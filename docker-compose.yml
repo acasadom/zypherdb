@@ -1,0 +1,16 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    volumes:
+      # Codigo fuente: bind mount, se edita desde macOS con tu editor normal.
+      - .:/workspace
+      # Cache de fuentes descargadas por vcpkg, persiste aunque borres el build/.
+      - vcpkg-downloads-cache:/opt/vcpkg/downloads
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+
+volumes:
+  vcpkg-downloads-cache:
