@@ -9,14 +9,23 @@
 //! Conventions:
 //!
 //! - Absent variable/label/type/alias is the empty string `""`.
-//! - `query` children are always `[pattern, where_expr, projection]`; a missing
-//!   `WHERE` is represented as `bool_literal(true)`.
+//! - `query` children are a list of clauses, in source order:
+//!   `match_clause`, `create_clause`, `set_clause`, `delete_clause`,
+//!   `return_clause`.
+//! - `match_clause` children are `[pattern, where_expr]`; a missing `WHERE` is
+//!   represented as `bool_literal(true)`.
+//! - `create_clause` children are `[pattern]`.
+//! - `set_clause` children are `set_item`s.
+//! - `delete_clause` children are `delete_item`s.
+//! - `return_clause` children are `[projection]`.
 //! - `pattern` children are the chain `[node0, edge0, node1, edge1, ...]`
 //!   (alternating node/edge, always an odd count).
 //! - `node_pattern` children are its `{name: value}` property entries.
 //! - `property` children are `[value_expr]` (the name is in `.text`).
 //! - `property_access` children are `[object_expr]` (the property name is in
 //!   `.text`).
+//! - `set_item` children are `[property_access, value_expr]`.
+//! - `delete_item` children are `[variable]`.
 //! - `projection` children are its `projection_item`s.
 //! - `projection_item` children are `[expr]` (the alias is in `.text`).
 
@@ -64,6 +73,13 @@ pub const NodeKind = enum {
     unary_op,
     projection,
     projection_item,
+    match_clause,
+    create_clause,
+    set_clause,
+    delete_clause,
+    return_clause,
+    set_item,
+    delete_item,
 };
 
 /// Node payload. The active variant is determined by the node's `kind`; kinds
@@ -181,19 +197,26 @@ test "builds and walks the AST for a MATCH/RETURN query" {
     // no WHERE -> true
     const true_expr = try ast.addNode(.bool_literal, .{ .boolean = true }, &.{});
 
-    const query = try ast.addNode(.query, .{ .none = {} }, &.{ pattern, true_expr, projection });
+    const match_clause = try ast.addNode(.match_clause, .{ .none = {} }, &.{ pattern, true_expr });
+    const return_clause = try ast.addNode(.return_clause, .{ .none = {} }, &.{projection});
+    const query = try ast.addNode(.query, .{ .none = {} }, &.{ match_clause, return_clause });
 
     try testing.expectEqual(query, ast.root());
     try testing.expectEqual(NodeKind.query, ast.kind(ast.root()));
 
     const qc = ast.nodeChildren(query);
-    try testing.expectEqual(@as(usize, 3), qc.len);
-    try testing.expectEqual(NodeKind.pattern, ast.kind(qc[0]));
-    try testing.expectEqual(NodeKind.bool_literal, ast.kind(qc[1]));
-    try testing.expectEqual(NodeKind.projection, ast.kind(qc[2]));
+    try testing.expectEqual(@as(usize, 2), qc.len);
+    try testing.expectEqual(NodeKind.match_clause, ast.kind(qc[0]));
+    try testing.expectEqual(NodeKind.return_clause, ast.kind(qc[1]));
+
+    // match_clause -> [pattern, where]
+    const mc = ast.nodeChildren(qc[0]);
+    try testing.expectEqual(@as(usize, 2), mc.len);
+    try testing.expectEqual(NodeKind.pattern, ast.kind(mc[0]));
+    try testing.expectEqual(NodeKind.bool_literal, ast.kind(mc[1]));
 
     // pattern -> node_pattern
-    const pc = ast.nodeChildren(qc[0]);
+    const pc = ast.nodeChildren(mc[0]);
     try testing.expectEqual(@as(usize, 1), pc.len);
     try testing.expectEqual(NodeKind.node_pattern, ast.kind(pc[0]));
     try testing.expectEqualStrings("Person", ast.data(pc[0]).node_pattern.label);
@@ -205,8 +228,10 @@ test "builds and walks the AST for a MATCH/RETURN query" {
     try testing.expectEqual(NodeKind.property, ast.kind(nprops[0]));
     try testing.expectEqualStrings("name", ast.data(nprops[0]).text);
 
-    // projection -> one item -> property_access("born", variable("p"))
-    const projc = ast.nodeChildren(qc[2]);
+    // return_clause -> projection -> one item -> property_access("born", variable("p"))
+    const rc = ast.nodeChildren(qc[1]);
+    try testing.expectEqual(@as(usize, 1), rc.len);
+    const projc = ast.nodeChildren(rc[0]);
     try testing.expectEqual(@as(usize, 1), projc.len);
     try testing.expectEqual(NodeKind.projection_item, ast.kind(projc[0]));
 

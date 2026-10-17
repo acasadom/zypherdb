@@ -1,17 +1,14 @@
-//! Volcano-style executor for the openCypher subset.
+//! Volcano-style executor for the openCypher subset, now with write clauses.
 //!
-//! The pattern is matched as nested loops over a "bind step" plan: pick the
-//! most selective node as the anchor (anchor selection), scan it by label,
-//! then expand outward along the pattern in both directions. Equality
-//! predicates — from inline node property maps and from `WHERE` equalities —
-//! are pushed down and checked as soon as their node is bound. The residual
-//! `WHERE` is evaluated on each complete match, then the `RETURN` items are
-//! projected.
+//! A query is a list of clauses (`match`, `create`, `set`, `delete`, `return`).
+//! The `MATCH` clause is planned as before (anchor selection, predicate
+//! pushdown) and produces variable bindings; then each `CREATE`/`SET`/`DELETE`
+//! clause is applied to every binding, and finally `RETURN` projects (if
+//! present). A query with no `MATCH` is applied to a single empty binding, so a
+//! standalone `CREATE ...` works.
 //!
-//! Anchor selection is heuristic: a node with any equality predicate is
-//! estimated as 1 match; otherwise its label's node count (via `labelCount`).
-//! There is no property index yet, so a pushed-down equality is applied as a
-//! scan-and-filter rather than a point lookup.
+//! Bindings map variable names to node ids dynamically, since `CREATE`
+//! introduces new variables at runtime.
 
 const std = @import("std");
 
@@ -59,18 +56,44 @@ const BindStep = union(enum) {
     expand: struct { from: usize, to: usize },
 };
 
+/// Dynamic variable-name -> node-id bindings.
+const Bindings = struct {
+    entries: std.ArrayList(struct { name: []const u8, id: NodeId }),
+
+    fn get(self: *const Bindings, name: []const u8) ?NodeId {
+        for (self.entries.items) |e| {
+            if (std.mem.eql(u8, e.name, name)) return e.id;
+        }
+        return null;
+    }
+
+    fn put(self: *Bindings, allocator: Allocator, name: []const u8, id: NodeId) !void {
+        for (self.entries.items) |*e| {
+            if (std.mem.eql(u8, e.name, name)) {
+                e.id = id;
+                return;
+            }
+        }
+        try self.entries.append(allocator, .{ .name = name, .id = id });
+    }
+};
+
 pub const Executor = struct {
     ast: *Ast,
     graph: *Graph,
-    allocator: Allocator, // scratch allocator, owned by the caller
+    allocator: Allocator,
     rows: std.ArrayList(Row),
 
-    // Per-run context.
+    // Match context.
     nodes: std.ArrayList(ChainNode),
     edges: std.ArrayList(ChainEdge),
     steps: std.ArrayList(BindStep),
     where_expr: Index,
-    projection: Index,
+    has_match: bool,
+
+    // Write context.
+    update_clauses: std.ArrayList(Index),
+    return_projection: ?Index,
 
     pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         return .{
@@ -82,20 +105,45 @@ pub const Executor = struct {
             .edges = .empty,
             .steps = .empty,
             .where_expr = 0,
-            .projection = 0,
+            .has_match = false,
+            .update_clauses = .empty,
+            .return_projection = null,
         };
     }
 
-    /// Runs the `query` (an AST `query` node) and returns its projected rows,
-    /// valid until `deinit`.
     pub fn run(self: *Executor, query: Index) ExecError![]const Row {
         self.rows.clearRetainingCapacity();
 
-        const qc = self.ast.nodeChildren(query);
-        const pattern = qc[0];
-        self.where_expr = qc[1];
-        self.projection = qc[2];
+        var match_clause: ?Index = null;
+        self.update_clauses = .empty;
+        self.return_projection = null;
+        for (self.ast.nodeChildren(query)) |c| {
+            switch (self.ast.kind(c)) {
+                .match_clause => match_clause = c,
+                .create_clause, .set_clause, .delete_clause => try self.update_clauses.append(self.allocator, c),
+                .return_clause => self.return_projection = self.ast.nodeChildren(c)[0],
+                else => {},
+            }
+        }
 
+        var bindings = Bindings{ .entries = .empty };
+        if (match_clause) |mc| {
+            const mc_children = self.ast.nodeChildren(mc);
+            self.has_match = true;
+            self.where_expr = mc_children[1];
+            try self.setupMatch(mc_children[0]);
+            try self.execStep(0, &bindings);
+        } else {
+            self.has_match = false;
+            try self.finish(&bindings);
+        }
+
+        return self.rows.items;
+    }
+
+    // --- Planning ----------------------------------------------------------
+
+    fn setupMatch(self: *Executor, pattern: Index) ExecError!void {
         const chain = self.ast.nodeChildren(pattern);
         const num_nodes = (chain.len + 1) / 2;
 
@@ -123,18 +171,8 @@ pub const Executor = struct {
         }
 
         try self.collectWhereSeeks(self.where_expr);
-
-        const anchor = self.chooseAnchor();
-        try self.buildSteps(anchor);
-
-        var row = std.ArrayList(?NodeId).empty;
-        for (0..num_nodes) |_| try row.append(self.allocator, null);
-
-        try self.execStep(0, &row);
-        return self.rows.items;
+        try self.buildSteps(self.chooseAnchor());
     }
-
-    // --- Planning ----------------------------------------------------------
 
     fn nodeIndex(self: *Executor, name: []const u8) ?usize {
         for (self.nodes.items, 0..) |n, i| {
@@ -143,8 +181,6 @@ pub const Executor = struct {
         return null;
     }
 
-    /// If `access_expr` is `var.prop` and `value_expr` is a literal, records a
-    /// seek on `var`'s node. Returns whether a seek was recorded.
     fn tryAddSeek(self: *Executor, access_expr: Index, value_expr: Index) ExecError!bool {
         if (self.ast.kind(access_expr) != .property_access) return false;
         const obj = self.ast.nodeChildren(access_expr)[0];
@@ -160,8 +196,6 @@ pub const Executor = struct {
         return true;
     }
 
-    /// Extracts equality seeks from an AND tree (safe: OR/NOT are left to the
-    /// residual WHERE).
     fn collectWhereSeeks(self: *Executor, expr: Index) ExecError!void {
         if (self.ast.kind(expr) != .binary_op) return;
         const op = self.ast.data(expr).bin_op;
@@ -203,12 +237,10 @@ pub const Executor = struct {
         self.steps = .empty;
         try self.steps.append(self.allocator, .{ .scan = .{ .node = anchor } });
 
-        // Expand right (anchor -> ... -> last node).
         var i: usize = anchor;
         while (i + 1 < self.nodes.items.len) : (i += 1) {
             try self.steps.append(self.allocator, .{ .expand = .{ .from = i, .to = i + 1 } });
         }
-        // Expand left (anchor -> ... -> first node).
         i = anchor;
         while (i > 0) : (i -= 1) {
             try self.steps.append(self.allocator, .{ .expand = .{ .from = i, .to = i - 1 } });
@@ -217,9 +249,9 @@ pub const Executor = struct {
 
     // --- Execution ---------------------------------------------------------
 
-    fn execStep(self: *Executor, step_idx: usize, row: *std.ArrayList(?NodeId)) ExecError!void {
+    fn execStep(self: *Executor, step_idx: usize, bindings: *Bindings) ExecError!void {
         if (step_idx == self.steps.items.len) {
-            return self.emit(row);
+            return self.finish(bindings);
         }
         switch (self.steps.items[step_idx]) {
             .scan => |s| {
@@ -227,13 +259,14 @@ pub const Executor = struct {
                 var it = try self.graph.nodesWithLabel(node.label);
                 defer it.deinit();
                 while (try it.next()) |id| {
-                    row.items[s.node] = id;
-                    if (!try self.nodeSeeksMatch(s.node, id, row)) continue;
-                    try self.execStep(step_idx + 1, row);
+                    try bindings.put(self.allocator, node.var_name, id);
+                    if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
+                    try self.execStep(step_idx + 1, bindings);
                 }
             },
             .expand => |e| {
-                const from_id = row.items[e.from].?;
+                const from_name = self.nodes.items[e.from].var_name;
+                const from_id = bindings.get(from_name) orelse return error.UnknownVar;
                 const edge = self.edges.items[@min(e.from, e.to)];
                 const dir: Direction = if (e.from < e.to) edge.fwd_dir else opposite(edge.fwd_dir);
                 const node = self.nodes.items[e.to];
@@ -242,50 +275,116 @@ pub const Executor = struct {
                 defer it.deinit();
                 while (try it.next()) |nid| {
                     if (node.label.len > 0 and !(try self.graph.hasLabel(nid, node.label))) continue;
-                    row.items[e.to] = nid;
-                    if (!try self.nodeSeeksMatch(e.to, nid, row)) continue;
-                    try self.execStep(step_idx + 1, row);
+                    try bindings.put(self.allocator, node.var_name, nid);
+                    if (!try self.nodeSeeksMatch(e.to, nid, bindings)) continue;
+                    try self.execStep(step_idx + 1, bindings);
                 }
             },
         }
     }
 
-    fn nodeSeeksMatch(self: *Executor, node_idx: usize, id: NodeId, row: *std.ArrayList(?NodeId)) ExecError!bool {
+    fn finish(self: *Executor, bindings: *Bindings) ExecError!void {
+        if (self.has_match and !try self.evalBool(self.where_expr, bindings)) return;
+
+        for (self.update_clauses.items) |clause| {
+            switch (self.ast.kind(clause)) {
+                .create_clause => try self.applyCreate(self.ast.nodeChildren(clause)[0], bindings),
+                .set_clause => try self.applySet(clause, bindings),
+                .delete_clause => try self.applyDelete(clause, bindings),
+                else => {},
+            }
+        }
+
+        if (self.return_projection) |proj| {
+            var out = std.ArrayList(Value).empty;
+            for (self.ast.nodeChildren(proj)) |item| {
+                const v = try self.eval(self.ast.nodeChildren(item)[0], bindings);
+                try out.append(self.allocator, v);
+            }
+            try self.rows.append(self.allocator, out);
+        }
+    }
+
+    fn applyCreate(self: *Executor, pattern: Index, bindings: *Bindings) ExecError!void {
+        const chain = self.ast.nodeChildren(pattern);
+        const num_nodes = (chain.len + 1) / 2;
+
+        // Create nodes and bind new variables.
+        for (0..num_nodes) |i| {
+            const np_idx = chain[i * 2];
+            const np = self.ast.data(np_idx).node_pattern;
+            if (np.var_name.len == 0) continue;
+            if (bindings.get(np.var_name) != null) continue;
+
+            const id = try self.graph.allocNodeId();
+            try self.graph.addNode(id, np.label);
+            for (self.ast.nodeChildren(np_idx)) |prop_idx| {
+                const prop_name = self.ast.data(prop_idx).text;
+                const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
+                try self.graph.setProp(id, prop_name, value);
+            }
+            try bindings.put(self.allocator, np.var_name, id);
+        }
+
+        // Create edges between the now-bound endpoints.
+        for (0..num_nodes - 1) |i| {
+            const ep = self.ast.data(chain[i * 2 + 1]).edge_pattern;
+            const left_name = self.ast.data(chain[i * 2]).node_pattern.var_name;
+            const right_name = self.ast.data(chain[i * 2 + 2]).node_pattern.var_name;
+            const left_id = bindings.get(left_name) orelse return error.UnknownVar;
+            const right_id = bindings.get(right_name) orelse return error.UnknownVar;
+            const src: NodeId = switch (ep.direction) {
+                .left_to_right => left_id,
+                .right_to_left => right_id,
+            };
+            const dst: NodeId = switch (ep.direction) {
+                .left_to_right => right_id,
+                .right_to_left => left_id,
+            };
+            try self.graph.addEdge(src, dst, ep.etype);
+        }
+    }
+
+    fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) ExecError!void {
+        for (self.ast.nodeChildren(set_clause)) |item| {
+            const ic = self.ast.nodeChildren(item);
+            const access = ic[0];
+            const value_expr = ic[1];
+            const prop = self.ast.data(access).text;
+            const obj = self.ast.nodeChildren(access)[0];
+            const name = self.ast.data(obj).text;
+            const id = bindings.get(name) orelse return error.UnknownVar;
+            const value = try self.eval(value_expr, bindings);
+            try self.graph.setProp(id, prop, value);
+        }
+    }
+
+    fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) ExecError!void {
+        for (self.ast.nodeChildren(delete_clause)) |item| {
+            const obj = self.ast.nodeChildren(item)[0];
+            const name = self.ast.data(obj).text;
+            const id = bindings.get(name) orelse return error.UnknownVar;
+            try self.graph.deleteNode(id);
+        }
+    }
+
+    fn nodeSeeksMatch(self: *Executor, node_idx: usize, id: NodeId, bindings: *Bindings) ExecError!bool {
         for (self.nodes.items[node_idx].seeks.items) |seek| {
-            const expected = try self.eval(seek.value, row);
+            const expected = try self.eval(seek.value, bindings);
             const actual = (try self.graph.getProp(id, seek.prop, self.allocator)) orelse return false;
             if (!valueEq(actual, expected)) return false;
         }
         return true;
     }
 
-    fn emit(self: *Executor, row: *std.ArrayList(?NodeId)) ExecError!void {
-        if (!try self.evalBool(self.where_expr, row)) return;
-
-        var out = std.ArrayList(Value).empty;
-        for (self.ast.nodeChildren(self.projection)) |item| {
-            const expr = self.ast.nodeChildren(item)[0];
-            const v = try self.eval(expr, row);
-            try out.append(self.allocator, v);
-        }
-        try self.rows.append(self.allocator, out);
-    }
-
-    fn slotOf(self: *Executor, name: []const u8) ?usize {
-        for (self.nodes.items, 0..) |n, i| {
-            if (std.mem.eql(u8, n.var_name, name)) return i;
-        }
-        return null;
-    }
-
-    fn evalBool(self: *Executor, expr: Index, row: *std.ArrayList(?NodeId)) ExecError!bool {
-        return switch (try self.eval(expr, row)) {
+    fn evalBool(self: *Executor, expr: Index, bindings: *Bindings) ExecError!bool {
+        return switch (try self.eval(expr, bindings)) {
             .boolean => |b| b,
             else => error.TypeMismatch,
         };
     }
 
-    fn eval(self: *Executor, expr: Index, row: *std.ArrayList(?NodeId)) ExecError!Value {
+    fn eval(self: *Executor, expr: Index, bindings: *Bindings) ExecError!Value {
         return switch (self.ast.kind(expr)) {
             .int_literal => .{ .int = self.ast.data(expr).int },
             .string_literal => .{ .str = self.ast.data(expr).text },
@@ -294,8 +393,7 @@ pub const Executor = struct {
                 const obj = self.ast.nodeChildren(expr)[0];
                 if (self.ast.kind(obj) != .variable) return error.InvalidExpr;
                 const name = self.ast.data(obj).text;
-                const slot = self.slotOf(name) orelse return error.UnknownVar;
-                const id = row.items[slot] orelse return error.UnknownVar;
+                const id = bindings.get(name) orelse return error.UnknownVar;
                 const prop = self.ast.data(expr).text;
                 const v = (try self.graph.getProp(id, prop, self.allocator)) orelse return error.MissingProp;
                 break :blk v;
@@ -303,13 +401,13 @@ pub const Executor = struct {
             .binary_op => blk: {
                 const op = self.ast.data(expr).bin_op;
                 const kids = self.ast.nodeChildren(expr);
-                const l = try self.eval(kids[0], row);
-                const r = try self.eval(kids[1], row);
+                const l = try self.eval(kids[0], bindings);
+                const r = try self.eval(kids[1], bindings);
                 break :blk try applyBinOp(op, l, r);
             },
             .unary_op => blk: {
                 const op = self.ast.data(expr).un_op;
-                const v = try self.eval(self.ast.nodeChildren(expr)[0], row);
+                const v = try self.eval(self.ast.nodeChildren(expr)[0], bindings);
                 break :blk try applyUnOp(op, v);
             },
             else => error.InvalidExpr,
@@ -508,4 +606,46 @@ test "runs the vertical-slice queries end to end" {
         &.{ .{ .str = "Keanu Reeves" }, .{ .str = "The Matrix Reloaded" } },
         &.{ .{ .str = "Keanu Reeves" }, .{ .str = "John Wick" } },
     });
+}
+
+test "write clauses: CREATE, SET and DELETE" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // CREATE a node, then read it back.
+    try expectQuery(&ast, &g, "CREATE (n:Person {name: 'Neo', born: 1964})", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Neo'}) RETURN n.born", &.{
+        &.{.{ .int = 1964 }},
+    });
+
+    // SET a property.
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Neo'}) SET n.born = 1970", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Neo'}) RETURN n.born", &.{
+        &.{.{ .int = 1970 }},
+    });
+
+    // CREATE two nodes + an edge in one statement.
+    try expectQuery(&ast, &g, "CREATE (a:Person {name: 'X'})-[:KNOWS]->(b:Person {name: 'Y'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'X'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
+        &.{.{ .str = "Y" }},
+    });
+
+    // MATCH + CREATE: bind an existing node, create a new one + edge.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'X'}) CREATE (a)-[:KNOWS]->(b:Person {name: 'Z'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'X'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
+        &.{.{ .str = "Y" }},
+        &.{.{ .str = "Z" }},
+    });
+
+    // DELETE a node (detach).
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Neo'}) DELETE n", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Neo'}) RETURN n.name", &.{});
 }

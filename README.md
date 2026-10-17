@@ -50,9 +50,10 @@ python3 examples/demo.py
 ## Current status
 
 First vertical slice complete: a subset of openCypher (`MATCH` with node/edge
-patterns, `WHERE` with comparisons and `AND`/`OR`/`NOT`, `RETURN` with aliases)
-is parsed, planned (anchor selection + predicate pushdown) and executed over
-index-free adjacency in LMDB. 21 tests cover the pipeline end to end.
+patterns, `WHERE` with comparisons and `AND`/`OR`/`NOT`, `RETURN` with aliases,
+plus `CREATE`/`SET`/`DELETE` writes) is parsed, planned (anchor selection +
+predicate pushdown) and executed over index-free adjacency in LMDB. 24 tests
+cover the pipeline end to end.
 
 ## Roadmap (initial openCypher subset)
 

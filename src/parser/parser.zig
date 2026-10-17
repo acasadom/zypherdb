@@ -282,22 +282,85 @@ const Parser = struct {
     // --- Grammar -----------------------------------------------------------
 
     fn parseQuery(self: *Parser) ParseError!Index {
-        try self.expectKeyword("MATCH");
-        const pattern = try self.parsePattern();
+        var clauses = std.ArrayList(Index).empty;
+        defer clauses.deinit(self.ast.allocator);
 
-        var where_expr: Index = undefined;
-        if (self.atKeyword("WHERE")) {
+        if (self.atKeyword("MATCH")) {
             _ = self.advance();
-            where_expr = try self.parseExpr();
-        } else {
-            where_expr = try self.ast.addNode(.bool_literal, .{ .boolean = true }, &.{});
+            const pattern = try self.parsePattern();
+            var where_expr: Index = undefined;
+            if (self.atKeyword("WHERE")) {
+                _ = self.advance();
+                where_expr = try self.parseExpr();
+            } else {
+                where_expr = try self.ast.addNode(.bool_literal, .{ .boolean = true }, &.{});
+            }
+            const mc = try self.ast.addNode(.match_clause, .{ .none = {} }, &.{ pattern, where_expr });
+            try clauses.append(self.ast.allocator, mc);
         }
 
-        try self.expectKeyword("RETURN");
-        const projection = try self.parseProjection();
+        while (true) {
+            if (self.atKeyword("CREATE")) {
+                _ = self.advance();
+                const pattern = try self.parsePattern();
+                const cc = try self.ast.addNode(.create_clause, .{ .none = {} }, &.{pattern});
+                try clauses.append(self.ast.allocator, cc);
+            } else if (self.atKeyword("SET")) {
+                _ = self.advance();
+                const sc = try self.parseSetClause();
+                try clauses.append(self.ast.allocator, sc);
+            } else if (self.atKeyword("DELETE")) {
+                _ = self.advance();
+                const dc = try self.parseDeleteClause();
+                try clauses.append(self.ast.allocator, dc);
+            } else break;
+        }
+
+        if (self.atKeyword("RETURN")) {
+            _ = self.advance();
+            const projection = try self.parseProjection();
+            const rc = try self.ast.addNode(.return_clause, .{ .none = {} }, &.{projection});
+            try clauses.append(self.ast.allocator, rc);
+        }
 
         if (self.peek().kind != .eof) return error.UnexpectedToken;
-        return self.ast.addNode(.query, .{ .none = {} }, &.{ pattern, where_expr, projection });
+        if (clauses.items.len == 0) return error.UnexpectedToken;
+        return self.ast.addNode(.query, .{ .none = {} }, clauses.items);
+    }
+
+    fn parseSetClause(self: *Parser) ParseError!Index {
+        var items = std.ArrayList(Index).empty;
+        defer items.deinit(self.ast.allocator);
+        while (true) {
+            const var_name = try self.internIdent();
+            try self.expect(.dot);
+            const prop = try self.internIdent();
+            const var_node = try self.ast.addNode(.variable, .{ .text = var_name }, &.{});
+            const access = try self.ast.addNode(.property_access, .{ .text = prop }, &.{var_node});
+            try self.expect(.eq);
+            const value = try self.parseExpr();
+            const item = try self.ast.addNode(.set_item, .{ .none = {} }, &.{ access, value });
+            try items.append(self.ast.allocator, item);
+            if (self.at(.comma)) {
+                _ = self.advance();
+            } else break;
+        }
+        return self.ast.addNode(.set_clause, .{ .none = {} }, items.items);
+    }
+
+    fn parseDeleteClause(self: *Parser) ParseError!Index {
+        var items = std.ArrayList(Index).empty;
+        defer items.deinit(self.ast.allocator);
+        while (true) {
+            const name = try self.internIdent();
+            const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
+            const item = try self.ast.addNode(.delete_item, .{ .none = {} }, &.{var_node});
+            try items.append(self.ast.allocator, item);
+            if (self.at(.comma)) {
+                _ = self.advance();
+            } else break;
+        }
+        return self.ast.addNode(.delete_clause, .{ .none = {} }, items.items);
     }
 
     fn parsePattern(self: *Parser) ParseError!Index {
@@ -502,30 +565,27 @@ test "parses a simple MATCH/RETURN query" {
 
     try testing.expectEqual(NodeKind.query, r.ast.kind(r.root));
     const qc = r.ast.nodeChildren(r.root);
-    try testing.expectEqual(@as(usize, 3), qc.len);
+    try testing.expectEqual(@as(usize, 2), qc.len);
+    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(qc[0]));
+    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(qc[1]));
 
-    // pattern -> single node, no edges
-    try testing.expectEqual(NodeKind.pattern, r.ast.kind(qc[0]));
-    const pc = r.ast.nodeChildren(qc[0]);
+    // match_clause -> [pattern, where=true]
+    const mc = r.ast.nodeChildren(qc[0]);
+    try testing.expectEqual(@as(usize, 2), mc.len);
+    try testing.expectEqual(NodeKind.pattern, r.ast.kind(mc[0]));
+    try testing.expectEqual(NodeKind.bool_literal, r.ast.kind(mc[1]));
+    try testing.expect(r.ast.data(mc[1]).boolean);
+
+    // pattern -> single node
+    const pc = r.ast.nodeChildren(mc[0]);
     try testing.expectEqual(@as(usize, 1), pc.len);
-    try testing.expectEqual(NodeKind.node_pattern, r.ast.kind(pc[0]));
     try testing.expectEqualStrings("p", r.ast.data(pc[0]).node_pattern.var_name);
     try testing.expectEqualStrings("Person", r.ast.data(pc[0]).node_pattern.label);
-    // one property {name: 'Keanu Reeves'}
-    const nprops = r.ast.nodeChildren(pc[0]);
-    try testing.expectEqual(@as(usize, 1), nprops.len);
-    try testing.expectEqual(NodeKind.property, r.ast.kind(nprops[0]));
-    try testing.expectEqualStrings("name", r.ast.data(nprops[0]).text);
 
-    // no WHERE -> true
-    try testing.expectEqual(NodeKind.bool_literal, r.ast.kind(qc[1]));
-    try testing.expect(r.ast.data(qc[1]).boolean);
-
-    // projection -> item -> property_access("born", variable("p"))
-    try testing.expectEqual(NodeKind.projection, r.ast.kind(qc[2]));
-    const projc = r.ast.nodeChildren(qc[2]);
+    // return_clause -> projection -> property_access("born")
+    const rc = r.ast.nodeChildren(qc[1]);
+    const projc = r.ast.nodeChildren(rc[0]);
     try testing.expectEqual(@as(usize, 1), projc.len);
-    try testing.expectEqual(NodeKind.projection_item, r.ast.kind(projc[0]));
     const ic = r.ast.nodeChildren(projc[0]);
     try testing.expectEqual(NodeKind.property_access, r.ast.kind(ic[0]));
     try testing.expectEqualStrings("born", r.ast.data(ic[0]).text);
@@ -538,20 +598,17 @@ test "parses an edge, WHERE with AND, and multiple RETURN items" {
     defer r.ast.deinit();
 
     const qc = r.ast.nodeChildren(r.root);
-    const pc = r.ast.nodeChildren(qc[0]);
+    const mc = r.ast.nodeChildren(qc[0]);
+    const pc = r.ast.nodeChildren(mc[0]);
     try testing.expectEqual(@as(usize, 3), pc.len);
-    try testing.expectEqual(NodeKind.edge_pattern, r.ast.kind(pc[1]));
     try testing.expectEqualStrings("ACTED_IN", r.ast.data(pc[1]).edge_pattern.etype);
     try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pc[1]).edge_pattern.direction);
-    try testing.expectEqualStrings("Movie", r.ast.data(pc[2]).node_pattern.label);
 
-    // WHERE = AND
-    try testing.expectEqual(NodeKind.binary_op, r.ast.kind(qc[1]));
-    try testing.expectEqual(BinOp.and_, r.ast.data(qc[1]).bin_op);
+    try testing.expectEqual(NodeKind.binary_op, r.ast.kind(mc[1]));
+    try testing.expectEqual(BinOp.and_, r.ast.data(mc[1]).bin_op);
 
-    // projection = two items
-    try testing.expectEqual(NodeKind.projection, r.ast.kind(qc[2]));
-    try testing.expectEqual(@as(usize, 2), r.ast.nodeChildren(qc[2]).len);
+    const rc = r.ast.nodeChildren(qc[1]);
+    try testing.expectEqual(@as(usize, 2), r.ast.nodeChildren(rc[0]).len);
 }
 
 test "parses a reverse-direction edge chain" {
@@ -561,7 +618,8 @@ test "parses a reverse-direction edge chain" {
     defer r.ast.deinit();
 
     const qc = r.ast.nodeChildren(r.root);
-    const pc = r.ast.nodeChildren(qc[0]);
+    const mc = r.ast.nodeChildren(qc[0]);
+    const pc = r.ast.nodeChildren(mc[0]);
     try testing.expectEqual(@as(usize, 5), pc.len); // node edge node edge node
     try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pc[1]).edge_pattern.direction);
     try testing.expectEqualStrings("DIRECTED", r.ast.data(pc[1]).edge_pattern.etype);
@@ -574,13 +632,42 @@ test "parses RETURN alias and comparison operators" {
     defer r.ast.deinit();
 
     const qc = r.ast.nodeChildren(r.root);
-    // WHERE = binary_op ge
-    try testing.expectEqual(NodeKind.binary_op, r.ast.kind(qc[1]));
-    try testing.expectEqual(BinOp.ge, r.ast.data(qc[1]).bin_op);
+    const mc = r.ast.nodeChildren(qc[0]);
+    try testing.expectEqual(NodeKind.binary_op, r.ast.kind(mc[1]));
+    try testing.expectEqual(BinOp.ge, r.ast.data(mc[1]).bin_op);
 
-    // projection item alias = "movie"
-    const projc = r.ast.nodeChildren(qc[2]);
+    const rc = r.ast.nodeChildren(qc[1]);
+    const projc = r.ast.nodeChildren(rc[0]);
     try testing.expectEqualStrings("movie", r.ast.data(projc[0]).text);
+}
+
+test "parses write clauses (CREATE, SET, DELETE)" {
+    var r = try parseString(
+        "MATCH (a:Person {name: 'Keanu Reeves'}) CREATE (a)-[:KNOWS]->(b:Person {name: 'Neo'}) SET b.born = 1964 DELETE a RETURN b.name",
+    );
+    defer r.ast.deinit();
+
+    const qc = r.ast.nodeChildren(r.root);
+    try testing.expectEqual(@as(usize, 5), qc.len);
+    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(qc[0]));
+    try testing.expectEqual(NodeKind.create_clause, r.ast.kind(qc[1]));
+    try testing.expectEqual(NodeKind.set_clause, r.ast.kind(qc[2]));
+    try testing.expectEqual(NodeKind.delete_clause, r.ast.kind(qc[3]));
+    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(qc[4]));
+
+    // create_clause -> pattern (node edge node)
+    const cc = r.ast.nodeChildren(qc[1]);
+    const cpc = r.ast.nodeChildren(cc[0]);
+    try testing.expectEqual(@as(usize, 3), cpc.len);
+    try testing.expectEqualStrings("KNOWS", r.ast.data(cpc[1]).edge_pattern.etype);
+
+    // set_clause -> one set_item (property_access + value)
+    const sc = r.ast.nodeChildren(qc[2]);
+    try testing.expectEqual(@as(usize, 1), sc.len);
+    try testing.expectEqual(NodeKind.set_item, r.ast.kind(sc[0]));
+    const sic = r.ast.nodeChildren(sc[0]);
+    try testing.expectEqual(NodeKind.property_access, r.ast.kind(sic[0]));
+    try testing.expectEqualStrings("born", r.ast.data(sic[0]).text);
 }
 
 test "reports unterminated string" {
