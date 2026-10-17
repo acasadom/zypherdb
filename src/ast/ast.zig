@@ -18,7 +18,11 @@
 //! - `create_clause` children are `[pattern]`.
 //! - `set_clause` children are `set_item`s.
 //! - `delete_clause` children are `delete_item`s.
-//! - `return_clause` children are `[projection]`.
+//! - `return_clause` children are `[projection]`, plus an optional `order_by`
+//!   and an optional `limit`; `distinct` is in the `return_` payload.
+//! - `order_by` children are `order_item`s.
+//! - `order_item` children are `[expr]` (`ascending` is in the payload).
+//! - `limit` children are `[expr]`.
 //! - `pattern` children are the chain `[node0, edge0, node1, edge1, ...]`
 //!   (alternating node/edge, always an odd count).
 //! - `node_pattern` children are its `{name: value}` property entries.
@@ -82,6 +86,9 @@ pub const NodeKind = enum {
     return_clause,
     set_item,
     delete_item,
+    order_by,
+    order_item,
+    limit,
 };
 
 /// Node payload. The active variant is determined by the node's `kind`; kinds
@@ -97,6 +104,8 @@ pub const Data = union(enum) {
     edge_pattern: struct { var_name: []const u8, etype: []const u8, direction: EdgeDirection },
     bin_op: BinOp,
     un_op: UnOp,
+    return_: struct { distinct: bool },
+    order_item: struct { ascending: bool },
 };
 
 pub const Node = struct {

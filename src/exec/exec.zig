@@ -96,7 +96,10 @@ pub const Executor = struct {
 
     // Write context.
     update_clauses: std.ArrayList(Index),
-    return_projection: ?Index,
+    return_clause: ?Index,
+
+    // Result post-processing.
+    row_keys: std.ArrayList([]const Value),
 
     /// Optional sink for error messages (message + source position).
     diag: ?*Diagnostic,
@@ -114,7 +117,8 @@ pub const Executor = struct {
             .where_expr = 0,
             .has_match = false,
             .update_clauses = .empty,
-            .return_projection = null,
+            .return_clause = null,
+            .row_keys = .empty,
             .diag = null,
         };
     }
@@ -125,15 +129,16 @@ pub const Executor = struct {
 
     pub fn run(self: *Executor, query: Index) ExecError![]const Row {
         self.rows.clearRetainingCapacity();
+        self.row_keys = .empty;
 
         var match_clause: ?Index = null;
         self.update_clauses = .empty;
-        self.return_projection = null;
+        self.return_clause = null;
         for (self.ast.nodeChildren(query)) |c| {
             switch (self.ast.kind(c)) {
                 .match_clause => match_clause = c,
                 .create_clause, .merge_clause, .set_clause, .delete_clause => try self.update_clauses.append(self.allocator, c),
-                .return_clause => self.return_projection = self.ast.nodeChildren(c)[0],
+                .return_clause => self.return_clause = c,
                 else => {},
             }
         }
@@ -157,6 +162,10 @@ pub const Executor = struct {
         }
 
         if (has_writes) try self.graph.commitWrite();
+
+        if (self.return_clause) |rc| {
+            try self.postProcess(rc);
+        }
 
         return self.rows.items;
     }
@@ -358,14 +367,114 @@ pub const Executor = struct {
             }
         }
 
-        if (self.return_projection) |proj| {
+        if (self.return_clause) |rc| {
+            const info = self.returnInfo(rc);
+
             var out = std.ArrayList(Value).empty;
-            for (self.ast.nodeChildren(proj)) |item| {
+            for (self.ast.nodeChildren(info.projection)) |item| {
                 const v = try self.eval(self.ast.nodeChildren(item)[0], bindings);
                 try out.append(self.allocator, v);
             }
             try self.rows.append(self.allocator, out);
+
+            // Evaluate the ORDER BY keys alongside the row (they may reference
+            // variables that aren't projected).
+            var keys = std.ArrayList(Value).empty;
+            if (info.order_by) |ob| {
+                for (self.ast.nodeChildren(ob)) |item| {
+                    const v = try self.eval(self.ast.nodeChildren(item)[0], bindings);
+                    try keys.append(self.allocator, v);
+                }
+            }
+            try self.row_keys.append(self.allocator, keys.items);
         }
+    }
+
+    const ReturnInfo = struct {
+        projection: Index,
+        order_by: ?Index,
+        limit: ?Index,
+        distinct: bool,
+    };
+
+    fn returnInfo(self: *Executor, rc: Index) ReturnInfo {
+        var info = ReturnInfo{
+            .projection = 0,
+            .order_by = null,
+            .limit = null,
+            .distinct = self.ast.data(rc).return_.distinct,
+        };
+        for (self.ast.nodeChildren(rc)) |child| {
+            switch (self.ast.kind(child)) {
+                .projection => info.projection = child,
+                .order_by => info.order_by = child,
+                .limit => info.limit = child,
+                else => {},
+            }
+        }
+        return info;
+    }
+
+    fn postProcess(self: *Executor, rc: Index) ExecError!void {
+        const info = self.returnInfo(rc);
+
+        if (info.distinct) self.dedup();
+
+        if (info.order_by) |ob| {
+            try self.sortRows(ob);
+        }
+
+        if (info.limit) |lim| {
+            const expr = self.ast.nodeChildren(lim)[0];
+            var empty = Bindings{ .entries = .empty };
+            const n = switch (try self.eval(expr, &empty)) {
+                .int => |n| if (n < 0) 0 else @as(usize, @intCast(n)),
+                else => 0,
+            };
+            if (n < self.rows.items.len) self.rows.shrinkRetainingCapacity(n);
+        }
+    }
+
+    fn dedup(self: *Executor) void {
+        var i: usize = 0;
+        while (i < self.rows.items.len) : (i += 1) {
+            var j: usize = i + 1;
+            while (j < self.rows.items.len) {
+                if (rowsEq(self.rows.items[i].items, self.rows.items[j].items)) {
+                    _ = self.rows.swapRemove(j);
+                    _ = self.row_keys.swapRemove(j);
+                } else {
+                    j += 1;
+                }
+            }
+        }
+    }
+
+    fn sortRows(self: *Executor, ob: Index) ExecError!void {
+        const n = self.rows.items.len;
+        if (n <= 1) return;
+
+        const items = self.ast.nodeChildren(ob);
+        var asc = std.ArrayList(bool).empty;
+        defer asc.deinit(self.allocator);
+        for (items) |item| try asc.append(self.allocator, self.ast.data(item).order_item.ascending);
+
+        var idx = std.ArrayList(usize).empty;
+        defer idx.deinit(self.allocator);
+        var k: usize = 0;
+        while (k < n) : (k += 1) try idx.append(self.allocator, k);
+
+        const ctx = SortCtx{ .keys = self.row_keys.items, .asc = asc.items };
+        std.sort.pdq(usize, idx.items, ctx, lessThanIdx);
+
+        var new_rows = std.ArrayList(Row).empty;
+        var new_keys = std.ArrayList([]const Value).empty;
+        for (idx.items) |i| {
+            try new_rows.append(self.allocator, self.rows.items[i]);
+            try new_keys.append(self.allocator, self.row_keys.items[i]);
+        }
+        self.rows = new_rows;
+        self.row_keys = new_keys;
     }
 
     fn applyCreate(self: *Executor, pattern: Index, bindings: *Bindings) ExecError!void {
@@ -571,6 +680,47 @@ fn valueEq(l: Value, r: Value) bool {
     };
 }
 
+fn rowsEq(a: []const Value, b: []const Value) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |av, bv| {
+        if (!valueEq(av, bv)) return false;
+    }
+    return true;
+}
+
+fn compareValue(a: Value, b: Value) std.math.Order {
+    return switch (a) {
+        .int => |av| switch (b) {
+            .int => |bv| std.math.order(av, bv),
+            else => .lt,
+        },
+        .str => |av| switch (b) {
+            .str => |bv| std.mem.order(u8, av, bv),
+            else => .gt,
+        },
+        .boolean => |av| switch (b) {
+            .boolean => |bv| std.math.order(@intFromBool(av), @intFromBool(bv)),
+            else => .lt,
+        },
+    };
+}
+
+const SortCtx = struct {
+    keys: []const []const Value,
+    asc: []const bool,
+};
+
+fn lessThanIdx(ctx: SortCtx, a: usize, b: usize) bool {
+    const ka = ctx.keys[a];
+    const kb = ctx.keys[b];
+    for (ka, kb, ctx.asc) |va, vb, asc| {
+        const ord = compareValue(va, vb);
+        if (ord == .lt) return asc;
+        if (ord == .gt) return !asc;
+    }
+    return false;
+}
+
 fn applyBinOp(op: BinOp, l: Value, r: Value) ExecError!Value {
     return switch (op) {
         .eq => .{ .boolean = valueEq(l, r) },
@@ -702,6 +852,18 @@ fn expectQuery(ast: *Ast, g: *Graph, src: []const u8, expected: []const []const 
     var exec = Executor.init(ast, g, arena.allocator());
     const rows = try exec.run(query);
     try expectRows(rows, expected);
+}
+
+fn expectOrdered(ast: *Ast, g: *Graph, src: []const u8, expected: []const []const Value) !void {
+    const query = try parser.parse(ast, src, null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exec = Executor.init(ast, g, arena.allocator());
+    const rows = try exec.run(query);
+    try testing.expectEqual(expected.len, rows.len);
+    for (expected, rows) |exp, r| {
+        try testing.expect(rowsEq(r.items, exp));
+    }
 }
 
 test "runs the vertical-slice queries end to end" {
@@ -853,5 +1015,44 @@ test "MATCH multi-pattern: join and shared variables" {
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[:KNOWS]->(c:Person) RETURN c.name", &.{
         &.{.{ .str = "B" }},
         &.{.{ .str = "C" }},
+    });
+}
+
+test "ORDER BY, LIMIT and DISTINCT" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // ORDER BY ascending.
+    try expectOrdered(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title ORDER BY m.released", &.{
+        &.{.{ .str = "The Matrix" }},
+        &.{.{ .str = "The Matrix Reloaded" }},
+        &.{.{ .str = "John Wick" }},
+    });
+
+    // ORDER BY descending.
+    try expectOrdered(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title ORDER BY m.released DESC", &.{
+        &.{.{ .str = "John Wick" }},
+        &.{.{ .str = "The Matrix Reloaded" }},
+        &.{.{ .str = "The Matrix" }},
+    });
+
+    // LIMIT after ORDER BY.
+    try expectOrdered(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title ORDER BY m.released LIMIT 2", &.{
+        &.{.{ .str = "The Matrix" }},
+        &.{.{ .str = "The Matrix Reloaded" }},
+    });
+
+    // DISTINCT collapses duplicate projected rows.
+    try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie {title: 'The Matrix'}) RETURN DISTINCT m.title", &.{
+        &.{.{ .str = "The Matrix" }},
     });
 }

@@ -387,8 +387,7 @@ const Parser = struct {
 
         if (self.atKeyword("RETURN")) {
             _ = self.advance();
-            const projection = try self.parseProjection();
-            const rc = try self.ast.addNode(.return_clause, .{ .none = {} }, &.{projection});
+            const rc = try self.parseReturnClause();
             try clauses.append(self.ast.allocator, rc);
         }
 
@@ -524,6 +523,56 @@ const Parser = struct {
             alias = try self.internIdent();
         }
         return self.ast.addNode(.projection_item, .{ .text = alias }, &.{expr});
+    }
+
+    fn parseReturnClause(self: *Parser) ParseError!Index {
+        var distinct = false;
+        if (self.atKeyword("DISTINCT")) {
+            _ = self.advance();
+            distinct = true;
+        }
+        const projection = try self.parseProjection();
+
+        var kids = std.ArrayList(Index).empty;
+        defer kids.deinit(self.ast.allocator);
+        try kids.append(self.ast.allocator, projection);
+
+        if (self.atKeyword("ORDER")) {
+            _ = self.advance();
+            try self.expectKeyword("BY");
+            const ob = try self.parseOrderBy();
+            try kids.append(self.ast.allocator, ob);
+        }
+
+        if (self.atKeyword("LIMIT")) {
+            _ = self.advance();
+            const expr = try self.parseExpr();
+            const lim = try self.ast.addNode(.limit, .{ .none = {} }, &.{expr});
+            try kids.append(self.ast.allocator, lim);
+        }
+
+        return self.ast.addNode(.return_clause, .{ .return_ = .{ .distinct = distinct } }, kids.items);
+    }
+
+    fn parseOrderBy(self: *Parser) ParseError!Index {
+        var items = std.ArrayList(Index).empty;
+        defer items.deinit(self.ast.allocator);
+        while (true) {
+            const expr = try self.parseExpr();
+            var ascending = true;
+            if (self.atKeyword("DESC")) {
+                _ = self.advance();
+                ascending = false;
+            } else if (self.atKeyword("ASC")) {
+                _ = self.advance();
+            }
+            const item = try self.ast.addNode(.order_item, .{ .order_item = .{ .ascending = ascending } }, &.{expr});
+            try items.append(self.ast.allocator, item);
+            if (self.at(.comma)) {
+                _ = self.advance();
+            } else break;
+        }
+        return self.ast.addNode(.order_by, .{ .none = {} }, items.items);
     }
 
     fn parseExpr(self: *Parser) ParseError!Index {
