@@ -1,116 +1,127 @@
-# acmedb — Development status
+# acmedb — Estado de desarrollo
 
-_Last updated: session working with the agent. Keep this file current: it is the
-entry point for a fresh session so we do not lose context._
+_Última actualización: binding C manual de LMDB terminado; `KvStore` compila y
+pasa sus 6 tests. Mantén este fichero al día: es el punto de entrada para una
+sesión nueva, para no perder contexto._
 
-## 1. Environment (host is macOS, Apple Silicon)
+## 1. Decisión clave: pivote de pila (C++/RocksDB → Zig/LMDB)
 
-- Commands run **directly on the host** (an earlier note in the README claiming
-  an "isolated VM without a Docker daemon" was **wrong** — verify before trusting
-  it again).
-- Docker is available. **Current engine: OrbStack** (`docker context show` ->
-  `orbstack`). Docker Desktop is also installed. The active context has changed
-  between engines during the project, so **always check `docker context show`
-  before building**: an image/volume built on one engine is NOT visible on the
-  other, though the host bind mount (`build/`) is shared.
-- Toolchain lives **inside the container only** (Clang 20, CMake, Ninja, vcpkg).
-  Nothing is installed on the host. **Rule: never install/modify anything on the
-  host without explicit permission.**
-- Internet access is fast; disk was freed up (was ~3.5 GiB, now ~96 GiB free).
+**Se abandona C++ + RocksDB y se pasa a Zig + LMDB.** Motivos (según el usuario):
 
-### Build/run loop (important operational notes)
+1. Quiere algo **embebido en Python** (no en C++).
+2. Quiere **rendimiento real y utilizable**.
+3. **Compilaciones rápidas** en un M1 de 8 GB de RAM.
+4. Quiere que **funcione sin tener que revisar todo el código** a fondo.
+5. A futuro le interesa **replicación de lectura** (un proceso escribe → se replica a N → cada proceso lee su réplica).
 
-- The **terminal kills foreground commands after 2 minutes**. Long builds MUST be
-  launched detached, writing to a log file in the repo, then polled:
-  ```bash
-  docker compose run --rm -d --name acmedb-<step> dev bash -lc \
-    '<cmd> > build/logs/<step>.log 2>&1; echo "EXIT=$?" >> build/logs/<step>.log; touch build/logs/<step>.done'
-  # then read build/logs/<step>.log
-  ```
-- `build/logs/` holds these logs. `build/` is gitignored.
-- The first vcpkg configure compiles RocksDB from source (~1h45m). It is now
-  cached in `build/debug/vcpkg_installed/` (host bind mount), so subsequent
-  configures take ~2s. RocksDB is NOT recompiled unless `vcpkg.json` changes.
-- If a detached container is interrupted, clean it up: `docker rm -f acmedb-<step>`.
+Puntos que aclaramos y conviene recordar:
 
-## 2. What was found (bugs / surprises)
+- El dolor de "compilación lenta" **no venía del código C++**, sino de **RocksDB
+  compilado desde fuente vía vcpkg** (~1h45m la primera vez). Cambiar de lenguaje
+  no elimina ese coste si se sigue enlazando RocksDB.
+- El **lenguaje del ejecutor importa poco para el rendimiento**: lo dominan el
+  storage engine (I/O) y la planificación (selección de anchor).
+- **LMDB es single-writer / multi-reader por nodo**, lo que encaja exactamente con
+  el modelo de réplicas deseado (cada réplica la escribe solo el "apply" de
+  replicación). En lecturas LMDB es ~6x más rápido que RocksDB.
+- **Caveats asumidos**: Zig sigue pre-1.0 (0.17.0, breaking changes hasta 1.0) y
+  ecosistema pequeño; LMDB tiene `map_size` fijo a dimensionar y un solo escritor.
 
-1. **`docker/Dockerfile` broke the image build**: `software-properties-common`
-   does not exist on `debian:trixie-slim`, so `apt-get install` failed with
-   exit 100. It was unused (the LLVM script adds its own repo), so it was removed.
-2. **`src/storage/kv_store.cpp` did not compile** against the RocksDB that vcpkg
-   installs (11.8.1): `rocksdb::DB::Open` now takes `std::unique_ptr<DB>*`, not
-   the old raw `DB**`. The code assumed the raw-pointer overload. This proves the
-   skeleton had **never actually been compiled** before.
-3. The README's claim about an isolated VM without Docker was inaccurate for this
-   environment (see section 1).
-4. No git repository existed at the start.
+El esqueleto C++/RocksDB **se conserva en git** (commit `1a5080f`), no se pierde.
 
-## 3. What was done
+## 2. Entorno y toolchain (ya hecho)
 
-- **Dockerfile fixed** (removed `software-properties-common`). Image builds.
-- **`kv_store.cpp` fixed** for the modern `DB::Open` signature (uses
-  `std::unique_ptr<rocksdb::DB>` directly).
-- **Git initialized** (`main`) with an initial commit of the skeleton (`9aed84c`),
-  including a `.gitignore` that excludes `build/`, `vcpkg_installed/`,
-  `compile_commands.json`, `.DS_Store`, and local editor dirs (`.continue/`,
-  `.vscode/`).
-- **`KvStore` hardened** (uncommitted at time of writing):
-  - `get` now returns `std::expected<std::optional<std::string>, KvError>` —
-    a missing key is a normal result, not an error.
-  - added `exists` and `del` (del is idempotent).
-  - added `scan_prefix` returning a **`PrefixRange`**, which models
-    `std::ranges::input_range` (compile-time `static_assert`), owns the RocksDB
-    iterator via `unique_ptr` (move-only, RAII, no dangling), yields
-    `std::pair<std::string_view, std::string_view>`, and composes with
-    `std::views` (verified with a `transform | take` test).
-  - added `count_prefix` (neighbour counts — needed later for anchor selection).
-  - `KvError` extended with `DeleteFailed` and `IteratorFailed`.
-- **Tests expanded** from 1 to 7, all passing: get/absent, exists, del idempotent,
-  ordered prefix scan, prefix scan composed with `std::views`, count_prefix, plus
-  the original smoke test.
+- **Zig 0.17.0** instalado en `.zig/0.17.0/` (gitignored), enlazado a
+  `~/.local/bin/zig` (que ya está en `PATH`). Verificado: `zig version` → `0.17.0`.
+- Se eliminó el `zig` de Homebrew (0.11.0, estaba roto: le faltaba una dylib de z3).
+- **LMDB 1.0.2** vendido en `vendor/lmdb/` (`mdb.c`, `midl.c`, `lmdb.h`, `midl.h`,
+  `LICENSE`, `COPYRIGHT`), fijado a la versión `LMDB_1.0.2`.
+- **Docker/vcpkg ya NO se necesitan**: Zig es una toolchain nativa de un solo
+  binario (trae su propio `zig cc`). Esto elimina toda la complejidad anterior de
+  Docker/vcpkg/CMake.
 
-### Design decisions worth remembering
+### Restricciones del sandbox (importante)
 
-- The project explicitly rejects class hierarchies / inheritance and the Visitor
-  pattern (Stepanov-style generic programming). This is **why the prefix scan is
-  modelled as a range/iterator**, not a push-style callback: a range is the
-  composable abstraction a Volcano-style executor needs, and it is consistent
-  with the stated philosophy.
-- Errors are values (`std::expected`), not exceptions.
+- El agente **no puede escribir** en `~/.local/opt` ni fuera del workspace del
+  proyecto. Sí puede escribir en el proyecto, `/tmp` y `~/.local/bin`.
+- Regla de la sesión anterior que se mantiene: **no instalar/modificar nada en el
+  host sin permiso explícito.**
 
-## 4. Verification status
+## 3. Código Zig creado (compila y pasa los tests)
 
-- Last pipeline run: **configure OK, build OK, 7/7 ctest passed, PIPELINE_EXIT=0**.
+Ficheros nuevos:
 
-## 5. Proposed plan from here
+- `build.zig` — módulo `acmedb` + librería estática + paso `test`.
+- `build.zig.zon` — manifiesto (fingerprint `0x8985f8037b44acbc`, generado por el toolchain).
+- `src/root.zig` — raíz de la librería (re-exporta `storage`).
+- `src/storage/kv_store.zig` — `KvStore` sobre LMDB + 6 tests.
+- `src/storage/lmdb.zig` — binding C **manual** de LMDB (sin `@cImport`).
 
-Ordered by leverage. Items 1–2 are the agreed next steps; adjust as needed.
+API diseñada de `KvStore` (espejo de la de C++), errores como `error union`
+(análogo a `std::expected`):
 
-1. **Commit the current `KvStore` work** (single clean commit).
-2. **Define one concrete vertical use case** before writing more engine code:
-   a tiny dataset (e.g. people + KNOWS edges) plus ~5 fixed queries with their
-   exact expected output. This becomes the definition of "done" for the first
-   openCypher slice. Without this, "supports MATCH" is undefined.
-3. **Graph key encoding** on top of `KvStore::scan_prefix`: encode adjacency as
-   `node-prefix | direction | edge-type | neighbour-id` so "neighbours of X" is a
-   single ordered prefix scan (index-free adjacency). This is the next real
-   engine brick and it exercises `scan_prefix` for real.
-4. **AST as an arena** (`std::vector<Node>` + child index ranges, `NodeKind` +
-   payload), no pointers/inheritance — as described in the README.
-5. **Recursive-descent openCypher parser** (subset) producing the arena AST.
-6. **Translation AST -> logical plan** -> **naive Volcano executor**
-   (Open/Next/Close) over the encoded adjacency.
-7. Later: statistics + pattern anchor selection (the highest-impact graph
-   optimisation), and only then write features (CREATE/SET/DELETE) and more
-   clauses.
+- `open(allocator, path) KvError!KvStore`
+- `put(key, value) KvError!void`
+- `get(key) KvError!?[]u8` (clave ausente = `null`, valor devuelto es copia propiedad)
+- `exists(key) KvError!bool`
+- `del(key) KvError!void` (idempotente)
+- `scanPrefix(prefix) KvError!PrefixIterator`
+- `countPrefix(prefix) KvError!usize`
 
-### Open decisions to settle
+## 4. Bloqueante resuelto: binding C manual (antes `@cImport`)
 
-- Whether to commit `.continue/prompts` and `.continue/rules` selectively
-  (currently the whole `.continue/` is ignored).
-- Which Docker engine to standardise on (OrbStack vs Docker Desktop) to avoid
-  rebuilding images when the context flips.
-- Whether the global host-safety rule should also be written to the user's global
-  Claude config (the agent could not write outside the project workspace; the user
-  must do it, or grant permission).
+**`@cImport` fue eliminado en Zig 0.17.0**, así que se sustituyó por un binding
+C **manual** en `src/storage/lmdb.zig`: `extern "c" fn` + tipos `opaque {}` para
+`MDB_env`/`MDB_txn`/`MDB_cursor`. Datos clave ya aplicados (ver
+`vendor/lmdb/lmdb.h`):
+
+- `MDB_val` = `extern struct { mv_size: usize, mv_data: ?*anyopaque }`.
+- `MDB_dbi` = `c_uint`; `mdb_size_t` = `size_t` (usize); `mdb_mode_t` = `c_uint`.
+- Constantes: `MDB_RDONLY = 0x20000`, `MDB_NOTFOUND = -30798`.
+- `MDB_cursor_op`: `MDB_NEXT = 8`, `MDB_SET_RANGE = 17`.
+
+Los 7 tests (6 de `KvStore` + `refAllDecls`) pasan: `zig build test`.
+
+## 5. Notas de API de Zig 0.17 (para no redescubrirlas)
+
+- `@cImport` eliminado → usar binding manual: `extern "c" fn`, tipos `opaque {}`,
+  structs `extern struct` (ver `src/storage/lmdb.zig`).
+- `std.fs` fue reorganizado → ahora `std.Io` (`Io.Dir`, `Io.File`). `makePath` y
+  `realpathAlloc` ya no existen; ahora es `createDirPathOpen`, etc.
+- `std.testing.tmpDir(.{})` devuelve `TmpDir` (NO un `error union`), crea la
+  carpeta en `.zig-cache/tmp/<sub_path>` y se limpia con `.cleanup()`.
+- `Allocator.dupeZ` eliminado → usar `dupeSentinel(u8, slice, 0)` (devuelve `[:0]u8`).
+- `std.ArrayList(T)` ahora es la variante *unmanaged* (sin `allocator` interno):
+  se inicializa con `std.ArrayList(T).empty`, y `append(gpa, item)` /
+  `deinit(gpa)` reciben el allocator por parámetro. `ArrayList.init(gpa)` ya no existe.
+- Build API: `b.addModule` / `b.createModule` / `b.addLibrary` / `b.addTest`;
+  métodos de módulo `addCSourceFiles`, `addIncludePath`; `link_libc` se pone en
+  `Module.CreateOptions`.
+
+## 6. Plan de desarrollo (roadmap, ahora en Zig)
+
+Ordenado por leverage:
+
+1. ~~**Terminar el binding C manual** y pasar los 6 tests de `KvStore`.~~ ✅ hecho
+2. **Definir un caso de uso vertical concreto** (dataset pequeño + ~5 queries con
+   salida exacta) como definición de "done" del primer slice de openCypher.
+3. **Codificación de claves de grafo** (adyacencia index-free) sobre `scanPrefix`:
+   `prefijo-nodo | dirección | tipo-relación | vecino-id`.
+4. **AST como arena** (`std.ArrayList` de nodos + índices de hijos, `NodeKind` +
+   payload), sin punteros ni herencia.
+5. **Parser recursivo-descendente** de openCypher (subset) → AST de arena.
+6. **Traducción AST → plan lógico** → **ejecutor Volcano ingenuo** (Open/Next/Close).
+7. **Estadísticas + selección de anchor** del patrón (la optimización de mayor impacto).
+8. **Wrapper Python vía ABI C** (`export fn`), y solo después escrituras
+   (CREATE/SET/DELETE) y más cláusulas.
+
+## 7. Decisiones de diseño que conviene recordar
+
+- **Sin jerarquías de clases ni Visitor.** Generic programming (Stepanov/STL):
+  datos como tipos concretos, algoritmos como funciones libres. En Zig esto se
+  traduce a `comptime` generics y tipos concretos.
+- **Errores como valores** (`error union`), no excepciones.
+- El `scan_prefix` como **iterador** (no callback push): es la abstracción
+  componible que necesita un ejecutor Volcano.
+- LMDB itera en orden lexicográfico de clave, que es justo lo que explota la
+  codificación de adyacencia por prefijo.

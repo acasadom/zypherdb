@@ -9,3 +9,8 @@ compile_commands.json
 # Editor / tooling local (Continue, VSCode)
 .continue/
 .vscode/
+
+# Zig toolchain + build artifacts (self-contained, pinned per project)
+.zig/
+.zig-cache/
+zig-out/
