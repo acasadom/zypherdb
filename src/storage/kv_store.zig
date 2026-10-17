@@ -23,6 +23,7 @@ pub const KvStore = struct {
     env: *c.MDB_env,
     dbi: c.MDB_dbi,
     allocator: std.mem.Allocator,
+    active_txn: ?*c.MDB_txn,
 
     /// Opens (or creates) an LMDB environment at `path`. The directory must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8) KvError!KvStore {
@@ -53,23 +54,45 @@ pub const KvStore = struct {
             return error.OpenFailed;
         }
 
-        return .{ .env = env.?, .dbi = dbi, .allocator = allocator };
+        return .{ .env = env.?, .dbi = dbi, .allocator = allocator, .active_txn = null };
     }
 
     pub fn deinit(self: *KvStore) void {
         c.mdb_env_close(self.env);
     }
 
-    pub fn put(self: *KvStore, key: []const u8, value: []const u8) KvError!void {
+    /// Begins an explicit write transaction. Until `commitWrite`/`abortWrite`,
+    /// `put`/`del`/`get`/`exists`/`scanPrefix` run on this transaction (and see
+    /// its uncommitted writes). Not reentrant (LMDB is single-writer anyway).
+    pub fn beginWrite(self: *KvStore) KvError!void {
+        if (self.active_txn != null) return error.WriteFailed;
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, 0, &txn) != 0) return error.WriteFailed;
+        self.active_txn = txn.?;
+    }
 
-        var key_val = makeVal(key);
-        var data_val = makeVal(value);
-        if (c.mdb_put(txn.?, self.dbi, &key_val, &data_val, 0) != 0) {
-            _ = c.mdb_txn_abort(txn.?);
+    pub fn commitWrite(self: *KvStore) KvError!void {
+        const txn = self.active_txn orelse return error.WriteFailed;
+        self.active_txn = null;
+        if (c.mdb_txn_commit(txn) != 0) {
+            _ = c.mdb_txn_abort(txn);
             return error.WriteFailed;
         }
+    }
+
+    pub fn abortWrite(self: *KvStore) void {
+        if (self.active_txn) |txn| {
+            _ = c.mdb_txn_abort(txn);
+            self.active_txn = null;
+        }
+    }
+
+    pub fn put(self: *KvStore, key: []const u8, value: []const u8) KvError!void {
+        if (self.active_txn) |txn| return self.putIn(txn, key, value);
+        var txn: ?*c.MDB_txn = null;
+        if (c.mdb_txn_begin(self.env, null, 0, &txn) != 0) return error.WriteFailed;
+        errdefer _ = c.mdb_txn_abort(txn.?);
+        try self.putIn(txn.?, key, value);
         if (c.mdb_txn_commit(txn.?) != 0) {
             _ = c.mdb_txn_abort(txn.?);
             return error.WriteFailed;
@@ -80,44 +103,28 @@ pub const KvStore = struct {
     /// The returned value is an owned copy for the caller (free with
     /// `self.allocator.free`).
     pub fn get(self: *KvStore, key: []const u8) KvError!?[]u8 {
+        if (self.active_txn) |txn| return self.getIn(txn, key);
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.ReadFailed;
         defer _ = c.mdb_txn_abort(txn.?);
-
-        var key_val = makeVal(key);
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_get(txn.?, self.dbi, &key_val, &data_val);
-        if (rc == c.MDB_NOTFOUND) return null;
-        if (rc != 0) return error.ReadFailed;
-
-        const bytes = valSlice(data_val);
-        return self.allocator.dupe(u8, bytes) catch error.OutOfMemory;
+        return self.getIn(txn.?, key);
     }
 
     pub fn exists(self: *KvStore, key: []const u8) KvError!bool {
+        if (self.active_txn) |txn| return self.existsIn(txn, key);
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.ReadFailed;
         defer _ = c.mdb_txn_abort(txn.?);
-
-        var key_val = makeVal(key);
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_get(txn.?, self.dbi, &key_val, &data_val);
-        if (rc == c.MDB_NOTFOUND) return false;
-        if (rc != 0) return error.ReadFailed;
-        return true;
+        return self.existsIn(txn.?, key);
     }
 
     /// Idempotent: deleting a missing key is a success.
     pub fn del(self: *KvStore, key: []const u8) KvError!void {
+        if (self.active_txn) |txn| return self.delIn(txn, key);
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, 0, &txn) != 0) return error.DeleteFailed;
-
-        var key_val = makeVal(key);
-        const rc = c.mdb_del(txn.?, self.dbi, &key_val, null);
-        if (rc != 0 and rc != c.MDB_NOTFOUND) {
-            _ = c.mdb_txn_abort(txn.?);
-            return error.DeleteFailed;
-        }
+        errdefer _ = c.mdb_txn_abort(txn.?);
+        try self.delIn(txn.?, key);
         if (c.mdb_txn_commit(txn.?) != 0) {
             _ = c.mdb_txn_abort(txn.?);
             return error.DeleteFailed;
@@ -127,12 +134,56 @@ pub const KvStore = struct {
     /// Iterator over all key/value pairs whose key starts with `prefix`, in
     /// lexicographic order (LMDB's natural order).
     pub fn scanPrefix(self: *KvStore, prefix: []const u8) KvError!PrefixIterator {
+        if (self.active_txn) |txn| return self.scanPrefixIn(txn, prefix, false);
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.IteratorFailed;
         errdefer _ = c.mdb_txn_abort(txn.?);
+        return self.scanPrefixIn(txn.?, prefix, true);
+    }
 
+    pub fn countPrefix(self: *KvStore, prefix: []const u8) KvError!usize {
+        var it = try self.scanPrefix(prefix);
+        defer it.deinit();
+
+        var count: usize = 0;
+        while (try it.next()) |_| count += 1;
+        return count;
+    }
+
+    fn putIn(self: *KvStore, txn: *c.MDB_txn, key: []const u8, value: []const u8) KvError!void {
+        var key_val = makeVal(key);
+        var data_val = makeVal(value);
+        if (c.mdb_put(txn, self.dbi, &key_val, &data_val, 0) != 0) return error.WriteFailed;
+    }
+
+    fn getIn(self: *KvStore, txn: *c.MDB_txn, key: []const u8) KvError!?[]u8 {
+        var key_val = makeVal(key);
+        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
+        const rc = c.mdb_get(txn, self.dbi, &key_val, &data_val);
+        if (rc == c.MDB_NOTFOUND) return null;
+        if (rc != 0) return error.ReadFailed;
+        const bytes = valSlice(data_val);
+        return self.allocator.dupe(u8, bytes) catch error.OutOfMemory;
+    }
+
+    fn existsIn(self: *KvStore, txn: *c.MDB_txn, key: []const u8) KvError!bool {
+        var key_val = makeVal(key);
+        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
+        const rc = c.mdb_get(txn, self.dbi, &key_val, &data_val);
+        if (rc == c.MDB_NOTFOUND) return false;
+        if (rc != 0) return error.ReadFailed;
+        return true;
+    }
+
+    fn delIn(self: *KvStore, txn: *c.MDB_txn, key: []const u8) KvError!void {
+        var key_val = makeVal(key);
+        const rc = c.mdb_del(txn, self.dbi, &key_val, null);
+        if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
+    }
+
+    fn scanPrefixIn(self: *KvStore, txn: *c.MDB_txn, prefix: []const u8, owns_txn: bool) KvError!PrefixIterator {
         var cursor: ?*c.MDB_cursor = null;
-        if (c.mdb_cursor_open(txn.?, self.dbi, &cursor) != 0) return error.IteratorFailed;
+        if (c.mdb_cursor_open(txn, self.dbi, &cursor) != 0) return error.IteratorFailed;
         errdefer c.mdb_cursor_close(cursor.?);
 
         const owned_prefix = self.allocator.dupe(u8, prefix) catch return error.OutOfMemory;
@@ -146,7 +197,7 @@ pub const KvStore = struct {
 
         return .{
             .store = self,
-            .txn = txn.?,
+            .txn = if (owns_txn) txn else null,
             .cursor = cursor.?,
             .prefix = owned_prefix,
             .key = key_val,
@@ -154,22 +205,14 @@ pub const KvStore = struct {
             .finished = finished,
         };
     }
-
-    pub fn countPrefix(self: *KvStore, prefix: []const u8) KvError!usize {
-        var it = try self.scanPrefix(prefix);
-        defer it.deinit();
-
-        var count: usize = 0;
-        while (try it.next()) |_| count += 1;
-        return count;
-    }
 };
 
-/// Single-pass iterator over a prefix scan. Owns the LMDB transaction and
-/// cursor; `deinit` releases them.
+/// Single-pass iterator over a prefix scan. Owns the cursor; aborts the
+/// transaction only if it owns one (a scan over a borrowed write txn must not
+/// abort it).
 pub const PrefixIterator = struct {
     store: *KvStore,
-    txn: *c.MDB_txn,
+    txn: ?*c.MDB_txn, // null = borrowed from an active write txn
     cursor: *c.MDB_cursor,
     prefix: []u8,
     key: c.MDB_val,
@@ -180,7 +223,7 @@ pub const PrefixIterator = struct {
 
     pub fn deinit(self: *PrefixIterator) void {
         c.mdb_cursor_close(self.cursor);
-        _ = c.mdb_txn_abort(self.txn);
+        if (self.txn) |t| _ = c.mdb_txn_abort(t);
         self.store.allocator.free(self.prefix);
     }
 

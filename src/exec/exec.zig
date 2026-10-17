@@ -126,6 +126,11 @@ pub const Executor = struct {
             }
         }
 
+        // All writes of this query commit (or abort) atomically.
+        const has_writes = self.update_clauses.items.len > 0;
+        if (has_writes) try self.graph.beginWrite();
+        errdefer if (has_writes) self.graph.abortWrite();
+
         var bindings = Bindings{ .entries = .empty };
         if (match_clause) |mc| {
             const mc_children = self.ast.nodeChildren(mc);
@@ -137,6 +142,8 @@ pub const Executor = struct {
             self.has_match = false;
             try self.finish(&bindings);
         }
+
+        if (has_writes) try self.graph.commitWrite();
 
         return self.rows.items;
     }

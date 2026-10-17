@@ -180,6 +180,20 @@ pub const Graph = struct {
         return .{ .store = store, .allocator = allocator };
     }
 
+    /// Begins an atomic write transaction; see `commitWrite`/`abortWrite`. All
+    /// mutations until then are batched into one transaction.
+    pub fn beginWrite(self: *Graph) KvError!void {
+        return self.store.beginWrite();
+    }
+
+    pub fn commitWrite(self: *Graph) KvError!void {
+        return self.store.commitWrite();
+    }
+
+    pub fn abortWrite(self: *Graph) void {
+        self.store.abortWrite();
+    }
+
     /// Marks `id` as an existing node with the given `label` (empty string for
     /// an unlabeled node). Idempotent. A non-empty label also writes a
     /// label-index entry so `nodesWithLabel` can find it, plus a `~label`
@@ -570,4 +584,37 @@ test "allocNodeId and deleteNode detach edges" {
     var it2 = try g.neighbours(b, .in, "KNOWS");
     defer it2.deinit();
     try testing.expect((try it2.next()) == null);
+}
+
+test "write transactions commit and abort atomically" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    // Commit path: batched writes are all visible, and the id counter advances
+    // within the transaction (read-modify-write on the write txn).
+    try g.beginWrite();
+    const a = try g.allocNodeId();
+    const b = try g.allocNodeId();
+    try testing.expect(a != b);
+    try g.addNode(a, "Person");
+    try g.setProp(a, "name", .{ .str = "A" });
+    try g.addEdge(a, b, "KNOWS");
+    try g.commitWrite();
+
+    try testing.expect(try g.hasNode(a));
+    try testing.expect(try g.hasEdge(a, b, "KNOWS"));
+
+    // Abort path: nothing is visible, and the counter increment is rolled back.
+    try g.beginWrite();
+    const c = try g.allocNodeId();
+    try g.addNode(c, "Person");
+    g.abortWrite();
+
+    try testing.expect(!try g.hasNode(c));
+    try testing.expectEqual(c, try g.allocNodeId()); // counter rolled back, so c is reused
 }
