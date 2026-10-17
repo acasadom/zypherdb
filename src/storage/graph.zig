@@ -48,6 +48,14 @@ const label_marker: u8 = 'l';
 const sep: u8 = 0x00;
 const id_len: usize = @sizeOf(NodeId);
 
+/// Reserved property name holding a node's label, so it can be read back
+/// (e.g. on delete). `~` is not a valid openCypher identifier, so no user
+/// property can collide.
+const label_prop: []const u8 = "~label";
+
+/// Key storing the next node id to allocate (8-byte big-endian counter).
+const counter_key: []const u8 = "!";
+
 // ---------------------------------------------------------------------------
 // Value encoding (property values)
 // ---------------------------------------------------------------------------
@@ -174,7 +182,8 @@ pub const Graph = struct {
 
     /// Marks `id` as an existing node with the given `label` (empty string for
     /// an unlabeled node). Idempotent. A non-empty label also writes a
-    /// label-index entry so `nodesWithLabel` can find it.
+    /// label-index entry so `nodesWithLabel` can find it, plus a `~label`
+    /// property so it can be read back on delete.
     pub fn addNode(self: *Graph, id: NodeId, label: []const u8) KvError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -185,7 +194,99 @@ pub const Graph = struct {
             key.clearRetainingCapacity();
             try appendLabelKey(&key, self.allocator, label, id);
             try self.store.put(key.items, "");
+
+            key.clearRetainingCapacity();
+            try appendNodePropKey(&key, self.allocator, id, label_prop);
+            var val = std.ArrayList(u8).empty;
+            defer val.deinit(self.allocator);
+            try encodeValue(&val, self.allocator, .{ .str = label });
+            try self.store.put(key.items, val.items);
         }
+    }
+
+    /// Allocates a fresh, never-used node id (persistent counter).
+    pub fn allocNodeId(self: *Graph) KvError!NodeId {
+        var next: NodeId = 0;
+        const raw = try self.store.get(counter_key);
+        if (raw) |r| {
+            defer self.allocator.free(r);
+            if (r.len == id_len) next = readNodeId(r);
+        }
+        var buf: [id_len]u8 = undefined;
+        std.mem.writeInt(NodeId, &buf, next + 1, .big);
+        try self.store.put(counter_key, &buf);
+        return next;
+    }
+
+    /// Deletes a node and detaches it: removes all its edges (both directions),
+    /// its label-index entry, properties and marker.
+    pub fn deleteNode(self: *Graph, id: NodeId) KvError!void {
+        try self.deleteEdgesInDirection(id, .out);
+        try self.deleteEdgesInDirection(id, .in);
+
+        if (try self.getProp(id, label_prop, self.allocator)) |v| {
+            switch (v) {
+                .str => |label| {
+                    defer self.allocator.free(label);
+                    var lkey = std.ArrayList(u8).empty;
+                    defer lkey.deinit(self.allocator);
+                    try appendLabelKey(&lkey, self.allocator, label, id);
+                    try self.store.del(lkey.items);
+                },
+                else => {},
+            }
+        }
+
+        var nprefix = std.ArrayList(u8).empty;
+        defer nprefix.deinit(self.allocator);
+        try appendNodeKey(&nprefix, self.allocator, id);
+        try self.deleteKeysUnder(nprefix.items);
+    }
+
+    fn deleteEdgesInDirection(self: *Graph, id: NodeId, dir: Direction) KvError!void {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try prefix.append(self.allocator, edge_marker);
+        try appendNodeId(&prefix, self.allocator, id);
+        try prefix.append(self.allocator, @backingInt(dir));
+
+        var keys = std.ArrayList([]u8).empty;
+        defer {
+            for (keys.items) |k| self.allocator.free(k);
+            keys.deinit(self.allocator);
+        }
+        var it = try self.store.scanPrefix(prefix.items);
+        defer it.deinit();
+        while (try it.next()) |entry| {
+            try keys.append(self.allocator, try self.allocator.dupe(u8, entry.key));
+        }
+
+        for (keys.items) |k| {
+            const ek = decodeEdgeKey(k);
+            try self.store.del(k);
+
+            const rev_dir: Direction = if (ek.dir == .out) .in else .out;
+            var rev = std.ArrayList(u8).empty;
+            defer rev.deinit(self.allocator);
+            try appendEdgeKey(&rev, self.allocator, ek.neighbour, rev_dir, ek.etype, ek.id);
+            try self.store.del(rev.items);
+        }
+    }
+
+    /// Deletes every key under `prefix` (collected first so the scan cursor is
+    /// not open across the deletes).
+    fn deleteKeysUnder(self: *Graph, prefix: []const u8) KvError!void {
+        var keys = std.ArrayList([]u8).empty;
+        defer {
+            for (keys.items) |k| self.allocator.free(k);
+            keys.deinit(self.allocator);
+        }
+        var it = try self.store.scanPrefix(prefix);
+        defer it.deinit();
+        while (try it.next()) |entry| {
+            try keys.append(self.allocator, try self.allocator.dupe(u8, entry.key));
+        }
+        for (keys.items) |k| try self.store.del(k);
     }
 
     pub fn hasNode(self: *Graph, id: NodeId) KvError!bool {
@@ -427,4 +528,38 @@ test "labels, properties and value encoding" {
 
     // absent property -> null
     try testing.expect((try g.getProp(1, "nope", testing.allocator)) == null);
+}
+
+test "allocNodeId and deleteNode detach edges" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    const a = try g.allocNodeId();
+    const b = try g.allocNodeId();
+    try testing.expect(a != b);
+
+    try g.addNode(a, "Person");
+    try g.setProp(a, "name", .{ .str = "Neo" });
+    try g.addNode(b, "Person");
+    try g.addEdge(a, b, "KNOWS");
+
+    try testing.expect(try g.hasLabel(a, "Person"));
+    var it = try g.neighbours(a, .out, "KNOWS");
+    defer it.deinit();
+    try expectNext(&it, b);
+    try testing.expect((try it.next()) == null);
+
+    try g.deleteNode(a);
+
+    try testing.expect(!try g.hasNode(a));
+    try testing.expect(!try g.hasLabel(a, "Person"));
+    try testing.expect(try g.hasNode(b));
+    var it2 = try g.neighbours(b, .in, "KNOWS");
+    defer it2.deinit();
+    try testing.expect((try it2.next()) == null);
 }
