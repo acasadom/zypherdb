@@ -1,7 +1,7 @@
-//! Raiz de la libreria `acmedb`.
+//! Root of the `acmedb` library.
 //!
-//! Motor de base de datos de grafos embebido (subconjunto de openCypher).
-//! Primer ladrillo: la capa de storage (`KvStore` sobre LMDB).
+//! Embedded graph database engine (a subset of openCypher).
+//! First building block: the storage layer (`KvStore` over LMDB).
 
 pub const storage = @import("storage/kv_store.zig");
 

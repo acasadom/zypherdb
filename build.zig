@@ -4,7 +4,7 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Modulo unico de acmedb: logica del motor + LMDB vendido (C) enlazado.
+    // Single acmedb module: engine logic + vendored LMDB (C) linked in.
     const acmedb = b.addModule("acmedb", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
         .flags = &.{"-O2"},
     });
 
-    // Libreria estatica: el artefacto embeble/exportable (base del wrapper Python).
+    // Static library: the embeddable/exportable artifact (basis of the Python wrapper).
     const lib = b.addLibrary(.{
         .name = "acmedb",
         .root_module = acmedb,
@@ -25,12 +25,12 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
-    // Tests: un solo ejecutable que recorre los bloques `test` del modulo.
+    // Tests: a single executable that walks the module's `test` blocks.
     const tests = b.addTest(.{
         .root_module = acmedb,
     });
     const run_tests = b.addRunArtifact(tests);
 
-    const test_step = b.step("test", "Ejecutar los tests");
+    const test_step = b.step("test", "Run the tests");
     test_step.dependOn(&run_tests.step);
 }

@@ -1,10 +1,10 @@
-//! KvStore: envoltorio RAII minimo sobre LMDB.
+//! KvStore: a minimal RAII wrapper over LMDB.
 //!
-//! Deliberadamente NO hay jerarquia de clases: un unico tipo concreto, movible
-//! (a traves de punteros a opacos de LMDB) y no copiable, con errores modelados
-//! como valores (`error union`, el analogo a `std::expected`) en vez de
-//! excepciones. Es el primer ladrillo de la capa de storage sobre la que luego
-//! se construira la codificacion de claves para nodos, aristas y propiedades.
+//! Deliberately NO class hierarchy: a single concrete type, movable (through
+//! pointers to LMDB opaques) and non-copyable, with errors modeled as values
+//! (`error union`, the analogue of `std::expected`) rather than exceptions.
+//! This is the first building block of the storage layer on which the key
+//! encoding for nodes, edges and properties will later be built.
 
 const std = @import("std");
 
@@ -24,13 +24,13 @@ pub const KvStore = struct {
     dbi: c.MDB_dbi,
     allocator: std.mem.Allocator,
 
-    /// Abre (o crea) un entorno LMDB en `path`. El directorio debe existir.
+    /// Opens (or creates) an LMDB environment at `path`. The directory must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8) KvError!KvStore {
         var env: ?*c.MDB_env = null;
         if (c.mdb_env_create(&env) != 0) return error.OpenFailed;
         errdefer c.mdb_env_close(env.?);
 
-        // LMDB exige fijar un tamano maximo de mapa (reserva virtual, no RAM).
+        // LMDB requires setting a maximum map size (virtual reservation, not RAM).
         if (c.mdb_env_set_mapsize(env.?, 1 << 30) != 0) return error.OpenFailed;
 
         const c_path = allocator.dupeSentinel(u8, path, 0) catch return error.OutOfMemory;
@@ -38,7 +38,7 @@ pub const KvStore = struct {
 
         if (c.mdb_env_open(env.?, c_path.ptr, 0, 0o644) != 0) return error.OpenFailed;
 
-        // Abre la base de datos por defecto (sin nombre) en una transaccion.
+        // Opens the default (unnamed) database inside a transaction.
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(env.?, null, 0, &txn) != 0) return error.OpenFailed;
         errdefer _ = c.mdb_txn_abort(txn.?);
@@ -73,8 +73,8 @@ pub const KvStore = struct {
         }
     }
 
-    /// Una clave ausente es un resultado normal: `null`, no un error.
-    /// El valor devuelto es una copia propiedad del llamante (liberar con
+    /// An absent key is a normal result: `null`, not an error.
+    /// The returned value is an owned copy for the caller (free with
     /// `self.allocator.free`).
     pub fn get(self: *KvStore, key: []const u8) KvError!?[]u8 {
         var txn: ?*c.MDB_txn = null;
@@ -104,7 +104,7 @@ pub const KvStore = struct {
         return true;
     }
 
-    /// Idempotente: borrar una clave inexistente es un exito.
+    /// Idempotent: deleting a missing key is a success.
     pub fn del(self: *KvStore, key: []const u8) KvError!void {
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, 0, &txn) != 0) return error.DeleteFailed;
@@ -121,8 +121,8 @@ pub const KvStore = struct {
         }
     }
 
-    /// Iterador sobre todos los pares clave/valor cuya clave empieza por
-    /// `prefix`, en orden lexicografico (que es el orden natural de LMDB).
+    /// Iterator over all key/value pairs whose key starts with `prefix`, in
+    /// lexicographic order (LMDB's natural order).
     pub fn scanPrefix(self: *KvStore, prefix: []const u8) KvError!PrefixIterator {
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.IteratorFailed;
@@ -162,8 +162,8 @@ pub const KvStore = struct {
     }
 };
 
-/// Iterador de una sola pasada sobre un escaneo por prefijo. Propietario de la
-/// transaccion y el cursor de LMDB; `deinit` los libera.
+/// Single-pass iterator over a prefix scan. Owns the LMDB transaction and
+/// cursor; `deinit` releases them.
 pub const PrefixIterator = struct {
     store: *KvStore,
     txn: *c.MDB_txn,
@@ -188,9 +188,9 @@ pub const PrefixIterator = struct {
         return std.mem.eql(u8, k[0..self.prefix.len], self.prefix);
     }
 
-    /// Devuelve el siguiente par clave/valor, o `null` al final. Las vistas
-    /// devueltas apuntan a memoria de LMDB y solo son validas hasta la
-    /// siguiente llamada a `next`.
+    /// Returns the next key/value pair, or `null` at the end. The returned
+    /// views point into LMDB memory and are only valid until the next call to
+    /// `next`.
     pub fn next(self: *PrefixIterator) KvError!?Entry {
         if (!self.inRange()) {
             self.finished = true;
@@ -231,7 +231,7 @@ fn testPath(tmp: *testing.TmpDir, buf: []u8) []const u8 {
     return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
 }
 
-test "KvStore abre, escribe y lee una clave" {
+test "KvStore opens, writes and reads a key" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -241,15 +241,15 @@ test "KvStore abre, escribe y lee una clave" {
     var store = try KvStore.open(testing.allocator, path);
     defer store.deinit();
 
-    try store.put("saludo", "hola acmedb");
+    try store.put("greeting", "hello acmedb");
 
-    const got = try store.get("saludo");
+    const got = try store.get("greeting");
     defer if (got) |g| testing.allocator.free(g);
     try testing.expect(got != null);
-    try testing.expectEqualStrings("hola acmedb", got.?);
+    try testing.expectEqualStrings("hello acmedb", got.?);
 }
 
-test "get de una clave inexistente devuelve null" {
+test "get of a missing key returns null" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -259,12 +259,12 @@ test "get de una clave inexistente devuelve null" {
     var store = try KvStore.open(testing.allocator, path);
     defer store.deinit();
 
-    const got = try store.get("no_existe");
+    const got = try store.get("does_not_exist");
     defer if (got) |g| testing.allocator.free(g);
     try testing.expect(got == null);
 }
 
-test "exists distingue presente de ausente" {
+test "exists distinguishes present from absent" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -280,7 +280,7 @@ test "exists distingue presente de ausente" {
     try testing.expect(!try store.exists("b"));
 }
 
-test "del borra una clave y es idempotente" {
+test "del deletes a key and is idempotent" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -297,11 +297,11 @@ test "del borra una clave y es idempotente" {
     defer if (got) |g| testing.allocator.free(g);
     try testing.expect(got == null);
 
-    // Borrar una clave ausente sigue siendo un exito.
+    // Deleting an absent key is still a success.
     try store.del("k");
 }
 
-test "scanPrefix devuelve solo las claves del prefijo, en orden" {
+test "scanPrefix returns only the prefixed keys, in order" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -335,7 +335,7 @@ test "scanPrefix devuelve solo las claves del prefijo, en orden" {
     try testing.expectEqualStrings("n:c", seen.items[2]);
 }
 
-test "countPrefix cuenta las claves de un prefijo" {
+test "countPrefix counts the keys of a prefix" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 

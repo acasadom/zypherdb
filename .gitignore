@@ -1,16 +1,15 @@
-build/
-build-*/
-vcpkg_installed/
-CMakeUserPresets.json
-compile_commands.json
-.cache/
-.DS_Store
+# Zig toolchain + build artifacts (self-contained, pinned per project)
+.zig/
+.zig-cache/
+zig-out/
+
+# Project memory: local-only handoff between agent sessions (not committed)
+STATUS.md
 
 # Editor / tooling local (Continue, VSCode)
 .continue/
 .vscode/
 
-# Zig toolchain + build artifacts (self-contained, pinned per project)
-.zig/
-.zig-cache/
-zig-out/
+# OS / misc
+.cache/
+.DS_Store

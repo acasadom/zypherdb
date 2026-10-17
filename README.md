@@ -1,89 +1,59 @@
 # acmedb
 
-Motor de base de datos de grafos embebido, en C++, hablando un subconjunto de
-openCypher, sobre RocksDB como capa de almacenamiento.
+Embedded graph database engine, written in Zig, speaking a subset of openCypher,
+on top of LMDB as the storage layer.
 
-## Decisiones de arquitectura (por que esta pila)
+## Architecture decisions (why this stack)
 
-- **C++23** como base estable (soporte completo en Clang/GCC recientes).
-  C++26 ya cerro su contenido tecnico en marzo de 2026 pero aun no esta
-  publicado como ISO; lo vamos adoptando funcion a funcion segun madure en el
-  compilador (reflection en particular puede cambiar mucho como se genera el
-  AST/plan mas adelante).
-- **Clang** como compilador principal (mejor tooling: clangd, clang-tidy,
-  sanitizers). GCC es tambien valido y conviene probarlo en CI para detectar
-  no-portabilidades, pero el dia a dia es con Clang.
-- **RocksDB** como storage engine (no SQLite): un grafo se recorre siguiendo
-  adyacencias, no haciendo joins entre tablas. Codificamos nuestras propias
-  claves (prefijo por nodo+direccion+tipo de relacion) y aprovechamos que
-  RocksDB itera en orden para resolver "dame los vecinos de X" con un scan de
-  prefijo, sin joins.
-- **Sin jerarquias de clases por polimorfismo de herencia.** Nos apoyamos en
-  generic programming al estilo Stepanov/STL: datos como tipos concretos sin
-  comportamiento propio, algoritmos como funciones libres, concepts de C++20
-  para los sitios donde de verdad hace falta un contrato generico. Nada de
-  Visitor con jerarquias base-clase-de-todo. El AST se modelara como un arena
-  de nodos (`std::vector` + indices, no punteros/herencia), inspirado en como
-  representan su AST compiladores como el de Zig.
-- **Parser propio, sin ANTLR ni libcypher-parser.** Decision explicita:
-  recursivo-descendente escrito a mano sobre la gramatica publicada de
-  openCypher, para no meter en el proyecto el estilo (y las dependencias) de
-  un generador de parsers ajeno al paradigma que buscamos.
-- **Docker** como entorno de desarrollo: todo el toolchain (Clang, CMake,
-  Ninja, vcpkg) vive en la imagen; el codigo fuente se monta como volumen, asi
-  que tu macOS no se ensucia con nada de esto.
-- **vcpkg en modo manifiesto** para dependencias (`vcpkg.json`), fijado a un
-  commit concreto de vcpkg para builds reproducibles. Se descarto Hunter (el
-  ecosistema se ha movido a vcpkg/Conan) y Conan 2 se deja como opcion futura
-  si algun dia hace falta una matriz de configuraciones mas compleja o
-  distribuir acmedb como paquete.
+- **Zig 0.17.0** as the language. Pre-1.0 (breaking changes until 1.0) and a
+  small ecosystem, but a fast single-binary toolchain with no external build
+  system, and `comptime` generics that map cleanly to the generic-programming
+  style we want.
+- **LMDB** as the storage engine (not RocksDB, not SQLite): a graph is traversed
+  by following adjacencies, not by joining tables. We encode our own keys
+  (prefix per node + direction + edge type) and exploit LMDB's lexicographic
+  iteration to answer "give me the neighbours of X" with a prefix scan — no joins.
+- **Single-writer / multi-reader per node** fits the intended read-replication
+  model (one process writes, applies to N replicas, each process reads its own
+  replica). LMDB reads are ~6x faster than RocksDB.
+- **No class hierarchies, no Visitor.** Generic programming (Stepanov/STL): data
+  as concrete types, algorithms as free functions. The AST is modeled as an arena
+  of nodes (`std.ArrayList` of nodes + child indices, no pointers, no
+  inheritance), inspired by how compilers such as Zig's represent their AST.
+- **Hand-written recursive-descent parser** for openCypher (subset), no ANTLR, no
+  parser generator, to stay in control of the style and the dependencies.
 
-## Como se construye
+## Building
 
-Todo corre dentro de Docker, nada se instala en tu maquina:
+Zig is a self-contained toolchain; nothing is installed system-wide beyond the
+`zig` binary. From the project root:
 
 ```bash
-docker compose build
-docker compose run --rm dev bash
+zig build test    # build and run the test suite
+zig build         # build the static library (installed to zig-out/)
 ```
 
-Dentro del contenedor (en `/workspace`, que es tu carpeta del proyecto):
+The LMDB C sources under `vendor/lmdb/` are vendored and compiled by the build.
+No Docker, no CMake, no vcpkg.
 
-```bash
-cmake --preset=debug
-cmake --build --preset=debug
-ctest --preset=debug
-```
+## Current status
 
-La primera vez, `cmake --preset=debug` hace que vcpkg compile RocksDB y
-Catch2 desde fuente (varios minutos). Las siguientes veces es casi
-instantaneo porque `vcpkg_installed/` queda en tu carpeta del proyecto
-(montada como volumen) y no se vuelve a compilar mientras no cambie
-`vcpkg.json`.
+First skeleton: `acmedb.storage.KvStore`, a minimal RAII wrapper over LMDB (no
+hierarchies, errors as error unions — the Zig analogue of `std::expected`) plus
+tests covering open/write/read/exists/delete/prefix-scan. It validates the whole
+pipeline (Zig build + vendored LMDB + C bindings) end to end before moving on to
+the AST.
 
-Nota: la maquina desde la que estoy trabajando ahora mismo no tiene Docker
-accesible directamente (es una VM aislada sin el daemon de Docker), asi que
-esta primera build y el test de humo los tienes que lanzar tu una vez en tu
-Mac. Si algo falla, pegame la salida y lo arreglamos.
+## Roadmap (initial openCypher subset)
 
-## Estado actual
-
-Primer esqueleto: `acmedb::storage::KvStore`, un envoltorio RAII minimo sobre
-RocksDB (sin jerarquias, errores como `std::expected`, no excepciones) mas un
-test de humo que abre una DB, escribe una clave y la lee. Sirve para validar
-que todo el pipeline (CMake + vcpkg + RocksDB + C++23 + Catch2) funciona de
-extremo a extremo antes de meternos con el AST.
-
-## Roadmap (subconjunto inicial de openCypher)
-
-1. `MATCH` con patrones simples de nodo/relacion, `WHERE` con comparaciones y
-   booleanos basicos, `RETURN` con expresiones y alias. Fuera de esta primera
-   vuelta: `OPTIONAL MATCH`, `WITH` encadenado, `UNWIND`, agregaciones,
+1. `MATCH` with simple node/edge patterns, `WHERE` with comparisons and basic
+   booleans, `RETURN` with expressions and aliases. Out of scope for this first
+   pass: `OPTIONAL MATCH`, chained `WITH`, `UNWIND`, aggregations,
    `MERGE`/`CREATE`/`SET`/`DELETE`, comprehensions, subqueries.
-2. Parser recursivo-descendente propio -> AST como arena de nodos por
-   indices (`NodeKind` + payload + rango de hijos).
-3. Traductor AST -> plan logico (operadores tipo Scan/Expand/Filter/Produce).
-4. Codificacion de claves en RocksDB para adyacencia + primer ejecutor
-   ingenuo estilo Volcano (Open/Next/Close).
-5. Estadisticas basicas + seleccion de "anchor" del patron (la optimizacion
-   de mayor impacto en un motor de grafos).
+2. Hand-written recursive-descent parser -> AST as an arena of nodes by index
+   (`NodeKind` + payload + child range).
+3. AST -> logical plan translation (Scan/Expand/Filter/Produce operators).
+4. Key encoding in LMDB for adjacency + a first naive Volcano-style executor
+   (Open/Next/Close).
+5. Basic statistics + pattern "anchor" selection (the highest-impact optimization
+   in a graph engine).
