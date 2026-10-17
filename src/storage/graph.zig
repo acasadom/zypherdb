@@ -44,8 +44,51 @@ pub const EdgeKey = struct {
 
 const node_marker: u8 = 'n';
 const edge_marker: u8 = 'e';
+const label_marker: u8 = 'l';
 const sep: u8 = 0x00;
 const id_len: usize = @sizeOf(NodeId);
+
+// ---------------------------------------------------------------------------
+// Value encoding (property values)
+// ---------------------------------------------------------------------------
+
+/// A typed property/expression value. `boolean` is produced during evaluation
+/// but is never stored as a property (properties are `int` or `str`).
+pub const Value = union(enum) {
+    int: i64,
+    str: []const u8,
+    boolean: bool,
+};
+
+const value_int: u8 = 0x01;
+const value_str: u8 = 0x02;
+
+/// Appends the storage encoding of `value`: `tag | payload`.
+pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) !void {
+    switch (value) {
+        .int => |v| {
+            try list.append(allocator, value_int);
+            var buf: [8]u8 = undefined;
+            std.mem.writeInt(i64, &buf, v, .big);
+            try list.appendSlice(allocator, &buf);
+        },
+        .str => |s| {
+            try list.append(allocator, value_str);
+            try list.appendSlice(allocator, s);
+        },
+        .boolean => unreachable, // booleans are not stored as properties
+    }
+}
+
+/// Decodes a stored value, returning a `Value` whose `str` variant is an owned
+/// copy allocated with `allocator` (free it, or use an arena).
+fn decodeOwnedValue(raw: []const u8, allocator: Allocator) !Value {
+    return switch (raw[0]) {
+        value_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
+        value_str => .{ .str = try allocator.dupe(u8, raw[1..]) },
+        else => unreachable,
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Key encoding
@@ -73,6 +116,14 @@ pub fn appendNodePropKey(list: *std.ArrayList(u8), allocator: Allocator, id: Nod
     try appendNodeKey(list, allocator, id);
     try list.append(allocator, sep);
     try list.appendSlice(allocator, prop);
+}
+
+/// Appends the key for a label-index entry: `l | label | 0x00 | node_id`.
+pub fn appendLabelKey(list: *std.ArrayList(u8), allocator: Allocator, label: []const u8, id: NodeId) !void {
+    try list.append(allocator, label_marker);
+    try list.appendSlice(allocator, label);
+    try list.append(allocator, sep);
+    try appendNodeId(list, allocator, id);
 }
 
 /// Appends the shared prefix of all edge keys for `(id, dir, etype)`, up to
@@ -121,12 +172,20 @@ pub const Graph = struct {
         return .{ .store = store, .allocator = allocator };
     }
 
-    /// Marks `id` as an existing node. Idempotent.
-    pub fn addNode(self: *Graph, id: NodeId) KvError!void {
+    /// Marks `id` as an existing node with the given `label` (empty string for
+    /// an unlabeled node). Idempotent. A non-empty label also writes a
+    /// label-index entry so `nodesWithLabel` can find it.
+    pub fn addNode(self: *Graph, id: NodeId, label: []const u8) KvError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendNodeKey(&key, self.allocator, id);
         try self.store.put(key.items, "");
+
+        if (label.len > 0) {
+            key.clearRetainingCapacity();
+            try appendLabelKey(&key, self.allocator, label, id);
+            try self.store.put(key.items, "");
+        }
     }
 
     pub fn hasNode(self: *Graph, id: NodeId) KvError!bool {
@@ -134,6 +193,37 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         try appendNodeKey(&key, self.allocator, id);
         return self.store.exists(key.items);
+    }
+
+    pub fn hasLabel(self: *Graph, id: NodeId, label: []const u8) KvError!bool {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendLabelKey(&key, self.allocator, label, id);
+        return self.store.exists(key.items);
+    }
+
+    /// Stores a typed property `name` on node `id`. Idempotent.
+    pub fn setProp(self: *Graph, id: NodeId, name: []const u8, value: Value) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendNodePropKey(&key, self.allocator, id, name);
+
+        var encoded = std.ArrayList(u8).empty;
+        defer encoded.deinit(self.allocator);
+        try encodeValue(&encoded, self.allocator, value);
+
+        try self.store.put(key.items, encoded.items);
+    }
+
+    /// Reads a typed property `name` of node `id`, or `null` if absent. The
+    /// `str` variant is an owned copy allocated with `allocator`.
+    pub fn getProp(self: *Graph, id: NodeId, name: []const u8, allocator: Allocator) KvError!?Value {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendNodePropKey(&key, self.allocator, id, name);
+        const raw = (try self.store.get(key.items)) orelse return null;
+        defer allocator.free(raw);
+        return try decodeOwnedValue(raw, allocator);
     }
 
     /// Adds a directed, typed edge, storing both directions. Idempotent.
@@ -151,30 +241,45 @@ pub const Graph = struct {
 
     /// Iterates the neighbours of `id` in the given `dir` and `etype`, in
     /// ascending neighbour-id order (LMDB's lexicographic order).
-    pub fn neighbours(self: *Graph, id: NodeId, dir: Direction, etype: []const u8) KvError!NeighbourIterator {
+    pub fn neighbours(self: *Graph, id: NodeId, dir: Direction, etype: []const u8) KvError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try appendEdgePrefix(&prefix, self.allocator, id, dir, etype);
         const it = try self.store.scanPrefix(prefix.items);
         return .{ .inner = it };
     }
+
+    /// Iterates all nodes carrying `label`, in ascending node-id order.
+    pub fn nodesWithLabel(self: *Graph, label: []const u8) KvError!NodeIdIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try prefix.append(self.allocator, label_marker);
+        try prefix.appendSlice(self.allocator, label);
+        try prefix.append(self.allocator, sep);
+        const it = try self.store.scanPrefix(prefix.items);
+        return .{ .inner = it };
+    }
 };
 
-/// Iterator over neighbour ids from a `Graph.neighbours` scan. Owns the
-/// underlying LMDB transaction/cursor; `deinit` releases them.
-pub const NeighbourIterator = struct {
+/// Iterator over node ids decoded from the trailing 8 bytes of scanned keys
+/// (edge keys or label-index keys). Owns the underlying LMDB
+/// transaction/cursor; `deinit` releases them.
+pub const NodeIdIterator = struct {
     inner: PrefixIterator,
 
-    pub fn deinit(self: *NeighbourIterator) void {
+    pub fn deinit(self: *NodeIdIterator) void {
         self.inner.deinit();
     }
 
-    /// Returns the next neighbour id, or `null` at the end.
-    pub fn next(self: *NeighbourIterator) KvError!?NodeId {
+    /// Returns the next node id, or `null` at the end.
+    pub fn next(self: *NodeIdIterator) KvError!?NodeId {
         const entry = try self.inner.next() orelse return null;
         return readNodeId(entry.key[entry.key.len - id_len ..]);
     }
 };
+
+/// Backward-compatible name for `NodeIdIterator` (neighbour scans).
+pub const NeighbourIterator = NodeIdIterator;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -225,11 +330,11 @@ test "neighbours scans outgoing, incoming and type-filtered edges" {
     const reloaded: NodeId = 101;
     const wick: NodeId = 102;
 
-    try g.addNode(keanu);
-    try g.addNode(lana);
-    try g.addNode(matrix);
-    try g.addNode(reloaded);
-    try g.addNode(wick);
+    try g.addNode(keanu, "");
+    try g.addNode(lana, "");
+    try g.addNode(matrix, "");
+    try g.addNode(reloaded, "");
+    try g.addNode(wick, "");
 
     try g.addEdge(keanu, matrix, "ACTED_IN");
     try g.addEdge(keanu, reloaded, "ACTED_IN");
@@ -272,7 +377,45 @@ test "addNode and hasNode track node existence" {
     var g = Graph.init(&store, testing.allocator);
 
     try testing.expect(!try g.hasNode(7));
-    try g.addNode(7);
+    try g.addNode(7, "");
     try testing.expect(try g.hasNode(7));
     try testing.expect(!try g.hasNode(8));
+}
+
+test "labels, properties and value encoding" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(1, "Person");
+    try g.addNode(2, "Person");
+    try g.addNode(100, "Movie");
+
+    // label index
+    var it = try g.nodesWithLabel("Person");
+    defer it.deinit();
+    try expectNext(&it, 1);
+    try expectNext(&it, 2);
+    try testing.expect((try it.next()) == null);
+
+    try testing.expect(try g.hasLabel(100, "Movie"));
+    try testing.expect(!try g.hasLabel(100, "Person"));
+
+    // properties: string and int round-trip
+    try g.setProp(1, "name", .{ .str = "Keanu Reeves" });
+    try g.setProp(1, "born", .{ .int = 1964 });
+
+    const name = (try g.getProp(1, "name", testing.allocator)).?;
+    defer testing.allocator.free(name.str);
+    try testing.expectEqualStrings("Keanu Reeves", name.str);
+
+    const born = (try g.getProp(1, "born", testing.allocator)).?;
+    try testing.expectEqual(@as(i64, 1964), born.int);
+
+    // absent property -> null
+    try testing.expect((try g.getProp(1, "nope", testing.allocator)) == null);
 }

@@ -16,6 +16,8 @@ pub const NodeId = graph.NodeId;
 pub const Direction = graph.Direction;
 pub const EdgeKey = graph.EdgeKey;
 pub const NeighbourIterator = graph.NeighbourIterator;
+pub const NodeIdIterator = graph.NodeIdIterator;
+pub const Value = graph.Value;
 
 pub const ast = @import("ast/ast.zig");
 
