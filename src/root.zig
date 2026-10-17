@@ -28,6 +28,12 @@ pub const BinOp = ast.BinOp;
 pub const UnOp = ast.UnOp;
 pub const EdgeDirection = ast.EdgeDirection;
 
+pub const parser = @import("parser/parser.zig");
+
+pub const ParseError = parser.ParseError;
+pub const TokenKind = parser.TokenKind;
+pub const Token = parser.Token;
+
 test {
     @import("std").testing.refAllDecls(@This());
 }
