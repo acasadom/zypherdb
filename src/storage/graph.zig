@@ -45,6 +45,7 @@ pub const EdgeKey = struct {
 const node_marker: u8 = 'n';
 const edge_marker: u8 = 'e';
 const label_marker: u8 = 'l';
+const index_marker: u8 = 'p';
 const sep: u8 = 0x00;
 const id_len: usize = @sizeOf(NodeId);
 
@@ -98,6 +99,35 @@ fn decodeOwnedValue(raw: []const u8, allocator: Allocator) !Value {
     };
 }
 
+/// Decodes a stored value without copying; `str` is a view into `raw`.
+fn decodeValue(raw: []const u8) Value {
+    return switch (raw[0]) {
+        value_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
+        value_str => .{ .str = raw[1..] },
+        else => unreachable,
+    };
+}
+
+/// Appends the property-index encoding of `value`: strings get a trailing
+/// `0x00` so a lookup prefix for "X" cannot also match "XY"; ints are fixed
+/// width and need no delimiter.
+fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) !void {
+    switch (value) {
+        .int => |v| {
+            try list.append(allocator, value_int);
+            var buf: [8]u8 = undefined;
+            std.mem.writeInt(i64, &buf, v, .big);
+            try list.appendSlice(allocator, &buf);
+        },
+        .str => |s| {
+            try list.append(allocator, value_str);
+            try list.appendSlice(allocator, s);
+            try list.append(allocator, sep);
+        },
+        .boolean => unreachable, // booleans are not stored as properties
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Key encoding
 // ---------------------------------------------------------------------------
@@ -132,6 +162,21 @@ pub fn appendLabelKey(list: *std.ArrayList(u8), allocator: Allocator, label: []c
     try list.appendSlice(allocator, label);
     try list.append(allocator, sep);
     try appendNodeId(list, allocator, id);
+}
+
+/// Appends the key for a property-index entry:
+/// `p | prop | 0x00 | value | node_id`.
+pub fn appendIndexKey(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value, id: NodeId) !void {
+    try appendIndexPrefix(list, allocator, prop, value);
+    try appendNodeId(list, allocator, id);
+}
+
+/// Appends the lookup prefix for "prop == value": `p | prop | 0x00 | value`.
+pub fn appendIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value) !void {
+    try list.append(allocator, index_marker);
+    try list.appendSlice(allocator, prop);
+    try list.append(allocator, sep);
+    try encodeIndexValue(list, allocator, value);
 }
 
 /// Appends the shared prefix of all edge keys for `(id, dir, etype)`, up to
@@ -254,6 +299,18 @@ pub const Graph = struct {
         var nprefix = std.ArrayList(u8).empty;
         defer nprefix.deinit(self.allocator);
         try appendNodeKey(&nprefix, self.allocator, id);
+
+        // Remove property-index entries before deleting the properties.
+        var pprefix = std.ArrayList(u8).empty;
+        defer pprefix.deinit(self.allocator);
+        try appendNodePropKey(&pprefix, self.allocator, id, "");
+        var pit = try self.store.scanPrefix(pprefix.items);
+        defer pit.deinit();
+        while (try pit.next()) |entry| {
+            const prop_name = entry.key[1 + id_len + 1 ..];
+            try self.deleteIndexEntry(id, prop_name, decodeValue(entry.value));
+        }
+
         try self.deleteKeysUnder(nprefix.items);
     }
 
@@ -317,8 +374,18 @@ pub const Graph = struct {
         return self.store.exists(key.items);
     }
 
-    /// Stores a typed property `name` on node `id`. Idempotent.
+    /// Stores a typed property `name` on node `id`. Idempotent. Maintains the
+    /// property index.
     pub fn setProp(self: *Graph, id: NodeId, name: []const u8, value: Value) KvError!void {
+        // Remove the previous index entry, if any.
+        if (try self.getProp(id, name, self.allocator)) |old| {
+            defer switch (old) {
+                .str => |s| self.allocator.free(s),
+                else => {},
+            };
+            try self.deleteIndexEntry(id, name, old);
+        }
+
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendNodePropKey(&key, self.allocator, id, name);
@@ -326,8 +393,33 @@ pub const Graph = struct {
         var encoded = std.ArrayList(u8).empty;
         defer encoded.deinit(self.allocator);
         try encodeValue(&encoded, self.allocator, value);
-
         try self.store.put(key.items, encoded.items);
+
+        try self.putIndexEntry(id, name, value);
+    }
+
+    /// Iterates all nodes whose property `name` equals `value` (via the
+    /// property index), in ascending node-id order.
+    pub fn nodesByProp(self: *Graph, name: []const u8, value: Value) KvError!NodeIdIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try appendIndexPrefix(&prefix, self.allocator, name, value);
+        const it = try self.store.scanPrefix(prefix.items);
+        return .{ .inner = it };
+    }
+
+    fn putIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendIndexKey(&key, self.allocator, name, value, id);
+        try self.store.put(key.items, "");
+    }
+
+    fn deleteIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendIndexKey(&key, self.allocator, name, value, id);
+        try self.store.del(key.items);
     }
 
     /// Reads a typed property `name` of node `id`, or `null` if absent. The
@@ -617,4 +709,48 @@ test "write transactions commit and abort atomically" {
 
     try testing.expect(!try g.hasNode(c));
     try testing.expectEqual(c, try g.allocNodeId()); // counter rolled back, so c is reused
+}
+
+test "property index: lookups, updates and deletes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(1, "Person");
+    try g.setProp(1, "name", .{ .str = "Keanu Reeves" });
+    try g.addNode(2, "Person");
+    try g.setProp(2, "name", .{ .str = "Carrie-Anne Moss" });
+    try g.addNode(3, "Person");
+    try g.setProp(3, "name", .{ .str = "Keanu Reeves" });
+
+    // Two nodes share the name "Keanu Reeves".
+    var it = try g.nodesByProp("name", .{ .str = "Keanu Reeves" });
+    defer it.deinit();
+    try expectNext(&it, 1);
+    try expectNext(&it, 3);
+    try testing.expect((try it.next()) == null);
+
+    // Integer index lookup.
+    try g.setProp(1, "born", .{ .int = 1964 });
+    var it2 = try g.nodesByProp("born", .{ .int = 1964 });
+    defer it2.deinit();
+    try expectNext(&it2, 1);
+    try testing.expect((try it2.next()) == null);
+
+    // Updating a value moves the index entry.
+    try g.setProp(3, "name", .{ .str = "Laurence Fishburne" });
+    var it3 = try g.nodesByProp("name", .{ .str = "Keanu Reeves" });
+    defer it3.deinit();
+    try expectNext(&it3, 1);
+    try testing.expect((try it3.next()) == null);
+
+    // Deleting a node removes its index entries.
+    try g.deleteNode(1);
+    var it4 = try g.nodesByProp("name", .{ .str = "Keanu Reeves" });
+    defer it4.deinit();
+    try testing.expect((try it4.next()) == null);
 }

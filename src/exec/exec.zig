@@ -263,12 +263,26 @@ pub const Executor = struct {
         switch (self.steps.items[step_idx]) {
             .scan => |s| {
                 const node = self.nodes.items[s.node];
-                var it = try self.graph.nodesWithLabel(node.label);
-                defer it.deinit();
-                while (try it.next()) |id| {
-                    try bindings.put(self.allocator, node.var_name, id);
-                    if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
-                    try self.execStep(step_idx + 1, bindings);
+                if (node.seeks.items.len > 0) {
+                    // Index lookup on the first equality predicate.
+                    const seek = node.seeks.items[0];
+                    const value = try self.eval(seek.value, bindings);
+                    var it = try self.graph.nodesByProp(seek.prop, value);
+                    defer it.deinit();
+                    while (try it.next()) |id| {
+                        if (node.label.len > 0 and !(try self.graph.hasLabel(id, node.label))) continue;
+                        try bindings.put(self.allocator, node.var_name, id);
+                        if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
+                        try self.execStep(step_idx + 1, bindings);
+                    }
+                } else {
+                    var it = try self.graph.nodesWithLabel(node.label);
+                    defer it.deinit();
+                    while (try it.next()) |id| {
+                        try bindings.put(self.allocator, node.var_name, id);
+                        if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
+                        try self.execStep(step_idx + 1, bindings);
+                    }
                 }
             },
             .expand => |e| {
@@ -357,6 +371,21 @@ pub const Executor = struct {
     /// Finds an existing node matching the label + property map, if any.
     fn findMatchingNode(self: *Executor, np_idx: Index, bindings: *Bindings) ExecError!?NodeId {
         const np = self.ast.data(np_idx).node_pattern;
+        const props = self.ast.nodeChildren(np_idx);
+
+        if (props.len > 0) {
+            // Index lookup on the first property.
+            const prop_name = self.ast.data(props[0]).text;
+            const value = try self.eval(self.ast.nodeChildren(props[0])[0], bindings);
+            var it = try self.graph.nodesByProp(prop_name, value);
+            defer it.deinit();
+            while (try it.next()) |id| {
+                if (np.label.len > 0 and !(try self.graph.hasLabel(id, np.label))) continue;
+                if (try self.nodePropsMatch(np_idx, id, bindings)) return id;
+            }
+            return null;
+        }
+
         var it = try self.graph.nodesWithLabel(np.label);
         defer it.deinit();
         while (try it.next()) |id| {
