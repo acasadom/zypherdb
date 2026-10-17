@@ -35,6 +35,8 @@ lib.acmedb_set_prop_str.restype = ctypes.c_int
 
 lib.acmedb_query.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_query.restype = ctypes.c_void_p
+lib.acmedb_last_error.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+lib.acmedb_last_error.restype = ctypes.c_void_p
 lib.acmedb_result_free.argtypes = [ctypes.c_void_p]
 lib.acmedb_result_rows.argtypes = [ctypes.c_void_p]
 lib.acmedb_result_rows.restype = ctypes.c_size_t
@@ -72,7 +74,10 @@ def _cell(result, row: int, col: int):
 def run_query(ctx, query: str):
     result = lib.acmedb_query(ctx, _b(query), len(query))
     if not result:
-        raise RuntimeError(f"query failed: {query}")
+        n = ctypes.c_size_t(0)
+        p = lib.acmedb_last_error(ctx, ctypes.byref(n))
+        msg = ctypes.string_at(p, n.value).decode() if n.value else "(unknown error)"
+        raise RuntimeError(f"query failed: {query!r}: {msg}")
     try:
         rows = lib.acmedb_result_rows(result)
         cols = lib.acmedb_result_cols(result)

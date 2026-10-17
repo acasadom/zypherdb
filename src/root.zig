@@ -42,6 +42,10 @@ pub const Executor = exec.Executor;
 pub const ExecError = exec.ExecError;
 pub const Row = exec.Row;
 
+pub const diag = @import("diag.zig");
+
+pub const Diagnostic = diag.Diagnostic;
+
 pub const capi = @import("capi.zig");
 
 comptime {

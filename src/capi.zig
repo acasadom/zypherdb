@@ -16,12 +16,14 @@ const KvStore = @import("storage/kv_store.zig").KvStore;
 const Value = @import("storage/graph.zig").Value;
 const Row = @import("exec/exec.zig").Row;
 const Executor = @import("exec/exec.zig").Executor;
+const Diagnostic = @import("diag.zig").Diagnostic;
 const parser = @import("parser/parser.zig");
 
 const Context = struct {
     store: KvStore,
     graph: Graph,
     allocator: Allocator,
+    diag: Diagnostic,
 };
 
 const Result = struct {
@@ -45,12 +47,21 @@ export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     };
     ctx.graph = Graph.init(&ctx.store, allocator);
     ctx.allocator = allocator;
+    ctx.diag = Diagnostic.init();
     return ctx;
 }
 
 export fn acmedb_close(ctx: *Context) void {
     ctx.store.deinit();
     allocator.destroy(ctx);
+}
+
+/// Returns the last error message (and its length), if the most recent
+/// operation failed.
+export fn acmedb_last_error(ctx: *Context, out_len: *usize) [*]const u8 {
+    const m = ctx.diag.message();
+    out_len.* = m.len;
+    return m.ptr;
 }
 
 export fn acmedb_add_node(ctx: *Context, id: u64, label_ptr: [*]const u8, label_len: usize) c_int {
@@ -79,8 +90,9 @@ export fn acmedb_query(ctx: *Context, query_ptr: [*]const u8, query_len: usize) 
     var scratch = std.heap.ArenaAllocator.init(ctx.allocator);
     defer scratch.deinit();
     var ast = Ast.init(scratch.allocator());
-    const q = parser.parse(&ast, query) catch return null;
+    const q = parser.parse(&ast, query, &ctx.diag) catch return null;
     var exec = Executor.init(&ast, &ctx.graph, scratch.allocator());
+    exec.diag = &ctx.diag;
     const rows = exec.run(q) catch return null;
 
     const result = ctx.allocator.create(Result) catch return null;

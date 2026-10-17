@@ -18,6 +18,7 @@ const Index = @import("../ast/ast.zig").Index;
 const NodeKind = @import("../ast/ast.zig").NodeKind;
 const BinOp = @import("../ast/ast.zig").BinOp;
 const EdgeDirection = @import("../ast/ast.zig").EdgeDirection;
+const Diagnostic = @import("../diag.zig").Diagnostic;
 
 pub const ParseError = error{
     UnexpectedToken,
@@ -58,6 +59,40 @@ pub const Token = struct {
     pos: usize,
 };
 
+fn tokenKindName(kind: TokenKind) []const u8 {
+    return switch (kind) {
+        .ident => "an identifier",
+        .string => "a string",
+        .integer => "an integer",
+        .l_paren => "'('",
+        .r_paren => "')'",
+        .l_bracket => "'['",
+        .r_bracket => "']'",
+        .l_brace => "'{'",
+        .r_brace => "'}'",
+        .colon => "':'",
+        .comma => "','",
+        .dot => "'.'",
+        .minus => "'-'",
+        .arrow_right => "'->'",
+        .arrow_left => "'<-'",
+        .eq => "'='",
+        .ne => "'<>'",
+        .lt => "'<'",
+        .gt => "'>'",
+        .le => "'<='",
+        .ge => "'>='",
+        .eof => "end of query",
+    };
+}
+
+fn tokenDesc(t: Token) []const u8 {
+    return switch (t.kind) {
+        .ident, .string, .integer => t.text,
+        else => tokenKindName(t.kind),
+    };
+}
+
 fn isIdentStart(c: u8) bool {
     return std.ascii.isAlphabetic(c) or c == '_';
 }
@@ -70,7 +105,7 @@ fn add(tokens: *std.ArrayList(Token), allocator: Allocator, kind: TokenKind, tex
     try tokens.append(allocator, .{ .kind = kind, .text = text, .pos = pos });
 }
 
-fn tokenize(allocator: Allocator, src: []const u8) ParseError!std.ArrayList(Token) {
+fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) ParseError!std.ArrayList(Token) {
     var tokens = std.ArrayList(Token).empty;
     errdefer tokens.deinit(allocator);
 
@@ -127,7 +162,10 @@ fn tokenize(allocator: Allocator, src: []const u8) ParseError!std.ArrayList(Toke
                     if (src[i] == '\'') break;
                     i += 1;
                 }
-                if (i >= src.len) return error.UnexpectedEof;
+                if (i >= src.len) {
+                    if (diag) |d| d.set(start, "unterminated string literal", .{});
+                    return error.UnexpectedEof;
+                }
                 try add(&tokens, allocator, .string, src[content_start..i], start);
                 i += 1; // closing quote
             },
@@ -185,6 +223,7 @@ fn tokenize(allocator: Allocator, src: []const u8) ParseError!std.ArrayList(Toke
                     while (i < src.len and isIdentCont(src[i])) i += 1;
                     try add(&tokens, allocator, .ident, src[start..i], start);
                 } else {
+                    if (diag) |d| d.set(i, "unexpected character 0x{x:0>2}", .{c});
                     return error.UnexpectedToken;
                 }
             },
@@ -194,15 +233,17 @@ fn tokenize(allocator: Allocator, src: []const u8) ParseError!std.ArrayList(Toke
     return tokens;
 }
 
-/// Parses `src` into `ast` and returns the root `query` node index.
-pub fn parse(ast: *Ast, src: []const u8) ParseError!Index {
-    var tokens = try tokenize(ast.allocator, src);
+/// Parses `src` into `ast` and returns the root `query` node index. On error,
+/// `diag` (if non-null) is populated with a message and byte offset.
+pub fn parse(ast: *Ast, src: []const u8, diag: ?*Diagnostic) ParseError!Index {
+    var tokens = try tokenize(ast.allocator, src, diag);
     defer tokens.deinit(ast.allocator);
 
     var parser = Parser{
         .ast = ast,
         .tokens = tokens.items,
         .pos = 0,
+        .diag = diag,
     };
     return parser.parseQuery();
 }
@@ -211,6 +252,7 @@ const Parser = struct {
     ast: *Ast,
     tokens: []const Token,
     pos: usize,
+    diag: ?*Diagnostic,
 
     fn peek(self: *const Parser) Token {
         return self.tokens[self.pos];
@@ -231,20 +273,33 @@ const Parser = struct {
         return t.kind == .ident and std.ascii.eqlIgnoreCase(t.text, kw);
     }
 
+    fn fail(self: *Parser, comptime fmt: []const u8, args: anytype) void {
+        if (self.diag) |d| d.set(self.peek().pos, fmt, args);
+    }
+
     fn expect(self: *Parser, kind: TokenKind) ParseError!void {
         const t = self.peek();
-        if (t.kind != kind) return error.UnexpectedToken;
+        if (t.kind != kind) {
+            self.fail("expected {s}, found {s}", .{ tokenKindName(kind), tokenDesc(t) });
+            return error.UnexpectedToken;
+        }
         _ = self.advance();
     }
 
     fn expectKeyword(self: *Parser, kw: []const u8) ParseError!void {
-        if (!self.atKeyword(kw)) return error.UnexpectedToken;
+        if (!self.atKeyword(kw)) {
+            self.fail("expected keyword {s}", .{kw});
+            return error.UnexpectedToken;
+        }
         _ = self.advance();
     }
 
     fn expectIdent(self: *Parser) ParseError!Token {
         const t = self.peek();
-        if (t.kind != .ident) return error.UnexpectedToken;
+        if (t.kind != .ident) {
+            self.fail("expected an identifier, found {s}", .{tokenDesc(t)});
+            return error.UnexpectedToken;
+        }
         return self.advance();
     }
 
@@ -546,7 +601,10 @@ const Parser = struct {
                 try self.expect(.r_paren);
                 return e;
             },
-            else => return error.UnexpectedToken,
+            else => {
+                self.fail("expected an expression, found {s}", .{tokenDesc(t)});
+                return error.UnexpectedToken;
+            },
         }
     }
 };
@@ -560,7 +618,7 @@ const testing = std.testing;
 fn parseString(src: []const u8) !struct { ast: Ast, root: Index } {
     var ast = Ast.init(testing.allocator);
     errdefer ast.deinit();
-    const root = try parse(&ast, src);
+    const root = try parse(&ast, src, null);
     return .{ .ast = ast, .root = root };
 }
 
@@ -678,11 +736,25 @@ test "parses write clauses (CREATE, SET, DELETE)" {
 test "reports unterminated string" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
-    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:Person {name: 'Keanu}) RETURN p.born"));
+    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:Person {name: 'Keanu}) RETURN p.born", null));
 }
 
 test "reports unexpected token" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
-    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:Person) RETURN"));
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:Person) RETURN", null));
+}
+
+test "diagnostics carry a message and position" {
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    var diag = Diagnostic.init();
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:Person) RETURN )", &diag));
+    try testing.expectEqualStrings("expected an expression, found ')'", diag.message());
+    try testing.expectEqual(@as(usize, 24), diag.pos);
+
+    var diag2 = Diagnostic.init();
+    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:Person {name: 'Keanu}) RETURN p.born", &diag2));
+    try testing.expectEqualStrings("unterminated string literal", diag2.message());
 }

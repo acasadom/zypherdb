@@ -23,6 +23,7 @@ const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../storage/graph.zig").Value;
 const Direction = @import("../storage/graph.zig").Direction;
 const KvError = @import("../storage/kv_store.zig").KvError;
+const Diagnostic = @import("../diag.zig").Diagnostic;
 
 pub const ExecError = KvError || error{
     UnknownVar,
@@ -95,6 +96,9 @@ pub const Executor = struct {
     update_clauses: std.ArrayList(Index),
     return_projection: ?Index,
 
+    /// Optional sink for error messages (message + source position).
+    diag: ?*Diagnostic,
+
     pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         return .{
             .ast = ast,
@@ -108,7 +112,12 @@ pub const Executor = struct {
             .has_match = false,
             .update_clauses = .empty,
             .return_projection = null,
+            .diag = null,
         };
+    }
+
+    fn fail(self: *Executor, comptime fmt: []const u8, args: anytype) void {
+        if (self.diag) |d| d.set(0, fmt, args);
     }
 
     pub fn run(self: *Executor, query: Index) ExecError![]const Row {
@@ -466,9 +475,15 @@ pub const Executor = struct {
                 const obj = self.ast.nodeChildren(expr)[0];
                 if (self.ast.kind(obj) != .variable) return error.InvalidExpr;
                 const name = self.ast.data(obj).text;
-                const id = bindings.get(name) orelse return error.UnknownVar;
+                const id = bindings.get(name) orelse {
+                    self.fail("unknown variable '{s}'", .{name});
+                    return error.UnknownVar;
+                };
                 const prop = self.ast.data(expr).text;
-                const v = (try self.graph.getProp(id, prop, self.allocator)) orelse return error.MissingProp;
+                const v = (try self.graph.getProp(id, prop, self.allocator)) orelse {
+                    self.fail("node has no property '{s}'", .{prop});
+                    return error.MissingProp;
+                };
                 break :blk v;
             },
             .binary_op => blk: {
@@ -637,7 +652,7 @@ fn loadSlice(g: *Graph) !void {
 
 /// Parses `src`, runs it, and asserts the projected rows (as an unordered set).
 fn expectQuery(ast: *Ast, g: *Graph, src: []const u8, expected: []const []const Value) !void {
-    const query = try parser.parse(ast, src);
+    const query = try parser.parse(ast, src, null);
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var exec = Executor.init(ast, g, arena.allocator());
