@@ -17,6 +17,17 @@ pub const Direction = graph.Direction;
 pub const EdgeKey = graph.EdgeKey;
 pub const NeighbourIterator = graph.NeighbourIterator;
 
+pub const ast = @import("ast/ast.zig");
+
+pub const Ast = ast.Ast;
+pub const Index = ast.Index;
+pub const NodeKind = ast.NodeKind;
+pub const Node = ast.Node;
+pub const Data = ast.Data;
+pub const BinOp = ast.BinOp;
+pub const UnOp = ast.UnOp;
+pub const EdgeDirection = ast.EdgeDirection;
+
 test {
     @import("std").testing.refAllDecls(@This());
 }
