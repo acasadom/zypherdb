@@ -28,6 +28,10 @@ pub const MDB_val = extern struct {
 
 /// Open the environment read-only.
 pub const MDB_RDONLY: c_uint = 0x20000;
+/// Track read transactions per-txn instead of per-thread, so a single thread
+/// can hold several concurrent readers (needed for nested scans). Each read
+/// txn then owns a reader-table slot until it is aborted.
+pub const MDB_NOTLS: c_uint = 0x200000;
 /// Returned by mdb_get / mdb_del / mdb_cursor_get when a key is absent.
 pub const MDB_NOTFOUND: c_int = -30798;
 

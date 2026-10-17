@@ -36,7 +36,10 @@ pub const KvStore = struct {
         const c_path = allocator.dupeSentinel(u8, path, 0) catch return error.OutOfMemory;
         defer allocator.free(c_path);
 
-        if (c.mdb_env_open(env.?, c_path.ptr, 0, 0o644) != 0) return error.OpenFailed;
+        // MDB_NOTLS: without it a thread may hold only one read transaction at
+        // a time, which would forbid the nested prefix scans a graph executor
+        // needs. With it, each read txn owns its reader slot until aborted.
+        if (c.mdb_env_open(env.?, c_path.ptr, c.MDB_NOTLS, 0o644) != 0) return error.OpenFailed;
 
         // Opens the default (unnamed) database inside a transaction.
         var txn: ?*c.MDB_txn = null;
