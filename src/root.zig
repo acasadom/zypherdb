@@ -36,6 +36,12 @@ pub const ParseError = parser.ParseError;
 pub const TokenKind = parser.TokenKind;
 pub const Token = parser.Token;
 
+pub const exec = @import("exec/exec.zig");
+
+pub const Executor = exec.Executor;
+pub const ExecError = exec.ExecError;
+pub const Row = exec.Row;
+
 test {
     @import("std").testing.refAllDecls(@This());
 }

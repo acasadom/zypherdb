@@ -222,7 +222,7 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         try appendNodePropKey(&key, self.allocator, id, name);
         const raw = (try self.store.get(key.items)) orelse return null;
-        defer allocator.free(raw);
+        defer self.store.allocator.free(raw);
         return try decodeOwnedValue(raw, allocator);
     }
 
