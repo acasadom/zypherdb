@@ -340,6 +340,14 @@ pub const Graph = struct {
         try self.store.put(key.items, "");
     }
 
+    /// True if the directed, typed edge `src -> dst` exists.
+    pub fn hasEdge(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8) KvError!bool {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendEdgeKey(&key, self.allocator, src, .out, etype, dst);
+        return self.store.exists(key.items);
+    }
+
     /// Iterates the neighbours of `id` in the given `dir` and `etype`, in
     /// ascending neighbour-id order (LMDB's lexicographic order).
     pub fn neighbours(self: *Graph, id: NodeId, dir: Direction, etype: []const u8) KvError!NodeIdIterator {

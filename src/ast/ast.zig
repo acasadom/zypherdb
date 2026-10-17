@@ -75,6 +75,7 @@ pub const NodeKind = enum {
     projection_item,
     match_clause,
     create_clause,
+    merge_clause,
     set_clause,
     delete_clause,
     return_clause,

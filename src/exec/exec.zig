@@ -120,7 +120,7 @@ pub const Executor = struct {
         for (self.ast.nodeChildren(query)) |c| {
             switch (self.ast.kind(c)) {
                 .match_clause => match_clause = c,
-                .create_clause, .set_clause, .delete_clause => try self.update_clauses.append(self.allocator, c),
+                .create_clause, .merge_clause, .set_clause, .delete_clause => try self.update_clauses.append(self.allocator, c),
                 .return_clause => self.return_projection = self.ast.nodeChildren(c)[0],
                 else => {},
             }
@@ -289,6 +289,7 @@ pub const Executor = struct {
         for (self.update_clauses.items) |clause| {
             switch (self.ast.kind(clause)) {
                 .create_clause => try self.applyCreate(self.ast.nodeChildren(clause)[0], bindings),
+                .merge_clause => try self.applyMerge(self.ast.nodeChildren(clause)[0], bindings),
                 .set_clause => try self.applySet(clause, bindings),
                 .delete_clause => try self.applyDelete(clause, bindings),
                 else => {},
@@ -309,38 +310,74 @@ pub const Executor = struct {
         const chain = self.ast.nodeChildren(pattern);
         const num_nodes = (chain.len + 1) / 2;
 
-        // Create nodes and bind new variables.
         for (0..num_nodes) |i| {
             const np_idx = chain[i * 2];
             const np = self.ast.data(np_idx).node_pattern;
-            if (np.var_name.len == 0) continue;
-            if (bindings.get(np.var_name) != null) continue;
-
-            const id = try self.graph.allocNodeId();
-            try self.graph.addNode(id, np.label);
-            for (self.ast.nodeChildren(np_idx)) |prop_idx| {
-                const prop_name = self.ast.data(prop_idx).text;
-                const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
-                try self.graph.setProp(id, prop_name, value);
-            }
+            if (np.var_name.len == 0 or bindings.get(np.var_name) != null) continue;
+            const id = try self.createNode(np_idx, bindings);
             try bindings.put(self.allocator, np.var_name, id);
         }
+        try self.applyEdges(chain, num_nodes, bindings, false);
+    }
 
-        // Create edges between the now-bound endpoints.
+    fn applyMerge(self: *Executor, pattern: Index, bindings: *Bindings) ExecError!void {
+        const chain = self.ast.nodeChildren(pattern);
+        const num_nodes = (chain.len + 1) / 2;
+
+        for (0..num_nodes) |i| {
+            const np_idx = chain[i * 2];
+            const np = self.ast.data(np_idx).node_pattern;
+            if (np.var_name.len == 0 or bindings.get(np.var_name) != null) continue;
+            const id = (try self.findMatchingNode(np_idx, bindings)) orelse (try self.createNode(np_idx, bindings));
+            try bindings.put(self.allocator, np.var_name, id);
+        }
+        try self.applyEdges(chain, num_nodes, bindings, true);
+    }
+
+    /// Creates a node from a `node_pattern` and returns its fresh id.
+    fn createNode(self: *Executor, np_idx: Index, bindings: *Bindings) ExecError!NodeId {
+        const np = self.ast.data(np_idx).node_pattern;
+        const id = try self.graph.allocNodeId();
+        try self.graph.addNode(id, np.label);
+        for (self.ast.nodeChildren(np_idx)) |prop_idx| {
+            const prop_name = self.ast.data(prop_idx).text;
+            const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
+            try self.graph.setProp(id, prop_name, value);
+        }
+        return id;
+    }
+
+    /// Finds an existing node matching the label + property map, if any.
+    fn findMatchingNode(self: *Executor, np_idx: Index, bindings: *Bindings) ExecError!?NodeId {
+        const np = self.ast.data(np_idx).node_pattern;
+        var it = try self.graph.nodesWithLabel(np.label);
+        defer it.deinit();
+        while (try it.next()) |id| {
+            if (try self.nodePropsMatch(np_idx, id, bindings)) return id;
+        }
+        return null;
+    }
+
+    fn nodePropsMatch(self: *Executor, np_idx: Index, id: NodeId, bindings: *Bindings) ExecError!bool {
+        for (self.ast.nodeChildren(np_idx)) |prop_idx| {
+            const prop_name = self.ast.data(prop_idx).text;
+            const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
+            const actual = (try self.graph.getProp(id, prop_name, self.allocator)) orelse return false;
+            if (!valueEq(actual, value)) return false;
+        }
+        return true;
+    }
+
+    fn applyEdges(self: *Executor, chain: []const Index, num_nodes: usize, bindings: *Bindings, merge: bool) ExecError!void {
         for (0..num_nodes - 1) |i| {
             const ep = self.ast.data(chain[i * 2 + 1]).edge_pattern;
             const left_name = self.ast.data(chain[i * 2]).node_pattern.var_name;
             const right_name = self.ast.data(chain[i * 2 + 2]).node_pattern.var_name;
             const left_id = bindings.get(left_name) orelse return error.UnknownVar;
             const right_id = bindings.get(right_name) orelse return error.UnknownVar;
-            const src: NodeId = switch (ep.direction) {
-                .left_to_right => left_id,
-                .right_to_left => right_id,
-            };
-            const dst: NodeId = switch (ep.direction) {
-                .left_to_right => right_id,
-                .right_to_left => left_id,
-            };
+            const src: NodeId = if (ep.direction == .left_to_right) left_id else right_id;
+            const dst: NodeId = if (ep.direction == .left_to_right) right_id else left_id;
+            if (merge and (try self.graph.hasEdge(src, dst, ep.etype))) continue;
             try self.graph.addEdge(src, dst, ep.etype);
         }
     }
@@ -648,4 +685,43 @@ test "write clauses: CREATE, SET and DELETE" {
     // DELETE a node (detach).
     try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Neo'}) DELETE n", &.{});
     try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Neo'}) RETURN n.name", &.{});
+}
+
+test "MERGE gets-or-creates nodes and edges" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try g.addNode(1, "Person");
+    try g.setProp(1, "name", .{ .str = "Keanu Reeves" });
+    try g.setProp(1, "born", .{ .int = 1964 });
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // MERGE an existing node twice -> still exactly one.
+    try expectQuery(&ast, &g, "MERGE (n:Person {name: 'Keanu Reeves'})", &.{});
+    try expectQuery(&ast, &g, "MERGE (n:Person {name: 'Keanu Reeves'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Keanu Reeves'}) RETURN n.name", &.{
+        &.{.{ .str = "Keanu Reeves" }},
+    });
+
+    // MERGE a brand-new node -> created.
+    try expectQuery(&ast, &g, "MERGE (n:Person {name: 'Zorg', born: 1900})", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Zorg'}) RETURN n.born", &.{
+        &.{.{ .int = 1900 }},
+    });
+
+    // MERGE an edge (get-or-create), then again -> still one edge.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'}) MERGE (a)-[:KNOWS]->(b:Person {name: 'Zorg'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
+        &.{.{ .str = "Zorg" }},
+    });
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'}) MERGE (a)-[:KNOWS]->(b:Person {name: 'Zorg'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
+        &.{.{ .str = "Zorg" }},
+    });
 }

@@ -305,6 +305,11 @@ const Parser = struct {
                 const pattern = try self.parsePattern();
                 const cc = try self.ast.addNode(.create_clause, .{ .none = {} }, &.{pattern});
                 try clauses.append(self.ast.allocator, cc);
+            } else if (self.atKeyword("MERGE")) {
+                _ = self.advance();
+                const pattern = try self.parsePattern();
+                const mc = try self.ast.addNode(.merge_clause, .{ .none = {} }, &.{pattern});
+                try clauses.append(self.ast.allocator, mc);
             } else if (self.atKeyword("SET")) {
                 _ = self.advance();
                 const sc = try self.parseSetClause();
