@@ -1,11 +1,17 @@
-//! Naive Volcano-style executor for the openCypher subset.
+//! Volcano-style executor for the openCypher subset.
 //!
-//! The pattern is matched as nested loops: scan the anchor node (first node of
-//! the pattern, by label), then expand edge by edge, then apply the filters
-//! (`WHERE` plus every node's inline property map) and project the `RETURN`
-//! items. No predicate pushdown and no anchor selection yet — that is the next
-//! step. The anchor is always the pattern's first node, so its label must be
-//! non-empty (unlabeled all-node scans are not implemented yet).
+//! The pattern is matched as nested loops over a "bind step" plan: pick the
+//! most selective node as the anchor (anchor selection), scan it by label,
+//! then expand outward along the pattern in both directions. Equality
+//! predicates — from inline node property maps and from `WHERE` equalities —
+//! are pushed down and checked as soon as their node is bound. The residual
+//! `WHERE` is evaluated on each complete match, then the `RETURN` items are
+//! projected.
+//!
+//! Anchor selection is heuristic: a node with any equality predicate is
+//! estimated as 1 match; otherwise its label's node count (via `labelCount`).
+//! There is no property index yet, so a pushed-down equality is applied as a
+//! scan-and-filter rather than a point lookup.
 
 const std = @import("std");
 
@@ -31,6 +37,28 @@ pub const ExecError = KvError || error{
 /// A projected row: one `Value` per RETURN item.
 pub const Row = std.ArrayList(Value);
 
+/// An equality predicate `node.prop = value_expr` pushed down to a node.
+const Seek = struct {
+    prop: []const u8,
+    value: Index, // AST literal expr
+};
+
+const ChainNode = struct {
+    var_name: []const u8,
+    label: []const u8,
+    seeks: std.ArrayList(Seek),
+};
+
+const ChainEdge = struct {
+    etype: []const u8,
+    fwd_dir: Direction, // direction when traversing node_i -> node_{i+1}
+};
+
+const BindStep = union(enum) {
+    scan: struct { node: usize },
+    expand: struct { from: usize, to: usize },
+};
+
 pub const Executor = struct {
     ast: *Ast,
     graph: *Graph,
@@ -38,8 +66,9 @@ pub const Executor = struct {
     rows: std.ArrayList(Row),
 
     // Per-run context.
-    chain: []const Index, // pattern children: node0, edge0, node1, ...
-    var_names: std.ArrayList([]const u8), // slot -> variable name
+    nodes: std.ArrayList(ChainNode),
+    edges: std.ArrayList(ChainEdge),
+    steps: std.ArrayList(BindStep),
     where_expr: Index,
     projection: Index,
 
@@ -49,8 +78,9 @@ pub const Executor = struct {
             .graph = graph,
             .arena = std.heap.ArenaAllocator.init(allocator),
             .rows = .empty,
-            .chain = &.{},
-            .var_names = .empty,
+            .nodes = .empty,
+            .edges = .empty,
+            .steps = .empty,
             .where_expr = 0,
             .projection = 0,
         };
@@ -66,60 +96,175 @@ pub const Executor = struct {
         self.rows.clearRetainingCapacity();
 
         const qc = self.ast.nodeChildren(query);
-        self.chain = self.ast.nodeChildren(qc[0]);
+        const pattern = qc[0];
         self.where_expr = qc[1];
         self.projection = qc[2];
 
-        self.var_names = .empty;
-        for (self.chain, 0..) |c, i| {
-            if (i % 2 == 0) {
-                try self.var_names.append(self.arena.allocator(), self.ast.data(c).node_pattern.var_name);
+        const chain = self.ast.nodeChildren(pattern);
+        const num_nodes = (chain.len + 1) / 2;
+
+        self.nodes = .empty;
+        self.edges = .empty;
+        for (0..num_nodes) |i| {
+            const np_idx = chain[i * 2];
+            const np = self.ast.data(np_idx).node_pattern;
+            var node = ChainNode{ .var_name = np.var_name, .label = np.label, .seeks = .empty };
+            for (self.ast.nodeChildren(np_idx)) |prop_idx| {
+                const prop_name = self.ast.data(prop_idx).text;
+                const value = self.ast.nodeChildren(prop_idx)[0];
+                try node.seeks.append(self.arena.allocator(), .{ .prop = prop_name, .value = value });
+            }
+            try self.nodes.append(self.arena.allocator(), node);
+
+            if (i + 1 < num_nodes) {
+                const ep = self.ast.data(chain[i * 2 + 1]).edge_pattern;
+                const fwd_dir: Direction = switch (ep.direction) {
+                    .left_to_right => .out,
+                    .right_to_left => .in,
+                };
+                try self.edges.append(self.arena.allocator(), .{ .etype = ep.etype, .fwd_dir = fwd_dir });
             }
         }
 
-        const num_nodes = (self.chain.len + 1) / 2;
+        try self.collectWhereSeeks(self.where_expr);
+
+        const anchor = self.chooseAnchor();
+        try self.buildSteps(anchor);
+
         var row = std.ArrayList(?NodeId).empty;
         for (0..num_nodes) |_| try row.append(self.arena.allocator(), null);
 
-        const anchor_label = self.ast.data(self.chain[0]).node_pattern.label;
-        var it = try self.graph.nodesWithLabel(anchor_label);
-        defer it.deinit();
-        while (try it.next()) |id| {
-            row.items[0] = id;
-            try self.expandChain(0, &row);
-        }
-
+        try self.execStep(0, &row);
         return self.rows.items;
     }
 
-    /// Binds node `edge_idx + 1` from the neighbours of node `edge_idx`, then
-    /// recurses; at the last edge it emits a projected row.
-    fn expandChain(self: *Executor, edge_idx: usize, row: *std.ArrayList(?NodeId)) ExecError!void {
-        const num_edges = self.chain.len / 2;
-        if (edge_idx == num_edges) {
+    // --- Planning ----------------------------------------------------------
+
+    fn nodeIndex(self: *Executor, name: []const u8) ?usize {
+        for (self.nodes.items, 0..) |n, i| {
+            if (std.mem.eql(u8, n.var_name, name)) return i;
+        }
+        return null;
+    }
+
+    /// If `access_expr` is `var.prop` and `value_expr` is a literal, records a
+    /// seek on `var`'s node. Returns whether a seek was recorded.
+    fn tryAddSeek(self: *Executor, access_expr: Index, value_expr: Index) ExecError!bool {
+        if (self.ast.kind(access_expr) != .property_access) return false;
+        const obj = self.ast.nodeChildren(access_expr)[0];
+        if (self.ast.kind(obj) != .variable) return false;
+        switch (self.ast.kind(value_expr)) {
+            .int_literal, .string_literal, .bool_literal => {},
+            else => return false,
+        }
+        const var_name = self.ast.data(obj).text;
+        const node_idx = self.nodeIndex(var_name) orelse return false;
+        const prop = self.ast.data(access_expr).text;
+        try self.nodes.items[node_idx].seeks.append(self.arena.allocator(), .{ .prop = prop, .value = value_expr });
+        return true;
+    }
+
+    /// Extracts equality seeks from an AND tree (safe: OR/NOT are left to the
+    /// residual WHERE).
+    fn collectWhereSeeks(self: *Executor, expr: Index) ExecError!void {
+        if (self.ast.kind(expr) != .binary_op) return;
+        const op = self.ast.data(expr).bin_op;
+        const kids = self.ast.nodeChildren(expr);
+        switch (op) {
+            .eq => {
+                _ = try self.tryAddSeek(kids[0], kids[1]);
+                _ = try self.tryAddSeek(kids[1], kids[0]);
+            },
+            .and_ => {
+                try self.collectWhereSeeks(kids[0]);
+                try self.collectWhereSeeks(kids[1]);
+            },
+            else => {},
+        }
+    }
+
+    fn estimate(self: *Executor, node_idx: usize) usize {
+        const node = self.nodes.items[node_idx];
+        if (node.seeks.items.len > 0) return 1;
+        if (node.label.len == 0) return std.math.maxInt(usize);
+        return self.graph.labelCount(node.label) catch std.math.maxInt(usize);
+    }
+
+    fn chooseAnchor(self: *Executor) usize {
+        var best: usize = 0;
+        var best_est = self.estimate(0);
+        for (1..self.nodes.items.len) |i| {
+            const est = self.estimate(i);
+            if (est < best_est) {
+                best = i;
+                best_est = est;
+            }
+        }
+        return best;
+    }
+
+    fn buildSteps(self: *Executor, anchor: usize) ExecError!void {
+        self.steps = .empty;
+        try self.steps.append(self.arena.allocator(), .{ .scan = .{ .node = anchor } });
+
+        // Expand right (anchor -> ... -> last node).
+        var i: usize = anchor;
+        while (i + 1 < self.nodes.items.len) : (i += 1) {
+            try self.steps.append(self.arena.allocator(), .{ .expand = .{ .from = i, .to = i + 1 } });
+        }
+        // Expand left (anchor -> ... -> first node).
+        i = anchor;
+        while (i > 0) : (i -= 1) {
+            try self.steps.append(self.arena.allocator(), .{ .expand = .{ .from = i, .to = i - 1 } });
+        }
+    }
+
+    // --- Execution ---------------------------------------------------------
+
+    fn execStep(self: *Executor, step_idx: usize, row: *std.ArrayList(?NodeId)) ExecError!void {
+        if (step_idx == self.steps.items.len) {
             return self.emit(row);
         }
+        switch (self.steps.items[step_idx]) {
+            .scan => |s| {
+                const node = self.nodes.items[s.node];
+                var it = try self.graph.nodesWithLabel(node.label);
+                defer it.deinit();
+                while (try it.next()) |id| {
+                    row.items[s.node] = id;
+                    if (!try self.nodeSeeksMatch(s.node, id, row)) continue;
+                    try self.execStep(step_idx + 1, row);
+                }
+            },
+            .expand => |e| {
+                const from_id = row.items[e.from].?;
+                const edge = self.edges.items[@min(e.from, e.to)];
+                const dir: Direction = if (e.from < e.to) edge.fwd_dir else opposite(edge.fwd_dir);
+                const node = self.nodes.items[e.to];
 
-        const from_id = row.items[edge_idx].?;
-        const edge = self.ast.data(self.chain[edge_idx * 2 + 1]).edge_pattern;
-        const dir: Direction = switch (edge.direction) {
-            .left_to_right => .out,
-            .right_to_left => .in,
-        };
-
-        var it = try self.graph.neighbours(from_id, dir, edge.etype);
-        defer it.deinit();
-        while (try it.next()) |nid| {
-            const label = self.ast.data(self.chain[(edge_idx + 1) * 2]).node_pattern.label;
-            if (label.len > 0 and !(try self.graph.hasLabel(nid, label))) continue;
-            row.items[edge_idx + 1] = nid;
-            try self.expandChain(edge_idx + 1, row);
+                var it = try self.graph.neighbours(from_id, dir, edge.etype);
+                defer it.deinit();
+                while (try it.next()) |nid| {
+                    if (node.label.len > 0 and !(try self.graph.hasLabel(nid, node.label))) continue;
+                    row.items[e.to] = nid;
+                    if (!try self.nodeSeeksMatch(e.to, nid, row)) continue;
+                    try self.execStep(step_idx + 1, row);
+                }
+            },
         }
+    }
+
+    fn nodeSeeksMatch(self: *Executor, node_idx: usize, id: NodeId, row: *std.ArrayList(?NodeId)) ExecError!bool {
+        for (self.nodes.items[node_idx].seeks.items) |seek| {
+            const expected = try self.eval(seek.value, row);
+            const actual = (try self.graph.getProp(id, seek.prop, self.arena.allocator())) orelse return false;
+            if (!valueEq(actual, expected)) return false;
+        }
+        return true;
     }
 
     fn emit(self: *Executor, row: *std.ArrayList(?NodeId)) ExecError!void {
         if (!try self.evalBool(self.where_expr, row)) return;
-        if (!try self.nodesMatch(row)) return;
 
         var out = std.ArrayList(Value).empty;
         for (self.ast.nodeChildren(self.projection)) |item| {
@@ -130,32 +275,9 @@ pub const Executor = struct {
         try self.rows.append(self.arena.allocator(), out);
     }
 
-    /// True if every node's inline property map matches its binding.
-    fn nodesMatch(self: *Executor, row: *std.ArrayList(?NodeId)) ExecError!bool {
-        for (self.chain, 0..) |c, i| {
-            if (i % 2 != 0) continue; // edges carry no properties here
-            const var_name = self.ast.data(c).node_pattern.var_name;
-            const slot = self.slotOf(var_name) orelse return error.UnknownVar;
-            const id = row.items[slot].?;
-            if (!try self.nodePropsMatch(c, id, row)) return false;
-        }
-        return true;
-    }
-
-    fn nodePropsMatch(self: *Executor, node_pattern_idx: Index, id: NodeId, row: *std.ArrayList(?NodeId)) ExecError!bool {
-        for (self.ast.nodeChildren(node_pattern_idx)) |prop_idx| {
-            const prop_name = self.ast.data(prop_idx).text;
-            const value_expr = self.ast.nodeChildren(prop_idx)[0];
-            const expected = try self.eval(value_expr, row);
-            const actual = (try self.graph.getProp(id, prop_name, self.arena.allocator())) orelse return false;
-            if (!valueEq(actual, expected)) return false;
-        }
-        return true;
-    }
-
     fn slotOf(self: *Executor, name: []const u8) ?usize {
-        for (self.var_names.items, 0..) |n, i| {
-            if (std.mem.eql(u8, n, name)) return i;
+        for (self.nodes.items, 0..) |n, i| {
+            if (std.mem.eql(u8, n.var_name, name)) return i;
         }
         return null;
     }
@@ -198,6 +320,13 @@ pub const Executor = struct {
         };
     }
 };
+
+fn opposite(dir: Direction) Direction {
+    return switch (dir) {
+        .out => .in,
+        .in => .out,
+    };
+}
 
 fn valueEq(l: Value, r: Value) bool {
     return switch (l) {

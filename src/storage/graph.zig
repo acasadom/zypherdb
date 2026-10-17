@@ -259,6 +259,15 @@ pub const Graph = struct {
         const it = try self.store.scanPrefix(prefix.items);
         return .{ .inner = it };
     }
+
+    /// Number of nodes carrying `label`.
+    pub fn labelCount(self: *Graph, label: []const u8) KvError!usize {
+        var it = try self.nodesWithLabel(label);
+        defer it.deinit();
+        var count: usize = 0;
+        while (try it.next()) |_| count += 1;
+        return count;
+    }
 };
 
 /// Iterator over node ids decoded from the trailing 8 bytes of scanned keys
