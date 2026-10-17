@@ -25,6 +25,14 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
+    // Shared library exposing the C ABI (src/capi.zig), loadable from Python.
+    const shared = b.addLibrary(.{
+        .name = "acmedb",
+        .root_module = acmedb,
+        .linkage = .dynamic,
+    });
+    b.installArtifact(shared);
+
     // Tests: a single executable that walks the module's `test` blocks.
     const tests = b.addTest(.{
         .root_module = acmedb,

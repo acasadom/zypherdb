@@ -30,19 +30,29 @@ Zig is a self-contained toolchain; nothing is installed system-wide beyond the
 
 ```bash
 zig build test    # build and run the test suite
-zig build         # build the static library (installed to zig-out/)
+zig build         # build the static + shared libraries (installed to zig-out/)
 ```
 
 The LMDB C sources under `vendor/lmdb/` are vendored and compiled by the build.
-No Docker, no CMake, no vcpkg.
+No Docker, no CMake, no vcpkg. `zig build` also produces `libacmedb.dylib`
+(`.so` on Linux), the shared library exposing the C ABI for embedding.
+
+## Embedding from Python
+
+The C ABI (`src/capi.zig`) is exposed through the shared library. A minimal
+ctypes example lives in `examples/demo.py`:
+
+```bash
+zig build
+python3 examples/demo.py
+```
 
 ## Current status
 
-First skeleton: `acmedb.storage.KvStore`, a minimal RAII wrapper over LMDB (no
-hierarchies, errors as error unions — the Zig analogue of `std::expected`) plus
-tests covering open/write/read/exists/delete/prefix-scan. It validates the whole
-pipeline (Zig build + vendored LMDB + C bindings) end to end before moving on to
-the AST.
+First vertical slice complete: a subset of openCypher (`MATCH` with node/edge
+patterns, `WHERE` with comparisons and `AND`/`OR`/`NOT`, `RETURN` with aliases)
+is parsed, planned (anchor selection + predicate pushdown) and executed over
+index-free adjacency in LMDB. 21 tests cover the pipeline end to end.
 
 ## Roadmap (initial openCypher subset)
 

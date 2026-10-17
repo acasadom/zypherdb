@@ -42,6 +42,14 @@ pub const Executor = exec.Executor;
 pub const ExecError = exec.ExecError;
 pub const Row = exec.Row;
 
+pub const capi = @import("capi.zig");
+
+comptime {
+    // Force the C ABI export functions to be emitted in library builds (a
+    // `pub const` import alone is analyzed lazily).
+    _ = @import("capi.zig");
+}
+
 test {
     @import("std").testing.refAllDecls(@This());
 }

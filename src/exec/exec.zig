@@ -62,7 +62,7 @@ const BindStep = union(enum) {
 pub const Executor = struct {
     ast: *Ast,
     graph: *Graph,
-    arena: std.heap.ArenaAllocator,
+    allocator: Allocator, // scratch allocator, owned by the caller
     rows: std.ArrayList(Row),
 
     // Per-run context.
@@ -76,7 +76,7 @@ pub const Executor = struct {
         return .{
             .ast = ast,
             .graph = graph,
-            .arena = std.heap.ArenaAllocator.init(allocator),
+            .allocator = allocator,
             .rows = .empty,
             .nodes = .empty,
             .edges = .empty,
@@ -84,10 +84,6 @@ pub const Executor = struct {
             .where_expr = 0,
             .projection = 0,
         };
-    }
-
-    pub fn deinit(self: *Executor) void {
-        self.arena.deinit();
     }
 
     /// Runs the `query` (an AST `query` node) and returns its projected rows,
@@ -112,9 +108,9 @@ pub const Executor = struct {
             for (self.ast.nodeChildren(np_idx)) |prop_idx| {
                 const prop_name = self.ast.data(prop_idx).text;
                 const value = self.ast.nodeChildren(prop_idx)[0];
-                try node.seeks.append(self.arena.allocator(), .{ .prop = prop_name, .value = value });
+                try node.seeks.append(self.allocator, .{ .prop = prop_name, .value = value });
             }
-            try self.nodes.append(self.arena.allocator(), node);
+            try self.nodes.append(self.allocator, node);
 
             if (i + 1 < num_nodes) {
                 const ep = self.ast.data(chain[i * 2 + 1]).edge_pattern;
@@ -122,7 +118,7 @@ pub const Executor = struct {
                     .left_to_right => .out,
                     .right_to_left => .in,
                 };
-                try self.edges.append(self.arena.allocator(), .{ .etype = ep.etype, .fwd_dir = fwd_dir });
+                try self.edges.append(self.allocator, .{ .etype = ep.etype, .fwd_dir = fwd_dir });
             }
         }
 
@@ -132,7 +128,7 @@ pub const Executor = struct {
         try self.buildSteps(anchor);
 
         var row = std.ArrayList(?NodeId).empty;
-        for (0..num_nodes) |_| try row.append(self.arena.allocator(), null);
+        for (0..num_nodes) |_| try row.append(self.allocator, null);
 
         try self.execStep(0, &row);
         return self.rows.items;
@@ -160,7 +156,7 @@ pub const Executor = struct {
         const var_name = self.ast.data(obj).text;
         const node_idx = self.nodeIndex(var_name) orelse return false;
         const prop = self.ast.data(access_expr).text;
-        try self.nodes.items[node_idx].seeks.append(self.arena.allocator(), .{ .prop = prop, .value = value_expr });
+        try self.nodes.items[node_idx].seeks.append(self.allocator, .{ .prop = prop, .value = value_expr });
         return true;
     }
 
@@ -205,17 +201,17 @@ pub const Executor = struct {
 
     fn buildSteps(self: *Executor, anchor: usize) ExecError!void {
         self.steps = .empty;
-        try self.steps.append(self.arena.allocator(), .{ .scan = .{ .node = anchor } });
+        try self.steps.append(self.allocator, .{ .scan = .{ .node = anchor } });
 
         // Expand right (anchor -> ... -> last node).
         var i: usize = anchor;
         while (i + 1 < self.nodes.items.len) : (i += 1) {
-            try self.steps.append(self.arena.allocator(), .{ .expand = .{ .from = i, .to = i + 1 } });
+            try self.steps.append(self.allocator, .{ .expand = .{ .from = i, .to = i + 1 } });
         }
         // Expand left (anchor -> ... -> first node).
         i = anchor;
         while (i > 0) : (i -= 1) {
-            try self.steps.append(self.arena.allocator(), .{ .expand = .{ .from = i, .to = i - 1 } });
+            try self.steps.append(self.allocator, .{ .expand = .{ .from = i, .to = i - 1 } });
         }
     }
 
@@ -257,7 +253,7 @@ pub const Executor = struct {
     fn nodeSeeksMatch(self: *Executor, node_idx: usize, id: NodeId, row: *std.ArrayList(?NodeId)) ExecError!bool {
         for (self.nodes.items[node_idx].seeks.items) |seek| {
             const expected = try self.eval(seek.value, row);
-            const actual = (try self.graph.getProp(id, seek.prop, self.arena.allocator())) orelse return false;
+            const actual = (try self.graph.getProp(id, seek.prop, self.allocator)) orelse return false;
             if (!valueEq(actual, expected)) return false;
         }
         return true;
@@ -270,9 +266,9 @@ pub const Executor = struct {
         for (self.ast.nodeChildren(self.projection)) |item| {
             const expr = self.ast.nodeChildren(item)[0];
             const v = try self.eval(expr, row);
-            try out.append(self.arena.allocator(), v);
+            try out.append(self.allocator, v);
         }
-        try self.rows.append(self.arena.allocator(), out);
+        try self.rows.append(self.allocator, out);
     }
 
     fn slotOf(self: *Executor, name: []const u8) ?usize {
@@ -301,7 +297,7 @@ pub const Executor = struct {
                 const slot = self.slotOf(name) orelse return error.UnknownVar;
                 const id = row.items[slot] orelse return error.UnknownVar;
                 const prop = self.ast.data(expr).text;
-                const v = (try self.graph.getProp(id, prop, self.arena.allocator())) orelse return error.MissingProp;
+                const v = (try self.graph.getProp(id, prop, self.allocator)) orelse return error.MissingProp;
                 break :blk v;
             },
             .binary_op => blk: {
@@ -471,8 +467,9 @@ fn loadSlice(g: *Graph) !void {
 /// Parses `src`, runs it, and asserts the projected rows (as an unordered set).
 fn expectQuery(ast: *Ast, g: *Graph, src: []const u8, expected: []const []const Value) !void {
     const query = try parser.parse(ast, src);
-    var exec = Executor.init(ast, g, testing.allocator);
-    defer exec.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exec = Executor.init(ast, g, arena.allocator());
     const rows = try exec.run(query);
     try expectRows(rows, expected);
 }
