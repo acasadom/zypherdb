@@ -45,6 +45,7 @@ const ChainNode = struct {
     var_name: []const u8,
     label: []const u8,
     seeks: std.ArrayList(Seek),
+    bound: bool, // already bound by an earlier pattern in this query
 };
 
 const ChainEdge = struct {
@@ -86,6 +87,7 @@ pub const Executor = struct {
     rows: std.ArrayList(Row),
 
     // Match context.
+    patterns: []const Index, // the MATCH clause's patterns (one or more)
     nodes: std.ArrayList(ChainNode),
     edges: std.ArrayList(ChainEdge),
     steps: std.ArrayList(BindStep),
@@ -105,6 +107,7 @@ pub const Executor = struct {
             .graph = graph,
             .allocator = allocator,
             .rows = .empty,
+            .patterns = &.{},
             .nodes = .empty,
             .edges = .empty,
             .steps = .empty,
@@ -144,9 +147,10 @@ pub const Executor = struct {
         if (match_clause) |mc| {
             const mc_children = self.ast.nodeChildren(mc);
             self.has_match = true;
-            self.where_expr = mc_children[1];
-            try self.setupMatch(mc_children[0]);
-            try self.execStep(0, &bindings);
+            // children = [pattern0, ..., patternN, where_expr]
+            self.patterns = mc_children[0 .. mc_children.len - 1];
+            self.where_expr = mc_children[mc_children.len - 1];
+            try self.matchPatterns(0, &bindings);
         } else {
             self.has_match = false;
             try self.finish(&bindings);
@@ -159,7 +163,7 @@ pub const Executor = struct {
 
     // --- Planning ----------------------------------------------------------
 
-    fn setupMatch(self: *Executor, pattern: Index) ExecError!void {
+    fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) ExecError!void {
         const chain = self.ast.nodeChildren(pattern);
         const num_nodes = (chain.len + 1) / 2;
 
@@ -168,7 +172,12 @@ pub const Executor = struct {
         for (0..num_nodes) |i| {
             const np_idx = chain[i * 2];
             const np = self.ast.data(np_idx).node_pattern;
-            var node = ChainNode{ .var_name = np.var_name, .label = np.label, .seeks = .empty };
+            var node = ChainNode{
+                .var_name = np.var_name,
+                .label = np.label,
+                .seeks = .empty,
+                .bound = bindings.get(np.var_name) != null,
+            };
             for (self.ast.nodeChildren(np_idx)) |prop_idx| {
                 const prop_name = self.ast.data(prop_idx).text;
                 const value = self.ast.nodeChildren(prop_idx)[0];
@@ -231,6 +240,7 @@ pub const Executor = struct {
 
     fn estimate(self: *Executor, node_idx: usize) usize {
         const node = self.nodes.items[node_idx];
+        if (node.bound) return 0; // already known: a free start
         if (node.seeks.items.len > 0) return 1;
         if (node.label.len == 0) return std.math.maxInt(usize);
         return self.graph.labelCount(node.label) catch std.math.maxInt(usize);
@@ -251,7 +261,10 @@ pub const Executor = struct {
 
     fn buildSteps(self: *Executor, anchor: usize) ExecError!void {
         self.steps = .empty;
-        try self.steps.append(self.allocator, .{ .scan = .{ .node = anchor } });
+        // A bound anchor needs no scan: expand straight from its known value.
+        if (!self.nodes.items[anchor].bound) {
+            try self.steps.append(self.allocator, .{ .scan = .{ .node = anchor } });
+        }
 
         var i: usize = anchor;
         while (i + 1 < self.nodes.items.len) : (i += 1) {
@@ -265,9 +278,17 @@ pub const Executor = struct {
 
     // --- Execution ---------------------------------------------------------
 
-    fn execStep(self: *Executor, step_idx: usize, bindings: *Bindings) ExecError!void {
-        if (step_idx == self.steps.items.len) {
+    fn matchPatterns(self: *Executor, pat_idx: usize, bindings: *Bindings) ExecError!void {
+        if (pat_idx == self.patterns.len) {
             return self.finish(bindings);
+        }
+        try self.setupPattern(self.patterns[pat_idx], bindings);
+        try self.execStep(0, pat_idx, bindings);
+    }
+
+    fn execStep(self: *Executor, step_idx: usize, pat_idx: usize, bindings: *Bindings) ExecError!void {
+        if (step_idx == self.steps.items.len) {
+            return self.matchPatterns(pat_idx + 1, bindings);
         }
         switch (self.steps.items[step_idx]) {
             .scan => |s| {
@@ -282,7 +303,7 @@ pub const Executor = struct {
                         if (node.label.len > 0 and !(try self.graph.hasLabel(id, node.label))) continue;
                         try bindings.put(self.allocator, node.var_name, id);
                         if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
-                        try self.execStep(step_idx + 1, bindings);
+                        try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
                 } else {
                     var it = try self.graph.nodesWithLabel(node.label);
@@ -290,7 +311,7 @@ pub const Executor = struct {
                     while (try it.next()) |id| {
                         try bindings.put(self.allocator, node.var_name, id);
                         if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
-                        try self.execStep(step_idx + 1, bindings);
+                        try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
                 }
             },
@@ -298,16 +319,27 @@ pub const Executor = struct {
                 const from_name = self.nodes.items[e.from].var_name;
                 const from_id = bindings.get(from_name) orelse return error.UnknownVar;
                 const edge = self.edges.items[@min(e.from, e.to)];
-                const dir: Direction = if (e.from < e.to) edge.fwd_dir else opposite(edge.fwd_dir);
-                const node = self.nodes.items[e.to];
+                const to_node = self.nodes.items[e.to];
 
-                var it = try self.graph.neighbours(from_id, dir, edge.etype);
-                defer it.deinit();
-                while (try it.next()) |nid| {
-                    if (node.label.len > 0 and !(try self.graph.hasLabel(nid, node.label))) continue;
-                    try bindings.put(self.allocator, node.var_name, nid);
-                    if (!try self.nodeSeeksMatch(e.to, nid, bindings)) continue;
-                    try self.execStep(step_idx + 1, bindings);
+                if (to_node.bound) {
+                    // Verify the already-bound neighbour satisfies this edge.
+                    const to_id = bindings.get(to_node.var_name) orelse return error.UnknownVar;
+                    const sd = edgeSrcDst(edge.fwd_dir, e.from, e.to, from_id, to_id);
+                    if (try self.graph.hasEdge(sd.src, sd.dst, edge.etype)) {
+                        if (try self.nodeSeeksMatch(e.to, to_id, bindings)) {
+                            try self.execStep(step_idx + 1, pat_idx, bindings);
+                        }
+                    }
+                } else {
+                    const dir: Direction = if (e.from < e.to) edge.fwd_dir else opposite(edge.fwd_dir);
+                    var it = try self.graph.neighbours(from_id, dir, edge.etype);
+                    defer it.deinit();
+                    while (try it.next()) |nid| {
+                        if (to_node.label.len > 0 and !(try self.graph.hasLabel(nid, to_node.label))) continue;
+                        try bindings.put(self.allocator, to_node.var_name, nid);
+                        if (!try self.nodeSeeksMatch(e.to, nid, bindings)) continue;
+                        try self.execStep(step_idx + 1, pat_idx, bindings);
+                    }
                 }
             },
         }
@@ -507,6 +539,18 @@ fn opposite(dir: Direction) Direction {
     return switch (dir) {
         .out => .in,
         .in => .out,
+    };
+}
+
+/// Computes the written edge's source/destination ids, given the two endpoint
+/// node indices (`from`/`to`) and their ids. `fwd_dir` is the direction when
+/// traversing the lower index to the higher index.
+fn edgeSrcDst(fwd_dir: Direction, from: usize, to: usize, from_id: NodeId, to_id: NodeId) struct { src: NodeId, dst: NodeId } {
+    const left_id = if (from < to) from_id else to_id;
+    const right_id = if (from < to) to_id else from_id;
+    return switch (fwd_dir) {
+        .out => .{ .src = left_id, .dst = right_id },
+        .in => .{ .src = right_id, .dst = left_id },
     };
 }
 
@@ -774,5 +818,40 @@ test "MERGE gets-or-creates nodes and edges" {
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'}) MERGE (a)-[:KNOWS]->(b:Person {name: 'Zorg'})", &.{});
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
         &.{.{ .str = "Zorg" }},
+    });
+}
+
+test "MATCH multi-pattern: join and shared variables" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    // People with a KNOWS chain: A -> B -> C.
+    try g.addNode(1, "Person");
+    try g.setProp(1, "name", .{ .str = "A" });
+    try g.addNode(2, "Person");
+    try g.setProp(2, "name", .{ .str = "B" });
+    try g.addNode(3, "Person");
+    try g.setProp(3, "name", .{ .str = "C" });
+    try g.addEdge(1, 2, "KNOWS");
+    try g.addEdge(2, 3, "KNOWS");
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Shared variable across two patterns: a 2-hop path A -> ? -> ?.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[:KNOWS]->(b), (b)-[:KNOWS]->(c) RETURN c.name", &.{
+        &.{.{ .str = "C" }},
+    });
+
+    // Join two independent matched nodes and connect them.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}), (c:Person {name: 'C'}) CREATE (a)-[:KNOWS]->(c)", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[:KNOWS]->(c:Person) RETURN c.name", &.{
+        &.{.{ .str = "B" }},
+        &.{.{ .str = "C" }},
     });
 }

@@ -12,8 +12,9 @@
 //! - `query` children are a list of clauses, in source order:
 //!   `match_clause`, `create_clause`, `set_clause`, `delete_clause`,
 //!   `return_clause`.
-//! - `match_clause` children are `[pattern, where_expr]`; a missing `WHERE` is
-//!   represented as `bool_literal(true)`.
+//! - `match_clause` children are `[pattern0, ..., patternN, where_expr]`: one or
+//!   more comma-separated patterns followed by the `WHERE` (a missing `WHERE`
+//!   is `bool_literal(true)`).
 //! - `create_clause` children are `[pattern]`.
 //! - `set_clause` children are `set_item`s.
 //! - `delete_clause` children are `delete_item`s.

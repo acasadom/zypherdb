@@ -342,7 +342,15 @@ const Parser = struct {
 
         if (self.atKeyword("MATCH")) {
             _ = self.advance();
-            const pattern = try self.parsePattern();
+            var match_kids = std.ArrayList(Index).empty;
+            defer match_kids.deinit(self.ast.allocator);
+            while (true) {
+                const pattern = try self.parsePattern();
+                try match_kids.append(self.ast.allocator, pattern);
+                if (self.at(.comma)) {
+                    _ = self.advance();
+                } else break;
+            }
             var where_expr: Index = undefined;
             if (self.atKeyword("WHERE")) {
                 _ = self.advance();
@@ -350,7 +358,8 @@ const Parser = struct {
             } else {
                 where_expr = try self.ast.addNode(.bool_literal, .{ .boolean = true }, &.{});
             }
-            const mc = try self.ast.addNode(.match_clause, .{ .none = {} }, &.{ pattern, where_expr });
+            try match_kids.append(self.ast.allocator, where_expr);
+            const mc = try self.ast.addNode(.match_clause, .{ .none = {} }, match_kids.items);
             try clauses.append(self.ast.allocator, mc);
         }
 
