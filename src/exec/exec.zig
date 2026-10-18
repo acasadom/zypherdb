@@ -634,11 +634,21 @@ pub const Executor = struct {
     }
 
     fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) ExecError!void {
+        const detach = self.ast.data(delete_clause).delete.detach;
         for (self.ast.nodeChildren(delete_clause)) |item| {
             const obj = self.ast.nodeChildren(item)[0];
             const name = self.ast.data(obj).text;
             const id = bindings.getNode(name) orelse return error.UnknownVar;
-            try self.graph.deleteNode(id);
+            if (detach) {
+                try self.graph.deleteNodeDetach(id);
+            } else {
+                self.graph.deleteNode(id) catch |err| {
+                    if (err == error.NodeStillConnected) {
+                        self.fail("node '{s}' still has relationships (use DETACH DELETE)", .{name});
+                    }
+                    return err;
+                };
+            }
         }
     }
 
@@ -936,6 +946,14 @@ fn expectOrdered(ast: *Ast, g: *Graph, src: []const u8, expected: []const []cons
     }
 }
 
+fn expectQueryError(ast: *Ast, g: *Graph, src: []const u8, expected_err: anyerror) !void {
+    const query = try parser.parse(ast, src, null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var exec = Executor.init(ast, g, arena.allocator());
+    try testing.expectError(expected_err, exec.run(query));
+}
+
 test "runs the vertical-slice queries end to end" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1160,6 +1178,34 @@ test "relationship properties: CREATE, MATCH, SET and WHERE" {
 
     // Inline relationship property filter.
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[r:KNOWS {weight: 10}]->(b:Person) RETURN b.name", &.{
+        &.{.{ .str = "B" }},
+    });
+}
+
+test "DELETE fails on connected nodes; DETACH DELETE removes edges" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})", &.{});
+
+    // Plain DELETE fails because 'A' still has a relationship.
+    try expectQueryError(&ast, &g, "MATCH (a:Person {name: 'A'}) DELETE a", error.NodeStillConnected);
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}) RETURN a.name", &.{
+        &.{.{ .str = "A" }},
+    });
+
+    // DETACH DELETE removes 'A' and its relationship.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}) DETACH DELETE a", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}) RETURN a.name", &.{});
+    try expectQuery(&ast, &g, "MATCH (b:Person {name: 'B'}) RETURN b.name", &.{
         &.{.{ .str = "B" }},
     });
 }

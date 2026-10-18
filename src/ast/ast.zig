@@ -17,7 +17,8 @@
 //!   is `bool_literal(true)`).
 //! - `create_clause` children are `[pattern]`.
 //! - `set_clause` children are `set_item`s.
-//! - `delete_clause` children are `delete_item`s.
+//! - `delete_clause` children are `delete_item`s; `detach` is in the `delete`
+//!   payload.
 //! - `return_clause` children are `[projection]`, plus an optional `order_by`
 //!   and an optional `limit`; `distinct` is in the `return_` payload.
 //! - `order_by` children are `order_item`s.
@@ -108,6 +109,7 @@ pub const Data = union(enum) {
     un_op: UnOp,
     return_: struct { distinct: bool },
     order_item: struct { ascending: bool },
+    delete: struct { detach: bool },
 };
 
 pub const Node = struct {

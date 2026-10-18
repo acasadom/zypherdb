@@ -295,12 +295,39 @@ pub const Graph = struct {
         return next;
     }
 
-    /// Deletes a node and detaches it: removes all its edges (both directions),
-    /// its label-index entry, properties and marker.
+    /// Deletes a node; fails with `error.NodeStillConnected` if it still has
+    /// relationships (use `deleteNodeDetach` to remove them too).
     pub fn deleteNode(self: *Graph, id: NodeId) KvError!void {
+        if (try self.hasAnyEdge(id)) return error.NodeStillConnected;
+        return self.deleteNodeOnly(id);
+    }
+
+    /// Deletes a node and detaches it: removes all its edges (both directions)
+    /// and edge properties, its label-index entry, properties and marker.
+    pub fn deleteNodeDetach(self: *Graph, id: NodeId) KvError!void {
         try self.deleteEdgesInDirection(id, .out);
         try self.deleteEdgesInDirection(id, .in);
+        return self.deleteNodeOnly(id);
+    }
 
+    /// True if the node is the endpoint of at least one edge.
+    pub fn hasAnyEdge(self: *Graph, id: NodeId) KvError!bool {
+        var out_prefix = std.ArrayList(u8).empty;
+        defer out_prefix.deinit(self.allocator);
+        try out_prefix.append(self.allocator, edge_marker);
+        try appendNodeId(&out_prefix, self.allocator, id);
+        try out_prefix.append(self.allocator, @backingInt(Direction.out));
+        if (try self.store.countPrefix(out_prefix.items) > 0) return true;
+
+        var in_prefix = std.ArrayList(u8).empty;
+        defer in_prefix.deinit(self.allocator);
+        try in_prefix.append(self.allocator, edge_marker);
+        try appendNodeId(&in_prefix, self.allocator, id);
+        try in_prefix.append(self.allocator, @backingInt(Direction.in));
+        return try self.store.countPrefix(in_prefix.items) > 0;
+    }
+
+    fn deleteNodeOnly(self: *Graph, id: NodeId) KvError!void {
         if (try self.getProp(id, label_prop, self.allocator)) |v| {
             switch (v) {
                 .str => |label| {
@@ -718,7 +745,7 @@ test "allocNodeId and deleteNode detach edges" {
     try expectNext(&it, b);
     try testing.expect((try it.next()) == null);
 
-    try g.deleteNode(a);
+    try g.deleteNodeDetach(a);
 
     try testing.expect(!try g.hasNode(a));
     try testing.expect(!try g.hasLabel(a, "Person"));
@@ -823,8 +850,8 @@ test "edge properties round-trip and delete" {
     try testing.expectEqual(@as(i64, 5), w.int);
     try testing.expect((try g.getEdgeProp(1, 2, "KNOWS", "nope", testing.allocator)) == null);
 
-    // Deleting a node removes its edge properties too.
-    try g.deleteNode(1);
+    // Detach-deleting a node removes its edge properties too.
+    try g.deleteNodeDetach(1);
     try testing.expect(!try g.hasEdge(1, 2, "KNOWS"));
     try testing.expect((try g.getEdgeProp(1, 2, "KNOWS", "weight", testing.allocator)) == null);
 }

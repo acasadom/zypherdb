@@ -380,7 +380,12 @@ const Parser = struct {
                 try clauses.append(self.ast.allocator, sc);
             } else if (self.atKeyword("DELETE")) {
                 _ = self.advance();
-                const dc = try self.parseDeleteClause();
+                const dc = try self.parseDeleteClause(false);
+                try clauses.append(self.ast.allocator, dc);
+            } else if (self.atKeyword("DETACH")) {
+                _ = self.advance();
+                try self.expectKeyword("DELETE");
+                const dc = try self.parseDeleteClause(true);
                 try clauses.append(self.ast.allocator, dc);
             } else break;
         }
@@ -416,7 +421,7 @@ const Parser = struct {
         return self.ast.addNode(.set_clause, .{ .none = {} }, items.items);
     }
 
-    fn parseDeleteClause(self: *Parser) ParseError!Index {
+    fn parseDeleteClause(self: *Parser, detach: bool) ParseError!Index {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
         while (true) {
@@ -428,7 +433,7 @@ const Parser = struct {
                 _ = self.advance();
             } else break;
         }
-        return self.ast.addNode(.delete_clause, .{ .none = {} }, items.items);
+        return self.ast.addNode(.delete_clause, .{ .delete = .{ .detach = detach } }, items.items);
     }
 
     fn parsePattern(self: *Parser) ParseError!Index {

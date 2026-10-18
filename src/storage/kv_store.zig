@@ -17,6 +17,7 @@ pub const KvError = error{
     DeleteFailed,
     IteratorFailed,
     OutOfMemory,
+    NodeStillConnected,
 };
 
 pub const KvStore = struct {
