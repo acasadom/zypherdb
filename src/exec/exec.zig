@@ -18,6 +18,7 @@ const Index = @import("../ast/ast.zig").Index;
 const NodeKind = @import("../ast/ast.zig").NodeKind;
 const BinOp = @import("../ast/ast.zig").BinOp;
 const UnOp = @import("../ast/ast.zig").UnOp;
+const AggKind = @import("../ast/ast.zig").AggKind;
 const Graph = @import("../storage/graph.zig").Graph;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../storage/graph.zig").Value;
@@ -108,6 +109,25 @@ const Bindings = struct {
     }
 };
 
+/// One projection item: either a grouping key or an aggregation.
+const ProjItem = union(enum) {
+    key: Index, // expression index
+    agg: struct { kind: AggKind, arg: ?Index }, // arg = null for count(*)
+};
+
+const AggState = struct {
+    kind: AggKind,
+    count: usize = 0,
+    sum: i64 = 0,
+    min: ?Value = null,
+    max: ?Value = null,
+};
+
+const Group = struct {
+    keys: std.ArrayList(Value),
+    aggs: std.ArrayList(AggState),
+};
+
 pub const Executor = struct {
     ast: *Ast,
     graph: *Graph,
@@ -129,6 +149,11 @@ pub const Executor = struct {
     // Result post-processing.
     row_keys: std.ArrayList([]const Value),
 
+    // Aggregation.
+    has_agg: bool,
+    proj_items: std.ArrayList(ProjItem),
+    groups: std.ArrayList(Group),
+
     /// Optional sink for error messages (message + source position).
     diag: ?*Diagnostic,
 
@@ -147,6 +172,9 @@ pub const Executor = struct {
             .update_clauses = .empty,
             .return_clause = null,
             .row_keys = .empty,
+            .has_agg = false,
+            .proj_items = .empty,
+            .groups = .empty,
             .diag = null,
         };
     }
@@ -158,6 +186,9 @@ pub const Executor = struct {
     pub fn run(self: *Executor, query: Index) ExecError![]const Row {
         self.rows.clearRetainingCapacity();
         self.row_keys = .empty;
+        self.groups = .empty;
+        self.has_agg = false;
+        self.proj_items = .empty;
 
         var match_clause: ?Index = null;
         self.update_clauses = .empty;
@@ -168,6 +199,23 @@ pub const Executor = struct {
                 .create_clause, .merge_clause, .set_clause, .delete_clause => try self.update_clauses.append(self.allocator, c),
                 .return_clause => self.return_clause = c,
                 else => {},
+            }
+        }
+
+        // Detect aggregations in the projection (grouping).
+        if (self.return_clause) |rc| {
+            const info = self.returnInfo(rc);
+            for (self.ast.nodeChildren(info.projection)) |item| {
+                const expr = self.ast.nodeChildren(item)[0];
+                if (self.ast.kind(expr) == .agg) {
+                    self.has_agg = true;
+                    const kind = self.ast.data(expr).agg;
+                    const kids = self.ast.nodeChildren(expr);
+                    const arg: ?Index = if (kids.len > 0) kids[0] else null;
+                    try self.proj_items.append(self.allocator, .{ .agg = .{ .kind = kind, .arg = arg } });
+                } else {
+                    try self.proj_items.append(self.allocator, .{ .key = expr });
+                }
             }
         }
 
@@ -413,6 +461,11 @@ pub const Executor = struct {
         if (self.return_clause) |rc| {
             const info = self.returnInfo(rc);
 
+            if (self.has_agg) {
+                try self.accumulate(bindings);
+                return;
+            }
+
             var out = std.ArrayList(Value).empty;
             for (self.ast.nodeChildren(info.projection)) |item| {
                 const v = try self.eval(self.ast.nodeChildren(item)[0], bindings);
@@ -430,6 +483,90 @@ pub const Executor = struct {
                 }
             }
             try self.row_keys.append(self.allocator, keys.items);
+        }
+    }
+
+    fn accumulate(self: *Executor, bindings: *Bindings) ExecError!void {
+        var keys = std.ArrayList(Value).empty;
+        var args = std.ArrayList(Value).empty;
+        for (self.proj_items.items) |item| {
+            switch (item) {
+                .key => |expr| try keys.append(self.allocator, try self.eval(expr, bindings)),
+                .agg => |a| {
+                    // count ignores its argument (no nulls in this subset), and
+                    // count(*) has none.
+                    if (a.kind == .count or a.arg == null) {
+                        try args.append(self.allocator, .{ .int = 0 });
+                    } else {
+                        try args.append(self.allocator, try self.eval(a.arg.?, bindings));
+                    }
+                },
+            }
+        }
+
+        const group = try self.findOrCreateGroup(keys.items);
+        var arg_i: usize = 0;
+        for (group.aggs.items) |*state| {
+            try self.updateAgg(state, args.items[arg_i]);
+            arg_i += 1;
+        }
+    }
+
+    fn findOrCreateGroup(self: *Executor, keys: []const Value) ExecError!*Group {
+        for (self.groups.items) |*g| {
+            if (rowsEq(g.keys.items, keys)) return g;
+        }
+        var group = Group{ .keys = .empty, .aggs = .empty };
+        for (keys) |k| try group.keys.append(self.allocator, k);
+        for (self.proj_items.items) |item| {
+            switch (item) {
+                .key => {},
+                .agg => |a| try group.aggs.append(self.allocator, AggState{ .kind = a.kind }),
+            }
+        }
+        try self.groups.append(self.allocator, group);
+        return &self.groups.items[self.groups.items.len - 1];
+    }
+
+    fn updateAgg(self: *Executor, state: *AggState, arg: Value) ExecError!void {
+        _ = self;
+        switch (state.kind) {
+            .count => state.count += 1,
+            .sum => state.sum += try asInt(arg),
+            .min => {
+                if (state.min) |m| {
+                    if (compareValue(arg, m) == .lt) state.min = arg;
+                } else state.min = arg;
+            },
+            .max => {
+                if (state.max) |m| {
+                    if (compareValue(arg, m) == .gt) state.max = arg;
+                } else state.max = arg;
+            },
+        }
+    }
+
+    fn aggregate(self: *Executor) ExecError!void {
+        self.rows = .empty;
+        self.row_keys = .empty;
+        for (self.groups.items) |group| {
+            var row = std.ArrayList(Value).empty;
+            var key_i: usize = 0;
+            var agg_i: usize = 0;
+            for (self.proj_items.items) |item| {
+                switch (item) {
+                    .key => {
+                        try row.append(self.allocator, group.keys.items[key_i]);
+                        key_i += 1;
+                    },
+                    .agg => |a| {
+                        try row.append(self.allocator, aggResult(a.kind, group.aggs.items[agg_i]));
+                        agg_i += 1;
+                    },
+                }
+            }
+            try self.rows.append(self.allocator, row);
+            try self.row_keys.append(self.allocator, @as([]const Value, &.{}));
         }
     }
 
@@ -460,6 +597,10 @@ pub const Executor = struct {
 
     fn postProcess(self: *Executor, rc: Index) ExecError!void {
         const info = self.returnInfo(rc);
+
+        if (self.has_agg) {
+            try self.aggregate();
+        }
 
         if (info.distinct) self.dedup();
 
@@ -766,6 +907,15 @@ fn rowsEq(a: []const Value, b: []const Value) bool {
         if (!valueEq(av, bv)) return false;
     }
     return true;
+}
+
+fn aggResult(kind: AggKind, state: AggState) Value {
+    return switch (kind) {
+        .count => .{ .int = @intCast(state.count) },
+        .sum => .{ .int = state.sum },
+        .min => state.min orelse .{ .int = 0 },
+        .max => state.max orelse .{ .int = 0 },
+    };
 }
 
 fn compareValue(a: Value, b: Value) std.math.Order {
@@ -1207,5 +1357,42 @@ test "DELETE fails on connected nodes; DETACH DELETE removes edges" {
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}) RETURN a.name", &.{});
     try expectQuery(&ast, &g, "MATCH (b:Person {name: 'B'}) RETURN b.name", &.{
         &.{.{ .str = "B" }},
+    });
+}
+
+test "aggregations: count, sum, min and max with grouping" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Count movies per actor (implicit GROUP BY p.name).
+    try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN p.name, count(m)", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 3 } },
+        &.{ .{ .str = "Carrie-Anne Moss" }, .{ .int = 1 } },
+        &.{ .{ .str = "Laurence Fishburne" }, .{ .int = 1 } },
+        &.{ .{ .str = "Tom Hanks" }, .{ .int = 1 } },
+    });
+
+    // count(*) over all persons.
+    try expectQuery(&ast, &g, "MATCH (p:Person) RETURN count(p)", &.{
+        &.{.{ .int = 5 }},
+    });
+
+    // min/max released year.
+    try expectQuery(&ast, &g, "MATCH (m:Movie) RETURN min(m.released), max(m.released)", &.{
+        &.{ .{ .int = 1994 }, .{ .int = 2014 } },
+    });
+
+    // sum of birth years.
+    try expectQuery(&ast, &g, "MATCH (p:Person) RETURN sum(p.born)", &.{
+        &.{.{ .int = 9813 }},
     });
 }

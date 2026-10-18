@@ -52,10 +52,10 @@ python3 examples/demo.py
 First vertical slice complete: a subset of openCypher (`MATCH` with node/edge
 patterns — including multiple comma-separated patterns, `WHERE` with
 comparisons and `AND`/`OR`/`NOT`, `RETURN` with aliases plus `DISTINCT`/`ORDER
-BY`/`LIMIT`, relationship properties, and `CREATE`/`MERGE`/`SET`/`DELETE`
-(`DETACH DELETE`) writes) is parsed, planned (anchor selection + predicate
-pushdown) and executed over index-free adjacency in LMDB. 33 tests cover the
-pipeline end to end.
+BY`/`LIMIT`, relationship properties, aggregations (`count`/`sum`/`min`/`max`),
+and `CREATE`/`MERGE`/`SET`/`DELETE` (`DETACH DELETE`) writes) is parsed, planned
+(anchor selection + predicate pushdown) and executed over index-free adjacency
+in LMDB. 34 tests cover the pipeline end to end.
 
 ## Roadmap (initial openCypher subset)
 

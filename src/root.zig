@@ -28,6 +28,7 @@ pub const Node = ast.Node;
 pub const Data = ast.Data;
 pub const BinOp = ast.BinOp;
 pub const UnOp = ast.UnOp;
+pub const AggKind = ast.AggKind;
 pub const EdgeDirection = ast.EdgeDirection;
 
 pub const parser = @import("parser/parser.zig");

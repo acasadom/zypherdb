@@ -34,6 +34,8 @@
 //!   `.text`).
 //! - `set_item` children are `[property_access, value_expr]`.
 //! - `delete_item` children are `[variable]`.
+//! - `agg` children are `[arg_expr]` (empty for `count(*)`); the function is in
+//!   the `agg` payload.
 //! - `projection` children are its `projection_item`s.
 //! - `projection_item` children are `[expr]` (the alias is in `.text`).
 
@@ -60,6 +62,14 @@ pub const UnOp = enum {
     not_,
 };
 
+/// Aggregation functions (`count`, `sum`, `min`, `max`).
+pub const AggKind = enum {
+    count,
+    sum,
+    min,
+    max,
+};
+
 /// Written direction of an edge pattern.
 pub const EdgeDirection = enum {
     left_to_right, // -[...]->
@@ -79,6 +89,7 @@ pub const NodeKind = enum {
     bool_literal,
     binary_op,
     unary_op,
+    agg,
     projection,
     projection_item,
     match_clause,
@@ -107,6 +118,7 @@ pub const Data = union(enum) {
     edge_pattern: struct { var_name: []const u8, etype: []const u8, direction: EdgeDirection },
     bin_op: BinOp,
     un_op: UnOp,
+    agg: AggKind,
     return_: struct { distinct: bool },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },

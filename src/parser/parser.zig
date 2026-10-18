@@ -18,6 +18,7 @@ const Index = @import("../ast/ast.zig").Index;
 const NodeKind = @import("../ast/ast.zig").NodeKind;
 const BinOp = @import("../ast/ast.zig").BinOp;
 const EdgeDirection = @import("../ast/ast.zig").EdgeDirection;
+const AggKind = @import("../ast/ast.zig").AggKind;
 const Diagnostic = @import("../diag.zig").Diagnostic;
 
 pub const ParseError = error{
@@ -40,6 +41,7 @@ pub const TokenKind = enum {
     comma,
     dot,
     minus,
+    star,
     arrow_right,
     arrow_left,
     eq,
@@ -74,6 +76,7 @@ fn tokenKindName(kind: TokenKind) []const u8 {
         .comma => "','",
         .dot => "'.'",
         .minus => "'-'",
+        .star => "'*'",
         .arrow_right => "'->'",
         .arrow_left => "'<-'",
         .eq => "'='",
@@ -91,6 +94,14 @@ fn tokenDesc(t: Token) []const u8 {
         .ident, .string, .integer => t.text,
         else => tokenKindName(t.kind),
     };
+}
+
+fn aggKindFromName(name: []const u8) ?AggKind {
+    if (std.ascii.eqlIgnoreCase(name, "count")) return .count;
+    if (std.ascii.eqlIgnoreCase(name, "sum")) return .sum;
+    if (std.ascii.eqlIgnoreCase(name, "min")) return .min;
+    if (std.ascii.eqlIgnoreCase(name, "max")) return .max;
+    return null;
 }
 
 fn isIdentStart(c: u8) bool {
@@ -148,6 +159,10 @@ fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) ParseErro
             },
             '.' => {
                 try add(&tokens, allocator, .dot, src[i .. i + 1], i);
+                i += 1;
+            },
+            '*' => {
+                try add(&tokens, allocator, .star, src[i .. i + 1], i);
                 i += 1;
             },
             '\'' => {
@@ -666,6 +681,11 @@ const Parser = struct {
                 _ = self.advance();
                 if (std.ascii.eqlIgnoreCase(t.text, "true")) return self.ast.addNode(.bool_literal, .{ .boolean = true }, &.{});
                 if (std.ascii.eqlIgnoreCase(t.text, "false")) return self.ast.addNode(.bool_literal, .{ .boolean = false }, &.{});
+                if (aggKindFromName(t.text)) |kind| {
+                    if (self.at(.l_paren)) {
+                        return self.parseAggCall(kind);
+                    }
+                }
                 const name = try self.ast.intern(t.text);
                 const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
                 if (self.at(.dot)) {
@@ -686,6 +706,18 @@ const Parser = struct {
                 return error.UnexpectedToken;
             },
         }
+    }
+
+    fn parseAggCall(self: *Parser, kind: AggKind) ParseError!Index {
+        try self.expect(.l_paren);
+        if (kind == .count and self.at(.star)) {
+            _ = self.advance();
+            try self.expect(.r_paren);
+            return self.ast.addNode(.agg, .{ .agg = kind }, &.{});
+        }
+        const arg = try self.parseExpr();
+        try self.expect(.r_paren);
+        return self.ast.addNode(.agg, .{ .agg = kind }, &.{arg});
     }
 };
 
