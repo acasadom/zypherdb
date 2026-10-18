@@ -6,6 +6,9 @@ zig-out/
 # Project memory: local-only handoff between agent sessions (not committed)
 STATUS.md
 
+# Sphinx build output
+docs/_build/
+
 # Editor / tooling local (Continue, VSCode)
 .continue/
 .vscode/

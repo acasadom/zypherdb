@@ -1,72 +1,109 @@
 # acmedb
 
-Embedded graph database engine, written in Zig, speaking a subset of openCypher,
-on top of LMDB as the storage layer.
+*An embedded graph database in Zig, speaking openCypher, on LMDB.*
 
-## Architecture decisions (why this stack)
+A small, embeddable **graph database**: link it into your process, or load the shared library from
+Python, write nodes and edges, and answer queries in a subset of **openCypher** — over an
+**index-free adjacency** graph stored in **LMDB**. No server, no configuration, one binary
+toolchain.
 
-- **Zig 0.17.0** as the language. Pre-1.0 (breaking changes until 1.0) and a
-  small ecosystem, but a fast single-binary toolchain with no external build
-  system, and `comptime` generics that map cleanly to the generic-programming
-  style we want.
-- **LMDB** as the storage engine (not RocksDB, not SQLite): a graph is traversed
-  by following adjacencies, not by joining tables. We encode our own keys
-  (prefix per node + direction + edge type) and exploit LMDB's lexicographic
-  iteration to answer "give me the neighbours of X" with a prefix scan — no joins.
-- **Single-writer / multi-reader per node** fits the intended read-replication
-  model (one process writes, applies to N replicas, each process reads its own
-  replica). LMDB reads are ~6x faster than RocksDB.
-- **No class hierarchies, no Visitor.** Generic programming (Stepanov/STL): data
-  as concrete types, algorithms as free functions. The AST is modeled as an arena
-  of nodes (`std.ArrayList` of nodes + child indices, no pointers, no
-  inheritance), inspired by how compilers such as Zig's represent their AST.
-- **Hand-written recursive-descent parser** for openCypher (subset), no ANTLR, no
-  parser generator, to stay in control of the style and the dependencies.
+---
+
+## Why this stack
+
+- **Zig 0.17.0** — a fast, self-contained, single-binary toolchain: no Docker, no CMake, no
+  vcpkg. Pre-1.0 (breaking changes until 1.0) and a small ecosystem, but `comptime` generics map
+  cleanly onto the generic-programming style the project uses throughout.
+- **LMDB** as the storage engine — not RocksDB, not SQLite. A graph is traversed by following
+  adjacencies, not by joining tables: acmedb encodes its own keys and exploits LMDB's lexicographic
+  iteration so *"give me the neighbours of X"* is one prefix scan. LMDB is single-writer /
+  multi-reader, which matches the intended read-replication model, and reads are ~6x faster than
+  RocksDB.
+- **No class hierarchies, no Visitor.** Generic programming (Stepanov/STL): data as concrete
+  types, algorithms as free functions, errors as values. The AST is an arena of nodes — a flat
+  `std.ArrayList` plus child indices, no pointers, no inheritance.
+- **A hand-written recursive-descent parser** for the openCypher subset — no ANTLR, no generator.
 
 ## Building
 
-Zig is a self-contained toolchain; nothing is installed system-wide beyond the
-`zig` binary. From the project root:
-
 ```bash
 zig build test    # build and run the test suite
-zig build         # build the static + shared libraries (installed to zig-out/)
+zig build         # build the static + shared libraries into zig-out/
 ```
 
-The LMDB C sources under `vendor/lmdb/` are vendored and compiled by the build.
-No Docker, no CMake, no vcpkg. `zig build` also produces `libacmedb.dylib`
-(`.so` on Linux), the shared library exposing the C ABI for embedding.
+The LMDB C sources under `vendor/lmdb/` are vendored and compiled by the build. `zig build` also
+produces `libacmedb.dylib` (`.so` on Linux) — the shared library that exposes the C ABI for
+embedding.
 
-## Embedding from Python
+## Quickstart (Python)
 
-The C ABI (`src/capi.zig`) is exposed through the shared library. A minimal
-ctypes example lives in `examples/demo.py`:
+The engine is a shared library with a small C ABI, driven here with `ctypes`:
 
 ```bash
 zig build
 python3 examples/demo.py
 ```
 
-## Current status
+```python
+import ctypes, tempfile
+from pathlib import Path
 
-First vertical slice complete: a subset of openCypher (`MATCH` with node/edge
-patterns — including multiple comma-separated patterns, `WHERE` with
-comparisons and `AND`/`OR`/`NOT`, `RETURN` with aliases plus `DISTINCT`/`ORDER
-BY`/`LIMIT`, relationship properties, aggregations (`count`/`sum`/`min`/`max`),
-and `CREATE`/`MERGE`/`SET`/`DELETE` (`DETACH DELETE`) writes) is parsed, planned
-(anchor selection + predicate pushdown) and executed over index-free adjacency
-in LMDB. 34 tests cover the pipeline end to end.
+lib = ctypes.CDLL(str(next(Path("zig-out/lib").glob("libacmedb.*"))))
+# … declare the C signatures (see examples/demo.py) …
 
-## Roadmap (initial openCypher subset)
+ctx = lib.acmedb_open(b"/tmp/acmedb-demo", 15)   # path + length
 
-1. `MATCH` with simple node/edge patterns, `WHERE` with comparisons and basic
-   booleans, `RETURN` with expressions and aliases. Out of scope for this first
-   pass: `OPTIONAL MATCH`, chained `WITH`, `UNWIND`, aggregations,
-   `MERGE`/`CREATE`/`SET`/`DELETE`, comprehensions, subqueries.
-2. Hand-written recursive-descent parser -> AST as an arena of nodes by index
-   (`NodeKind` + payload + child range).
-3. AST -> logical plan translation (Scan/Expand/Filter/Produce operators).
-4. Key encoding in LMDB for adjacency + a first naive Volcano-style executor
-   (Open/Next/Close).
-5. Basic statistics + pattern "anchor" selection (the highest-impact optimization
-   in a graph engine).
+lib.acmedb_add_node(ctx, 1, b"Person", 6)
+lib.acmedb_set_prop_str(ctx, 1, b"name", 4, b"Keanu Reeves", 13)
+lib.acmedb_add_node(ctx, 100, b"Movie", 5)
+lib.acmedb_set_prop_str(ctx, 100, b"title", 5, b"The Matrix", 10)
+lib.acmedb_add_edge(ctx, 1, 100, b"ACTED_IN", 8)
+
+# MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title
+```
+
+A query looks like openCypher:
+
+```text
+MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2000 RETURN m.title
+```
+
+## Documentation
+
+Read the docs at [`docs/`](docs/) — a step-by-step **tutorial** (eight steps that grow a "people
+and movies" graph from a first `MATCH` to `OPTIONAL MATCH` and lists) plus guides for the
+architecture, the openCypher subset, and the C ABI. Build the HTML locally:
+
+```bash
+pip install -r docs/requirements.txt
+sphinx-build -b html docs docs/_build/html
+```
+
+- **[Tutorial](docs/tutorial/01-getting-started.md)** — start here; the language, one feature at a time.
+- **[Architecture](docs/guide/architecture.md)** — how the keys are laid out, index-free adjacency, and how the executor plans.
+- **[openCypher subset](docs/guide/cypher.md)** — the full reference of what the language supports.
+- **[C ABI](docs/guide/c-api.md)** · **[Python](docs/guide/python.md)** — embedding reference.
+
+## What's in the box
+
+- **The openCypher subset**: `MATCH` (chains, multi-pattern, `WHERE`), `OPTIONAL MATCH` (outer
+  join + nulls), `WITH` (pipelines), `UNWIND`, `RETURN` (`DISTINCT` / `ORDER BY` / `SKIP` /
+  `LIMIT`), and the writes `CREATE` / `MERGE` (with `ON CREATE/MATCH SET`) / `SET` / `DELETE`
+  (`DETACH DELETE`) / `REMOVE`.
+- **Expressions**: comparisons, `AND`/`OR`/`NOT`, `STARTS WITH`/`ENDS WITH`/`CONTAINS`, `IN`,
+  `CASE`, `size`, list literals.
+- **Aggregations** with implicit grouping: `count` (and `count(*)`), `sum`, `min`, `max`, `collect`.
+- **A typed value model**: `int`, `str`, `boolean`, `null`, `list`.
+- **Storage**: index-free adjacency, a property index, an edge-property index, label indexes, and
+  an edge-type cardinality counter for planning — all as LMDB keys.
+- **An executor that plans**: anchor selection (label counts, equality seeks, edge-type
+  cardinality) with predicate pushdown, one read transaction per read query, one write transaction
+  per writing query.
+- **A C ABI** for embedding from any language with an FFI (the reference client is Python via
+  `ctypes`).
+
+## Status
+
+The openCypher functional surface and the performance work are complete, covered by a test suite
+that runs the whole pipeline end to end (`zig build test`). See `STATUS.md` (kept out of git) for
+the working notes and the roadmap.
