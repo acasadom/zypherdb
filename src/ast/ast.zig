@@ -26,6 +26,8 @@
 //! - `pattern` children are the chain `[node0, edge0, node1, edge1, ...]`
 //!   (alternating node/edge, always an odd count).
 //! - `node_pattern` children are its `{name: value}` property entries.
+//! - `edge_pattern` children are its `{name: value}` property entries (usually
+//!   empty).
 //! - `property` children are `[value_expr]` (the name is in `.text`).
 //! - `property_access` children are `[object_expr]` (the property name is in
 //!   `.text`).

@@ -474,7 +474,7 @@ const Parser = struct {
         return self.ast.addNode(.node_pattern, .{ .node_pattern = .{ .var_name = var_name, .label = label } }, props.items);
     }
 
-    fn parseEdgeDetails(self: *Parser) ParseError!struct { var_name: []const u8, etype: []const u8 } {
+    fn parseEdgeDetails(self: *Parser) ParseError!struct { var_name: []const u8, etype: []const u8, props: std.ArrayList(Index) } {
         try self.expect(.l_bracket);
         var var_name: []const u8 = "";
         if (self.at(.ident)) var_name = try self.ast.intern(self.advance().text);
@@ -483,8 +483,23 @@ const Parser = struct {
             _ = self.advance();
             etype = try self.internIdent();
         }
+        var props = std.ArrayList(Index).empty;
+        if (self.at(.l_brace)) {
+            _ = self.advance();
+            while (!self.at(.r_brace)) {
+                const name = try self.internIdent();
+                try self.expect(.colon);
+                const value = try self.parsePrimary();
+                const prop = try self.ast.addNode(.property, .{ .text = name }, &.{value});
+                try props.append(self.ast.allocator, prop);
+                if (self.at(.comma)) {
+                    _ = self.advance();
+                } else break;
+            }
+            try self.expect(.r_brace);
+        }
         try self.expect(.r_bracket);
-        return .{ .var_name = var_name, .etype = etype };
+        return .{ .var_name = var_name, .etype = etype, .props = props };
     }
 
     fn parseEdgePattern(self: *Parser) ParseError!Index {
@@ -492,15 +507,17 @@ const Parser = struct {
         if (self.at(.minus)) {
             _ = self.advance(); // -[...]->
             direction = .left_to_right;
-            const d = try self.parseEdgeDetails();
+            var d = try self.parseEdgeDetails();
+            defer d.props.deinit(self.ast.allocator);
             try self.expect(.arrow_right);
-            return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{ .var_name = d.var_name, .etype = d.etype, .direction = direction } }, &.{});
+            return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{ .var_name = d.var_name, .etype = d.etype, .direction = direction } }, d.props.items);
         }
         _ = self.advance(); // <-[...]-
         direction = .right_to_left;
-        const d = try self.parseEdgeDetails();
+        var d = try self.parseEdgeDetails();
+        defer d.props.deinit(self.ast.allocator);
         try self.expect(.minus);
-        return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{ .var_name = d.var_name, .etype = d.etype, .direction = direction } }, &.{});
+        return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{ .var_name = d.var_name, .etype = d.etype, .direction = direction } }, d.props.items);
     }
 
     fn parseProjection(self: *Parser) ParseError!Index {

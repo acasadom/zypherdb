@@ -51,6 +51,8 @@ const ChainNode = struct {
 const ChainEdge = struct {
     etype: []const u8,
     fwd_dir: Direction, // direction when traversing node_i -> node_{i+1}
+    var_name: []const u8,
+    seeks: std.ArrayList(Seek), // inline property equality filters
 };
 
 const BindStep = union(enum) {
@@ -58,25 +60,51 @@ const BindStep = union(enum) {
     expand: struct { from: usize, to: usize },
 };
 
-/// Dynamic variable-name -> node-id bindings.
-const Bindings = struct {
-    entries: std.ArrayList(struct { name: []const u8, id: NodeId }),
+/// Reference to a directed edge, used to bind relationship variables.
+const EdgeRef = struct {
+    src: NodeId,
+    dst: NodeId,
+    etype: []const u8,
+};
 
-    fn get(self: *const Bindings, name: []const u8) ?NodeId {
+const Binding = union(enum) {
+    node: NodeId,
+    edge: EdgeRef,
+};
+
+/// Dynamic variable-name -> value bindings (nodes and relationships).
+const Bindings = struct {
+    entries: std.ArrayList(struct { name: []const u8, value: Binding }),
+
+    fn get(self: *const Bindings, name: []const u8) ?Binding {
         for (self.entries.items) |e| {
-            if (std.mem.eql(u8, e.name, name)) return e.id;
+            if (std.mem.eql(u8, e.name, name)) return e.value;
         }
         return null;
     }
 
-    fn put(self: *Bindings, allocator: Allocator, name: []const u8, id: NodeId) !void {
+    fn put(self: *Bindings, allocator: Allocator, name: []const u8, value: Binding) !void {
         for (self.entries.items) |*e| {
             if (std.mem.eql(u8, e.name, name)) {
-                e.id = id;
+                e.value = value;
                 return;
             }
         }
-        try self.entries.append(allocator, .{ .name = name, .id = id });
+        try self.entries.append(allocator, .{ .name = name, .value = value });
+    }
+
+    fn getNode(self: *const Bindings, name: []const u8) ?NodeId {
+        return switch (self.get(name) orelse return null) {
+            .node => |id| id,
+            .edge => null,
+        };
+    }
+
+    fn getEdge(self: *const Bindings, name: []const u8) ?EdgeRef {
+        return switch (self.get(name) orelse return null) {
+            .node => null,
+            .edge => |e| e,
+        };
     }
 };
 
@@ -185,7 +213,7 @@ pub const Executor = struct {
                 .var_name = np.var_name,
                 .label = np.label,
                 .seeks = .empty,
-                .bound = bindings.get(np.var_name) != null,
+                .bound = bindings.getNode(np.var_name) != null,
             };
             for (self.ast.nodeChildren(np_idx)) |prop_idx| {
                 const prop_name = self.ast.data(prop_idx).text;
@@ -195,12 +223,19 @@ pub const Executor = struct {
             try self.nodes.append(self.allocator, node);
 
             if (i + 1 < num_nodes) {
-                const ep = self.ast.data(chain[i * 2 + 1]).edge_pattern;
+                const ep_idx = chain[i * 2 + 1];
+                const ep = self.ast.data(ep_idx).edge_pattern;
                 const fwd_dir: Direction = switch (ep.direction) {
                     .left_to_right => .out,
                     .right_to_left => .in,
                 };
-                try self.edges.append(self.allocator, .{ .etype = ep.etype, .fwd_dir = fwd_dir });
+                var edge = ChainEdge{ .etype = ep.etype, .fwd_dir = fwd_dir, .var_name = ep.var_name, .seeks = .empty };
+                for (self.ast.nodeChildren(ep_idx)) |prop_idx| {
+                    const prop_name = self.ast.data(prop_idx).text;
+                    const value = self.ast.nodeChildren(prop_idx)[0];
+                    try edge.seeks.append(self.allocator, .{ .prop = prop_name, .value = value });
+                }
+                try self.edges.append(self.allocator, edge);
             }
         }
 
@@ -310,7 +345,7 @@ pub const Executor = struct {
                     defer it.deinit();
                     while (try it.next()) |id| {
                         if (node.label.len > 0 and !(try self.graph.hasLabel(id, node.label))) continue;
-                        try bindings.put(self.allocator, node.var_name, id);
+                        try bindings.put(self.allocator, node.var_name, .{ .node = id });
                         if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
                         try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
@@ -318,7 +353,7 @@ pub const Executor = struct {
                     var it = try self.graph.nodesWithLabel(node.label);
                     defer it.deinit();
                     while (try it.next()) |id| {
-                        try bindings.put(self.allocator, node.var_name, id);
+                        try bindings.put(self.allocator, node.var_name, .{ .node = id });
                         if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
                         try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
@@ -326,18 +361,21 @@ pub const Executor = struct {
             },
             .expand => |e| {
                 const from_name = self.nodes.items[e.from].var_name;
-                const from_id = bindings.get(from_name) orelse return error.UnknownVar;
+                const from_id = bindings.getNode(from_name) orelse return error.UnknownVar;
                 const edge = self.edges.items[@min(e.from, e.to)];
                 const to_node = self.nodes.items[e.to];
 
                 if (to_node.bound) {
                     // Verify the already-bound neighbour satisfies this edge.
-                    const to_id = bindings.get(to_node.var_name) orelse return error.UnknownVar;
+                    const to_id = bindings.getNode(to_node.var_name) orelse return error.UnknownVar;
                     const sd = edgeSrcDst(edge.fwd_dir, e.from, e.to, from_id, to_id);
                     if (try self.graph.hasEdge(sd.src, sd.dst, edge.etype)) {
-                        if (try self.nodeSeeksMatch(e.to, to_id, bindings)) {
-                            try self.execStep(step_idx + 1, pat_idx, bindings);
+                        if (edge.var_name.len > 0) {
+                            try bindings.put(self.allocator, edge.var_name, .{ .edge = .{ .src = sd.src, .dst = sd.dst, .etype = edge.etype } });
                         }
+                        if (!try self.nodeSeeksMatch(e.to, to_id, bindings)) return;
+                        if (!try self.edgeSeeksMatch(edge, sd.src, sd.dst, bindings)) return;
+                        try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
                 } else {
                     const dir: Direction = if (e.from < e.to) edge.fwd_dir else opposite(edge.fwd_dir);
@@ -345,8 +383,13 @@ pub const Executor = struct {
                     defer it.deinit();
                     while (try it.next()) |nid| {
                         if (to_node.label.len > 0 and !(try self.graph.hasLabel(nid, to_node.label))) continue;
-                        try bindings.put(self.allocator, to_node.var_name, nid);
+                        try bindings.put(self.allocator, to_node.var_name, .{ .node = nid });
                         if (!try self.nodeSeeksMatch(e.to, nid, bindings)) continue;
+                        const sd = edgeSrcDst(edge.fwd_dir, e.from, e.to, from_id, nid);
+                        if (edge.var_name.len > 0) {
+                            try bindings.put(self.allocator, edge.var_name, .{ .edge = .{ .src = sd.src, .dst = sd.dst, .etype = edge.etype } });
+                        }
+                        if (!try self.edgeSeeksMatch(edge, sd.src, sd.dst, bindings)) continue;
                         try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
                 }
@@ -484,9 +527,9 @@ pub const Executor = struct {
         for (0..num_nodes) |i| {
             const np_idx = chain[i * 2];
             const np = self.ast.data(np_idx).node_pattern;
-            if (np.var_name.len == 0 or bindings.get(np.var_name) != null) continue;
+            if (np.var_name.len == 0 or bindings.getNode(np.var_name) != null) continue;
             const id = try self.createNode(np_idx, bindings);
-            try bindings.put(self.allocator, np.var_name, id);
+            try bindings.put(self.allocator, np.var_name, .{ .node = id });
         }
         try self.applyEdges(chain, num_nodes, bindings, false);
     }
@@ -498,9 +541,9 @@ pub const Executor = struct {
         for (0..num_nodes) |i| {
             const np_idx = chain[i * 2];
             const np = self.ast.data(np_idx).node_pattern;
-            if (np.var_name.len == 0 or bindings.get(np.var_name) != null) continue;
+            if (np.var_name.len == 0 or bindings.getNode(np.var_name) != null) continue;
             const id = (try self.findMatchingNode(np_idx, bindings)) orelse (try self.createNode(np_idx, bindings));
-            try bindings.put(self.allocator, np.var_name, id);
+            try bindings.put(self.allocator, np.var_name, .{ .node = id });
         }
         try self.applyEdges(chain, num_nodes, bindings, true);
     }
@@ -556,15 +599,21 @@ pub const Executor = struct {
 
     fn applyEdges(self: *Executor, chain: []const Index, num_nodes: usize, bindings: *Bindings, merge: bool) ExecError!void {
         for (0..num_nodes - 1) |i| {
-            const ep = self.ast.data(chain[i * 2 + 1]).edge_pattern;
+            const ep_idx = chain[i * 2 + 1];
+            const ep = self.ast.data(ep_idx).edge_pattern;
             const left_name = self.ast.data(chain[i * 2]).node_pattern.var_name;
             const right_name = self.ast.data(chain[i * 2 + 2]).node_pattern.var_name;
-            const left_id = bindings.get(left_name) orelse return error.UnknownVar;
-            const right_id = bindings.get(right_name) orelse return error.UnknownVar;
+            const left_id = bindings.getNode(left_name) orelse return error.UnknownVar;
+            const right_id = bindings.getNode(right_name) orelse return error.UnknownVar;
             const src: NodeId = if (ep.direction == .left_to_right) left_id else right_id;
             const dst: NodeId = if (ep.direction == .left_to_right) right_id else left_id;
             if (merge and (try self.graph.hasEdge(src, dst, ep.etype))) continue;
             try self.graph.addEdge(src, dst, ep.etype);
+            for (self.ast.nodeChildren(ep_idx)) |prop_idx| {
+                const prop_name = self.ast.data(prop_idx).text;
+                const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
+                try self.graph.setEdgeProp(src, dst, ep.etype, prop_name, value);
+            }
         }
     }
 
@@ -576,9 +625,11 @@ pub const Executor = struct {
             const prop = self.ast.data(access).text;
             const obj = self.ast.nodeChildren(access)[0];
             const name = self.ast.data(obj).text;
-            const id = bindings.get(name) orelse return error.UnknownVar;
             const value = try self.eval(value_expr, bindings);
-            try self.graph.setProp(id, prop, value);
+            switch (bindings.get(name) orelse return error.UnknownVar) {
+                .node => |id| try self.graph.setProp(id, prop, value),
+                .edge => |e| try self.graph.setEdgeProp(e.src, e.dst, e.etype, prop, value),
+            }
         }
     }
 
@@ -586,7 +637,7 @@ pub const Executor = struct {
         for (self.ast.nodeChildren(delete_clause)) |item| {
             const obj = self.ast.nodeChildren(item)[0];
             const name = self.ast.data(obj).text;
-            const id = bindings.get(name) orelse return error.UnknownVar;
+            const id = bindings.getNode(name) orelse return error.UnknownVar;
             try self.graph.deleteNode(id);
         }
     }
@@ -595,6 +646,15 @@ pub const Executor = struct {
         for (self.nodes.items[node_idx].seeks.items) |seek| {
             const expected = try self.eval(seek.value, bindings);
             const actual = (try self.graph.getProp(id, seek.prop, self.allocator)) orelse return false;
+            if (!valueEq(actual, expected)) return false;
+        }
+        return true;
+    }
+
+    fn edgeSeeksMatch(self: *Executor, edge: ChainEdge, src: NodeId, dst: NodeId, bindings: *Bindings) ExecError!bool {
+        for (edge.seeks.items) |seek| {
+            const expected = try self.eval(seek.value, bindings);
+            const actual = (try self.graph.getEdgeProp(src, dst, edge.etype, seek.prop, self.allocator)) orelse return false;
             if (!valueEq(actual, expected)) return false;
         }
         return true;
@@ -616,16 +676,26 @@ pub const Executor = struct {
                 const obj = self.ast.nodeChildren(expr)[0];
                 if (self.ast.kind(obj) != .variable) return error.InvalidExpr;
                 const name = self.ast.data(obj).text;
-                const id = bindings.get(name) orelse {
+                const prop = self.ast.data(expr).text;
+                switch (bindings.get(name) orelse {
                     self.fail("unknown variable '{s}'", .{name});
                     return error.UnknownVar;
-                };
-                const prop = self.ast.data(expr).text;
-                const v = (try self.graph.getProp(id, prop, self.allocator)) orelse {
-                    self.fail("node has no property '{s}'", .{prop});
-                    return error.MissingProp;
-                };
-                break :blk v;
+                }) {
+                    .node => |id| {
+                        const v = (try self.graph.getProp(id, prop, self.allocator)) orelse {
+                            self.fail("node has no property '{s}'", .{prop});
+                            return error.MissingProp;
+                        };
+                        break :blk v;
+                    },
+                    .edge => |e| {
+                        const v = (try self.graph.getEdgeProp(e.src, e.dst, e.etype, prop, self.allocator)) orelse {
+                            self.fail("relationship has no property '{s}'", .{prop});
+                            return error.MissingProp;
+                        };
+                        break :blk v;
+                    },
+                }
             },
             .binary_op => blk: {
                 const op = self.ast.data(expr).bin_op;
@@ -1054,5 +1124,42 @@ test "ORDER BY, LIMIT and DISTINCT" {
     // DISTINCT collapses duplicate projected rows.
     try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie {title: 'The Matrix'}) RETURN DISTINCT m.title", &.{
         &.{.{ .str = "The Matrix" }},
+    });
+}
+
+test "relationship properties: CREATE, MATCH, SET and WHERE" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // CREATE an edge with a property.
+    try expectQuery(&ast, &g, "CREATE (a:Person {name: 'A'})-[:KNOWS {weight: 5}]->(b:Person {name: 'B'})", &.{});
+
+    // Read the relationship property.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[r:KNOWS]->(b:Person {name: 'B'}) RETURN r.weight", &.{
+        &.{.{ .int = 5 }},
+    });
+
+    // WHERE on a relationship property.
+    try expectQuery(&ast, &g, "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.weight > 3 RETURN b.name", &.{
+        &.{.{ .str = "B" }},
+    });
+
+    // SET a relationship property.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[r:KNOWS]->(b:Person {name: 'B'}) SET r.weight = 10", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[r:KNOWS]->(b:Person {name: 'B'}) RETURN r.weight", &.{
+        &.{.{ .int = 10 }},
+    });
+
+    // Inline relationship property filter.
+    try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[r:KNOWS {weight: 10}]->(b:Person) RETURN b.name", &.{
+        &.{.{ .str = "B" }},
     });
 }

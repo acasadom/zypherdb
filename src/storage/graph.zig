@@ -46,6 +46,7 @@ const node_marker: u8 = 'n';
 const edge_marker: u8 = 'e';
 const label_marker: u8 = 'l';
 const index_marker: u8 = 'p';
+const edge_prop_marker: u8 = 'f';
 const sep: u8 = 0x00;
 const id_len: usize = @sizeOf(NodeId);
 
@@ -177,6 +178,23 @@ pub fn appendIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, prop: [
     try list.appendSlice(allocator, prop);
     try list.append(allocator, sep);
     try encodeIndexValue(list, allocator, value);
+}
+
+/// Appends the key for an edge property (canonical `src -> dst` orientation):
+/// `f | src | dst | 0x00 | edge_type | 0x00 | prop`.
+pub fn appendEdgePropKey(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, etype: []const u8, prop: []const u8) !void {
+    try appendEdgePropPrefix(list, allocator, src, dst, etype);
+    try list.appendSlice(allocator, prop);
+}
+
+/// Appends the prefix of all properties of an edge: `f | src | dst | 0x00 | edge_type | 0x00`.
+pub fn appendEdgePropPrefix(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, etype: []const u8) !void {
+    try list.append(allocator, edge_prop_marker);
+    try appendNodeId(list, allocator, src);
+    try appendNodeId(list, allocator, dst);
+    try list.append(allocator, sep);
+    try list.appendSlice(allocator, etype);
+    try list.append(allocator, sep);
 }
 
 /// Appends the shared prefix of all edge keys for `(id, dir, etype)`, up to
@@ -341,6 +359,14 @@ pub const Graph = struct {
             defer rev.deinit(self.allocator);
             try appendEdgeKey(&rev, self.allocator, ek.neighbour, rev_dir, ek.etype, ek.id);
             try self.store.del(rev.items);
+
+            // Delete the edge's properties (canonical src -> dst).
+            const src = if (ek.dir == .out) ek.id else ek.neighbour;
+            const dst = if (ek.dir == .out) ek.neighbour else ek.id;
+            var epp = std.ArrayList(u8).empty;
+            defer epp.deinit(self.allocator);
+            try appendEdgePropPrefix(&epp, self.allocator, src, dst, ek.etype);
+            try self.deleteKeysUnder(epp.items);
         }
     }
 
@@ -452,6 +478,30 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         try appendEdgeKey(&key, self.allocator, src, .out, etype, dst);
         return self.store.exists(key.items);
+    }
+
+    /// Stores a typed property on the directed edge `src -> dst` of type
+    /// `etype`. Idempotent.
+    pub fn setEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, value: Value) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
+
+        var encoded = std.ArrayList(u8).empty;
+        defer encoded.deinit(self.allocator);
+        try encodeValue(&encoded, self.allocator, value);
+        try self.store.put(key.items, encoded.items);
+    }
+
+    /// Reads a typed property of the directed edge `src -> dst` of type
+    /// `etype`, or `null` if absent.
+    pub fn getEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, allocator: Allocator) KvError!?Value {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
+        const raw = (try self.store.get(key.items)) orelse return null;
+        defer self.store.allocator.free(raw);
+        return try decodeOwnedValue(raw, allocator);
     }
 
     /// Iterates the neighbours of `id` in the given `dir` and `etype`, in
@@ -753,4 +803,28 @@ test "property index: lookups, updates and deletes" {
     var it4 = try g.nodesByProp("name", .{ .str = "Keanu Reeves" });
     defer it4.deinit();
     try testing.expect((try it4.next()) == null);
+}
+
+test "edge properties round-trip and delete" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(1, "Person");
+    try g.addNode(2, "Person");
+    try g.addEdge(1, 2, "KNOWS");
+    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 5 });
+
+    const w = (try g.getEdgeProp(1, 2, "KNOWS", "weight", testing.allocator)).?;
+    try testing.expectEqual(@as(i64, 5), w.int);
+    try testing.expect((try g.getEdgeProp(1, 2, "KNOWS", "nope", testing.allocator)) == null);
+
+    // Deleting a node removes its edge properties too.
+    try g.deleteNode(1);
+    try testing.expect(!try g.hasEdge(1, 2, "KNOWS"));
+    try testing.expect((try g.getEdgeProp(1, 2, "KNOWS", "weight", testing.allocator)) == null);
 }
