@@ -487,6 +487,20 @@ pub const Executor = struct {
             const c = self.graph.labelCount(l) catch std.math.maxInt(usize);
             if (c < best) best = c;
         }
+        // Cap by the rarest incident edge type: the number of results is bounded
+        // by the number of edges of that type, not just the label size.
+        if (node_idx > 0) {
+            if (self.edges.items[node_idx - 1].etype.len > 0) {
+                const c = self.graph.edgeTypeCount(self.edges.items[node_idx - 1].etype) catch std.math.maxInt(usize);
+                if (c < best) best = c;
+            }
+        }
+        if (node_idx < self.edges.items.len) {
+            if (self.edges.items[node_idx].etype.len > 0) {
+                const c = self.graph.edgeTypeCount(self.edges.items[node_idx].etype) catch std.math.maxInt(usize);
+                if (c < best) best = c;
+            }
+        }
         return best;
     }
 

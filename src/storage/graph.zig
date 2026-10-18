@@ -49,6 +49,7 @@ const rev_label_marker: u8 = 'L';
 const index_marker: u8 = 'p';
 const edge_prop_marker: u8 = 'f';
 const edge_index_marker: u8 = 'g';
+const edge_type_marker: u8 = 't';
 const sep: u8 = 0x00;
 const id_len: usize = @sizeOf(NodeId);
 
@@ -478,6 +479,8 @@ pub const Graph = struct {
                 try appendEdgePropKey(&pk, self.allocator, src, dst, ek.etype, p.name);
                 try self.store.del(pk.items);
             }
+
+            try self.bumpEdgeType(ek.etype, false);
         }
     }
 
@@ -586,8 +589,11 @@ pub const Graph = struct {
         return try decodeOwnedValue(raw, allocator);
     }
 
-    /// Adds a directed, typed edge, storing both directions. Idempotent.
+    /// Adds a directed, typed edge, storing both directions. Idempotent. Also
+    /// maintains the edge-type cardinality counter.
     pub fn addEdge(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8) KvError!void {
+        if (try self.hasEdge(src, dst, etype)) return;
+
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
 
@@ -597,6 +603,38 @@ pub const Graph = struct {
         key.clearRetainingCapacity();
         try appendEdgeKey(&key, self.allocator, dst, .in, etype, src);
         try self.store.put(key.items, "");
+
+        try self.bumpEdgeType(etype, true);
+    }
+
+    /// Number of directed edges carrying `etype`.
+    pub fn edgeTypeCount(self: *Graph, etype: []const u8) KvError!usize {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try key.append(self.allocator, edge_type_marker);
+        try key.appendSlice(self.allocator, etype);
+        const raw = (try self.store.get(key.items)) orelse return 0;
+        defer self.store.allocator.free(raw);
+        if (raw.len == id_len) return @intCast(std.mem.readInt(u64, @ptrCast(raw.ptr), .big));
+        return 0;
+    }
+
+    fn bumpEdgeType(self: *Graph, etype: []const u8, increment: bool) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try key.append(self.allocator, edge_type_marker);
+        try key.appendSlice(self.allocator, etype);
+
+        var count: u64 = 0;
+        if (try self.store.get(key.items)) |raw| {
+            defer self.store.allocator.free(raw);
+            if (raw.len == id_len) count = std.mem.readInt(u64, @ptrCast(raw.ptr), .big);
+        }
+        count = if (increment) count + 1 else (if (count > 0) count - 1 else 0);
+
+        var buf: [id_len]u8 = undefined;
+        std.mem.writeInt(u64, &buf, count, .big);
+        try self.store.put(key.items, &buf);
     }
 
     /// True if the directed, typed edge `src -> dst` exists.
@@ -1076,4 +1114,37 @@ test "edge-property index: seek, update and delete" {
     var it5 = try g.edgesByProp("weight", .{ .int = 9 });
     defer it5.deinit();
     try testing.expect((try it5.next()) == null);
+}
+
+test "edge-type cardinality tracks add and delete" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(1, "");
+    try g.addNode(2, "");
+    try g.addNode(3, "");
+
+    try testing.expectEqual(@as(usize, 0), try g.edgeTypeCount("KNOWS"));
+
+    try g.addEdge(1, 2, "KNOWS");
+    try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("KNOWS"));
+
+    // Re-adding the same edge is idempotent.
+    try g.addEdge(1, 2, "KNOWS");
+    try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("KNOWS"));
+
+    try g.addEdge(1, 3, "KNOWS");
+    try g.addEdge(2, 3, "LIKES");
+    try testing.expectEqual(@as(usize, 2), try g.edgeTypeCount("KNOWS"));
+    try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
+
+    // Detach-deleting a node decrements its edge types.
+    try g.deleteNodeDetach(1);
+    try testing.expectEqual(@as(usize, 0), try g.edgeTypeCount("KNOWS"));
+    try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
 }
