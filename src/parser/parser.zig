@@ -179,7 +179,7 @@ fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) ParseErro
                     i += 1;
                 }
                 if (i >= src.len) {
-                    if (diag) |d| d.set(start, "unterminated string literal", .{});
+                    if (diag) |d| d.set(.parse, start, "unterminated string literal", .{});
                     return error.UnexpectedEof;
                 }
                 try add(&tokens, allocator, .string, src[content_start..i], start);
@@ -239,7 +239,7 @@ fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) ParseErro
                     while (i < src.len and isIdentCont(src[i])) i += 1;
                     try add(&tokens, allocator, .ident, src[start..i], start);
                 } else {
-                    if (diag) |d| d.set(i, "unexpected character 0x{x:0>2}", .{c});
+                    if (diag) |d| d.set(.parse, i, "unexpected character 0x{x:0>2}", .{c});
                     return error.UnexpectedToken;
                 }
             },
@@ -290,7 +290,7 @@ const Parser = struct {
     }
 
     fn fail(self: *Parser, comptime fmt: []const u8, args: anytype) void {
-        if (self.diag) |d| d.set(self.peek().pos, fmt, args);
+        if (self.diag) |d| d.set(.parse, self.peek().pos, fmt, args);
     }
 
     fn expect(self: *Parser, kind: TokenKind) ParseError!void {

@@ -17,6 +17,7 @@ const Value = @import("storage/graph.zig").Value;
 const Row = @import("exec/exec.zig").Row;
 const Executor = @import("exec/exec.zig").Executor;
 const Diagnostic = @import("diag.zig").Diagnostic;
+const ErrorCode = @import("diag.zig").ErrorCode;
 const parser = @import("parser/parser.zig");
 
 const Context = struct {
@@ -66,6 +67,23 @@ export fn acmedb_last_error(ctx: *Context, out_len: *usize) [*]const u8 {
     return m.ptr;
 }
 
+/// Returns the last error code (see `ErrorCode` in `diag.zig`), 0 if none.
+export fn acmedb_error_code(ctx: *Context) c_int {
+    return @intCast(@intFromEnum(ctx.diag.code));
+}
+
+/// Allocates a fresh, never-used node id (atomically). Returns `maxInt(u64)` on
+/// failure.
+export fn acmedb_alloc_node_id(ctx: *Context) u64 {
+    ctx.graph.beginWrite() catch return std.math.maxInt(u64);
+    const id = ctx.graph.allocNodeId() catch {
+        ctx.graph.abortWrite();
+        return std.math.maxInt(u64);
+    };
+    ctx.graph.commitWrite() catch return std.math.maxInt(u64);
+    return id;
+}
+
 export fn acmedb_add_node(ctx: *Context, id: u64, label_ptr: [*]const u8, label_len: usize) c_int {
     ctx.graph.addNode(id, label_ptr[0..label_len]) catch return 1;
     return 0;
@@ -89,13 +107,18 @@ export fn acmedb_set_prop_str(ctx: *Context, id: u64, name_ptr: [*]const u8, nam
 export fn acmedb_query(ctx: *Context, query_ptr: [*]const u8, query_len: usize) ?*Result {
     const query = query_ptr[0..query_len];
 
+    ctx.diag.clear();
     var scratch = std.heap.ArenaAllocator.init(ctx.allocator);
     defer scratch.deinit();
     var ast = Ast.init(scratch.allocator());
     const q = parser.parse(&ast, query, &ctx.diag) catch return null;
     var exec = Executor.init(&ast, &ctx.graph, scratch.allocator());
     exec.diag = &ctx.diag;
-    const rows = exec.run(q) catch return null;
+    const rows = exec.run(q) catch |err| {
+        // A bare runtime error that didn't set a message gets a generic one.
+        if (ctx.diag.message().len == 0) noteError(&ctx.diag, err);
+        return null;
+    };
 
     const result = ctx.allocator.create(Result) catch return null;
     result.arena = std.heap.ArenaAllocator.init(ctx.allocator);
@@ -200,6 +223,80 @@ export fn acmedb_result_str(result: *const Result, row: usize, col: usize, out_l
     return s.ptr;
 }
 
+/// The `idx`-th element of a list cell, or `null` if the cell isn't a list or
+/// the index is out of range.
+fn listItem(result: *const Result, row: usize, col: usize, idx: usize) ?Value {
+    if (row >= result.rows.len) return null;
+    const r = result.rows[row];
+    if (col >= r.items.len) return null;
+    const items = switch (r.items[col]) {
+        .list => |items| items,
+        else => return null,
+    };
+    if (idx >= items.len) return null;
+    return items[idx];
+}
+
+export fn acmedb_result_list_len(result: *const Result, row: usize, col: usize) usize {
+    if (row >= result.rows.len) return 0;
+    const r = result.rows[row];
+    if (col >= r.items.len) return 0;
+    return switch (r.items[col]) {
+        .list => |items| items.len,
+        else => 0,
+    };
+}
+
+export fn acmedb_result_list_item_type(result: *const Result, row: usize, col: usize, idx: usize) c_int {
+    const item = listItem(result, row, col, idx) orelse return -1;
+    return switch (item) {
+        .int => TYPE_INT,
+        .str => TYPE_STR,
+        .boolean => TYPE_BOOL,
+        .null => TYPE_NULL,
+        .list => TYPE_LIST,
+    };
+}
+
+export fn acmedb_result_list_item_int(result: *const Result, row: usize, col: usize, idx: usize) i64 {
+    const item = listItem(result, row, col, idx) orelse return 0;
+    return switch (item) {
+        .int => |n| n,
+        else => 0,
+    };
+}
+
+export fn acmedb_result_list_item_bool(result: *const Result, row: usize, col: usize, idx: usize) bool {
+    const item = listItem(result, row, col, idx) orelse return false;
+    return switch (item) {
+        .boolean => |b| b,
+        else => false,
+    };
+}
+
+export fn acmedb_result_list_item_str(result: *const Result, row: usize, col: usize, idx: usize, out_len: *usize) [*]const u8 {
+    const item = listItem(result, row, col, idx) orelse return "".ptr;
+    const s: []const u8 = switch (item) {
+        .str => |s| s,
+        else => "",
+    };
+    out_len.* = s.len;
+    return s.ptr;
+}
+
+/// Sets a generic message + code for a runtime error that never set one.
+fn noteError(diag: *Diagnostic, err: anyerror) void {
+    const code: ErrorCode = switch (err) {
+        error.UnknownVar => .unknown_var,
+        error.MissingProp => .missing_prop,
+        error.TypeMismatch => .type_mismatch,
+        error.InvalidExpr => .invalid_expr,
+        error.NodeStillConnected => .node_still_connected,
+        else => .storage,
+    };
+    diag.set(code, 0, "query failed: {s}", .{@errorName(err)});
+}
+
 // Force the export functions to be analyzed/emitted even when the test blocks
 // are not compiled (library builds).
 comptime {
@@ -209,6 +306,7 @@ comptime {
     _ = acmedb_add_edge;
     _ = acmedb_set_prop_i64;
     _ = acmedb_set_prop_str;
+    _ = acmedb_alloc_node_id;
     _ = acmedb_query;
     _ = acmedb_result_free;
     _ = acmedb_result_rows;
@@ -217,6 +315,13 @@ comptime {
     _ = acmedb_result_int;
     _ = acmedb_result_bool;
     _ = acmedb_result_str;
+    _ = acmedb_last_error;
+    _ = acmedb_error_code;
+    _ = acmedb_result_list_len;
+    _ = acmedb_result_list_item_type;
+    _ = acmedb_result_list_item_int;
+    _ = acmedb_result_list_item_bool;
+    _ = acmedb_result_list_item_str;
 }
 
 // ---------------------------------------------------------------------------
@@ -253,4 +358,49 @@ test "C ABI: open, load, query and read results" {
     var len: usize = 0;
     const s = acmedb_result_str(result, 0, 0, &len);
     try testing.expectEqualStrings("The Matrix", s[0..len]);
+}
+
+test "C ABI: node ids, list results and error codes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+
+    const ctx = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(ctx);
+
+    // Node id allocation is monotonic.
+    const a = acmedb_alloc_node_id(ctx);
+    const b = acmedb_alloc_node_id(ctx);
+    try testing.expect(a != b);
+    try testing.expectEqual(a + 1, b);
+
+    // A list result is readable.
+    const q1 = "RETURN [1, 2, 3]";
+    const r1 = acmedb_query(ctx, q1.ptr, q1.len).?;
+    defer acmedb_result_free(r1);
+    try testing.expectEqual(TYPE_LIST, acmedb_result_type(r1, 0, 0));
+    try testing.expectEqual(@as(usize, 3), acmedb_result_list_len(r1, 0, 0));
+    try testing.expectEqual(TYPE_INT, acmedb_result_list_item_type(r1, 0, 0, 0));
+    try testing.expectEqual(@as(i64, 2), acmedb_result_list_item_int(r1, 0, 0, 1));
+
+    // A parse error carries a code + message.
+    const q2 = "MATCH (";
+    try testing.expect(acmedb_query(ctx, q2.ptr, q2.len) == null);
+    try testing.expectEqual(@as(c_int, 1), acmedb_error_code(ctx));
+
+    // An unknown variable carries code 2.
+    const q3 = "RETURN n.name";
+    try testing.expect(acmedb_query(ctx, q3.ptr, q3.len) == null);
+    try testing.expectEqual(@as(c_int, 2), acmedb_error_code(ctx));
+
+    // A type mismatch carries code 4 (and a generic message).
+    const q4 = "RETURN size(1)";
+    try testing.expect(acmedb_query(ctx, q4.ptr, q4.len) == null);
+    try testing.expectEqual(@as(c_int, 4), acmedb_error_code(ctx));
+    var len: usize = 0;
+    const msg = acmedb_last_error(ctx, &len);
+    try testing.expect(len > 0);
+    _ = msg;
 }

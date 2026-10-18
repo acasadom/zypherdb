@@ -37,29 +37,24 @@ embedding.
 
 ## Quickstart (Python)
 
-The engine is a shared library with a small C ABI, driven here with `ctypes`:
+There is a thin Python package in `python/` over the C ABI. Point `PYTHONPATH` at it (or
+`pip install -e python/`) and use the `Database` object:
 
 ```bash
 zig build
-python3 examples/demo.py
-```
+PYTHONPATH=python python3 - <<'PY'
+from acmedb import Database
+import tempfile
 
-```python
-import ctypes, tempfile
-from pathlib import Path
-
-lib = ctypes.CDLL(str(next(Path("zig-out/lib").glob("libacmedb.*"))))
-# … declare the C signatures (see examples/demo.py) …
-
-ctx = lib.acmedb_open(b"/tmp/acmedb-demo", 15)   # path + length
-
-lib.acmedb_add_node(ctx, 1, b"Person", 6)
-lib.acmedb_set_prop_str(ctx, 1, b"name", 4, b"Keanu Reeves", 13)
-lib.acmedb_add_node(ctx, 100, b"Movie", 5)
-lib.acmedb_set_prop_str(ctx, 100, b"title", 5, b"The Matrix", 10)
-lib.acmedb_add_edge(ctx, 1, 100, b"ACTED_IN", 8)
-
-# MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title
+with Database(tempfile.mkdtemp()) as db:
+    nid = db.alloc_node_id()
+    db.add_node(nid, "Person")
+    db.set_prop(nid, "name", "Keanu Reeves")
+    db.add_node(100, "Movie")
+    db.set_prop(100, "title", "The Matrix")
+    db.add_edge(nid, 100, "ACTED_IN")
+    print(db.query("MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title"))
+PY
 ```
 
 A query looks like openCypher:
@@ -67,6 +62,11 @@ A query looks like openCypher:
 ```text
 MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2000 RETURN m.title
 ```
+
+Cells come back as Python values (`int`/`str`/`bool`/`None`/`list`); errors raise typed
+exceptions (`ParseError`, `UnknownVariableError`, `TypeMismatchError`, …). See the
+[Python guide](docs/guide/python.md) and the raw [C ABI](docs/guide/c-api.md) for the layer
+underneath.
 
 ## Documentation
 
@@ -96,6 +96,7 @@ make docs    # or: sphinx-build -b html docs docs/_build/html
 zig build test    # build and run the test suite
 zig build         # static + shared libraries into zig-out/
 make docs         # build the HTML documentation
+python -m pytest python/tests   # Python bindings (needs `zig build` first)
 ```
 
 See `STATUS.md` (kept out of git) for the working notes and the roadmap.

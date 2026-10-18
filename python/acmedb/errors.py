@@ -1,0 +1,60 @@
+"""Typed exceptions, mapped from acmedb's stable error codes."""
+
+
+class AcmedbError(Exception):
+    """Base class for every acmedb error."""
+
+
+class StorageError(AcmedbError):
+    """A storage-layer failure (I/O, LMDB)."""
+
+
+class QueryError(AcmedbError):
+    """A query failed to run. Carries the error code and message."""
+
+    def __init__(self, code: int, message: str):
+        self.code = code
+        self.message = message
+        super().__init__(f"{message} (code {code})")
+
+
+class ParseError(QueryError):
+    """The query text did not parse."""
+
+
+class UnknownVariableError(QueryError):
+    """The query referenced a variable that is not bound."""
+
+
+class MissingPropertyError(QueryError):
+    """The query read a property a node or relationship does not have."""
+
+
+class TypeMismatchError(QueryError):
+    """An operator or function got a value of the wrong type."""
+
+
+class InvalidExpressionError(QueryError):
+    """An expression is ill-formed (e.g. a WITH projection without an alias)."""
+
+
+class NodeStillConnectedError(QueryError):
+    """A DELETE targeted a node that still has relationships (use DETACH DELETE)."""
+
+
+# Error code -> exception class (see src/diag.zig ErrorCode).
+_CODE_TO_ERROR = {
+    1: ParseError,
+    2: UnknownVariableError,
+    3: MissingPropertyError,
+    4: TypeMismatchError,
+    5: InvalidExpressionError,
+    6: NodeStillConnectedError,
+}
+
+
+def error_from_code(code: int, message: str) -> AcmedbError:
+    cls = _CODE_TO_ERROR.get(code, QueryError)
+    if cls is QueryError and code == 7:
+        return StorageError(f"{message} (code 7)")
+    return cls(code, message)

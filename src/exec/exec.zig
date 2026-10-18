@@ -25,6 +25,7 @@ const Value = @import("../storage/graph.zig").Value;
 const Direction = @import("../storage/graph.zig").Direction;
 const KvError = @import("../storage/kv_store.zig").KvError;
 const Diagnostic = @import("../diag.zig").Diagnostic;
+const ErrorCode = @import("../diag.zig").ErrorCode;
 
 pub const ExecError = KvError || error{
     UnknownVar,
@@ -239,8 +240,8 @@ pub const Executor = struct {
         };
     }
 
-    fn fail(self: *Executor, comptime fmt: []const u8, args: anytype) void {
-        if (self.diag) |d| d.set(0, fmt, args);
+    fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: anytype) void {
+        if (self.diag) |d| d.set(code, 0, fmt, args);
     }
 
     pub fn run(self: *Executor, query: Index) ExecError![]const Row {
@@ -862,7 +863,7 @@ pub const Executor = struct {
             switch (self.ast.kind(expr)) {
                 .agg => {
                     if (alias.len == 0) {
-                        self.fail("WITH aggregation requires an alias", .{});
+                        self.fail(.invalid_expr, "WITH aggregation requires an alias", .{});
                         return error.InvalidExpr;
                     }
                     const kind = self.ast.data(expr).agg;
@@ -877,7 +878,7 @@ pub const Executor = struct {
                 },
                 else => {
                     if (alias.len == 0) {
-                        self.fail("WITH expression requires an alias", .{});
+                        self.fail(.invalid_expr, "WITH expression requires an alias", .{});
                         return error.InvalidExpr;
                     }
                     try items.append(self.allocator, .{ .key = .{ .name = alias, .expr = expr } });
@@ -902,7 +903,7 @@ pub const Executor = struct {
                 switch (item) {
                     .pass => |p| {
                         const b = bindings.get(p.src_name) orelse {
-                            self.fail("unknown variable '{s}'", .{p.src_name});
+                            self.fail(.unknown_var, "unknown variable '{s}'", .{p.src_name});
                             return error.UnknownVar;
                         };
                         try keys.append(self.allocator, b);
@@ -1442,7 +1443,7 @@ pub const Executor = struct {
             } else {
                 self.graph.deleteNode(id) catch |err| {
                     if (err == error.NodeStillConnected) {
-                        self.fail("node '{s}' still has relationships (use DETACH DELETE)", .{name});
+                        self.fail(.node_still_connected, "node '{s}' still has relationships (use DETACH DELETE)", .{name});
                     }
                     return err;
                 };
@@ -1527,7 +1528,7 @@ pub const Executor = struct {
             .variable => blk: {
                 const name = self.ast.data(expr).text;
                 switch (bindings.get(name) orelse {
-                    self.fail("unknown variable '{s}'", .{name});
+                    self.fail(.unknown_var, "unknown variable '{s}'", .{name});
                     return error.UnknownVar;
                 }) {
                     .value => |v| break :blk v,
@@ -1540,19 +1541,19 @@ pub const Executor = struct {
                 const name = self.ast.data(obj).text;
                 const prop = self.ast.data(expr).text;
                 switch (bindings.get(name) orelse {
-                    self.fail("unknown variable '{s}'", .{name});
+                    self.fail(.unknown_var, "unknown variable '{s}'", .{name});
                     return error.UnknownVar;
                 }) {
                     .node => |id| {
                         const v = (try self.graph.getProp(id, prop, self.allocator)) orelse {
-                            self.fail("node has no property '{s}'", .{prop});
+                            self.fail(.missing_prop, "node has no property '{s}'", .{prop});
                             return error.MissingProp;
                         };
                         break :blk v;
                     },
                     .edge => |e| {
                         const v = (try self.graph.getEdgeProp(e.src, e.dst, e.etype, prop, self.allocator)) orelse {
-                            self.fail("relationship has no property '{s}'", .{prop});
+                            self.fail(.missing_prop, "relationship has no property '{s}'", .{prop});
                             return error.MissingProp;
                         };
                         break :blk v;

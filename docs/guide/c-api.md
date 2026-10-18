@@ -23,14 +23,27 @@ typedef struct Result Result;     // opaque
 Context* acmedb_open(const char* path, size_t path_len);   // NULL on failure
 void     acmedb_close(Context*);
 const char* acmedb_last_error(Context*, size_t* out_len);  // last error message
+int      acmedb_error_code(Context*);                       // last error code (0 = none)
 ```
 
 `acmedb_open` opens (or creates) an LMDB database at `path`; the directory must exist. Every other
-function takes the returned `Context*`.
+function takes the returned `Context*`. Error codes (from `diag.zig`):
+
+| Code | Meaning |
+| --- | --- |
+| `0` | no error |
+| `1` | parse error |
+| `2` | unknown variable |
+| `3` | missing property |
+| `4` | type mismatch |
+| `5` | invalid expression (e.g. `WITH` without an alias) |
+| `6` | node still connected (`DELETE` without `DETACH`) |
+| `7` | storage error |
 
 ## Writing data
 
 ```c
+uint64_t acmedb_alloc_node_id(Context*);   // fresh id; maxInt(u64) on failure
 int acmedb_add_node(Context*, uint64_t id, const char* label, size_t label_len);
 int acmedb_add_edge(Context*, uint64_t src, uint64_t dst, const char* type, size_t type_len);
 int acmedb_set_prop_i64(Context*, uint64_t id, const char* name, size_t name_len, int64_t value);
@@ -38,8 +51,9 @@ int acmedb_set_prop_str(Context*, uint64_t id, const char* name, size_t name_len
                         const char* value, size_t value_len);
 ```
 
-Each returns `0` on success, non-zero on failure. `acmedb_add_node` takes a single label; node ids
-are caller-supplied (fixed ids, as in `examples/demo.py`).
+Each mutator returns `0` on success, non-zero on failure. `acmedb_alloc_node_id` allocates a
+never-used id atomically; `acmedb_add_node` also accepts caller-supplied ids. `acmedb_add_node`
+takes a single label (add more with `acmedb_query` `CREATE`, or `SET`).
 
 ## Querying
 
@@ -52,11 +66,19 @@ int     acmedb_result_type(const Result*, size_t row, size_t col);   // -1 out o
 int64_t acmedb_result_int(const Result*, size_t row, size_t col);
 bool    acmedb_result_bool(const Result*, size_t row, size_t col);
 const char* acmedb_result_str(const Result*, size_t row, size_t col, size_t* out_len);
+
+// list cells (TYPE_LIST) — flat lists only:
+size_t acmedb_result_list_len(const Result*, size_t row, size_t col);
+int    acmedb_result_list_item_type(const Result*, size_t row, size_t col, size_t idx);
+int64_t acmedb_result_list_item_int(const Result*, size_t row, size_t col, size_t idx);
+bool   acmedb_result_list_item_bool(const Result*, size_t row, size_t col, size_t idx);
+const char* acmedb_result_list_item_str(const Result*, size_t row, size_t col, size_t idx, size_t* out_len);
 ```
 
 `acmedb_query` runs one query (any subset of the [language](cypher)) and returns a self-contained
 `Result` that owns all its string cells; free it with `acmedb_result_free`. On failure it returns
-`NULL` and `acmedb_last_error` describes why.
+`NULL`; `acmedb_last_error` carries the message and `acmedb_error_code` the category. A runtime
+error that never set a specific message gets a generic `"query failed: <ErrorName>"`.
 
 ## From Python (ctypes)
 
