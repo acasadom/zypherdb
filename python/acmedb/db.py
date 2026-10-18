@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import json
 import threading
@@ -33,8 +34,9 @@ class Database:
         self._ctx = _ffi.lib.acmedb_open(encoded, len(encoded))
         if not self._ctx:
             raise StorageError(f"could not open database at {path!r}")
-        # LMDB is single-writer: serialize the mutating calls.
-        self._write_lock = threading.Lock()
+        # LMDB is single-writer: serialize the mutating calls. Reentrant, so a
+        # `write()` block can call the mutators that themselves take the lock.
+        self._write_lock = threading.RLock()
 
     def close(self) -> None:
         if self._ctx:
@@ -70,6 +72,31 @@ class Database:
             _ffi.lib.acmedb_result_free(result)
 
     # --- Writes --------------------------------------------------------------
+
+    @contextlib.contextmanager
+    def write(self):
+        """Batch mutators into one write transaction (one fsync on exit).
+
+        Every `add_node`/`add_edge`/`set_prop`/`alloc_node_id` inside the block
+        commits atomically when the block exits; an exception aborts it::
+
+            with db.write():
+                for i in range(100_000):
+                    nid = db.alloc_node_id()
+                    db.add_node(nid, "Person")
+                    db.set_prop(nid, "name", f"p{i}")
+
+        This is the bulk-ingestion path (one sync instead of one per write). Do
+        not run `query()` inside the block — reads use their own transaction.
+        """
+        with self._write_lock:
+            self._check(_ffi.lib.acmedb_begin_write(self._ctx))
+            try:
+                yield self
+            except Exception:
+                _ffi.lib.acmedb_abort_write(self._ctx)
+                raise
+            self._check(_ffi.lib.acmedb_commit_write(self._ctx))
 
     def alloc_node_id(self) -> int:
         """Allocate a fresh, never-used node id."""

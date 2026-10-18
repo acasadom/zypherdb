@@ -73,9 +73,31 @@ export fn acmedb_error_code(ctx: *Context) c_int {
     return @intCast(@intFromEnum(ctx.diag.code));
 }
 
+/// Begins an explicit write transaction. Until `acmedb_commit_write` (or
+/// `acmedb_abort_write`), every mutator runs inside it and commits atomically at
+/// the end — one fsync for the whole batch. Returns 0 on success.
+export fn acmedb_begin_write(ctx: *Context) c_int {
+    ctx.graph.beginWrite() catch return 1;
+    return 0;
+}
+
+export fn acmedb_commit_write(ctx: *Context) c_int {
+    ctx.graph.commitWrite() catch return 1;
+    return 0;
+}
+
+export fn acmedb_abort_write(ctx: *Context) void {
+    ctx.graph.abortWrite();
+}
+
 /// Allocates a fresh, never-used node id (atomically). Returns `maxInt(u64)` on
 /// failure.
 export fn acmedb_alloc_node_id(ctx: *Context) u64 {
+    // Inside an explicit write txn the read-modify-write is already atomic;
+    // standalone it needs its own transaction.
+    if (ctx.graph.inWriteTxn()) {
+        return ctx.graph.allocNodeId() catch std.math.maxInt(u64);
+    }
     ctx.graph.beginWrite() catch return std.math.maxInt(u64);
     const id = ctx.graph.allocNodeId() catch {
         ctx.graph.abortWrite();
@@ -379,6 +401,9 @@ comptime {
     _ = acmedb_set_prop_i64;
     _ = acmedb_set_prop_str;
     _ = acmedb_alloc_node_id;
+    _ = acmedb_begin_write;
+    _ = acmedb_commit_write;
+    _ = acmedb_abort_write;
     _ = acmedb_query;
     _ = acmedb_result_free;
     _ = acmedb_result_rows;
@@ -503,4 +528,43 @@ test "C ABI: bulk JSON result" {
     var len2: usize = 0;
     const json2 = acmedb_result_to_json(r2, &len2);
     try testing.expectEqualStrings("[[\"say \\\"hi\\\"\"]]", json2[0..len2]);
+}
+
+test "C ABI: batched write transaction commits atomically and aborts cleanly" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+
+    const ctx = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(ctx);
+
+    // 100 nodes in one transaction.
+    try testing.expectEqual(@as(c_int, 0), acmedb_begin_write(ctx));
+    for (0..100) |i| {
+        const id = acmedb_alloc_node_id(ctx);
+        try testing.expect(id != std.math.maxInt(u64));
+        try testing.expectEqual(@as(c_int, 0), acmedb_add_node(ctx, id, "Person".ptr, "Person".len));
+        try testing.expectEqual(@as(c_int, 0), acmedb_set_prop_i64(ctx, id, "n".ptr, "n".len, @intCast(i)));
+    }
+    try testing.expectEqual(@as(c_int, 0), acmedb_commit_write(ctx));
+
+    const q = "MATCH (n:Person) RETURN count(n)";
+    const r = acmedb_query(ctx, q.ptr, q.len).?;
+    defer acmedb_result_free(r);
+    try testing.expectEqual(@as(i64, 100), acmedb_result_int(r, 0, 0));
+
+    // An aborted transaction leaves nothing behind.
+    try testing.expectEqual(@as(c_int, 0), acmedb_begin_write(ctx));
+    const id = acmedb_alloc_node_id(ctx);
+    try testing.expectEqual(@as(c_int, 0), acmedb_add_node(ctx, id, "Ghost".ptr, "Ghost".len));
+    acmedb_abort_write(ctx);
+
+    const q2 = "MATCH (n:Ghost) RETURN count(n)";
+    const r2 = acmedb_query(ctx, q2.ptr, q2.len).?;
+    defer acmedb_result_free(r2);
+    // No Ghost nodes survive the abort: the aggregation over zero matches yields
+    // zero rows (acmedb does not emit a 0-count row for an empty input).
+    try testing.expectEqual(@as(usize, 0), acmedb_result_rows(r2));
 }

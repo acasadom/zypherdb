@@ -49,11 +49,20 @@ int acmedb_add_edge(Context*, uint64_t src, uint64_t dst, const char* type, size
 int acmedb_set_prop_i64(Context*, uint64_t id, const char* name, size_t name_len, int64_t value);
 int acmedb_set_prop_str(Context*, uint64_t id, const char* name, size_t name_len,
                         const char* value, size_t value_len);
+
+// batch writes into one transaction (one fsync):
+int  acmedb_begin_write(Context*);
+int  acmedb_commit_write(Context*);
+void acmedb_abort_write(Context*);
 ```
 
 Each mutator returns `0` on success, non-zero on failure. `acmedb_alloc_node_id` allocates a
 never-used id atomically; `acmedb_add_node` also accepts caller-supplied ids. `acmedb_add_node`
 takes a single label (add more with `acmedb_query` `CREATE`, or `SET`).
+
+`acmedb_begin_write` … `acmedb_commit_write` wrap mutators in one write transaction: everything in
+between commits atomically at the end (one fsync), and `acmedb_abort_write` rolls it back. This is
+the bulk-ingestion path — individual mutators each commit on their own and are fsync-bound.
 
 ## Querying
 

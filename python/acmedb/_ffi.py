@@ -59,6 +59,11 @@ lib.acmedb_error_code.restype = ctypes.c_int
 # --- Writes ------------------------------------------------------------------
 lib.acmedb_alloc_node_id.argtypes = [ctypes.c_void_p]
 lib.acmedb_alloc_node_id.restype = ctypes.c_uint64
+lib.acmedb_begin_write.argtypes = [ctypes.c_void_p]
+lib.acmedb_begin_write.restype = ctypes.c_int
+lib.acmedb_commit_write.argtypes = [ctypes.c_void_p]
+lib.acmedb_commit_write.restype = ctypes.c_int
+lib.acmedb_abort_write.argtypes = [ctypes.c_void_p]
 lib.acmedb_add_node.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_add_node.restype = ctypes.c_int
 lib.acmedb_add_edge.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t]

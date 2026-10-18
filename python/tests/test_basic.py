@@ -65,3 +65,21 @@ def test_errors(db):
 def test_json_roundtrip(db):
     # A double quote inside a string, a boolean, and a list survive the JSON path.
     assert db.query("RETURN 'say \"hi\"', true, [1, 2, 3]") == [["say \"hi\"", True, [1, 2, 3]]]
+
+
+def test_batched_write(db):
+    with db.write():
+        for i in range(100):
+            nid = db.alloc_node_id()
+            db.add_node(nid, "Person")
+            db.set_prop(nid, "id", nid)
+    assert db.query("MATCH (n:Person) RETURN count(n)") == [[100]]
+
+
+def test_write_abort(db):
+    with pytest.raises(RuntimeError):
+        with db.write():
+            db.add_node(1, "Ghost")
+            raise RuntimeError("boom")
+    # Nothing survived the abort.
+    assert db.query("MATCH (n:Ghost) RETURN count(n)") == []

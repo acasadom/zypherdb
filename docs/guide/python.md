@@ -33,6 +33,19 @@ with Database(tempfile.mkdtemp()) as db:
   `list`.
 - `alloc_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_prop(id, name, value)`
   write data. `set_prop` accepts `int` or `str` values.
+- `write()` is a context manager that batches mutators into **one** write transaction (one fsync):
+  the bulk-ingestion path. An exception inside the block aborts it.
+
+  ```python
+  with db.write():
+      for i in range(100_000):
+          nid = db.alloc_node_id()
+          db.add_node(nid, "Person")
+          db.set_prop(nid, "name", f"p{i}")
+  ```
+
+  Each mutator on its own is a separate transaction (slow, durable); a `write()` block does one
+  commit for the whole batch (~2000x faster for bulk loads). Don't run `query()` inside the block.
 - Errors raise typed exceptions — `ParseError`, `UnknownVariableError`, `MissingPropertyError`,
   `TypeMismatchError`, `InvalidExpressionError`, `NodeStillConnectedError`, `StorageError` — all
   subclasses of `AcmedbError`.

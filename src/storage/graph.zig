@@ -286,6 +286,11 @@ pub const Graph = struct {
         self.store.abortWrite();
     }
 
+    /// True if an explicit write transaction is currently active.
+    pub fn inWriteTxn(self: *Graph) bool {
+        return self.store.active_txn != null;
+    }
+
     /// Begins an atomic read transaction (snapshot); see `commitRead`/`abortRead`.
     /// All reads until then are batched into one transaction.
     pub fn beginRead(self: *Graph) KvError!void {
