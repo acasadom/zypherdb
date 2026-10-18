@@ -33,8 +33,10 @@ pub const KvStore = struct {
         if (c.mdb_env_create(&env) != 0) return error.OpenFailed;
         errdefer c.mdb_env_close(env.?);
 
-        // LMDB requires setting a maximum map size (virtual reservation, not RAM).
-        if (c.mdb_env_set_mapsize(env.?, 1 << 30) != 0) return error.OpenFailed;
+        // LMDB requires setting a maximum map size. This is a virtual
+        // address-space reservation (sparse mmap), not RAM: the file grows as
+        // pages are written. 1 TiB is plenty for an embedded graph DB on 64-bit.
+        if (c.mdb_env_set_mapsize(env.?, 1 << 40) != 0) return error.OpenFailed;
 
         const c_path = allocator.dupeSentinel(u8, path, 0) catch return error.OutOfMemory;
         defer allocator.free(c_path);
