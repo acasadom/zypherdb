@@ -66,6 +66,7 @@ int     acmedb_result_type(const Result*, size_t row, size_t col);   // -1 out o
 int64_t acmedb_result_int(const Result*, size_t row, size_t col);
 bool    acmedb_result_bool(const Result*, size_t row, size_t col);
 const char* acmedb_result_str(const Result*, size_t row, size_t col, size_t* out_len);
+const char* acmedb_result_to_json(const Result*, size_t* out_len);   // whole result as JSON
 
 // list cells (TYPE_LIST) — flat lists only:
 size_t acmedb_result_list_len(const Result*, size_t row, size_t col);
@@ -79,6 +80,11 @@ const char* acmedb_result_list_item_str(const Result*, size_t row, size_t col, s
 `Result` that owns all its string cells; free it with `acmedb_result_free`. On failure it returns
 `NULL`; `acmedb_last_error` carries the message and `acmedb_error_code` the category. A runtime
 error that never set a specific message gets a generic `"query failed: <ErrorName>"`.
+
+`acmedb_result_to_json` serializes the whole result to a JSON array of arrays (`[[…], […]]`) in one
+call — the recommended way to read a large result. The returned pointer lives until
+`acmedb_result_free`. The per-cell and per-list-item readers above stay available for languages
+without a JSON parser.
 
 ## From Python (ctypes)
 

@@ -40,8 +40,17 @@ with Database(tempfile.mkdtemp()) as db:
 The library is located via the `ACMEDB_LIB` environment variable, then `zig-out/lib`, then a
 standard install path.
 
+## Concurrency
+
+LMDB is **single-writer / multi-reader**. Reads (queries) can run concurrently, but writes are
+serialized: the `Database` object holds a lock around every mutator (`add_node`, `add_edge`,
+`set_prop`, `alloc_node_id`). Do not share one `Database` across processes; the multi-process model
+is read replication (a writer → N replicas), which is future work.
+
 ## Under the hood
 
 The package is a thin `ctypes` wrapper (`acmedb/_ffi.py` declares the signatures once;
-`acmedb/db.py` decodes results and maps error codes to exceptions). If you need the raw layer — or
-want to embed from another language — see the [C ABI reference](c-api).
+`acmedb/db.py` decodes results and maps error codes to exceptions). `query` reads the whole result
+in **one** call via `acmedb_result_to_json` (a JSON serialization of the rows), so a large result
+costs one FFI call plus a `json.loads` — not one call per cell. If you need the raw layer — or want
+to embed from another language — see the [C ABI reference](c-api).

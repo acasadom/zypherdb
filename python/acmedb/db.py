@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import threading
 
 from . import _ffi
@@ -53,15 +54,18 @@ class Database:
 
         Cells become `int`, `str`, `bool`, `None` (null) or a `list`; rows are
         lists of cells. Raises a typed :class:`QueryError` subclass on failure.
+
+        The whole result is read in one call (serialized to JSON), so a large
+        result costs one FFI call plus a `json.loads`, not one call per cell.
         """
         encoded = text.encode()
         result = _ffi.lib.acmedb_query(self._ctx, encoded, len(encoded))
         if not result:
             _raise_query_error(self._ctx)
         try:
-            rows = _ffi.lib.acmedb_result_rows(result)
-            cols = _ffi.lib.acmedb_result_cols(result)
-            return [[_cell(result, r, c) for c in range(cols)] for r in range(rows)]
+            n = ctypes.c_size_t()
+            p = _ffi.lib.acmedb_result_to_json(result, ctypes.byref(n))
+            return json.loads(ctypes.string_at(p, n.value))
         finally:
             _ffi.lib.acmedb_result_free(result)
 
@@ -95,43 +99,3 @@ class Database:
         if rc != 0:
             raise StorageError("write failed")
 
-
-# --- Result decoding ---------------------------------------------------------
-
-def _read_str(result, row, col) -> str:
-    n = ctypes.c_size_t()
-    p = _ffi.lib.acmedb_result_str(result, row, col, ctypes.byref(n))
-    return ctypes.string_at(p, n.value).decode()
-
-
-def _read_list_item_str(result, row, col, idx) -> str:
-    n = ctypes.c_size_t()
-    p = _ffi.lib.acmedb_result_list_item_str(result, row, col, idx, ctypes.byref(n))
-    return ctypes.string_at(p, n.value).decode()
-
-
-def _cell(result, row, col):
-    t = _ffi.lib.acmedb_result_type(result, row, col)
-    if t == _ffi.TYPE_INT:
-        return _ffi.lib.acmedb_result_int(result, row, col)
-    if t == _ffi.TYPE_STR:
-        return _read_str(result, row, col)
-    if t == _ffi.TYPE_BOOL:
-        return bool(_ffi.lib.acmedb_result_bool(result, row, col))
-    if t == _ffi.TYPE_NULL:
-        return None
-    if t == _ffi.TYPE_LIST:
-        n = _ffi.lib.acmedb_result_list_len(result, row, col)
-        return [_list_item(result, row, col, i) for i in range(n)]
-    return None
-
-
-def _list_item(result, row, col, idx):
-    t = _ffi.lib.acmedb_result_list_item_type(result, row, col, idx)
-    if t == _ffi.TYPE_INT:
-        return _ffi.lib.acmedb_result_list_item_int(result, row, col, idx)
-    if t == _ffi.TYPE_STR:
-        return _read_list_item_str(result, row, col, idx)
-    if t == _ffi.TYPE_BOOL:
-        return bool(_ffi.lib.acmedb_result_list_item_bool(result, row, col, idx))
-    return None  # null, or a nested list (unsupported)

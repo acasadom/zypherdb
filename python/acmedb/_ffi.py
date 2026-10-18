@@ -84,6 +84,8 @@ lib.acmedb_result_bool.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_si
 lib.acmedb_result_bool.restype = ctypes.c_bool
 lib.acmedb_result_str.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 lib.acmedb_result_str.restype = ctypes.c_void_p
+lib.acmedb_result_to_json.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+lib.acmedb_result_to_json.restype = ctypes.c_void_p
 
 # --- List cells (flat lists) -------------------------------------------------
 lib.acmedb_result_list_len.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]

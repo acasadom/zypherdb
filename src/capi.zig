@@ -30,6 +30,7 @@ const Context = struct {
 const Result = struct {
     arena: std.heap.ArenaAllocator,
     rows: []Row,
+    json: []u8, // the whole result serialized to JSON (for the bulk reader)
 };
 
 const allocator: Allocator = std.heap.c_allocator;
@@ -127,7 +128,78 @@ export fn acmedb_query(ctx: *Context, query_ptr: [*]const u8, query_len: usize) 
         ctx.allocator.destroy(result);
         return null;
     };
+    result.json = rowsToJson(&result.arena, result.rows) catch {
+        result.arena.deinit();
+        ctx.allocator.destroy(result);
+        return null;
+    };
     return result;
+}
+
+/// Serializes the whole result to a JSON array of arrays (`[[…], […]]`), so a
+/// caller can read a large result in one call instead of one per cell. The
+/// returned pointer is owned by the Result (valid until `acmedb_result_free`).
+export fn acmedb_result_to_json(result: *const Result, out_len: *usize) [*]const u8 {
+    out_len.* = result.json.len;
+    return result.json.ptr;
+}
+
+fn appendJsonString(buf: *std.ArrayList(u8), gpa: Allocator, s: []const u8) Allocator.Error!void {
+    try buf.append(gpa, '"');
+    for (s) |c| {
+        switch (c) {
+            '"' => try buf.appendSlice(gpa, "\\\""),
+            '\\' => try buf.appendSlice(gpa, "\\\\"),
+            0x00...0x1F => {
+                // Every control char (including \n \r \t) as a \u00XX escape.
+                const hex = "0123456789abcdef";
+                var esc = [6]u8{ '\\', 'u', '0', '0', 0, 0 };
+                esc[4] = hex[c >> 4];
+                esc[5] = hex[c & 0xF];
+                try buf.appendSlice(gpa, &esc);
+            },
+            else => try buf.append(gpa, c),
+        }
+    }
+    try buf.append(gpa, '"');
+}
+
+fn appendJsonValue(buf: *std.ArrayList(u8), gpa: Allocator, v: Value) Allocator.Error!void {
+    switch (v) {
+        .int => |n| {
+            var tmp: [32]u8 = undefined;
+            const s = std.fmt.bufPrint(&tmp, "{d}", .{n}) catch unreachable;
+            try buf.appendSlice(gpa, s);
+        },
+        .str => |s| try appendJsonString(buf, gpa, s),
+        .boolean => |b| try buf.appendSlice(gpa, if (b) "true" else "false"),
+        .null => try buf.appendSlice(gpa, "null"),
+        .list => |items| {
+            try buf.append(gpa, '[');
+            for (items, 0..) |e, i| {
+                if (i > 0) try buf.append(gpa, ',');
+                try appendJsonValue(buf, gpa, e);
+            }
+            try buf.append(gpa, ']');
+        },
+    }
+}
+
+fn rowsToJson(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Error![]u8 {
+    const gpa = arena.allocator();
+    var buf = std.ArrayList(u8).empty;
+    try buf.append(gpa, '[');
+    for (rows, 0..) |r, i| {
+        if (i > 0) try buf.append(gpa, ',');
+        try buf.append(gpa, '[');
+        for (r.items, 0..) |v, j| {
+            if (j > 0) try buf.append(gpa, ',');
+            try appendJsonValue(&buf, gpa, v);
+        }
+        try buf.append(gpa, ']');
+    }
+    try buf.append(gpa, ']');
+    return buf.items; // arena-owned
 }
 
 fn copyRows(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Error![]Row {
@@ -315,6 +387,7 @@ comptime {
     _ = acmedb_result_int;
     _ = acmedb_result_bool;
     _ = acmedb_result_str;
+    _ = acmedb_result_to_json;
     _ = acmedb_last_error;
     _ = acmedb_error_code;
     _ = acmedb_result_list_len;
@@ -403,4 +476,31 @@ test "C ABI: node ids, list results and error codes" {
     const msg = acmedb_last_error(ctx, &len);
     try testing.expect(len > 0);
     _ = msg;
+}
+
+test "C ABI: bulk JSON result" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+
+    const ctx = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(ctx);
+
+    // Scalars, a string and a list, in one JSON array-of-arrays.
+    const q1 = "RETURN 1, 'x', [1, 2, 3]";
+    const r1 = acmedb_query(ctx, q1.ptr, q1.len).?;
+    defer acmedb_result_free(r1);
+    var len1: usize = 0;
+    const json1 = acmedb_result_to_json(r1, &len1);
+    try testing.expectEqualStrings("[[1,\"x\",[1,2,3]]]", json1[0..len1]);
+
+    // A double quote inside a string is escaped.
+    const q2 = "RETURN 'say \"hi\"'";
+    const r2 = acmedb_query(ctx, q2.ptr, q2.len).?;
+    defer acmedb_result_free(r2);
+    var len2: usize = 0;
+    const json2 = acmedb_result_to_json(r2, &len2);
+    try testing.expectEqualStrings("[[\"say \\\"hi\\\"\"]]", json2[0..len2]);
 }

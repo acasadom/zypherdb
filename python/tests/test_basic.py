@@ -60,3 +60,8 @@ def test_errors(db):
         db.query("RETURN n.name")
     with pytest.raises(TypeMismatchError):
         db.query("RETURN size(1)")
+
+
+def test_json_roundtrip(db):
+    # A double quote inside a string, a boolean, and a list survive the JSON path.
+    assert db.query("RETURN 'say \"hi\"', true, [1, 2, 3]") == [["say \"hi\"", True, [1, 2, 3]]]
