@@ -25,6 +25,7 @@ pub const KvStore = struct {
     dbi: c.MDB_dbi,
     allocator: std.mem.Allocator,
     active_txn: ?*c.MDB_txn,
+    active_read_txn: ?*c.MDB_txn,
 
     /// Opens (or creates) an LMDB environment at `path`. The directory must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8) KvError!KvStore {
@@ -55,7 +56,7 @@ pub const KvStore = struct {
             return error.OpenFailed;
         }
 
-        return .{ .env = env.?, .dbi = dbi, .allocator = allocator, .active_txn = null };
+        return .{ .env = env.?, .dbi = dbi, .allocator = allocator, .active_txn = null, .active_read_txn = null };
     }
 
     pub fn deinit(self: *KvStore) void {
@@ -66,7 +67,7 @@ pub const KvStore = struct {
     /// `put`/`del`/`get`/`exists`/`scanPrefix` run on this transaction (and see
     /// its uncommitted writes). Not reentrant (LMDB is single-writer anyway).
     pub fn beginWrite(self: *KvStore) KvError!void {
-        if (self.active_txn != null) return error.WriteFailed;
+        if (self.active_txn != null or self.active_read_txn != null) return error.WriteFailed;
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, 0, &txn) != 0) return error.WriteFailed;
         self.active_txn = txn.?;
@@ -88,6 +89,31 @@ pub const KvStore = struct {
         }
     }
 
+    /// Begins an explicit read transaction (an MVCC snapshot). Until
+    /// `commitRead`/`abortRead`, `get`/`exists`/`scanPrefix` run on this
+    /// transaction, so a query's reads are batched into one transaction instead
+    /// of one per read. Reads see the committed state as of `beginRead`
+    /// (snapshot isolation), not writes committed afterwards.
+    pub fn beginRead(self: *KvStore) KvError!void {
+        if (self.active_txn != null or self.active_read_txn != null) return error.ReadFailed;
+        var txn: ?*c.MDB_txn = null;
+        if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.ReadFailed;
+        self.active_read_txn = txn.?;
+    }
+
+    /// Ends the active read transaction. For a read-only transaction "commit"
+    /// and "abort" are equivalent (nothing is written); both just release it.
+    pub fn commitRead(self: *KvStore) void {
+        self.abortRead();
+    }
+
+    pub fn abortRead(self: *KvStore) void {
+        if (self.active_read_txn) |txn| {
+            _ = c.mdb_txn_abort(txn);
+            self.active_read_txn = null;
+        }
+    }
+
     pub fn put(self: *KvStore, key: []const u8, value: []const u8) KvError!void {
         if (self.active_txn) |txn| return self.putIn(txn, key, value);
         var txn: ?*c.MDB_txn = null;
@@ -105,6 +131,7 @@ pub const KvStore = struct {
     /// `self.allocator.free`).
     pub fn get(self: *KvStore, key: []const u8) KvError!?[]u8 {
         if (self.active_txn) |txn| return self.getIn(txn, key);
+        if (self.active_read_txn) |txn| return self.getIn(txn, key);
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.ReadFailed;
         defer _ = c.mdb_txn_abort(txn.?);
@@ -113,6 +140,7 @@ pub const KvStore = struct {
 
     pub fn exists(self: *KvStore, key: []const u8) KvError!bool {
         if (self.active_txn) |txn| return self.existsIn(txn, key);
+        if (self.active_read_txn) |txn| return self.existsIn(txn, key);
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.ReadFailed;
         defer _ = c.mdb_txn_abort(txn.?);
@@ -136,6 +164,7 @@ pub const KvStore = struct {
     /// lexicographic order (LMDB's natural order).
     pub fn scanPrefix(self: *KvStore, prefix: []const u8) KvError!PrefixIterator {
         if (self.active_txn) |txn| return self.scanPrefixIn(txn, prefix, false);
+        if (self.active_read_txn) |txn| return self.scanPrefixIn(txn, prefix, false);
         var txn: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.env, null, c.MDB_RDONLY, &txn) != 0) return error.IteratorFailed;
         errdefer _ = c.mdb_txn_abort(txn.?);
@@ -213,7 +242,7 @@ pub const KvStore = struct {
 /// abort it).
 pub const PrefixIterator = struct {
     store: *KvStore,
-    txn: ?*c.MDB_txn, // null = borrowed from an active write txn
+    txn: ?*c.MDB_txn, // null = borrowed from an active write/read txn
     cursor: *c.MDB_cursor,
     prefix: []u8,
     key: c.MDB_val,
@@ -396,4 +425,46 @@ test "countPrefix counts the keys of a prefix" {
 
     try testing.expectEqual(@as(usize, 2), try store.countPrefix("n:"));
     try testing.expectEqual(@as(usize, 0), try store.countPrefix("q:"));
+}
+
+test "read transaction batches reads and sees a consistent snapshot" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buf);
+
+    var store = try KvStore.open(testing.allocator, path);
+    defer store.deinit();
+
+    try store.put("a", "1");
+
+    try store.beginRead();
+
+    // Reads route through the open read txn and see the committed state.
+    const a = try store.get("a");
+    defer if (a) |v| testing.allocator.free(v);
+    try testing.expect(a != null);
+    try testing.expectEqualStrings("1", a.?);
+
+    // A write committed after the snapshot is invisible to it (MVCC).
+    try store.put("b", "2");
+    try testing.expect((try store.get("b")) == null);
+
+    // A prefix scan during the read txn borrows it (does not abort it). The
+    // iterator must be deinit'd before the read txn ends (cursor → txn).
+    {
+        var it = try store.scanPrefix("a");
+        defer it.deinit();
+        try testing.expect((try it.next()) != null);
+        try testing.expect((try it.next()) == null);
+    }
+
+    store.commitRead();
+
+    // After the snapshot ends, a fresh read sees the write.
+    const b = try store.get("b");
+    defer if (b) |v| testing.allocator.free(v);
+    try testing.expect(b != null);
+    try testing.expectEqualStrings("2", b.?);
 }

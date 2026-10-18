@@ -37,6 +37,8 @@ const allocator: Allocator = std.heap.c_allocator;
 const TYPE_INT: c_int = 0;
 const TYPE_STR: c_int = 1;
 const TYPE_BOOL: c_int = 2;
+const TYPE_NULL: c_int = 3;
+const TYPE_LIST: c_int = 4;
 
 export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     const path = path_ptr[0..path_len];
@@ -113,6 +115,27 @@ fn copyRows(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Error!
             switch (v) {
                 .int => |n| try row.append(arena.allocator(), .{ .int = n }),
                 .boolean => |b| try row.append(arena.allocator(), .{ .boolean = b }),
+                .null => try row.append(arena.allocator(), .{ .null = {} }),
+                .list => |items| {
+                    var list = std.ArrayList(Value).empty;
+                    for (items) |e| {
+                        switch (e) {
+                            .int => |n| try list.append(arena.allocator(), .{ .int = n }),
+                            .boolean => |b| try list.append(arena.allocator(), .{ .boolean = b }),
+                            .null => try list.append(arena.allocator(), .{ .null = {} }),
+                            .str => |s| {
+                                const copy = try arena.allocator().dupe(u8, s);
+                                try list.append(arena.allocator(), .{ .str = copy });
+                            },
+                            .list => |inner| {
+                                // Lists of lists are not surfaced through the C ABI.
+                                _ = inner;
+                                return error.OutOfMemory;
+                            },
+                        }
+                    }
+                    try row.append(arena.allocator(), .{ .list = list.items });
+                },
                 .str => |s| {
                     const copy = try arena.allocator().dupe(u8, s);
                     try row.append(arena.allocator(), .{ .str = copy });
@@ -146,6 +169,8 @@ export fn acmedb_result_type(result: *const Result, row: usize, col: usize) c_in
         .int => TYPE_INT,
         .str => TYPE_STR,
         .boolean => TYPE_BOOL,
+        .null => TYPE_NULL,
+        .list => TYPE_LIST,
     };
 }
 

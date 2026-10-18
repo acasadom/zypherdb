@@ -15,15 +15,20 @@
 //! - `match_clause` children are `[pattern0, ..., patternN, where_expr]`: one or
 //!   more comma-separated patterns followed by the `WHERE` (a missing `WHERE`
 //!   is `bool_literal(true)`).
+//! - `optional_match_clause` children are the same shape as `match_clause`.
 //! - `create_clause` children are `[pattern]`.
 //! - `set_clause` children are `set_item`s.
 //! - `delete_clause` children are `delete_item`s; `detach` is in the `delete`
 //!   payload.
 //! - `return_clause` children are `[projection]`, plus an optional `order_by`
 //!   and an optional `limit`; `distinct` is in the `return_` payload.
+//! - `with_clause` children are `[projection, order_by?, skip?, limit?, where]`
+//!   (the `WHERE` is always present, `bool_literal(true)` if absent, and is the
+//!   last child); `distinct` is in the `with_` payload.
 //! - `order_by` children are `order_item`s.
 //! - `order_item` children are `[expr]` (`ascending` is in the payload).
 //! - `limit` children are `[expr]`.
+//! - `skip` children are `[expr]`.
 //! - `pattern` children are the chain `[node0, edge0, node1, edge1, ...]`
 //!   (alternating node/edge, always an odd count).
 //! - `node_pattern` children are its `{name: value}` property entries.
@@ -36,6 +41,14 @@
 //! - `delete_item` children are `[variable]`.
 //! - `agg` children are `[arg_expr]` (empty for `count(*)`); the function is in
 //!   the `agg` payload.
+//! - `list_literal` children are the list elements (used by `IN [...]` and list
+//!   expressions).
+//! - `size_fn` children are `[expr]` (the `size(...)` function).
+//! - `case_expr` children are `[cond0, then0, cond1, then1, ..., else?]`.
+//! - `remove_clause` children are `property_access` or `label_ref` items.
+//! - `label_ref` children are `[variable]` (the label name is in `.text`).
+//! - `unwind_clause` children are `[expr]`; the bound variable is in the
+//!   `unwind` payload.
 //! - `projection` children are its `projection_item`s.
 //! - `projection_item` children are `[expr]` (the alias is in `.text`).
 
@@ -56,18 +69,23 @@ pub const BinOp = enum {
     ge,
     and_,
     or_,
+    starts_with,
+    ends_with,
+    contains,
+    in_,
 };
 
 pub const UnOp = enum {
     not_,
 };
 
-/// Aggregation functions (`count`, `sum`, `min`, `max`).
+/// Aggregation functions (`count`, `sum`, `min`, `max`, `collect`).
 pub const AggKind = enum {
     count,
     sum,
     min,
     max,
+    collect,
 };
 
 /// Written direction of an edge pattern.
@@ -87,22 +105,31 @@ pub const NodeKind = enum {
     int_literal,
     string_literal,
     bool_literal,
+    list_literal,
+    size_fn,
+    case_expr,
     binary_op,
     unary_op,
     agg,
     projection,
     projection_item,
     match_clause,
+    optional_match_clause,
     create_clause,
     merge_clause,
     set_clause,
     delete_clause,
+    remove_clause,
+    label_ref,
+    with_clause,
+    unwind_clause,
     return_clause,
     set_item,
     delete_item,
     order_by,
     order_item,
     limit,
+    skip,
 };
 
 /// Node payload. The active variant is determined by the node's `kind`; kinds
@@ -114,12 +141,14 @@ pub const Data = union(enum) {
     /// A single string: a literal value, an identifier (variable, property,
     /// label, edge type) or a RETURN alias.
     text: []const u8,
-    node_pattern: struct { var_name: []const u8, label: []const u8 },
+    node_pattern: struct { var_name: []const u8, labels: []const []const u8 },
     edge_pattern: struct { var_name: []const u8, etype: []const u8, direction: EdgeDirection },
     bin_op: BinOp,
     un_op: UnOp,
     agg: AggKind,
     return_: struct { distinct: bool },
+    with_: struct { distinct: bool },
+    unwind: struct { var_name: []const u8 },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
 };
@@ -156,6 +185,11 @@ pub const Ast = struct {
     /// Dupes `s` into the arena and returns it; valid until `deinit`.
     pub fn intern(self: *Ast, s: []const u8) Allocator.Error![]const u8 {
         return self.arena.allocator().dupe(u8, s);
+    }
+
+    /// Dupes a slice of strings into the arena; valid until `deinit`.
+    pub fn internSlice(self: *Ast, s: []const []const u8) Allocator.Error![]const []const u8 {
+        return self.arena.allocator().dupe([]const u8, s);
     }
 
     /// Appends a node and returns its index. `kids` only needs to stay valid
@@ -218,7 +252,7 @@ test "builds and walks the AST for a MATCH/RETURN query" {
     // (p:Person {name: 'Keanu Reeves'})
     const lit = try ast.addNode(.string_literal, .{ .text = "Keanu Reeves" }, &.{});
     const prop = try ast.addNode(.property, .{ .text = "name" }, &.{lit});
-    const np = try ast.addNode(.node_pattern, .{ .node_pattern = .{ .var_name = "p", .label = "Person" } }, &.{prop});
+    const np = try ast.addNode(.node_pattern, .{ .node_pattern = .{ .var_name = "p", .labels = &.{"Person"} } }, &.{prop});
     const pattern = try ast.addNode(.pattern, .{ .none = {} }, &.{np});
 
     // no WHERE -> true
@@ -246,7 +280,7 @@ test "builds and walks the AST for a MATCH/RETURN query" {
     const pc = ast.nodeChildren(mc[0]);
     try testing.expectEqual(@as(usize, 1), pc.len);
     try testing.expectEqual(NodeKind.node_pattern, ast.kind(pc[0]));
-    try testing.expectEqualStrings("Person", ast.data(pc[0]).node_pattern.label);
+    try testing.expectEqualStrings("Person", ast.data(pc[0]).node_pattern.labels[0]);
     try testing.expectEqualStrings("p", ast.data(pc[0]).node_pattern.var_name);
 
     // node_pattern -> one property {name: 'Keanu Reeves'}

@@ -45,15 +45,12 @@ pub const EdgeKey = struct {
 const node_marker: u8 = 'n';
 const edge_marker: u8 = 'e';
 const label_marker: u8 = 'l';
+const rev_label_marker: u8 = 'L';
 const index_marker: u8 = 'p';
 const edge_prop_marker: u8 = 'f';
+const edge_index_marker: u8 = 'g';
 const sep: u8 = 0x00;
 const id_len: usize = @sizeOf(NodeId);
-
-/// Reserved property name holding a node's label, so it can be read back
-/// (e.g. on delete). `~` is not a valid openCypher identifier, so no user
-/// property can collide.
-const label_prop: []const u8 = "~label";
 
 /// Key storing the next node id to allocate (8-byte big-endian counter).
 const counter_key: []const u8 = "!";
@@ -62,12 +59,15 @@ const counter_key: []const u8 = "!";
 // Value encoding (property values)
 // ---------------------------------------------------------------------------
 
-/// A typed property/expression value. `boolean` is produced during evaluation
-/// but is never stored as a property (properties are `int` or `str`).
+/// A typed property/expression value. `boolean`, `null` and `list` are produced
+/// during evaluation but are never stored as properties (properties are `int`
+/// or `str`).
 pub const Value = union(enum) {
     int: i64,
     str: []const u8,
     boolean: bool,
+    null: void,
+    list: []const Value,
 };
 
 const value_int: u8 = 0x01;
@@ -86,7 +86,7 @@ pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value)
             try list.append(allocator, value_str);
             try list.appendSlice(allocator, s);
         },
-        .boolean => unreachable, // booleans are not stored as properties
+        .boolean, .null, .list => unreachable, // not stored as properties
     }
 }
 
@@ -125,7 +125,7 @@ fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value
             try list.appendSlice(allocator, s);
             try list.append(allocator, sep);
         },
-        .boolean => unreachable, // booleans are not stored as properties
+        .boolean, .null, .list => unreachable, // not stored as properties
     }
 }
 
@@ -163,6 +163,15 @@ pub fn appendLabelKey(list: *std.ArrayList(u8), allocator: Allocator, label: []c
     try list.appendSlice(allocator, label);
     try list.append(allocator, sep);
     try appendNodeId(list, allocator, id);
+}
+
+/// Appends the key for a reverse label-index entry: `L | node_id | 0x00 | label`
+/// (so a node's labels can be enumerated on delete).
+fn appendReverseLabelKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, label: []const u8) !void {
+    try list.append(allocator, rev_label_marker);
+    try appendNodeId(list, allocator, id);
+    try list.append(allocator, sep);
+    try list.appendSlice(allocator, label);
 }
 
 /// Appends the key for a property-index entry:
@@ -206,6 +215,25 @@ fn appendEdgePrefix(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, 
     try list.append(allocator, sep);
     try list.appendSlice(allocator, etype);
     try list.append(allocator, sep);
+}
+
+/// Appends the lookup prefix for "edge prop == value":
+/// `g | prop | 0x00 | value`.
+fn appendEdgeIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value) !void {
+    try list.append(allocator, edge_index_marker);
+    try list.appendSlice(allocator, prop);
+    try list.append(allocator, sep);
+    try encodeIndexValue(list, allocator, value);
+}
+
+/// Appends the edge-property index key:
+/// `g | prop | 0x00 | value | src | dst | 0x00 | edge_type`.
+fn appendEdgeIndexKey(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) !void {
+    try appendEdgeIndexPrefix(list, allocator, prop, value);
+    try appendNodeId(list, allocator, src);
+    try appendNodeId(list, allocator, dst);
+    try list.append(allocator, sep);
+    try list.appendSlice(allocator, etype);
 }
 
 /// Appends the key for one stored direction of an edge:
@@ -257,28 +285,54 @@ pub const Graph = struct {
         self.store.abortWrite();
     }
 
+    /// Begins an atomic read transaction (snapshot); see `commitRead`/`abortRead`.
+    /// All reads until then are batched into one transaction.
+    pub fn beginRead(self: *Graph) KvError!void {
+        return self.store.beginRead();
+    }
+
+    pub fn commitRead(self: *Graph) void {
+        self.store.commitRead();
+    }
+
+    pub fn abortRead(self: *Graph) void {
+        self.store.abortRead();
+    }
+
     /// Marks `id` as an existing node with the given `label` (empty string for
-    /// an unlabeled node). Idempotent. A non-empty label also writes a
-    /// label-index entry so `nodesWithLabel` can find it, plus a `~label`
-    /// property so it can be read back on delete.
+    /// an unlabeled node). Idempotent. A non-empty label also writes the label
+    /// index entries so `nodesWithLabel` can find it.
     pub fn addNode(self: *Graph, id: NodeId, label: []const u8) KvError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendNodeKey(&key, self.allocator, id);
         try self.store.put(key.items, "");
 
-        if (label.len > 0) {
-            key.clearRetainingCapacity();
-            try appendLabelKey(&key, self.allocator, label, id);
-            try self.store.put(key.items, "");
+        if (label.len > 0) try self.addLabel(id, label);
+    }
 
-            key.clearRetainingCapacity();
-            try appendNodePropKey(&key, self.allocator, id, label_prop);
-            var val = std.ArrayList(u8).empty;
-            defer val.deinit(self.allocator);
-            try encodeValue(&val, self.allocator, .{ .str = label });
-            try self.store.put(key.items, val.items);
-        }
+    /// Adds a label to a node (forward + reverse index). Idempotent.
+    pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendLabelKey(&key, self.allocator, label, id);
+        try self.store.put(key.items, "");
+
+        key.clearRetainingCapacity();
+        try appendReverseLabelKey(&key, self.allocator, id, label);
+        try self.store.put(key.items, "");
+    }
+
+    /// Removes a label from a node (forward + reverse index). Idempotent.
+    pub fn removeLabel(self: *Graph, id: NodeId, label: []const u8) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendLabelKey(&key, self.allocator, label, id);
+        try self.store.del(key.items);
+
+        key.clearRetainingCapacity();
+        try appendReverseLabelKey(&key, self.allocator, id, label);
+        try self.store.del(key.items);
     }
 
     /// Allocates a fresh, never-used node id (persistent counter).
@@ -328,18 +382,23 @@ pub const Graph = struct {
     }
 
     fn deleteNodeOnly(self: *Graph, id: NodeId) KvError!void {
-        if (try self.getProp(id, label_prop, self.allocator)) |v| {
-            switch (v) {
-                .str => |label| {
-                    defer self.allocator.free(label);
-                    var lkey = std.ArrayList(u8).empty;
-                    defer lkey.deinit(self.allocator);
-                    try appendLabelKey(&lkey, self.allocator, label, id);
-                    try self.store.del(lkey.items);
-                },
-                else => {},
-            }
+        // Enumerate and remove all labels (forward + reverse index).
+        var labels = std.ArrayList([]u8).empty;
+        defer {
+            for (labels.items) |l| self.allocator.free(l);
+            labels.deinit(self.allocator);
         }
+        var lprefix = std.ArrayList(u8).empty;
+        defer lprefix.deinit(self.allocator);
+        try lprefix.append(self.allocator, rev_label_marker);
+        try appendNodeId(&lprefix, self.allocator, id);
+        try lprefix.append(self.allocator, sep);
+        var lit = try self.store.scanPrefix(lprefix.items);
+        while (try lit.next()) |entry| {
+            try labels.append(self.allocator, try self.allocator.dupe(u8, entry.key[lprefix.items.len ..]));
+        }
+        lit.deinit();
+        for (labels.items) |label| try self.removeLabel(id, label);
 
         var nprefix = std.ArrayList(u8).empty;
         defer nprefix.deinit(self.allocator);
@@ -387,13 +446,38 @@ pub const Graph = struct {
             try appendEdgeKey(&rev, self.allocator, ek.neighbour, rev_dir, ek.etype, ek.id);
             try self.store.del(rev.items);
 
-            // Delete the edge's properties (canonical src -> dst).
+            // Delete the edge's properties and their index entries (canonical
+            // src -> dst). Collect first so the cursor isn't open across deletes.
             const src = if (ek.dir == .out) ek.id else ek.neighbour;
             const dst = if (ek.dir == .out) ek.neighbour else ek.id;
             var epp = std.ArrayList(u8).empty;
             defer epp.deinit(self.allocator);
             try appendEdgePropPrefix(&epp, self.allocator, src, dst, ek.etype);
-            try self.deleteKeysUnder(epp.items);
+
+            var props = std.ArrayList(struct { name: []u8, value: []u8 }).empty;
+            defer {
+                for (props.items) |p| {
+                    self.allocator.free(p.name);
+                    self.allocator.free(p.value);
+                }
+                props.deinit(self.allocator);
+            }
+            var epit = try self.store.scanPrefix(epp.items);
+            while (try epit.next()) |entry| {
+                try props.append(self.allocator, .{
+                    .name = try self.allocator.dupe(u8, entry.key[epp.items.len ..]),
+                    .value = try self.allocator.dupe(u8, entry.value),
+                });
+            }
+            epit.deinit();
+
+            for (props.items) |p| {
+                try self.deleteEdgeIndexEntry(p.name, decodeValue(p.value), src, dst, ek.etype);
+                var pk = std.ArrayList(u8).empty;
+                defer pk.deinit(self.allocator);
+                try appendEdgePropKey(&pk, self.allocator, src, dst, ek.etype, p.name);
+                try self.store.del(pk.items);
+            }
         }
     }
 
@@ -449,6 +533,22 @@ pub const Graph = struct {
         try self.store.put(key.items, encoded.items);
 
         try self.putIndexEntry(id, name, value);
+    }
+
+    /// Removes a typed property `name` from node `id` (and its index entry).
+    /// Idempotent.
+    pub fn removeProp(self: *Graph, id: NodeId, name: []const u8) KvError!void {
+        if (try self.getProp(id, name, self.allocator)) |old| {
+            defer switch (old) {
+                .str => |s| self.allocator.free(s),
+                else => {},
+            };
+            try self.deleteIndexEntry(id, name, old);
+        }
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendNodePropKey(&key, self.allocator, id, name);
+        try self.store.del(key.items);
     }
 
     /// Iterates all nodes whose property `name` equals `value` (via the
@@ -508,8 +608,16 @@ pub const Graph = struct {
     }
 
     /// Stores a typed property on the directed edge `src -> dst` of type
-    /// `etype`. Idempotent.
+    /// `etype`. Idempotent. Maintains the edge-property index.
     pub fn setEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, value: Value) KvError!void {
+        if (try self.getEdgeProp(src, dst, etype, name, self.allocator)) |old| {
+            defer switch (old) {
+                .str => |s| self.allocator.free(s),
+                else => {},
+            };
+            try self.deleteEdgeIndexEntry(name, old, src, dst, etype);
+        }
+
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
@@ -518,6 +626,49 @@ pub const Graph = struct {
         defer encoded.deinit(self.allocator);
         try encodeValue(&encoded, self.allocator, value);
         try self.store.put(key.items, encoded.items);
+
+        try self.putEdgeIndexEntry(name, value, src, dst, etype);
+    }
+
+    /// Removes a typed property from the directed edge `src -> dst` of type
+    /// `etype`. Idempotent.
+    pub fn removeEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8) KvError!void {
+        if (try self.getEdgeProp(src, dst, etype, name, self.allocator)) |old| {
+            defer switch (old) {
+                .str => |s| self.allocator.free(s),
+                else => {},
+            };
+            try self.deleteEdgeIndexEntry(name, old, src, dst, etype);
+        }
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
+        try self.store.del(key.items);
+    }
+
+    fn putEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
+        try self.store.put(key.items, "");
+    }
+
+    fn deleteEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) KvError!void {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
+        try self.store.del(key.items);
+    }
+
+    /// Iterates all directed edges whose property `name` equals `value` (via the
+    /// edge-property index), in ascending (src, dst) order.
+    pub fn edgesByProp(self: *Graph, name: []const u8, value: Value) KvError!EdgeIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try appendEdgeIndexPrefix(&prefix, self.allocator, name, value);
+        const value_len = prefix.items.len;
+        const it = try self.store.scanPrefix(prefix.items);
+        return .{ .inner = it, .value_len = value_len };
     }
 
     /// Reads a typed property of the directed edge `src -> dst` of type
@@ -581,6 +732,26 @@ pub const NodeIdIterator = struct {
 
 /// Backward-compatible name for `NodeIdIterator` (neighbour scans).
 pub const NeighbourIterator = NodeIdIterator;
+
+/// Iterator over directed edges (`src`, `dst`) decoded from edge-property index
+/// keys. Owns the underlying LMDB transaction/cursor.
+pub const EdgeIterator = struct {
+    inner: PrefixIterator,
+    value_len: usize,
+
+    pub fn deinit(self: *EdgeIterator) void {
+        self.inner.deinit();
+    }
+
+    /// Returns the next `(src, dst, etype)` edge, or `null` at the end.
+    pub fn next(self: *EdgeIterator) KvError!?struct { src: NodeId, dst: NodeId, etype: []const u8 } {
+        const entry = try self.inner.next() orelse return null;
+        const src = readNodeId(entry.key[self.value_len .. self.value_len + id_len]);
+        const dst = readNodeId(entry.key[self.value_len + id_len .. self.value_len + 2 * id_len]);
+        const etype = entry.key[self.value_len + 2 * id_len + 1 ..];
+        return .{ .src = src, .dst = dst, .etype = etype };
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -854,4 +1025,55 @@ test "edge properties round-trip and delete" {
     try g.deleteNodeDetach(1);
     try testing.expect(!try g.hasEdge(1, 2, "KNOWS"));
     try testing.expect((try g.getEdgeProp(1, 2, "KNOWS", "weight", testing.allocator)) == null);
+}
+
+test "edge-property index: seek, update and delete" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(1, "");
+    try g.addNode(2, "");
+    try g.addNode(3, "");
+    try g.addEdge(1, 2, "KNOWS");
+    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 5 });
+    try g.addEdge(1, 3, "KNOWS");
+    try g.setEdgeProp(1, 3, "KNOWS", "weight", .{ .int = 9 });
+
+    // Index lookup returns the matching edge (src, dst, etype).
+    var it = try g.edgesByProp("weight", .{ .int = 5 });
+    defer it.deinit();
+    const e = (try it.next()).?;
+    try testing.expectEqual(@as(NodeId, 1), e.src);
+    try testing.expectEqual(@as(NodeId, 2), e.dst);
+    try testing.expectEqualStrings("KNOWS", e.etype);
+    try testing.expect((try it.next()) == null);
+
+    // Updating a value moves the index entry.
+    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 9 });
+    var it2 = try g.edgesByProp("weight", .{ .int = 5 });
+    defer it2.deinit();
+    try testing.expect((try it2.next()) == null);
+    var it3 = try g.edgesByProp("weight", .{ .int = 9 });
+    defer it3.deinit();
+    _ = (try it3.next()).?;
+    _ = (try it3.next()).?;
+    try testing.expect((try it3.next()) == null);
+
+    // Removing a property removes its index entry.
+    try g.removeEdgeProp(1, 2, "KNOWS", "weight");
+    var it4 = try g.edgesByProp("weight", .{ .int = 9 });
+    defer it4.deinit();
+    _ = (try it4.next()).?;
+    try testing.expect((try it4.next()) == null);
+
+    // Detach-delete removes remaining edge index entries.
+    try g.deleteNodeDetach(1);
+    var it5 = try g.edgesByProp("weight", .{ .int = 9 });
+    defer it5.deinit();
+    try testing.expect((try it5.next()) == null);
 }

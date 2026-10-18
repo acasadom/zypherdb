@@ -44,7 +44,7 @@ const Seek = struct {
 
 const ChainNode = struct {
     var_name: []const u8,
-    label: []const u8,
+    labels: []const []const u8,
     seeks: std.ArrayList(Seek),
     bound: bool, // already bound by an earlier pattern in this query
 };
@@ -59,6 +59,7 @@ const ChainEdge = struct {
 const BindStep = union(enum) {
     scan: struct { node: usize },
     expand: struct { from: usize, to: usize },
+    edge_scan: struct { edge: usize }, // bind both endpoints from an edge-prop seek
 };
 
 /// Reference to a directed edge, used to bind relationship variables.
@@ -71,6 +72,7 @@ const EdgeRef = struct {
 const Binding = union(enum) {
     node: NodeId,
     edge: EdgeRef,
+    value: Value, // scalar bound by a WITH projection
 };
 
 /// Dynamic variable-name -> value bindings (nodes and relationships).
@@ -94,16 +96,25 @@ const Bindings = struct {
         try self.entries.append(allocator, .{ .name = name, .value = value });
     }
 
+    fn remove(self: *Bindings, name: []const u8) void {
+        for (self.entries.items, 0..) |e, i| {
+            if (std.mem.eql(u8, e.name, name)) {
+                _ = self.entries.swapRemove(i);
+                return;
+            }
+        }
+    }
+
     fn getNode(self: *const Bindings, name: []const u8) ?NodeId {
         return switch (self.get(name) orelse return null) {
             .node => |id| id,
-            .edge => null,
+            .edge, .value => null,
         };
     }
 
     fn getEdge(self: *const Bindings, name: []const u8) ?EdgeRef {
         return switch (self.get(name) orelse return null) {
-            .node => null,
+            .node, .value => null,
             .edge => |e| e,
         };
     }
@@ -121,11 +132,36 @@ const AggState = struct {
     sum: i64 = 0,
     min: ?Value = null,
     max: ?Value = null,
+    list: std.ArrayList(Value) = .empty,
 };
 
 const Group = struct {
     keys: std.ArrayList(Value),
     aggs: std.ArrayList(AggState),
+};
+
+/// One `WITH` projection item: a variable passthrough (keeps its node/edge/value
+/// binding), a scalar key expression, or an aggregation. `name` is the variable
+/// it binds in the new scope (alias, or the variable name for a passthrough).
+const WithItem = union(enum) {
+    pass: struct { name: []const u8, src_name: []const u8 },
+    key: struct { name: []const u8, expr: Index },
+    agg: struct { name: []const u8, kind: AggKind, arg: ?Index },
+};
+
+/// A `WITH` group: binding-valued keys plus the usual aggregation states.
+const WithGroup = struct {
+    keys: std.ArrayList(Binding),
+    aggs: std.ArrayList(AggState),
+};
+
+const WithInfo = struct {
+    projection: Index,
+    order_by: ?Index,
+    skip: ?Index,
+    limit: ?Index,
+    where_expr: Index,
+    distinct: bool,
 };
 
 pub const Executor = struct {
@@ -145,6 +181,21 @@ pub const Executor = struct {
     // Write context.
     update_clauses: std.ArrayList(Index),
     return_clause: ?Index,
+
+    // WITH pipeline context.
+    with_clause: ?Index,
+    with_rows: std.ArrayList(Bindings),
+    collecting: bool,
+
+    // OPTIONAL MATCH context.
+    optional_match: ?Index,
+    optional_vars: std.ArrayList([]const u8),
+    main_vars: std.ArrayList([]const u8),
+    in_optional: bool,
+    optional_matched: bool,
+
+    // UNWIND context.
+    unwind: ?Index,
 
     // Result post-processing.
     row_keys: std.ArrayList([]const Value),
@@ -171,6 +222,15 @@ pub const Executor = struct {
             .has_match = false,
             .update_clauses = .empty,
             .return_clause = null,
+            .with_clause = null,
+            .with_rows = .empty,
+            .collecting = false,
+            .optional_match = null,
+            .optional_vars = .empty,
+            .main_vars = .empty,
+            .in_optional = false,
+            .optional_matched = false,
+            .unwind = null,
             .row_keys = .empty,
             .has_agg = false,
             .proj_items = .empty,
@@ -189,17 +249,42 @@ pub const Executor = struct {
         self.groups = .empty;
         self.has_agg = false;
         self.proj_items = .empty;
+        self.with_rows = .empty;
+        self.collecting = false;
+        self.optional_match = null;
+        self.optional_vars = .empty;
+        self.main_vars = .empty;
+        self.in_optional = false;
+        self.optional_matched = false;
+        self.unwind = null;
 
-        var match_clause: ?Index = null;
+        var pre_match: ?Index = null;
+        var post_match: ?Index = null;
+        self.with_clause = null;
         self.update_clauses = .empty;
         self.return_clause = null;
         for (self.ast.nodeChildren(query)) |c| {
             switch (self.ast.kind(c)) {
-                .match_clause => match_clause = c,
-                .create_clause, .merge_clause, .set_clause, .delete_clause => try self.update_clauses.append(self.allocator, c),
+                .match_clause => {
+                    if (self.with_clause == null) {
+                        pre_match = c;
+                    } else {
+                        post_match = c;
+                    }
+                },
+                .optional_match_clause => self.optional_match = c,
+                .unwind_clause => self.unwind = c,
+                .with_clause => self.with_clause = c,
+                .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause => try self.update_clauses.append(self.allocator, c),
                 .return_clause => self.return_clause = c,
                 else => {},
             }
+        }
+        if (self.optional_match) |om| {
+            try self.collectOptionalVars(om);
+        }
+        if (pre_match) |pm| {
+            try self.collectClauseVars(pm, &self.main_vars);
         }
 
         // Detect aggregations in the projection (grouping).
@@ -219,31 +304,71 @@ pub const Executor = struct {
             }
         }
 
-        // All writes of this query commit (or abort) atomically.
+        // All writes of this query commit (or abort) atomically; a read-only
+        // query batches its reads into a single read transaction (snapshot),
+        // avoiding one LMDB transaction per read (the #1 performance win).
         const has_writes = self.update_clauses.items.len > 0;
-        if (has_writes) try self.graph.beginWrite();
-        errdefer if (has_writes) self.graph.abortWrite();
-
-        var bindings = Bindings{ .entries = .empty };
-        if (match_clause) |mc| {
-            const mc_children = self.ast.nodeChildren(mc);
-            self.has_match = true;
-            // children = [pattern0, ..., patternN, where_expr]
-            self.patterns = mc_children[0 .. mc_children.len - 1];
-            self.where_expr = mc_children[mc_children.len - 1];
-            try self.matchPatterns(0, &bindings);
+        if (has_writes) {
+            try self.graph.beginWrite();
         } else {
-            self.has_match = false;
-            try self.finish(&bindings);
+            try self.graph.beginRead();
+        }
+        errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
+
+        if (self.with_clause) |wc| {
+            // Phase 1: collect the pre-WITH match bindings.
+            self.collecting = true;
+            var start = Bindings{ .entries = .empty };
+            if (pre_match) |pm| {
+                try self.runMatch(pm, &start);
+            } else {
+                self.has_match = false;
+                try self.leaf(&start);
+            }
+            self.collecting = false;
+
+            // Phase 2: project/aggregate/filter/sort/paginate with WITH.
+            try self.applyWith(wc);
+
+            // Phase 3: run the post-WITH clauses against each projected row.
+            for (self.with_rows.items) |row| {
+                var bindings = Bindings{ .entries = .empty };
+                try bindings.entries.appendSlice(self.allocator, row.entries.items);
+                if (post_match) |pm| {
+                    try self.runMatch(pm, &bindings);
+                } else {
+                    self.has_match = false;
+                    try self.finishBody(&bindings);
+                }
+            }
+        } else {
+            var bindings = Bindings{ .entries = .empty };
+            if (pre_match) |pm| {
+                try self.runMatch(pm, &bindings);
+            } else {
+                self.has_match = false;
+                try self.leaf(&bindings);
+            }
         }
 
-        if (has_writes) try self.graph.commitWrite();
+        if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
 
         if (self.return_clause) |rc| {
             try self.postProcess(rc);
         }
 
         return self.rows.items;
+    }
+
+    /// Runs one MATCH clause (its patterns + WHERE) from `bindings`, recursing
+    /// through `matchPatterns`/`execStep` down to `leaf`.
+    fn runMatch(self: *Executor, mc: Index, bindings: *Bindings) ExecError!void {
+        const mc_children = self.ast.nodeChildren(mc);
+        self.has_match = true;
+        // children = [pattern0, ..., patternN, where_expr]
+        self.patterns = mc_children[0 .. mc_children.len - 1];
+        self.where_expr = mc_children[mc_children.len - 1];
+        try self.matchPatterns(0, bindings);
     }
 
     // --- Planning ----------------------------------------------------------
@@ -259,7 +384,7 @@ pub const Executor = struct {
             const np = self.ast.data(np_idx).node_pattern;
             var node = ChainNode{
                 .var_name = np.var_name,
-                .label = np.label,
+                .labels = np.labels,
                 .seeks = .empty,
                 .bound = bindings.getNode(np.var_name) != null,
             };
@@ -288,7 +413,29 @@ pub const Executor = struct {
         }
 
         try self.collectWhereSeeks(self.where_expr);
-        try self.buildSteps(self.chooseAnchor());
+        if (self.shouldEdgeAnchor()) {
+            try self.buildEdgeSteps();
+        } else {
+            try self.buildSteps(self.chooseAnchor());
+        }
+    }
+
+    /// Uses the edge-property index as the anchor when the pattern is a single
+    /// edge with an equality seek and both endpoints are unbound/unselective.
+    fn shouldEdgeAnchor(self: *Executor) bool {
+        if (self.nodes.items.len != 2 or self.edges.items.len != 1) return false;
+        if (self.edges.items[0].seeks.items.len == 0) return false;
+        const a = self.nodes.items[0];
+        const b = self.nodes.items[1];
+        if (a.bound or b.bound) return false;
+        if (a.labels.len > 0 or b.labels.len > 0) return false;
+        if (a.seeks.items.len > 0 or b.seeks.items.len > 0) return false;
+        return true;
+    }
+
+    fn buildEdgeSteps(self: *Executor) ExecError!void {
+        self.steps = .empty;
+        try self.steps.append(self.allocator, .{ .edge_scan = .{ .edge = 0 } });
     }
 
     fn nodeIndex(self: *Executor, name: []const u8) ?usize {
@@ -334,8 +481,21 @@ pub const Executor = struct {
         const node = self.nodes.items[node_idx];
         if (node.bound) return 0; // already known: a free start
         if (node.seeks.items.len > 0) return 1;
-        if (node.label.len == 0) return std.math.maxInt(usize);
-        return self.graph.labelCount(node.label) catch std.math.maxInt(usize);
+        if (node.labels.len == 0) return std.math.maxInt(usize);
+        var best: usize = std.math.maxInt(usize);
+        for (node.labels) |l| {
+            const c = self.graph.labelCount(l) catch std.math.maxInt(usize);
+            if (c < best) best = c;
+        }
+        return best;
+    }
+
+    /// True if `id` carries every label in `labels` (empty = always true).
+    fn hasAllLabels(self: *Executor, id: NodeId, labels: []const []const u8) KvError!bool {
+        for (labels) |l| {
+            if (!(try self.graph.hasLabel(id, l))) return false;
+        }
+        return true;
     }
 
     fn chooseAnchor(self: *Executor) usize {
@@ -372,7 +532,7 @@ pub const Executor = struct {
 
     fn matchPatterns(self: *Executor, pat_idx: usize, bindings: *Bindings) ExecError!void {
         if (pat_idx == self.patterns.len) {
-            return self.finish(bindings);
+            return self.leaf(bindings);
         }
         try self.setupPattern(self.patterns[pat_idx], bindings);
         try self.execStep(0, pat_idx, bindings);
@@ -392,19 +552,45 @@ pub const Executor = struct {
                     var it = try self.graph.nodesByProp(seek.prop, value);
                     defer it.deinit();
                     while (try it.next()) |id| {
-                        if (node.label.len > 0 and !(try self.graph.hasLabel(id, node.label))) continue;
+                        if (!(try self.hasAllLabels(id, node.labels))) continue;
                         try bindings.put(self.allocator, node.var_name, .{ .node = id });
                         if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
                         try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
                 } else {
-                    var it = try self.graph.nodesWithLabel(node.label);
+                    // Scan the first label as the seed, then verify the rest.
+                    const seed = if (node.labels.len > 0) node.labels[0] else "";
+                    var it = try self.graph.nodesWithLabel(seed);
                     defer it.deinit();
                     while (try it.next()) |id| {
+                        if (!(try self.hasAllLabels(id, node.labels))) continue;
                         try bindings.put(self.allocator, node.var_name, .{ .node = id });
                         if (!try self.nodeSeeksMatch(s.node, id, bindings)) continue;
                         try self.execStep(step_idx + 1, pat_idx, bindings);
                     }
+                }
+            },
+            .edge_scan => |es| {
+                const edge = self.edges.items[es.edge];
+                const seek = edge.seeks.items[0];
+                const value = try self.eval(seek.value, bindings);
+                var it = try self.graph.edgesByProp(seek.prop, value);
+                defer it.deinit();
+                const left = self.nodes.items[es.edge];
+                const right = self.nodes.items[es.edge + 1];
+                while (try it.next()) |e| {
+                    if (edge.etype.len > 0 and !std.mem.eql(u8, e.etype, edge.etype)) continue;
+                    const left_id: NodeId = if (edge.fwd_dir == .out) e.src else e.dst;
+                    const right_id: NodeId = if (edge.fwd_dir == .out) e.dst else e.src;
+                    try bindings.put(self.allocator, left.var_name, .{ .node = left_id });
+                    try bindings.put(self.allocator, right.var_name, .{ .node = right_id });
+                    if (edge.var_name.len > 0) {
+                        try bindings.put(self.allocator, edge.var_name, .{ .edge = .{ .src = e.src, .dst = e.dst, .etype = edge.etype } });
+                    }
+                    if (!try self.edgeSeeksMatch(edge, e.src, e.dst, bindings)) continue;
+                    if (!try self.nodeSeeksMatch(es.edge, left_id, bindings)) continue;
+                    if (!try self.nodeSeeksMatch(es.edge + 1, right_id, bindings)) continue;
+                    try self.execStep(step_idx + 1, pat_idx, bindings);
                 }
             },
             .expand => |e| {
@@ -430,7 +616,7 @@ pub const Executor = struct {
                     var it = try self.graph.neighbours(from_id, dir, edge.etype);
                     defer it.deinit();
                     while (try it.next()) |nid| {
-                        if (to_node.label.len > 0 and !(try self.graph.hasLabel(nid, to_node.label))) continue;
+                        if (!(try self.hasAllLabels(nid, to_node.labels))) continue;
                         try bindings.put(self.allocator, to_node.var_name, .{ .node = nid });
                         if (!try self.nodeSeeksMatch(e.to, nid, bindings)) continue;
                         const sd = edgeSrcDst(edge.fwd_dir, e.from, e.to, from_id, nid);
@@ -445,15 +631,156 @@ pub const Executor = struct {
         }
     }
 
-    fn finish(self: *Executor, bindings: *Bindings) ExecError!void {
+    /// Leaf of a match: apply the MATCH `WHERE`, then either outer-join through
+    /// OPTIONAL MATCH, collect the bindings (WITH pipeline), or apply updates +
+    /// RETURN.
+    fn leaf(self: *Executor, bindings: *Bindings) ExecError!void {
         if (self.has_match and !try self.evalBool(self.where_expr, bindings)) return;
+        if (self.in_optional) {
+            self.optional_matched = true;
+            return self.afterOptional(bindings);
+        }
+        if (self.optional_match != null) {
+            return self.runOptional(bindings);
+        }
+        if (self.unwind != null) {
+            return self.runUnwind(bindings);
+        }
+        return self.afterOptional(bindings);
+    }
 
+    /// Continuation after (optional) matching: collect or finish.
+    fn afterOptional(self: *Executor, bindings: *Bindings) ExecError!void {
+        if (self.collecting) {
+            return self.collect(bindings);
+        }
+        try self.finishBody(bindings);
+    }
+
+    /// UNWIND: for each element of the evaluated list, bind the variable and
+    /// continue (collect or finish). A null list yields no rows.
+    fn runUnwind(self: *Executor, bindings: *Bindings) ExecError!void {
+        const u = self.unwind.?;
+        const expr = self.ast.nodeChildren(u)[0];
+        const var_name = self.ast.data(u).unwind.var_name;
+        const v = try self.eval(expr, bindings);
+        switch (v) {
+            .list => |items| {
+                for (items) |item| {
+                    try bindings.put(self.allocator, var_name, .{ .value = item });
+                    try self.afterOptional(bindings);
+                }
+            },
+            .null => {},
+            else => return error.TypeMismatch,
+        }
+    }
+
+    /// Outer-joins the OPTIONAL MATCH pattern onto `bindings`: emits one row per
+    /// match, or (if none match) one row with the optional variables bound to
+    /// null.
+    fn runOptional(self: *Executor, bindings: *Bindings) ExecError!void {
+        const om = self.optional_match.?;
+        const om_children = self.ast.nodeChildren(om);
+
+        // Save the in-flight match context; the optional match reuses the same
+        // slots (`patterns`/`nodes`/`edges`/`steps`/`where_expr`/`has_match`).
+        const saved_patterns = self.patterns;
+        const saved_where = self.where_expr;
+        const saved_has_match = self.has_match;
+        const saved_nodes = self.nodes;
+        const saved_edges = self.edges;
+        const saved_steps = self.steps;
+        const saved_in_optional = self.in_optional;
+
+        self.in_optional = true;
+        self.optional_matched = false;
+        self.patterns = om_children[0 .. om_children.len - 1];
+        self.where_expr = om_children[om_children.len - 1];
+        self.has_match = true;
+
+        // Unbind optional-only variables left over from a previous outer
+        // iteration so they are matched fresh (shared variables stay bound).
+        for (self.optional_vars.items) |name| {
+            if (!self.isMainVar(name)) bindings.remove(name);
+        }
+
+        try self.matchPatterns(0, bindings);
+
+        if (!self.optional_matched) {
+            try self.bindOptionalNulls(bindings);
+            try self.afterOptional(bindings);
+        }
+
+        // Restore the outer match context.
+        self.patterns = saved_patterns;
+        self.where_expr = saved_where;
+        self.has_match = saved_has_match;
+        self.nodes = saved_nodes;
+        self.edges = saved_edges;
+        self.steps = saved_steps;
+        self.in_optional = saved_in_optional;
+    }
+
+    /// Collects the variable names introduced by the OPTIONAL MATCH patterns.
+    fn collectOptionalVars(self: *Executor, om: Index) ExecError!void {
+        self.optional_vars = .empty;
+        try self.collectClauseVars(om, &self.optional_vars);
+    }
+
+    /// Appends every node/edge variable name of a MATCH/OPTIONAL MATCH clause's
+    /// patterns to `out`.
+    fn collectClauseVars(self: *Executor, clause: Index, out: *std.ArrayList([]const u8)) ExecError!void {
+        const kids = self.ast.nodeChildren(clause);
+        for (kids[0 .. kids.len - 1]) |pattern| {
+            const chain = self.ast.nodeChildren(pattern);
+            for (chain) |c| {
+                switch (self.ast.kind(c)) {
+                    .node_pattern => {
+                        const v = self.ast.data(c).node_pattern.var_name;
+                        if (v.len > 0) try out.append(self.allocator, v);
+                    },
+                    .edge_pattern => {
+                        const v = self.ast.data(c).edge_pattern.var_name;
+                        if (v.len > 0) try out.append(self.allocator, v);
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+
+    fn isMainVar(self: *Executor, name: []const u8) bool {
+        for (self.main_vars.items) |v| {
+            if (std.mem.eql(u8, v, name)) return true;
+        }
+        return false;
+    }
+
+    /// Binds every optional-only variable to null (unmatched outer row, or a
+    /// match whose WHERE filtered it out). Shared variables stay bound.
+    fn bindOptionalNulls(self: *Executor, bindings: *Bindings) ExecError!void {
+        for (self.optional_vars.items) |name| {
+            if (self.isMainVar(name)) continue;
+            try bindings.put(self.allocator, name, .{ .value = .null });
+        }
+    }
+
+    /// Appends a deep copy of `bindings` to `with_rows` (used by WITH).
+    fn collect(self: *Executor, bindings: *Bindings) ExecError!void {
+        var copy = Bindings{ .entries = .empty };
+        try copy.entries.appendSlice(self.allocator, bindings.entries.items);
+        try self.with_rows.append(self.allocator, copy);
+    }
+
+    fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
         for (self.update_clauses.items) |clause| {
             switch (self.ast.kind(clause)) {
                 .create_clause => try self.applyCreate(self.ast.nodeChildren(clause)[0], bindings),
-                .merge_clause => try self.applyMerge(self.ast.nodeChildren(clause)[0], bindings),
+                .merge_clause => try self.applyMerge(clause, bindings),
                 .set_clause => try self.applySet(clause, bindings),
                 .delete_clause => try self.applyDelete(clause, bindings),
+                .remove_clause => try self.applyRemove(clause, bindings),
                 else => {},
             }
         }
@@ -486,21 +813,249 @@ pub const Executor = struct {
         }
     }
 
+    fn withInfo(self: *Executor, wc: Index) WithInfo {
+        const kids = self.ast.nodeChildren(wc);
+        var info = WithInfo{
+            .projection = kids[0],
+            .order_by = null,
+            .skip = null,
+            .limit = null,
+            .where_expr = kids[kids.len - 1],
+            .distinct = self.ast.data(wc).with_.distinct,
+        };
+        for (kids[1 .. kids.len - 1]) |child| {
+            switch (self.ast.kind(child)) {
+                .order_by => info.order_by = child,
+                .skip => info.skip = child,
+                .limit => info.limit = child,
+                else => {},
+            }
+        }
+        return info;
+    }
+
+    /// Projects the collected bindings through the WITH clause (grouping +
+    /// aggregation), then applies WHERE / DISTINCT / ORDER BY / SKIP / LIMIT,
+    /// rebinding the result into fresh variable bindings for the next clauses.
+    fn applyWith(self: *Executor, wc: Index) ExecError!void {
+        const info = self.withInfo(wc);
+
+        var items = std.ArrayList(WithItem).empty;
+        defer items.deinit(self.allocator);
+        for (self.ast.nodeChildren(info.projection)) |item| {
+            const expr = self.ast.nodeChildren(item)[0];
+            const alias = self.ast.data(item).text;
+            switch (self.ast.kind(expr)) {
+                .agg => {
+                    if (alias.len == 0) {
+                        self.fail("WITH aggregation requires an alias", .{});
+                        return error.InvalidExpr;
+                    }
+                    const kind = self.ast.data(expr).agg;
+                    const kids = self.ast.nodeChildren(expr);
+                    const arg: ?Index = if (kids.len > 0) kids[0] else null;
+                    try items.append(self.allocator, .{ .agg = .{ .name = alias, .kind = kind, .arg = arg } });
+                },
+                .variable => {
+                    const src_name = self.ast.data(expr).text;
+                    const name = if (alias.len > 0) alias else src_name;
+                    try items.append(self.allocator, .{ .pass = .{ .name = name, .src_name = src_name } });
+                },
+                else => {
+                    if (alias.len == 0) {
+                        self.fail("WITH expression requires an alias", .{});
+                        return error.InvalidExpr;
+                    }
+                    try items.append(self.allocator, .{ .key = .{ .name = alias, .expr = expr } });
+                },
+            }
+        }
+
+        var groups = std.ArrayList(WithGroup).empty;
+        defer {
+            for (groups.items) |*g| {
+                g.keys.deinit(self.allocator);
+                g.aggs.deinit(self.allocator);
+            }
+            groups.deinit(self.allocator);
+        }
+        for (self.with_rows.items) |*bindings| {
+            var keys = std.ArrayList(Binding).empty;
+            defer keys.deinit(self.allocator);
+            var args = std.ArrayList(Value).empty;
+            defer args.deinit(self.allocator);
+            for (items.items) |item| {
+                switch (item) {
+                    .pass => |p| {
+                        const b = bindings.get(p.src_name) orelse {
+                            self.fail("unknown variable '{s}'", .{p.src_name});
+                            return error.UnknownVar;
+                        };
+                        try keys.append(self.allocator, b);
+                    },
+                    .key => |k| try keys.append(self.allocator, .{ .value = try self.eval(k.expr, bindings) }),
+                    .agg => |a| {
+                        if (a.arg == null) {
+                            try args.append(self.allocator, .{ .int = 0 }); // count(*) always counts
+                        } else if (a.kind == .count) {
+                            try args.append(self.allocator, try self.evalCountArg(a.arg.?, bindings));
+                        } else {
+                            try args.append(self.allocator, try self.eval(a.arg.?, bindings));
+                        }
+                    },
+                }
+            }
+            const group = try self.findOrCreateWithGroup(&groups, keys.items, items.items);
+            var arg_i: usize = 0;
+            for (group.aggs.items) |*state| {
+                try self.updateAgg(state, args.items[arg_i]);
+                arg_i += 1;
+            }
+        }
+
+        var out = std.ArrayList(Bindings).empty;
+        for (groups.items) |group| {
+            var b = Bindings{ .entries = .empty };
+            var key_i: usize = 0;
+            var agg_i: usize = 0;
+            for (items.items) |item| {
+                switch (item) {
+                    .pass => |p| {
+                        try b.put(self.allocator, p.name, group.keys.items[key_i]);
+                        key_i += 1;
+                    },
+                    .key => |k| {
+                        try b.put(self.allocator, k.name, group.keys.items[key_i]);
+                        key_i += 1;
+                    },
+                    .agg => |a| {
+                        try b.put(self.allocator, a.name, .{ .value = aggResult(a.kind, group.aggs.items[agg_i]) });
+                        agg_i += 1;
+                    },
+                }
+            }
+            try out.append(self.allocator, b);
+        }
+
+        // WHERE filter (always present; `true` when absent).
+        var filtered = std.ArrayList(Bindings).empty;
+        for (out.items) |*b| {
+            if (try self.evalBool(info.where_expr, b)) {
+                try filtered.append(self.allocator, b.*);
+            }
+        }
+        out = filtered;
+
+        if (info.distinct) self.dedupBindings(&out);
+
+        if (info.order_by) |ob| try self.sortBindings(&out, ob);
+
+        if (info.skip) |sk| try self.applyBindingsSkip(&out, sk);
+        if (info.limit) |lim| try self.applyBindingsLimit(&out, lim);
+
+        self.with_rows = out;
+    }
+
+    fn findOrCreateWithGroup(self: *Executor, groups: *std.ArrayList(WithGroup), keys: []const Binding, items: []const WithItem) ExecError!*WithGroup {
+        for (groups.items) |*g| {
+            if (bindingKeysEq(g.keys.items, keys)) return g;
+        }
+        var group = WithGroup{ .keys = .empty, .aggs = .empty };
+        for (keys) |k| try group.keys.append(self.allocator, k);
+        for (items) |item| {
+            switch (item) {
+                .pass, .key => {},
+                .agg => |a| try group.aggs.append(self.allocator, AggState{ .kind = a.kind }),
+            }
+        }
+        try groups.append(self.allocator, group);
+        return &groups.items[groups.items.len - 1];
+    }
+
+    fn dedupBindings(self: *Executor, rows: *std.ArrayList(Bindings)) void {
+        _ = self;
+        var i: usize = 0;
+        while (i < rows.items.len) : (i += 1) {
+            var j: usize = i + 1;
+            while (j < rows.items.len) {
+                if (bindingsEq(rows.items[i], rows.items[j])) {
+                    _ = rows.swapRemove(j);
+                } else {
+                    j += 1;
+                }
+            }
+        }
+    }
+
+    fn applyBindingsSkip(self: *Executor, rows: *std.ArrayList(Bindings), skip: Index) ExecError!void {
+        const n = try self.evalCountExpr(self.ast.nodeChildren(skip)[0]);
+        if (n >= rows.items.len) {
+            rows.shrinkRetainingCapacity(0);
+            return;
+        }
+        var i: usize = 0;
+        while (i + n < rows.items.len) : (i += 1) {
+            rows.items[i] = rows.items[i + n];
+        }
+        rows.shrinkRetainingCapacity(rows.items.len - n);
+    }
+
+    fn applyBindingsLimit(self: *Executor, rows: *std.ArrayList(Bindings), limit: Index) ExecError!void {
+        const n = try self.evalCountExpr(self.ast.nodeChildren(limit)[0]);
+        if (n < rows.items.len) rows.shrinkRetainingCapacity(n);
+    }
+
+    fn sortBindings(self: *Executor, rows: *std.ArrayList(Bindings), ob: Index) ExecError!void {
+        const n = rows.items.len;
+        if (n <= 1) return;
+
+        const items = self.ast.nodeChildren(ob);
+        var asc = std.ArrayList(bool).empty;
+        defer asc.deinit(self.allocator);
+        for (items) |item| try asc.append(self.allocator, self.ast.data(item).order_item.ascending);
+
+        var keys = std.ArrayList(std.ArrayList(Value)).empty;
+        defer {
+            for (keys.items) |*k| k.deinit(self.allocator);
+            keys.deinit(self.allocator);
+        }
+        for (rows.items) |*b| {
+            var ks = std.ArrayList(Value).empty;
+            for (items) |item| {
+                try ks.append(self.allocator, try self.eval(self.ast.nodeChildren(item)[0], b));
+            }
+            try keys.append(self.allocator, ks);
+        }
+
+        var idx = std.ArrayList(usize).empty;
+        defer idx.deinit(self.allocator);
+        var k: usize = 0;
+        while (k < n) : (k += 1) try idx.append(self.allocator, k);
+
+        const ctx = WithSortCtx{ .keys = keys.items, .asc = asc.items };
+        std.sort.pdq(usize, idx.items, ctx, withLessThanIdx);
+
+        var new_rows = std.ArrayList(Bindings).empty;
+        for (idx.items) |i| try new_rows.append(self.allocator, rows.items[i]);
+        rows.* = new_rows;
+    }
+
+    /// Evaluates a non-negative integer literal (used by SKIP and LIMIT).
+    fn evalCountExpr(self: *Executor, expr: Index) ExecError!usize {
+        var empty = Bindings{ .entries = .empty };
+        return switch (try self.eval(expr, &empty)) {
+            .int => |n| if (n < 0) 0 else @as(usize, @intCast(n)),
+            else => 0,
+        };
+    }
+
     fn accumulate(self: *Executor, bindings: *Bindings) ExecError!void {
         var keys = std.ArrayList(Value).empty;
         var args = std.ArrayList(Value).empty;
         for (self.proj_items.items) |item| {
             switch (item) {
                 .key => |expr| try keys.append(self.allocator, try self.eval(expr, bindings)),
-                .agg => |a| {
-                    // count ignores its argument (no nulls in this subset), and
-                    // count(*) has none.
-                    if (a.kind == .count or a.arg == null) {
-                        try args.append(self.allocator, .{ .int = 0 });
-                    } else {
-                        try args.append(self.allocator, try self.eval(a.arg.?, bindings));
-                    }
-                },
+                .agg => |a| try args.append(self.allocator, try self.evalAggArg(a.kind, a.arg, bindings)),
             }
         }
 
@@ -510,6 +1065,28 @@ pub const Executor = struct {
             try self.updateAgg(state, args.items[arg_i]);
             arg_i += 1;
         }
+    }
+
+    /// Evaluates an aggregation argument. `count(*)` (no argument) returns a
+    /// non-null sentinel so it always counts; `count(x)` returns the real value
+    /// (a null skips it); other aggregates return the evaluated value.
+    fn evalAggArg(self: *Executor, kind: AggKind, arg: ?Index, bindings: *Bindings) ExecError!Value {
+        if (arg == null) return .{ .int = 0 }; // count(*) always counts
+        if (kind == .count) return self.evalCountArg(arg.?, bindings);
+        return self.eval(arg.?, bindings);
+    }
+
+    /// Evaluates `count(x)`: a bound node/edge variable is non-null; a scalar or
+    /// property access may be null.
+    fn evalCountArg(self: *Executor, expr: Index, bindings: *Bindings) ExecError!Value {
+        if (self.ast.kind(expr) == .variable) {
+            const name = self.ast.data(expr).text;
+            switch (bindings.get(name) orelse return error.UnknownVar) {
+                .node, .edge => return .{ .int = 0 }, // bound -> non-null sentinel
+                .value => |v| return v, // may be null
+            }
+        }
+        return self.eval(expr, bindings);
     }
 
     fn findOrCreateGroup(self: *Executor, keys: []const Value) ExecError!*Group {
@@ -529,19 +1106,27 @@ pub const Executor = struct {
     }
 
     fn updateAgg(self: *Executor, state: *AggState, arg: Value) ExecError!void {
-        _ = self;
         switch (state.kind) {
-            .count => state.count += 1,
-            .sum => state.sum += try asInt(arg),
+            .count => {
+                if (!isNull(arg)) state.count += 1;
+            },
+            .sum => {
+                if (!isNull(arg)) state.sum += try asInt(arg);
+            },
             .min => {
+                if (isNull(arg)) return;
                 if (state.min) |m| {
                     if (compareValue(arg, m) == .lt) state.min = arg;
                 } else state.min = arg;
             },
             .max => {
+                if (isNull(arg)) return;
                 if (state.max) |m| {
                     if (compareValue(arg, m) == .gt) state.max = arg;
                 } else state.max = arg;
+            },
+            .collect => {
+                try state.list.append(self.allocator, arg);
             },
         }
     }
@@ -573,6 +1158,7 @@ pub const Executor = struct {
     const ReturnInfo = struct {
         projection: Index,
         order_by: ?Index,
+        skip: ?Index,
         limit: ?Index,
         distinct: bool,
     };
@@ -581,6 +1167,7 @@ pub const Executor = struct {
         var info = ReturnInfo{
             .projection = 0,
             .order_by = null,
+            .skip = null,
             .limit = null,
             .distinct = self.ast.data(rc).return_.distinct,
         };
@@ -588,6 +1175,7 @@ pub const Executor = struct {
             switch (self.ast.kind(child)) {
                 .projection => info.projection = child,
                 .order_by => info.order_by = child,
+                .skip => info.skip = child,
                 .limit => info.limit = child,
                 else => {},
             }
@@ -608,13 +1196,24 @@ pub const Executor = struct {
             try self.sortRows(ob);
         }
 
+        if (info.skip) |sk| {
+            const n = try self.evalCountExpr(self.ast.nodeChildren(sk)[0]);
+            if (n >= self.rows.items.len) {
+                self.rows.shrinkRetainingCapacity(0);
+                self.row_keys.shrinkRetainingCapacity(0);
+            } else if (n > 0) {
+                var i: usize = 0;
+                while (i + n < self.rows.items.len) : (i += 1) {
+                    self.rows.items[i] = self.rows.items[i + n];
+                    self.row_keys.items[i] = self.row_keys.items[i + n];
+                }
+                self.rows.shrinkRetainingCapacity(self.rows.items.len - n);
+                self.row_keys.shrinkRetainingCapacity(self.row_keys.items.len - n);
+            }
+        }
+
         if (info.limit) |lim| {
-            const expr = self.ast.nodeChildren(lim)[0];
-            var empty = Bindings{ .entries = .empty };
-            const n = switch (try self.eval(expr, &empty)) {
-                .int => |n| if (n < 0) 0 else @as(usize, @intCast(n)),
-                else => 0,
-            };
+            const n = try self.evalCountExpr(self.ast.nodeChildren(lim)[0]);
             if (n < self.rows.items.len) self.rows.shrinkRetainingCapacity(n);
         }
     }
@@ -675,25 +1274,43 @@ pub const Executor = struct {
         try self.applyEdges(chain, num_nodes, bindings, false);
     }
 
-    fn applyMerge(self: *Executor, pattern: Index, bindings: *Bindings) ExecError!void {
+    fn applyMerge(self: *Executor, mc: Index, bindings: *Bindings) ExecError!void {
+        const kids = self.ast.nodeChildren(mc);
+        const pattern = kids[0];
+        const on_create = kids[1];
+        const on_match = kids[2];
         const chain = self.ast.nodeChildren(pattern);
         const num_nodes = (chain.len + 1) / 2;
 
+        var created = false;
         for (0..num_nodes) |i| {
             const np_idx = chain[i * 2];
             const np = self.ast.data(np_idx).node_pattern;
             if (np.var_name.len == 0 or bindings.getNode(np.var_name) != null) continue;
-            const id = (try self.findMatchingNode(np_idx, bindings)) orelse (try self.createNode(np_idx, bindings));
-            try bindings.put(self.allocator, np.var_name, .{ .node = id });
+            if (try self.findMatchingNode(np_idx, bindings)) |id| {
+                try bindings.put(self.allocator, np.var_name, .{ .node = id });
+            } else {
+                const id = try self.createNode(np_idx, bindings);
+                try bindings.put(self.allocator, np.var_name, .{ .node = id });
+                created = true;
+            }
         }
         try self.applyEdges(chain, num_nodes, bindings, true);
+
+        // ON CREATE / ON MATCH SET (an empty set clause is a no-op).
+        if (created) {
+            try self.applySet(on_create, bindings);
+        } else {
+            try self.applySet(on_match, bindings);
+        }
     }
 
     /// Creates a node from a `node_pattern` and returns its fresh id.
     fn createNode(self: *Executor, np_idx: Index, bindings: *Bindings) ExecError!NodeId {
         const np = self.ast.data(np_idx).node_pattern;
         const id = try self.graph.allocNodeId();
-        try self.graph.addNode(id, np.label);
+        try self.graph.addNode(id, ""); // node marker
+        for (np.labels) |label| try self.graph.addLabel(id, label);
         for (self.ast.nodeChildren(np_idx)) |prop_idx| {
             const prop_name = self.ast.data(prop_idx).text;
             const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
@@ -702,7 +1319,7 @@ pub const Executor = struct {
         return id;
     }
 
-    /// Finds an existing node matching the label + property map, if any.
+    /// Finds an existing node matching the labels + property map, if any.
     fn findMatchingNode(self: *Executor, np_idx: Index, bindings: *Bindings) ExecError!?NodeId {
         const np = self.ast.data(np_idx).node_pattern;
         const props = self.ast.nodeChildren(np_idx);
@@ -714,15 +1331,17 @@ pub const Executor = struct {
             var it = try self.graph.nodesByProp(prop_name, value);
             defer it.deinit();
             while (try it.next()) |id| {
-                if (np.label.len > 0 and !(try self.graph.hasLabel(id, np.label))) continue;
+                if (!(try self.hasAllLabels(id, np.labels))) continue;
                 if (try self.nodePropsMatch(np_idx, id, bindings)) return id;
             }
             return null;
         }
 
-        var it = try self.graph.nodesWithLabel(np.label);
+        const seed = if (np.labels.len > 0) np.labels[0] else "";
+        var it = try self.graph.nodesWithLabel(seed);
         defer it.deinit();
         while (try it.next()) |id| {
+            if (!(try self.hasAllLabels(id, np.labels))) continue;
             if (try self.nodePropsMatch(np_idx, id, bindings)) return id;
         }
         return null;
@@ -770,6 +1389,30 @@ pub const Executor = struct {
             switch (bindings.get(name) orelse return error.UnknownVar) {
                 .node => |id| try self.graph.setProp(id, prop, value),
                 .edge => |e| try self.graph.setEdgeProp(e.src, e.dst, e.etype, prop, value),
+                .value => return error.TypeMismatch,
+            }
+        }
+    }
+
+    fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) ExecError!void {
+        for (self.ast.nodeChildren(remove_clause)) |item| {
+            switch (self.ast.kind(item)) {
+                .property_access => {
+                    const prop = self.ast.data(item).text;
+                    const name = self.ast.data(self.ast.nodeChildren(item)[0]).text;
+                    switch (bindings.get(name) orelse return error.UnknownVar) {
+                        .node => |id| try self.graph.removeProp(id, prop),
+                        .edge => |e| try self.graph.removeEdgeProp(e.src, e.dst, e.etype, prop),
+                        .value => return error.TypeMismatch,
+                    }
+                },
+                .label_ref => {
+                    const label = self.ast.data(item).text;
+                    const name = self.ast.data(self.ast.nodeChildren(item)[0]).text;
+                    const id = bindings.getNode(name) orelse return error.UnknownVar;
+                    try self.graph.removeLabel(id, label);
+                },
+                else => {},
             }
         }
     }
@@ -814,8 +1457,20 @@ pub const Executor = struct {
     fn evalBool(self: *Executor, expr: Index, bindings: *Bindings) ExecError!bool {
         return switch (try self.eval(expr, bindings)) {
             .boolean => |b| b,
+            .null => false, // a null predicate filters the row out
             else => error.TypeMismatch,
         };
+    }
+
+    /// True if `needle` equals any element of the `list_literal` node. A null
+    /// needle matches nothing (`null IN [...]` is null, treated as false here).
+    fn inList(self: *Executor, needle: Value, list_node: Index, bindings: *Bindings) ExecError!bool {
+        if (isNull(needle)) return false;
+        for (self.ast.nodeChildren(list_node)) |item| {
+            const v = try self.eval(item, bindings);
+            if (valueEq(needle, v)) return true;
+        }
+        return false;
     }
 
     fn eval(self: *Executor, expr: Index, bindings: *Bindings) ExecError!Value {
@@ -823,6 +1478,48 @@ pub const Executor = struct {
             .int_literal => .{ .int = self.ast.data(expr).int },
             .string_literal => .{ .str = self.ast.data(expr).text },
             .bool_literal => .{ .boolean = self.ast.data(expr).boolean },
+            .list_literal => blk: {
+                var items = std.ArrayList(Value).empty;
+                for (self.ast.nodeChildren(expr)) |item| {
+                    try items.append(self.allocator, try self.eval(item, bindings));
+                }
+                break :blk .{ .list = items.items };
+            },
+            .size_fn => blk: {
+                const v = try self.eval(self.ast.nodeChildren(expr)[0], bindings);
+                const n: usize = switch (v) {
+                    .list => |items| items.len,
+                    .str => |s| s.len,
+                    .null => return error.TypeMismatch,
+                    else => return error.TypeMismatch,
+                };
+                break :blk .{ .int = @intCast(n) };
+            },
+            .case_expr => blk: {
+                const kids = self.ast.nodeChildren(expr);
+                const else_present = (kids.len % 2) == 1;
+                const num_pairs = kids.len / 2;
+                var p: usize = 0;
+                while (p < num_pairs) : (p += 1) {
+                    if (try self.evalBool(kids[p * 2], bindings)) {
+                        break :blk try self.eval(kids[p * 2 + 1], bindings);
+                    }
+                }
+                if (else_present) {
+                    break :blk try self.eval(kids[kids.len - 1], bindings);
+                }
+                break :blk .{ .null = {} };
+            },
+            .variable => blk: {
+                const name = self.ast.data(expr).text;
+                switch (bindings.get(name) orelse {
+                    self.fail("unknown variable '{s}'", .{name});
+                    return error.UnknownVar;
+                }) {
+                    .value => |v| break :blk v,
+                    .node, .edge => return error.TypeMismatch,
+                }
+            },
             .property_access => blk: {
                 const obj = self.ast.nodeChildren(expr)[0];
                 if (self.ast.kind(obj) != .variable) return error.InvalidExpr;
@@ -846,11 +1543,21 @@ pub const Executor = struct {
                         };
                         break :blk v;
                     },
+                    .value => |v| {
+                        // A property access on null yields null.
+                        if (isNull(v)) break :blk .{ .null = {} };
+                        return error.TypeMismatch;
+                    },
                 }
             },
             .binary_op => blk: {
                 const op = self.ast.data(expr).bin_op;
                 const kids = self.ast.nodeChildren(expr);
+                if (op == .in_) {
+                    // RHS is a list literal, not a scalar value.
+                    const l = try self.eval(kids[0], bindings);
+                    break :blk .{ .boolean = try self.inList(l, kids[1], bindings) };
+                }
                 const l = try self.eval(kids[0], bindings);
                 const r = try self.eval(kids[1], bindings);
                 break :blk try applyBinOp(op, l, r);
@@ -886,6 +1593,10 @@ fn edgeSrcDst(fwd_dir: Direction, from: usize, to: usize, from_id: NodeId, to_id
 
 fn valueEq(l: Value, r: Value) bool {
     return switch (l) {
+        .null => switch (r) {
+            .null => true,
+            else => false,
+        },
         .int => |lv| switch (r) {
             .int => |rv| lv == rv,
             else => false,
@@ -898,7 +1609,19 @@ fn valueEq(l: Value, r: Value) bool {
             .boolean => |rv| bv == rv,
             else => false,
         },
+        .list => |lv| switch (r) {
+            .list => |rv| listEq(lv, rv),
+            else => false,
+        },
     };
+}
+
+fn listEq(a: []const Value, b: []const Value) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |av, bv| {
+        if (!valueEq(av, bv)) return false;
+    }
+    return true;
 }
 
 fn rowsEq(a: []const Value, b: []const Value) bool {
@@ -913,13 +1636,22 @@ fn aggResult(kind: AggKind, state: AggState) Value {
     return switch (kind) {
         .count => .{ .int = @intCast(state.count) },
         .sum => .{ .int = state.sum },
-        .min => state.min orelse .{ .int = 0 },
-        .max => state.max orelse .{ .int = 0 },
+        .min => state.min orelse .{ .null = {} },
+        .max => state.max orelse .{ .null = {} },
+        .collect => .{ .list = state.list.items },
     };
 }
 
 fn compareValue(a: Value, b: Value) std.math.Order {
+    // Nulls sort after every non-null value (ascending order).
+    if (isNull(a)) return if (isNull(b)) .eq else .gt;
+    if (isNull(b)) return .lt;
     return switch (a) {
+        .null => unreachable,
+        .list => switch (b) {
+            .list => if (listEq(a.list, b.list)) .eq else .gt,
+            else => .gt,
+        },
         .int => |av| switch (b) {
             .int => |bv| std.math.order(av, bv),
             else => .lt,
@@ -951,29 +1683,109 @@ fn lessThanIdx(ctx: SortCtx, a: usize, b: usize) bool {
     return false;
 }
 
+const WithSortCtx = struct {
+    keys: []const std.ArrayList(Value),
+    asc: []const bool,
+};
+
+fn withLessThanIdx(ctx: WithSortCtx, a: usize, b: usize) bool {
+    const ka = ctx.keys[a].items;
+    const kb = ctx.keys[b].items;
+    for (ka, kb, ctx.asc) |va, vb, asc| {
+        const ord = compareValue(va, vb);
+        if (ord == .lt) return asc;
+        if (ord == .gt) return !asc;
+    }
+    return false;
+}
+
+fn bindingEq(a: Binding, b: Binding) bool {
+    return switch (a) {
+        .node => |x| switch (b) {
+            .node => |y| x == y,
+            else => false,
+        },
+        .edge => |x| switch (b) {
+            .edge => |y| x.src == y.src and x.dst == y.dst and std.mem.eql(u8, x.etype, y.etype),
+            else => false,
+        },
+        .value => |x| switch (b) {
+            .value => |y| valueEq(x, y),
+            else => false,
+        },
+    };
+}
+
+fn bindingsEq(a: Bindings, b: Bindings) bool {
+    if (a.entries.items.len != b.entries.items.len) return false;
+    for (a.entries.items) |ea| {
+        const eb = b.get(ea.name) orelse return false;
+        if (!bindingEq(ea.value, eb)) return false;
+    }
+    return true;
+}
+
+fn bindingKeysEq(a: []const Binding, b: []const Binding) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |av, bv| {
+        if (!bindingEq(av, bv)) return false;
+    }
+    return true;
+}
+
 fn applyBinOp(op: BinOp, l: Value, r: Value) ExecError!Value {
     return switch (op) {
-        .eq => .{ .boolean = valueEq(l, r) },
-        .ne => .{ .boolean = !valueEq(l, r) },
-        .and_ => .{ .boolean = try asBool(l) and try asBool(r) },
-        .or_ => .{ .boolean = try asBool(l) or try asBool(r) },
-        .lt, .gt, .le, .ge => blk: {
-            const li = try asInt(l);
-            const ri = try asInt(r);
-            break :blk .{ .boolean = switch (op) {
-                .lt => li < ri,
-                .gt => li > ri,
-                .le => li <= ri,
-                .ge => li >= ri,
+        .eq, .ne, .lt, .gt, .le, .ge, .starts_with, .ends_with, .contains => blk: {
+            // Three-valued logic: any null operand yields null.
+            if (isNull(l) or isNull(r)) break :blk .{ .null = {} };
+            break :blk switch (op) {
+                .eq => .{ .boolean = valueEq(l, r) },
+                .ne => .{ .boolean = !valueEq(l, r) },
+                .lt, .gt, .le, .ge => blk2: {
+                    const li = try asInt(l);
+                    const ri = try asInt(r);
+                    break :blk2 .{ .boolean = switch (op) {
+                        .lt => li < ri,
+                        .gt => li > ri,
+                        .le => li <= ri,
+                        .ge => li >= ri,
+                        else => unreachable,
+                    } };
+                },
+                .starts_with, .ends_with, .contains => blk2: {
+                    const ls = try asStr(l);
+                    const rs = try asStr(r);
+                    break :blk2 .{ .boolean = switch (op) {
+                        .starts_with => std.mem.startsWith(u8, ls, rs),
+                        .ends_with => std.mem.endsWith(u8, ls, rs),
+                        .contains => std.mem.indexOf(u8, ls, rs) != null,
+                        else => unreachable,
+                    } };
+                },
                 else => unreachable,
-            } };
+            };
         },
+        .and_ => blk: {
+            const lb = try asBoolOpt(l);
+            const rb = try asBoolOpt(r);
+            if (lb == false or rb == false) break :blk .{ .boolean = false };
+            if (lb == null or rb == null) break :blk .{ .null = {} };
+            break :blk .{ .boolean = true };
+        },
+        .or_ => blk: {
+            const lb = try asBoolOpt(l);
+            const rb = try asBoolOpt(r);
+            if (lb == true or rb == true) break :blk .{ .boolean = true };
+            if (lb == null or rb == null) break :blk .{ .null = {} };
+            break :blk .{ .boolean = false };
+        },
+        .in_ => unreachable, // handled in `eval` (RHS is a list literal)
     };
 }
 
 fn applyUnOp(op: UnOp, v: Value) ExecError!Value {
     return switch (op) {
-        .not_ => .{ .boolean = !try asBool(v) },
+        .not_ => if (isNull(v)) .{ .null = {} } else .{ .boolean = !try asBool(v) },
     };
 }
 
@@ -984,10 +1796,33 @@ fn asInt(v: Value) ExecError!i64 {
     };
 }
 
+fn asStr(v: Value) ExecError![]const u8 {
+    return switch (v) {
+        .str => |s| s,
+        else => error.TypeMismatch,
+    };
+}
+
 fn asBool(v: Value) ExecError!bool {
     return switch (v) {
         .boolean => |b| b,
         else => error.TypeMismatch,
+    };
+}
+
+/// Three-valued boolean coercion: `null` for null, an error for non-boolean.
+fn asBoolOpt(v: Value) ExecError!?bool {
+    return switch (v) {
+        .boolean => |b| b,
+        .null => null,
+        else => error.TypeMismatch,
+    };
+}
+
+fn isNull(v: Value) bool {
+    return switch (v) {
+        .null => true,
+        else => false,
     };
 }
 
@@ -1394,5 +2229,302 @@ test "aggregations: count, sum, min and max with grouping" {
     // sum of birth years.
     try expectQuery(&ast, &g, "MATCH (p:Person) RETURN sum(p.born)", &.{
         &.{.{ .int = 9813 }},
+    });
+}
+
+test "string predicates and IN membership" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // STARTS WITH.
+    try expectQuery(&ast, &g, "MATCH (m:Movie) WHERE m.title STARTS WITH 'The' RETURN m.title", &.{
+        &.{.{ .str = "The Matrix" }},
+        &.{.{ .str = "The Matrix Reloaded" }},
+    });
+
+    // ENDS WITH.
+    try expectQuery(&ast, &g, "MATCH (m:Movie) WHERE m.title ENDS WITH 'Wick' RETURN m.title", &.{
+        &.{.{ .str = "John Wick" }},
+    });
+
+    // CONTAINS.
+    try expectQuery(&ast, &g, "MATCH (m:Movie) WHERE m.title CONTAINS 'Matrix' RETURN m.title", &.{
+        &.{.{ .str = "The Matrix" }},
+        &.{.{ .str = "The Matrix Reloaded" }},
+    });
+
+    // IN with strings.
+    try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Tom Hanks'] RETURN p.name", &.{
+        &.{.{ .str = "Keanu Reeves" }},
+        &.{.{ .str = "Tom Hanks" }},
+    });
+
+    // IN with ints.
+    try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.born IN [1961, 1964] RETURN p.name", &.{
+        &.{.{ .str = "Keanu Reeves" }},
+        &.{.{ .str = "Laurence Fishburne" }},
+    });
+
+    // IN with no match.
+    try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.name IN ['Nobody'] RETURN p.name", &.{});
+}
+
+test "WITH pipeline: aggregation, filter, passthrough and pagination" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // WITH aggregation + WHERE filter on the aggregate.
+    try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WITH p, count(m) AS cnt WHERE cnt > 1 RETURN p.name, cnt", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 3 } },
+    });
+
+    // WITH passthrough + continued MATCH traversal.
+    try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WITH p, count(m) AS cnt WHERE cnt > 1 MATCH (p)-[:ACTED_IN]->(m2:Movie) RETURN m2.title", &.{
+        &.{.{ .str = "The Matrix" }},
+        &.{.{ .str = "The Matrix Reloaded" }},
+        &.{.{ .str = "John Wick" }},
+    });
+
+    // WITH scalar alias projection.
+    try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'}) WITH p.name AS n RETURN n", &.{
+        &.{.{ .str = "Keanu Reeves" }},
+    });
+
+    // WITH ORDER BY + SKIP + LIMIT (pagination mid-query).
+    try expectOrdered(&ast, &g, "MATCH (p:Person) WITH p ORDER BY p.name SKIP 1 LIMIT 2 RETURN p.name", &.{
+        &.{.{ .str = "Keanu Reeves" }},
+        &.{.{ .str = "Lana Wachowski" }},
+    });
+}
+
+test "SKIP pagination in RETURN" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectOrdered(&ast, &g, "MATCH (m:Movie) RETURN m.title ORDER BY m.released SKIP 1 LIMIT 2", &.{
+        &.{.{ .str = "The Matrix" }},
+        &.{.{ .str = "The Matrix Reloaded" }},
+    });
+
+    // SKIP without LIMIT.
+    try expectOrdered(&ast, &g, "MATCH (m:Movie) RETURN m.title ORDER BY m.released SKIP 3", &.{
+        &.{.{ .str = "John Wick" }},
+    });
+}
+
+test "OPTIONAL MATCH: outer join and nulls" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Unmatched optional pattern yields a null title.
+    try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Lana Wachowski'}) OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN p.name, m.title", &.{
+        &.{ .{ .str = "Lana Wachowski" }, .{ .null = {} } },
+    });
+
+    // Full outer join: each person with every acted movie, or null when none.
+    try expectQuery(&ast, &g, "MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN p.name, m.title", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .str = "The Matrix" } },
+        &.{ .{ .str = "Keanu Reeves" }, .{ .str = "The Matrix Reloaded" } },
+        &.{ .{ .str = "Keanu Reeves" }, .{ .str = "John Wick" } },
+        &.{ .{ .str = "Carrie-Anne Moss" }, .{ .str = "The Matrix" } },
+        &.{ .{ .str = "Laurence Fishburne" }, .{ .str = "The Matrix" } },
+        &.{ .{ .str = "Lana Wachowski" }, .{ .null = {} } },
+        &.{ .{ .str = "Tom Hanks" }, .{ .str = "Forrest Gump" } },
+    });
+
+    // count skips nulls: people with no DIRECTED movie count as 0.
+    try expectQuery(&ast, &g, "MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m:Movie) RETURN p.name, count(m)", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 0 } },
+        &.{ .{ .str = "Carrie-Anne Moss" }, .{ .int = 0 } },
+        &.{ .{ .str = "Laurence Fishburne" }, .{ .int = 0 } },
+        &.{ .{ .str = "Lana Wachowski" }, .{ .int = 2 } },
+        &.{ .{ .str = "Tom Hanks" }, .{ .int = 0 } },
+    });
+
+    // WHERE inside OPTIONAL MATCH: a person whose matches are all filtered out
+    // still yields one null row (the outer-join fallback).
+    try expectQuery(&ast, &g, "MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2010 RETURN p.name, m.title", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .str = "John Wick" } },
+        &.{ .{ .str = "Carrie-Anne Moss" }, .{ .null = {} } },
+        &.{ .{ .str = "Laurence Fishburne" }, .{ .null = {} } },
+        &.{ .{ .str = "Lana Wachowski" }, .{ .null = {} } },
+        &.{ .{ .str = "Tom Hanks" }, .{ .null = {} } },
+    });
+
+    // A null comparison in a post-join filter (via WITH) drops the row.
+    try expectQuery(&ast, &g, "MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m:Movie) WITH p, m WHERE m.released >= 2010 RETURN p.name, m.title", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .str = "John Wick" } },
+    });
+}
+
+test "lists: collect, size, list literals and UNWIND" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // size of a list literal.
+    try expectQuery(&ast, &g, "RETURN size([1, 2, 3])", &.{
+        &.{.{ .int = 3 }},
+    });
+
+    // size of a string.
+    try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'}) RETURN size(p.name)", &.{
+        &.{.{ .int = 12 }},
+    });
+
+    // collect every movie title (scan order = ascending id).
+    try expectQuery(&ast, &g, "MATCH (m:Movie) RETURN collect(m.title)", &.{
+        &.{.{ .list = &.{
+            .{ .str = "The Matrix" },
+            .{ .str = "The Matrix Reloaded" },
+            .{ .str = "John Wick" },
+            .{ .str = "Forrest Gump" },
+        } }},
+    });
+
+    // collect then size through WITH.
+    try expectQuery(&ast, &g, "MATCH (m:Movie) WITH collect(m.title) AS titles RETURN size(titles)", &.{
+        &.{.{ .int = 4 }},
+    });
+
+    // UNWIND a list literal (no MATCH).
+    try expectQuery(&ast, &g, "UNWIND [1, 2, 3] AS x RETURN x", &.{
+        &.{.{ .int = 1 }},
+        &.{.{ .int = 2 }},
+        &.{.{ .int = 3 }},
+    });
+
+    // UNWIND after MATCH.
+    try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'}) UNWIND [1, 2] AS x RETURN x", &.{
+        &.{.{ .int = 1 }},
+        &.{.{ .int = 2 }},
+    });
+}
+
+test "multi-label, REMOVE, CASE and MERGE ON CREATE/MATCH" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Multi-label: a node carries both labels; matching requires all of them.
+    try expectQuery(&ast, &g, "CREATE (n:Person:Employee {name: 'A'})", &.{});
+    try expectQuery(&ast, &g, "CREATE (m:Person {name: 'B'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person:Employee) RETURN n.name", &.{
+        &.{.{ .str = "A" }},
+    });
+    try expectQuery(&ast, &g, "MATCH (n:Employee) RETURN n.name", &.{
+        &.{.{ .str = "A" }},
+    });
+    try expectQuery(&ast, &g, "MATCH (n:Person) RETURN n.name", &.{
+        &.{.{ .str = "A" }},
+        &.{.{ .str = "B" }},
+    });
+
+    // REMOVE a label.
+    try expectQuery(&ast, &g, "MATCH (n:Person:Employee) REMOVE n:Employee", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Employee) RETURN n.name", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person) RETURN n.name", &.{
+        &.{.{ .str = "A" }},
+        &.{.{ .str = "B" }},
+    });
+
+    // REMOVE a property (and its index entry).
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'A'}) REMOVE n.name", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'A'}) RETURN n.name", &.{});
+
+    // CASE expression.
+    try expectQuery(&ast, &g, "RETURN CASE WHEN 1 > 0 THEN 'yes' ELSE 'no' END", &.{
+        &.{.{ .str = "yes" }},
+    });
+
+    // MERGE ON CREATE / ON MATCH SET.
+    try expectQuery(&ast, &g, "MERGE (n:Person {name: 'X'}) ON CREATE SET n.c = 1 ON MATCH SET n.m = 1", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'X'}) RETURN n.c", &.{
+        &.{.{ .int = 1 }},
+    });
+    try expectQuery(&ast, &g, "MERGE (n:Person {name: 'X'}) ON CREATE SET n.c = 2 ON MATCH SET n.m = 1", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:Person {name: 'X'}) RETURN n.m", &.{
+        &.{.{ .int = 1 }},
+    });
+}
+
+test "edge-property index anchors unlabeled edge patterns" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    // Unlabeled nodes connected by a typed edge carrying a property.
+    try g.addNode(1, "");
+    try g.setProp(1, "name", .{ .str = "A" });
+    try g.addNode(2, "");
+    try g.setProp(2, "name", .{ .str = "B" });
+    try g.addNode(3, "");
+    try g.setProp(3, "name", .{ .str = "C" });
+    try g.addEdge(1, 2, "KNOWS");
+    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 5 });
+    try g.addEdge(1, 3, "KNOWS");
+    try g.setEdgeProp(1, 3, "KNOWS", "weight", .{ .int = 9 });
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // The edge-property index anchors the match: only weight=5 edges match.
+    try expectQuery(&ast, &g, "MATCH (a)-[r:KNOWS {weight: 5}]->(b) RETURN a.name, b.name", &.{
+        &.{ .{ .str = "A" }, .{ .str = "B" } },
     });
 }
