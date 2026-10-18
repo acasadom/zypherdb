@@ -2,27 +2,22 @@
 
 *An embedded graph database in Zig, speaking openCypher, on LMDB.*
 
-acmedb is a small, embeddable graph database: you link it into your process (or load the
-shared library from Python), write your data and queries in a subset of **openCypher**, and it
-answers them over an **index-free adjacency** graph stored in **LMDB**. No server, no
-configuration, one binary toolchain.
+acmedb is a small, embeddable graph database: link it into your process (or load the shared
+library from Python), write data and run queries in a subset of **openCypher**, over an
+**index-free adjacency** graph stored in **LMDB**. No server, no configuration, one binary
+toolchain.
 
-It is built for embedding: the whole engine is a Zig library exposing a small **C ABI**, so any
-language that can call C — Python via `ctypes`, any FFI — can open a database, write nodes and
-edges, and run queries.
+The documentation has two tracks, like the codebase has two audiences:
 
-This documentation has two halves:
+- the **tutorial and references** — how to *use* the database: the language, the C ABI, Python;
+- the **technical guides** — how it *works inside*, for reading and maintaining the code: the
+  design, the storage encoding, the parser, and the planner/executor.
 
-- a **tutorial** that grows a single "people and movies" graph from a first `MATCH` to
-  aggregation, `WITH` pipelines and `OPTIONAL MATCH`;
-- a set of **guides** — the architecture (how the keys are laid out and how the executor plans),
-  the openCypher subset reference, and the C ABI.
-
-## The tutorial, step by step
+## Using it
 
 ```{toctree}
 :maxdepth: 1
-:caption: Tutorial
+:caption: Using acmedb
 
 tutorial/01-getting-started
 tutorial/02-matching
@@ -34,14 +29,24 @@ tutorial/07-optional-nulls
 tutorial/08-lists-strings
 ```
 
-## Guides
-
 ```{toctree}
 :maxdepth: 1
-:caption: Guides
+:caption: References
 
-guide/architecture
 guide/cypher
 guide/c-api
 guide/python
+```
+
+## How it works inside
+
+```{toctree}
+:maxdepth: 1
+:caption: Technical
+
+guide/architecture
+guide/storage
+guide/language
+guide/planning-execution
+guide/contributing
 ```

@@ -70,19 +70,35 @@ MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2000 RETURN m.title
 
 ## Documentation
 
-Read the docs at [`docs/`](docs/) — a step-by-step **tutorial** (eight steps that grow a "people
-and movies" graph from a first `MATCH` to `OPTIONAL MATCH` and lists) plus guides for the
-architecture, the openCypher subset, and the C ABI. Build the HTML locally:
+Read the docs at [`docs/`](docs/) — two tracks:
+
+- **Using acmedb** — a step-by-step [tutorial](docs/tutorial/01-getting-started.md) (eight steps
+  growing a "people and movies" graph) plus references for the
+  [openCypher subset](docs/guide/cypher.md), the [C ABI](docs/guide/c-api.md), and
+  [Python](docs/guide/python.md).
+- **How it works inside** — the [architecture](docs/guide/architecture.md) (design decisions,
+  components, query lifecycle), the [storage encoding](docs/guide/storage.md) (keys, index-free
+  adjacency, indexes), the [lexer/parser](docs/guide/language.md), and
+  [planning & execution](docs/guide/planning-execution.md) (anchor selection, pushdown, the
+  volcano translation), plus [contributing](docs/guide/contributing.md).
+
+Build the HTML locally:
 
 ```bash
-pip install -r docs/requirements.txt
-sphinx-build -b html docs docs/_build/html
+make docs    # or: sphinx-build -b html docs docs/_build/html
 ```
 
-- **[Tutorial](docs/tutorial/01-getting-started.md)** — start here; the language, one feature at a time.
-- **[Architecture](docs/guide/architecture.md)** — how the keys are laid out, index-free adjacency, and how the executor plans.
-- **[openCypher subset](docs/guide/cypher.md)** — the full reference of what the language supports.
-- **[C ABI](docs/guide/c-api.md)** · **[Python](docs/guide/python.md)** — embedding reference.
+(requires `pip install -r docs/requirements.txt` — Sphinx + MyST + mermaid.)
+
+## Development
+
+```bash
+zig build test    # build and run the test suite
+zig build         # static + shared libraries into zig-out/
+make docs         # build the HTML documentation
+```
+
+See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 
 ## What's in the box
 

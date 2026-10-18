@@ -1,117 +1,99 @@
-# Architecture — how acmedb works
+# Architecture
 
-This is the contributor-level deep dive: the layering, how the graph is encoded into LMDB keys,
-how adjacency is stored so a traversal is a single prefix scan, and how a query goes from text to
-rows.
+This is the entry point to the **technical** documentation: the design decisions, the components,
+how they interact, and how a query flows through them. It is for reading and maintaining the code.
+For the *how to use it* side, start with the [tutorial](../tutorial/01-getting-started); the deeper
+pages — [storage](storage), [the language](language), [planning & execution](planning-execution) —
+grow out of this one.
 
-If you only want to *write data and run queries*, the [tutorial](../tutorial/01-getting-started)
-and the [openCypher reference](cypher) are enough. This page is for changing the engine.
+## Why it is shaped this way
 
-## The shape of the design
+acmedb is deliberately small and generic. Four decisions explain almost every file:
 
-acmedb is five layers, each a plain Zig module with a small, concrete interface:
+- **Zig, not C++.** The project started as C++/RocksDB and pivoted. The reasons were pragmatic:
+  embeddable in Python, real performance, fast builds on an 8 GB M1, and a single-binary toolchain
+  (no CMake, no vcpkg, no Docker). Zig 0.17 is pre-1.0, but `comptime` generics map cleanly onto the
+  generic-programming style the project wants.
+- **No class hierarchies, no Visitor.** The style is Stepanov/STL: **data as concrete types,
+  algorithms as free functions, errors as values** (Zig `error union`s, the analogue of
+  `std::expected`). You will not find `interface`/`abstract class` anywhere — the AST is not a tree
+  of `Node` subclasses but a flat arena, and the executor is not a tree of `Operator` objects but a
+  recursive function over a small set of step tags.
+- **An arena AST.** Nodes live in one `std.ArrayList`, children are a separate index array, and
+  strings are interned into the arena. No pointers, no inheritance, one `deinit` frees the whole
+  tree. This is the same shape Zig itself uses for its AST.
+- **LMDB as the storage engine.** A graph is traversed by following adjacencies, not by joining
+  tables, so the storage is a single key/value B+tree and *"neighbours of X" is one prefix scan*.
+  LMDB is single-writer / multi-reader, which is exactly the intended read-replication model, and
+  its lexicographic key order is what the adjacency encoding exploits.
+
+## The components
+
+Ten files, five layers, with a strict one-way dependency rule (a layer talks only to the one below
+it):
 
 ```{mermaid}
 flowchart TB
-  subgraph L1["Storage"]
-    KV["kv_store.zig<br/>KvStore over LMDB"]
-    LMDB["lmdb.zig<br/>hand-written C bindings"]
-    Graph["graph.zig<br/>key encoding + index-free adjacency"]
+  subgraph embed["Embedding"]
+    CAPI["capi.zig — C ABI (export fn)"]
   end
-  subgraph L2["Language"]
-    AST["ast.zig<br/>arena AST (no pointers)"]
-    Parser["parser.zig<br/>recursive descent, openCypher subset"]
+  subgraph lang["Language"]
+    Parser["parser.zig — lexer + recursive descent"]
+    AST["ast.zig — arena AST"]
   end
-  subgraph L3["Execution"]
-    Exec["exec.zig<br/>Volcano executor (anchor + pushdown)"]
+  subgraph exec["Execution"]
+    Exec["exec.zig — Volcano executor"]
+    Diag["diag.zig — error messages + offsets"]
   end
-  subgraph L4["Embedding"]
-    CAPI["capi.zig<br/>C ABI (export fn)"]
+  subgraph storage["Storage"]
+    Graph["graph.zig — key encoding, indexes, adjacency"]
+    KV["kv_store.zig — KvStore over LMDB"]
+    LMDB["lmdb.zig — hand-written C bindings"]
   end
 
-  Parser --> AST
-  Exec --> AST
-  Exec --> Graph
-  Graph --> KV
-  KV --> LMDB
   CAPI --> Exec
   CAPI --> Graph
+  Exec --> AST
+  Exec --> Graph
+  Parser --> AST
+  Parser --> Diag
+  Graph --> KV
+  KV --> LMDB
 ```
 
-The dependency rule is strict and one-way: the executor talks only to `Graph`, `Graph` talks only
-to `KvStore`, and `KvStore` talks only to LMDB through the hand-written bindings. Nothing above
-the storage layer touches LMDB directly.
-
-## Storage: LMDB and the key encoding
-
-LMDB is a **single-writer, multi-reader** B+tree key/value store. acmedb opens the environment with
-`MDB_NOTLS`, so a single thread may hold several read transactions at once — the executor needs
-that to run nested prefix scans (a node scan, then a neighbour scan inside it). See
-[transactions](#transactions) below.
-
-There is exactly one unnamed database, and **everything is a key**. All integers are big-endian and
-fixed-width, so lexicographic byte order equals numeric order and no id is ever a prefix of
-another. The keys (with `|` = concatenation and `0x00` a separator byte):
-
-| Key | Meaning |
+| File | What it is |
 | --- | --- |
-| `n \| id` | a node exists |
-| `n \| id \| 0x00 \| prop` | a node property (value = encoded `Value`) |
-| `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` is `'o'` out / `'i'` in) |
-| `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the canonical `src -> dst` orientation |
-| `l \| label \| 0x00 \| id` | forward label index: which nodes carry `label` |
-| `L \| id \| 0x00 \| label` | reverse label index: which labels `id` carries (for delete) |
-| `p \| prop \| 0x00 \| value \| id` | property index: nodes whose `prop == value` |
-| `g \| prop \| 0x00 \| value \| src \| dst \| 0x00 \| type` | edge-property index: edges whose `prop == value` |
-| `t \| type` | edge-type cardinality counter (for anchor selection) |
-| `!` | the next node id to allocate (a persistent counter) |
+| `src/storage/lmdb.zig` | Hand-written C bindings: `opaque {}` handles for `MDB_env`/`MDB_txn`/`MDB_cursor`, an `extern struct MDB_val`, ~15 `extern "c" fn`, and the constants (`MDB_RDONLY`, `MDB_NOTLS`, `MDB_NOTFOUND`, `MDB_NEXT`, `MDB_SET_RANGE`). |
+| `src/storage/kv_store.zig` | `KvStore`, a RAII wrapper over LMDB: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix`, plus explicit write and read transactions. `scanPrefix` returns an **iterator**, not a callback — the composable abstraction the executor needs. |
+| `src/storage/graph.zig` | `Graph`: the key encoding, index-free adjacency, the label/property/edge indexes, and value encoding. It is the only place that knows the key layout. |
+| `src/ast/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, and `addNode`/`nodeChildren`/`intern`. |
+| `src/parser/parser.zig` | The lexer (`tokenize`) and the recursive-descent parser (`Parser`), text → arena AST. |
+| `src/exec/exec.zig` | The Volcano executor: planning (anchor selection, predicate pushdown) and execution (nested-loop scans/expansions), plus writes, aggregation and the `WITH` pipeline. |
+| `src/diag.zig` | `Diagnostic`: a message + byte offset, the error-reporting seam. |
+| `src/capi.zig` | The C ABI (`export fn`) for embedding; a `Context` (store + graph) and a self-contained `Result`. |
+| `src/root.zig` | The library root: re-exports the public surface. |
+| `build.zig` | One module + static library + shared library (C ABI) + test step; compiles the vendored LMDB C. |
 
-A `Value` is encoded as a one-byte tag plus a payload: `0x01` + 8-byte big-endian `i64` for
-integers, `0x02` + bytes for strings. Booleans, nulls and lists are produced during evaluation but
-are never stored as properties.
+## The lifecycle of a query
 
-### Index-free adjacency
-
-The whole point of this layout is that **"give me the neighbours of node X" is a single LMDB
-prefix scan** — no joins, no secondary lookup:
-
-- every directed typed edge is stored **twice** — keyed by its source (`'o'`) and by its target
-  (`'i'`) — so both directions are a prefix scan;
-- because the neighbour id is the trailing fixed-width field, LMDB's lexicographic iteration
-  returns neighbours in ascending id order for free.
-
-A traversal like `(a)-[:ACTED_IN]->(b)` is therefore: scan `e | a | 'o' | 0x00 | ACTED_IN | 0x00`
-and read the trailing 8 bytes of each key. That is the "index-free adjacency" (IFA) model.
-
-## The executor: a Volcano pipeline
-
-The executor is a small Volcano engine — `Open`/`Next`/`Close`-style operators over iterators —
-with three ideas worth knowing:
-
-1. **Anchor selection.** For a pattern, pick the cheapest starting point. A node is ranked by:
-   an equality seek on a property (`1`), otherwise its smallest label count, capped by the rarest
-   incident edge type. A single edge whose only selectivity is an inline property seek is anchored
-   directly on the edge-property index. The traversal then expands bidirectionally from the anchor.
-2. **Predicate pushdown.** Equality predicates (`=`, inline `{prop: value}`) are turned into index
-   seeks before the scan runs; the rest of the `WHERE` is evaluated per row.
-3. **Batched reads.** A read-only query runs inside one LMDB read transaction (an MVCC snapshot),
-   so a filtered scan is O(1) transactions rather than one per read.
-
-The clause pipeline is: `MATCH` → `OPTIONAL MATCH` (an outer join) → `UNWIND` → `WITH`
-(project/aggregate/filter/sort/paginate, then re-bind) → writes (`CREATE`/`MERGE`/`SET`/`DELETE`/
-`REMOVE`) → `RETURN` (project, `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`).
+A query is text in, rows out, through four stages. Each stage is a separate file:
 
 ```{mermaid}
 sequenceDiagram
   autonumber
-  participant P as parser
-  participant E as executor
-  participant G as graph
-  participant S as KvStore / LMDB
+  participant C as caller (capi)
+  participant P as parser.zig
+  participant A as ast.zig
+  participant E as exec.zig
+  participant G as graph.zig
+  participant S as kv_store.zig
 
-  P->>E: query AST
-  E->>E: plan: choose anchor (label count / seek / edge index)
-  E->>S: begin read txn (snapshot)
+  C->>P: "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN m.title"
+  P->>P: tokenize → tokens
+  P->>A: recursive descent → arena AST
+  P-->>C: AST (root query node)
+  C->>E: exec.run(query AST)
+  E->>E: plan: choose anchor, push predicates, build steps
   loop scan / expand
     E->>G: nodesWithLabel / neighbours / nodesByProp
     G->>S: scanPrefix(...)
@@ -119,36 +101,20 @@ sequenceDiagram
     G-->>E: node ids
   end
   E->>E: WHERE / projection / aggregation
-  E->>S: commit/abort read txn
-  E-->>P: rows
+  E-->>C: rows
 ```
 
-## The AST and the parser
+1. **Lex + parse** — `tokenize` turns the text into a token array; the recursive-descent `Parser`
+   walks it into the arena AST. See [the language](language).
+2. **Plan** — the executor reads the AST and, for each `MATCH` pattern, builds a plan: a chain of
+   `ChainNode`s/`ChainEdge`s, an anchor choice, and a list of `BindStep`s. This is where the
+   optimizations live. See [planning & execution](planning-execution).
+3. **Execute** — a recursive function (`execStep`) walks the steps; each step is a graph operation
+   (a scan or an expansion) backed by a `scanPrefix` iterator. See [storage](storage) for what those
+   operations *mean*.
+4. **Return** — rows are projected and handed back through the C ABI.
 
-The AST is an **arena**: a flat `std.ArrayList` of nodes plus a child-index array, no pointers, no
-inheritance, no Visitor. Each node is a `NodeKind` tag and a small tagged-union payload; strings
-are interned into the arena so the whole tree is freed with one `deinit`. This is the generic
-(Stepanov/STL) style the project uses throughout: data as concrete types, algorithms as free
-functions, errors as values (`error union`s, the analogue of `std::expected`).
-
-The parser is a hand-written recursive-descent parser for the openCypher subset — no ANTLR, no
-generator — producing that arena AST directly.
-
-## Transactions
-
-- **Writes** are atomic: the executor wraps every query's writes in one write transaction
-  (`KvStore.beginWrite` / `commitWrite`); a `MERGE` or `CREATE` that fails mid-way aborts cleanly.
-  Inside it, all reads see the uncommitted writes.
-- **Reads** are batched: a read-only query opens one read transaction (an MVCC snapshot) and every
-  `get`/`exists`/`scanPrefix` runs inside it. Iterators created under a transaction must be
-  `deinit`'d before the transaction ends (the cursor belongs to it).
-
-## Recap
-
-- **Everything is a key** in one LMDB database; fixed-width big-endian integers make lexicographic
-  order the order you want.
-- **Index-free adjacency**: edges are stored twice, so a traversal is a prefix scan.
-- **Indexes** are themselves keys: label, property, edge-property, plus a cardinality counter for
-  planning.
-- **The executor plans, then runs**: anchor selection + predicate pushdown, one read transaction
-  per query, one write transaction per writing query.
+There is deliberately **no intermediate representation** between the AST and the plan: the plan
+structures are built directly inside the executor, and the optimizations are the anchor selection
+and the predicate pushdown, applied inline. See [planning & execution](planning-execution) for *why
+that's fine at the current language surface* and *when a real IR would start to pay*.
