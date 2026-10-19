@@ -1,20 +1,9 @@
-//! Graph key encoding and a minimal index-free adjacency layer over `KeyValueStore`.
+//! The graph: nodes, labels, typed edges and properties, with their indexes,
+//! stored as keys in a `KeyValueStore` (see key_encoding.zig for the layout).
 //!
-//! Keys are byte strings laid out so that "give me the neighbours of node X"
-//! is a single LMDB prefix scan (index-free adjacency, IFA). Each directed,
-//! typed edge is stored twice — once keyed by its source (outgoing) and once
-//! by its target (incoming) — so both directions are O(1) prefix scans.
-//!
-//! Key layout (all integers big-endian, fixed width):
-//!
-//! - node marker:            `n | node_id`
-//! - node property:          `n | node_id | 0x00 | prop_name`
-//! - edge (per direction):   `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`
-//!
-//! `node_id` is a fixed-width u64, so lexicographic byte order equals numeric
-//! order and no id is ever a prefix of another. `dir` is a single byte
-//! (`'o'`/`'i'`), and `edge_type` is a string delimited by `0x00` (edge types
-//! are identifiers, so they never contain `0x00`).
+//! Index-free adjacency: each directed, typed edge is stored twice, keyed by
+//! its source (outgoing) and by its target (incoming), so the neighbours of a
+//! node in either direction are one prefix scan.
 
 const std = @import("std");
 
@@ -24,230 +13,12 @@ const PrefixIterator = @import("key_value_store.zig").PrefixIterator;
 
 const Allocator = std.mem.Allocator;
 
-/// Node identifiers are fixed-width u64.
-pub const NodeId = u64;
+const key_encoding = @import("key_encoding.zig");
 
-/// Traversal direction relative to the node a key is stored under.
-pub const Direction = enum(u8) {
-    out = 'o',
-    in = 'i',
-};
-
-/// Decoded fields of an edge key. `etype` is a view into the key and is only
-/// valid while the key itself is alive.
-pub const EdgeKey = struct {
-    id: NodeId,
-    dir: Direction,
-    etype: []const u8,
-    neighbour: NodeId,
-};
-
-const node_marker: u8 = 'n';
-const edge_marker: u8 = 'e';
-const label_marker: u8 = 'l';
-const rev_label_marker: u8 = 'L';
-const index_marker: u8 = 'p';
-const edge_prop_marker: u8 = 'f';
-const edge_index_marker: u8 = 'g';
-const edge_type_marker: u8 = 't';
-const sep: u8 = 0x00;
-const id_len: usize = @sizeOf(NodeId);
-
-/// Key storing the next node id to allocate (8-byte big-endian counter).
-const counter_key: []const u8 = "!";
-
-// ---------------------------------------------------------------------------
-// Value encoding (property values)
-// ---------------------------------------------------------------------------
-
-pub const Value = @import("../value.zig").Value;
-
-const value_int: u8 = 0x01;
-const value_str: u8 = 0x02;
-
-/// Appends the storage encoding of `value`: `tag | payload`.
-pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) !void {
-    switch (value) {
-        .int => |v| {
-            try list.append(allocator, value_int);
-            var buf: [8]u8 = undefined;
-            std.mem.writeInt(i64, &buf, v, .big);
-            try list.appendSlice(allocator, &buf);
-        },
-        .str => |s| {
-            try list.append(allocator, value_str);
-            try list.appendSlice(allocator, s);
-        },
-        .boolean, .null, .list => unreachable, // not stored as properties
-    }
-}
-
-/// Decodes a stored value, returning a `Value` whose `str` variant is an owned
-/// copy allocated with `allocator` (free it, or use an arena).
-fn decodeOwnedValue(raw: []const u8, allocator: Allocator) !Value {
-    return switch (raw[0]) {
-        value_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
-        value_str => .{ .str = try allocator.dupe(u8, raw[1..]) },
-        else => unreachable,
-    };
-}
-
-/// Decodes a stored value without copying; `str` is a view into `raw`.
-fn decodeValue(raw: []const u8) Value {
-    return switch (raw[0]) {
-        value_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
-        value_str => .{ .str = raw[1..] },
-        else => unreachable,
-    };
-}
-
-/// Appends the property-index encoding of `value`: strings get a trailing
-/// `0x00` so a lookup prefix for "X" cannot also match "XY"; ints are fixed
-/// width and need no delimiter.
-fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) !void {
-    switch (value) {
-        .int => |v| {
-            try list.append(allocator, value_int);
-            var buf: [8]u8 = undefined;
-            std.mem.writeInt(i64, &buf, v, .big);
-            try list.appendSlice(allocator, &buf);
-        },
-        .str => |s| {
-            try list.append(allocator, value_str);
-            try list.appendSlice(allocator, s);
-            try list.append(allocator, sep);
-        },
-        .boolean, .null, .list => unreachable, // not stored as properties
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Key encoding
-// ---------------------------------------------------------------------------
-
-fn appendNodeId(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId) !void {
-    var buf: [id_len]u8 = undefined;
-    std.mem.writeInt(NodeId, &buf, id, .big);
-    try list.appendSlice(allocator, &buf);
-}
-
-fn readNodeId(bytes: []const u8) NodeId {
-    std.debug.assert(bytes.len == id_len);
-    return std.mem.readInt(NodeId, @ptrCast(bytes.ptr), .big);
-}
-
-/// Appends the key for a node existence marker: `n | node_id`.
-pub fn appendNodeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId) !void {
-    try list.append(allocator, node_marker);
-    try appendNodeId(list, allocator, id);
-}
-
-/// Appends the key for a node property: `n | node_id | 0x00 | prop_name`.
-pub fn appendNodePropKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, prop: []const u8) !void {
-    try appendNodeKey(list, allocator, id);
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, prop);
-}
-
-/// Appends the key for a label-index entry: `l | label | 0x00 | node_id`.
-pub fn appendLabelKey(list: *std.ArrayList(u8), allocator: Allocator, label: []const u8, id: NodeId) !void {
-    try list.append(allocator, label_marker);
-    try list.appendSlice(allocator, label);
-    try list.append(allocator, sep);
-    try appendNodeId(list, allocator, id);
-}
-
-/// Appends the key for a reverse label-index entry: `L | node_id | 0x00 | label`
-/// (so a node's labels can be enumerated on delete).
-fn appendReverseLabelKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, label: []const u8) !void {
-    try list.append(allocator, rev_label_marker);
-    try appendNodeId(list, allocator, id);
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, label);
-}
-
-/// Appends the key for a property-index entry:
-/// `p | prop | 0x00 | value | node_id`.
-pub fn appendIndexKey(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value, id: NodeId) !void {
-    try appendIndexPrefix(list, allocator, prop, value);
-    try appendNodeId(list, allocator, id);
-}
-
-/// Appends the lookup prefix for "prop == value": `p | prop | 0x00 | value`.
-pub fn appendIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value) !void {
-    try list.append(allocator, index_marker);
-    try list.appendSlice(allocator, prop);
-    try list.append(allocator, sep);
-    try encodeIndexValue(list, allocator, value);
-}
-
-/// Appends the key for an edge property (canonical `src -> dst` orientation):
-/// `f | src | dst | 0x00 | edge_type | 0x00 | prop`.
-pub fn appendEdgePropKey(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, etype: []const u8, prop: []const u8) !void {
-    try appendEdgePropPrefix(list, allocator, src, dst, etype);
-    try list.appendSlice(allocator, prop);
-}
-
-/// Appends the prefix of all properties of an edge: `f | src | dst | 0x00 | edge_type | 0x00`.
-pub fn appendEdgePropPrefix(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, etype: []const u8) !void {
-    try list.append(allocator, edge_prop_marker);
-    try appendNodeId(list, allocator, src);
-    try appendNodeId(list, allocator, dst);
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, etype);
-    try list.append(allocator, sep);
-}
-
-/// Appends the shared prefix of all edge keys for `(id, dir, etype)`, up to
-/// and including the trailing `0x00` before the neighbour id.
-fn appendEdgePrefix(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, dir: Direction, etype: []const u8) !void {
-    try list.append(allocator, edge_marker);
-    try appendNodeId(list, allocator, id);
-    try list.append(allocator, @backingInt(dir));
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, etype);
-    try list.append(allocator, sep);
-}
-
-/// Appends the lookup prefix for "edge prop == value":
-/// `g | prop | 0x00 | value`.
-fn appendEdgeIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value) !void {
-    try list.append(allocator, edge_index_marker);
-    try list.appendSlice(allocator, prop);
-    try list.append(allocator, sep);
-    try encodeIndexValue(list, allocator, value);
-}
-
-/// Appends the edge-property index key:
-/// `g | prop | 0x00 | value | src | dst | 0x00 | edge_type`.
-fn appendEdgeIndexKey(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) !void {
-    try appendEdgeIndexPrefix(list, allocator, prop, value);
-    try appendNodeId(list, allocator, src);
-    try appendNodeId(list, allocator, dst);
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, etype);
-}
-
-/// Appends the key for one stored direction of an edge:
-/// `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`.
-pub fn appendEdgeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, dir: Direction, etype: []const u8, neighbour: NodeId) !void {
-    try appendEdgePrefix(list, allocator, id, dir, etype);
-    try appendNodeId(list, allocator, neighbour);
-}
-
-/// Decodes an edge key produced by `appendEdgeKey`.
-pub fn decodeEdgeKey(key: []const u8) EdgeKey {
-    std.debug.assert(key[0] == edge_marker);
-    const id = readNodeId(key[1 .. 1 + id_len]);
-    const dir: Direction = @fromBackingInt(@intCast(key[1 + id_len]));
-    const etype_start = 1 + id_len + 1 + 1; // after marker + id + dir + sep
-    std.debug.assert(key[etype_start - 1] == sep);
-    const etype_len = std.mem.indexOfScalar(u8, key[etype_start..], sep) orelse unreachable;
-    const etype = key[etype_start .. etype_start + etype_len];
-    const neighbour_start = etype_start + etype_len + 1;
-    const neighbour = readNodeId(key[neighbour_start .. neighbour_start + id_len]);
-    return .{ .id = id, .dir = dir, .etype = etype, .neighbour = neighbour };
-}
+pub const NodeId = key_encoding.NodeId;
+pub const Direction = key_encoding.Direction;
+pub const EdgeKey = key_encoding.EdgeKey;
+pub const Value = key_encoding.Value;
 
 // ---------------------------------------------------------------------------
 // Graph (index-free adjacency over KeyValueStore)
@@ -302,7 +73,7 @@ pub const Graph = struct {
     pub fn addNode(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendNodeKey(&key, self.allocator, id);
+        try key_encoding.appendNodeKey(&key, self.allocator, id);
         try self.store.put(key.items, "");
 
         if (label.len > 0) try self.addLabel(id, label);
@@ -312,11 +83,11 @@ pub const Graph = struct {
     pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendLabelKey(&key, self.allocator, label, id);
+        try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         try self.store.put(key.items, "");
 
         key.clearRetainingCapacity();
-        try appendReverseLabelKey(&key, self.allocator, id, label);
+        try key_encoding.appendReverseLabelKey(&key, self.allocator, id, label);
         try self.store.put(key.items, "");
     }
 
@@ -324,25 +95,25 @@ pub const Graph = struct {
     pub fn removeLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendLabelKey(&key, self.allocator, label, id);
+        try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         try self.store.del(key.items);
 
         key.clearRetainingCapacity();
-        try appendReverseLabelKey(&key, self.allocator, id, label);
+        try key_encoding.appendReverseLabelKey(&key, self.allocator, id, label);
         try self.store.del(key.items);
     }
 
     /// Allocates a fresh, never-used node id (persistent counter).
     pub fn allocNodeId(self: *Graph) StorageError!NodeId {
         var next: NodeId = 0;
-        const raw = try self.store.get(counter_key);
+        const raw = try self.store.get(key_encoding.counter_key);
         if (raw) |r| {
             defer self.allocator.free(r);
-            if (r.len == id_len) next = readNodeId(r);
+            if (r.len == key_encoding.id_len) next = key_encoding.readNodeId(r);
         }
-        var buf: [id_len]u8 = undefined;
+        var buf: [key_encoding.id_len]u8 = undefined;
         std.mem.writeInt(NodeId, &buf, next + 1, .big);
-        try self.store.put(counter_key, &buf);
+        try self.store.put(key_encoding.counter_key, &buf);
         return next;
     }
 
@@ -365,15 +136,15 @@ pub const Graph = struct {
     pub fn hasAnyEdge(self: *Graph, id: NodeId) StorageError!bool {
         var out_prefix = std.ArrayList(u8).empty;
         defer out_prefix.deinit(self.allocator);
-        try out_prefix.append(self.allocator, edge_marker);
-        try appendNodeId(&out_prefix, self.allocator, id);
+        try out_prefix.append(self.allocator, key_encoding.edge_marker);
+        try key_encoding.appendNodeId(&out_prefix, self.allocator, id);
         try out_prefix.append(self.allocator, @backingInt(Direction.out));
         if (try self.store.countPrefix(out_prefix.items) > 0) return true;
 
         var in_prefix = std.ArrayList(u8).empty;
         defer in_prefix.deinit(self.allocator);
-        try in_prefix.append(self.allocator, edge_marker);
-        try appendNodeId(&in_prefix, self.allocator, id);
+        try in_prefix.append(self.allocator, key_encoding.edge_marker);
+        try key_encoding.appendNodeId(&in_prefix, self.allocator, id);
         try in_prefix.append(self.allocator, @backingInt(Direction.in));
         return try self.store.countPrefix(in_prefix.items) > 0;
     }
@@ -387,9 +158,9 @@ pub const Graph = struct {
         }
         var lprefix = std.ArrayList(u8).empty;
         defer lprefix.deinit(self.allocator);
-        try lprefix.append(self.allocator, rev_label_marker);
-        try appendNodeId(&lprefix, self.allocator, id);
-        try lprefix.append(self.allocator, sep);
+        try lprefix.append(self.allocator, key_encoding.rev_label_marker);
+        try key_encoding.appendNodeId(&lprefix, self.allocator, id);
+        try lprefix.append(self.allocator, key_encoding.sep);
         var lit = try self.store.scanPrefix(lprefix.items);
         while (try lit.next()) |entry| {
             try labels.append(self.allocator, try self.allocator.dupe(u8, entry.key[lprefix.items.len ..]));
@@ -399,17 +170,17 @@ pub const Graph = struct {
 
         var nprefix = std.ArrayList(u8).empty;
         defer nprefix.deinit(self.allocator);
-        try appendNodeKey(&nprefix, self.allocator, id);
+        try key_encoding.appendNodeKey(&nprefix, self.allocator, id);
 
         // Remove property-index entries before deleting the properties.
         var pprefix = std.ArrayList(u8).empty;
         defer pprefix.deinit(self.allocator);
-        try appendNodePropKey(&pprefix, self.allocator, id, "");
+        try key_encoding.appendNodePropKey(&pprefix, self.allocator, id, "");
         var pit = try self.store.scanPrefix(pprefix.items);
         defer pit.deinit();
         while (try pit.next()) |entry| {
-            const prop_name = entry.key[1 + id_len + 1 ..];
-            try self.deleteIndexEntry(id, prop_name, decodeValue(entry.value));
+            const prop_name = entry.key[1 + key_encoding.id_len + 1 ..];
+            try self.deleteIndexEntry(id, prop_name, key_encoding.decodeValue(entry.value));
         }
 
         try self.deleteKeysUnder(nprefix.items);
@@ -418,8 +189,8 @@ pub const Graph = struct {
     fn deleteEdgesInDirection(self: *Graph, id: NodeId, dir: Direction) StorageError!void {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try prefix.append(self.allocator, edge_marker);
-        try appendNodeId(&prefix, self.allocator, id);
+        try prefix.append(self.allocator, key_encoding.edge_marker);
+        try key_encoding.appendNodeId(&prefix, self.allocator, id);
         try prefix.append(self.allocator, @backingInt(dir));
 
         var keys = std.ArrayList([]u8).empty;
@@ -434,13 +205,13 @@ pub const Graph = struct {
         }
 
         for (keys.items) |k| {
-            const ek = decodeEdgeKey(k);
+            const ek = key_encoding.decodeEdgeKey(k);
             try self.store.del(k);
 
             const rev_dir: Direction = if (ek.dir == .out) .in else .out;
             var rev = std.ArrayList(u8).empty;
             defer rev.deinit(self.allocator);
-            try appendEdgeKey(&rev, self.allocator, ek.neighbour, rev_dir, ek.etype, ek.id);
+            try key_encoding.appendEdgeKey(&rev, self.allocator, ek.neighbour, rev_dir, ek.etype, ek.id);
             try self.store.del(rev.items);
 
             // Delete the edge's properties and their index entries (canonical
@@ -449,7 +220,7 @@ pub const Graph = struct {
             const dst = if (ek.dir == .out) ek.neighbour else ek.id;
             var epp = std.ArrayList(u8).empty;
             defer epp.deinit(self.allocator);
-            try appendEdgePropPrefix(&epp, self.allocator, src, dst, ek.etype);
+            try key_encoding.appendEdgePropPrefix(&epp, self.allocator, src, dst, ek.etype);
 
             var props = std.ArrayList(struct { name: []u8, value: []u8 }).empty;
             defer {
@@ -469,10 +240,10 @@ pub const Graph = struct {
             epit.deinit();
 
             for (props.items) |p| {
-                try self.deleteEdgeIndexEntry(p.name, decodeValue(p.value), src, dst, ek.etype);
+                try self.deleteEdgeIndexEntry(p.name, key_encoding.decodeValue(p.value), src, dst, ek.etype);
                 var pk = std.ArrayList(u8).empty;
                 defer pk.deinit(self.allocator);
-                try appendEdgePropKey(&pk, self.allocator, src, dst, ek.etype, p.name);
+                try key_encoding.appendEdgePropKey(&pk, self.allocator, src, dst, ek.etype, p.name);
                 try self.store.del(pk.items);
             }
 
@@ -499,14 +270,14 @@ pub const Graph = struct {
     pub fn hasNode(self: *Graph, id: NodeId) StorageError!bool {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendNodeKey(&key, self.allocator, id);
+        try key_encoding.appendNodeKey(&key, self.allocator, id);
         return self.store.exists(key.items);
     }
 
     pub fn hasLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!bool {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendLabelKey(&key, self.allocator, label, id);
+        try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         return self.store.exists(key.items);
     }
 
@@ -524,11 +295,11 @@ pub const Graph = struct {
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendNodePropKey(&key, self.allocator, id, name);
+        try key_encoding.appendNodePropKey(&key, self.allocator, id, name);
 
         var encoded = std.ArrayList(u8).empty;
         defer encoded.deinit(self.allocator);
-        try encodeValue(&encoded, self.allocator, value);
+        try key_encoding.encodeValue(&encoded, self.allocator, value);
         try self.store.put(key.items, encoded.items);
 
         try self.putIndexEntry(id, name, value);
@@ -546,7 +317,7 @@ pub const Graph = struct {
         }
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendNodePropKey(&key, self.allocator, id, name);
+        try key_encoding.appendNodePropKey(&key, self.allocator, id, name);
         try self.store.del(key.items);
     }
 
@@ -555,7 +326,7 @@ pub const Graph = struct {
     pub fn nodesByProp(self: *Graph, name: []const u8, value: Value) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try appendIndexPrefix(&prefix, self.allocator, name, value);
+        try key_encoding.appendIndexPrefix(&prefix, self.allocator, name, value);
         const it = try self.store.scanPrefix(prefix.items);
         return .{ .inner = it };
     }
@@ -563,14 +334,14 @@ pub const Graph = struct {
     fn putIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendIndexKey(&key, self.allocator, name, value, id);
+        try key_encoding.appendIndexKey(&key, self.allocator, name, value, id);
         try self.store.put(key.items, "");
     }
 
     fn deleteIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendIndexKey(&key, self.allocator, name, value, id);
+        try key_encoding.appendIndexKey(&key, self.allocator, name, value, id);
         try self.store.del(key.items);
     }
 
@@ -579,10 +350,10 @@ pub const Graph = struct {
     pub fn getProp(self: *Graph, id: NodeId, name: []const u8, allocator: Allocator) StorageError!?Value {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendNodePropKey(&key, self.allocator, id, name);
+        try key_encoding.appendNodePropKey(&key, self.allocator, id, name);
         const raw = (try self.store.get(key.items)) orelse return null;
         defer self.store.allocator.free(raw);
-        return try decodeOwnedValue(raw, allocator);
+        return try key_encoding.decodeOwnedValue(raw, allocator);
     }
 
     /// Adds a directed, typed edge, storing both directions. Idempotent. Also
@@ -593,11 +364,11 @@ pub const Graph = struct {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
 
-        try appendEdgeKey(&key, self.allocator, src, .out, etype, dst);
+        try key_encoding.appendEdgeKey(&key, self.allocator, src, .out, etype, dst);
         try self.store.put(key.items, "");
 
         key.clearRetainingCapacity();
-        try appendEdgeKey(&key, self.allocator, dst, .in, etype, src);
+        try key_encoding.appendEdgeKey(&key, self.allocator, dst, .in, etype, src);
         try self.store.put(key.items, "");
 
         try self.bumpEdgeType(etype, true);
@@ -607,28 +378,28 @@ pub const Graph = struct {
     pub fn edgeTypeCount(self: *Graph, etype: []const u8) StorageError!usize {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try key.append(self.allocator, edge_type_marker);
+        try key.append(self.allocator, key_encoding.edge_type_marker);
         try key.appendSlice(self.allocator, etype);
         const raw = (try self.store.get(key.items)) orelse return 0;
         defer self.store.allocator.free(raw);
-        if (raw.len == id_len) return @intCast(std.mem.readInt(u64, @ptrCast(raw.ptr), .big));
+        if (raw.len == key_encoding.id_len) return @intCast(std.mem.readInt(u64, @ptrCast(raw.ptr), .big));
         return 0;
     }
 
     fn bumpEdgeType(self: *Graph, etype: []const u8, increment: bool) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try key.append(self.allocator, edge_type_marker);
+        try key.append(self.allocator, key_encoding.edge_type_marker);
         try key.appendSlice(self.allocator, etype);
 
         var count: u64 = 0;
         if (try self.store.get(key.items)) |raw| {
             defer self.store.allocator.free(raw);
-            if (raw.len == id_len) count = std.mem.readInt(u64, @ptrCast(raw.ptr), .big);
+            if (raw.len == key_encoding.id_len) count = std.mem.readInt(u64, @ptrCast(raw.ptr), .big);
         }
         count = if (increment) count + 1 else (if (count > 0) count - 1 else 0);
 
-        var buf: [id_len]u8 = undefined;
+        var buf: [key_encoding.id_len]u8 = undefined;
         std.mem.writeInt(u64, &buf, count, .big);
         try self.store.put(key.items, &buf);
     }
@@ -637,7 +408,7 @@ pub const Graph = struct {
     pub fn hasEdge(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8) StorageError!bool {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendEdgeKey(&key, self.allocator, src, .out, etype, dst);
+        try key_encoding.appendEdgeKey(&key, self.allocator, src, .out, etype, dst);
         return self.store.exists(key.items);
     }
 
@@ -654,11 +425,11 @@ pub const Graph = struct {
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
+        try key_encoding.appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
 
         var encoded = std.ArrayList(u8).empty;
         defer encoded.deinit(self.allocator);
-        try encodeValue(&encoded, self.allocator, value);
+        try key_encoding.encodeValue(&encoded, self.allocator, value);
         try self.store.put(key.items, encoded.items);
 
         try self.putEdgeIndexEntry(name, value, src, dst, etype);
@@ -676,21 +447,21 @@ pub const Graph = struct {
         }
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
+        try key_encoding.appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
         try self.store.del(key.items);
     }
 
     fn putEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
+        try key_encoding.appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
         try self.store.put(key.items, "");
     }
 
     fn deleteEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
+        try key_encoding.appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
         try self.store.del(key.items);
     }
 
@@ -699,7 +470,7 @@ pub const Graph = struct {
     pub fn edgesByProp(self: *Graph, name: []const u8, value: Value) StorageError!EdgeIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try appendEdgeIndexPrefix(&prefix, self.allocator, name, value);
+        try key_encoding.appendEdgeIndexPrefix(&prefix, self.allocator, name, value);
         const value_len = prefix.items.len;
         const it = try self.store.scanPrefix(prefix.items);
         return .{ .inner = it, .value_len = value_len };
@@ -710,10 +481,10 @@ pub const Graph = struct {
     pub fn getEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, allocator: Allocator) StorageError!?Value {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
+        try key_encoding.appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
         const raw = (try self.store.get(key.items)) orelse return null;
         defer self.store.allocator.free(raw);
-        return try decodeOwnedValue(raw, allocator);
+        return try key_encoding.decodeOwnedValue(raw, allocator);
     }
 
     /// Iterates the neighbours of `id` in the given `dir` and `etype`, in
@@ -721,7 +492,7 @@ pub const Graph = struct {
     pub fn neighbours(self: *Graph, id: NodeId, dir: Direction, etype: []const u8) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try appendEdgePrefix(&prefix, self.allocator, id, dir, etype);
+        try key_encoding.appendEdgePrefix(&prefix, self.allocator, id, dir, etype);
         const it = try self.store.scanPrefix(prefix.items);
         return .{ .inner = it };
     }
@@ -730,9 +501,9 @@ pub const Graph = struct {
     pub fn nodesWithLabel(self: *Graph, label: []const u8) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try prefix.append(self.allocator, label_marker);
+        try prefix.append(self.allocator, key_encoding.label_marker);
         try prefix.appendSlice(self.allocator, label);
-        try prefix.append(self.allocator, sep);
+        try prefix.append(self.allocator, key_encoding.sep);
         const it = try self.store.scanPrefix(prefix.items);
         return .{ .inner = it };
     }
@@ -741,8 +512,8 @@ pub const Graph = struct {
     /// the `n | node_id` existence markers, skipping the property keys that
     /// share the `n` prefix.
     pub fn allNodes(self: *Graph) StorageError!NodeIdIterator {
-        const it = try self.store.scanPrefix(&.{node_marker});
-        return .{ .inner = it, .key_len = 1 + id_len };
+        const it = try self.store.scanPrefix(&.{key_encoding.node_marker});
+        return .{ .inner = it, .key_len = 1 + key_encoding.id_len };
     }
 
     /// Number of nodes carrying `label`.
@@ -773,7 +544,7 @@ pub const NodeIdIterator = struct {
             if (self.key_len) |len| {
                 if (entry.key.len != len) continue;
             }
-            return readNodeId(entry.key[entry.key.len - id_len ..]);
+            return key_encoding.readNodeId(entry.key[entry.key.len - key_encoding.id_len ..]);
         }
         return null;
     }
@@ -795,28 +566,10 @@ pub const EdgeIterator = struct {
     /// Returns the next `(src, dst, etype)` edge, or `null` at the end.
     pub fn next(self: *EdgeIterator) StorageError!?struct { src: NodeId, dst: NodeId, etype: []const u8 } {
         const entry = try self.inner.next() orelse return null;
-        const src = readNodeId(entry.key[self.value_len .. self.value_len + id_len]);
-        const dst = readNodeId(entry.key[self.value_len + id_len .. self.value_len + 2 * id_len]);
-        const etype = entry.key[self.value_len + 2 * id_len + 1 ..];
+        const src = key_encoding.readNodeId(entry.key[self.value_len .. self.value_len + key_encoding.id_len]);
+        const dst = key_encoding.readNodeId(entry.key[self.value_len + key_encoding.id_len .. self.value_len + 2 * key_encoding.id_len]);
+        const etype = entry.key[self.value_len + 2 * key_encoding.id_len + 1 ..];
         return .{ .src = src, .dst = dst, .etype = etype };
     }
 };
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-const testing = std.testing;
-
-test "edge key encodes and decodes round-trip" {
-    var list = std.ArrayList(u8).empty;
-    defer list.deinit(testing.allocator);
-
-    try appendEdgeKey(&list, testing.allocator, 0x1234_5678_9abc_def0, .out, "ACTED_IN", 42);
-
-    const decoded = decodeEdgeKey(list.items);
-    try testing.expectEqual(@as(NodeId, 0x1234_5678_9abc_def0), decoded.id);
-    try testing.expectEqual(Direction.out, decoded.dir);
-    try testing.expectEqualStrings("ACTED_IN", decoded.etype);
-    try testing.expectEqual(@as(NodeId, 42), decoded.neighbour);
-}
