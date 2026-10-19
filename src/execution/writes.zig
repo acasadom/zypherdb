@@ -72,7 +72,7 @@ fn boundNode(bindings: *const Bindings, variable_name: []const u8) ?NodeId {
 /// Creates a node from a `node_pattern` and returns its fresh id.
 pub fn createNode(self: *Executor, node_pattern_index: Index, bindings: *Bindings) ExecutionError!NodeId {
     const node_pattern = self.ast.data(node_pattern_index).node_pattern;
-    const id = try self.graph.allocNodeId();
+    const id = try self.graph.allocateNodeId();
     try self.graph.addNode(id, ""); // node marker
     for (node_pattern.labels) |label| try self.graph.addLabel(id, label);
     for (self.ast.nodeChildren(node_pattern_index)) |property_node| {

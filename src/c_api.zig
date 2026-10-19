@@ -95,11 +95,11 @@ pub export fn acmedb_abort_write(context: *Context) void {
 pub export fn acmedb_allocate_node_id(context: *Context) u64 {
     // Inside an explicit write txn the read-modify-write is already atomic;
     // standalone it needs its own transaction.
-    if (context.graph.inWriteTxn()) {
-        return context.graph.allocNodeId() catch std.math.maxInt(u64);
+    if (context.graph.inWriteTransaction()) {
+        return context.graph.allocateNodeId() catch std.math.maxInt(u64);
     }
     context.graph.beginWrite() catch return std.math.maxInt(u64);
-    const id = context.graph.allocNodeId() catch {
+    const id = context.graph.allocateNodeId() catch {
         context.graph.abortWrite();
         return std.math.maxInt(u64);
     };

@@ -4,6 +4,16 @@
 //! Index-free adjacency: each directed, typed edge is stored twice, keyed by
 //! its source (outgoing) and by its target (incoming), so the neighbours of a
 //! node in either direction are one prefix scan.
+//!
+//! Costs. With N keys in the store, a point lookup or write is one LMDB
+//! B+-tree descent, O(log N); a scan yielding k entries is O(log N + k). Each
+//! operation below states its cost in those terms.
+//!
+//! Iterators (`NodeIdIterator`, `EdgeIterator`) share one concept:
+//! `next() StorageError!?T` yields the next item or null at the end, and
+//! `deinit()` releases the LMDB cursor. Slices inside a yielded item (an edge
+//! type) are views into the store, valid only until the next `next` call.
+//! Iterators opened inside a transaction must be `deinit`ed before it ends.
 
 const std = @import("std");
 
@@ -49,8 +59,8 @@ pub const Graph = struct {
     }
 
     /// True if an explicit write transaction is currently active.
-    pub fn inWriteTxn(self: *Graph) bool {
-        return self.store.active_txn != null;
+    pub fn inWriteTransaction(self: *Graph) bool {
+        return self.store.active_write_transaction != null;
     }
 
     /// Begins an atomic read transaction (snapshot); see `commitRead`/`abortRead`.
@@ -103,8 +113,8 @@ pub const Graph = struct {
         try self.store.del(key.items);
     }
 
-    /// Allocates a fresh, never-used node id (persistent counter).
-    pub fn allocNodeId(self: *Graph) StorageError!NodeId {
+    /// Allocates a fresh, never-used node id (persistent counter). O(log N).
+    pub fn allocateNodeId(self: *Graph) StorageError!NodeId {
         var next: NodeId = 0;
         const raw = try self.store.get(key_encoding.counter_key);
         if (raw) |r| {
@@ -126,13 +136,14 @@ pub const Graph = struct {
 
     /// Deletes a node and detaches it: removes all its edges (both directions)
     /// and edge properties, its label-index entry, properties and marker.
+    /// O(log N · (degree + properties + labels)).
     pub fn deleteNodeDetach(self: *Graph, id: NodeId) StorageError!void {
         try self.deleteEdgesInDirection(id, .out);
         try self.deleteEdgesInDirection(id, .in);
         return self.deleteNodeOnly(id);
     }
 
-    /// True if the node is the endpoint of at least one edge.
+    /// True if the node is the endpoint of at least one edge. O(log N).
     pub fn hasAnyEdge(self: *Graph, id: NodeId) StorageError!bool {
         var out_prefix = std.ArrayList(u8).empty;
         defer out_prefix.deinit(self.allocator);
@@ -282,7 +293,7 @@ pub const Graph = struct {
     }
 
     /// Stores a typed property `name` on node `id`. Idempotent. Maintains the
-    /// property index.
+    /// property index. O(log N).
     pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
         // Remove the previous index entry, if any.
         if (try self.getProperty(id, name, self.allocator)) |old| {
@@ -322,7 +333,7 @@ pub const Graph = struct {
     }
 
     /// Iterates all nodes whose property `name` equals `value` (via the
-    /// property index), in ascending node-id order.
+    /// property index), in ascending node-id order. O(log N + matches).
     pub fn nodesByProperty(self: *Graph, name: []const u8, value: Value) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
@@ -345,8 +356,8 @@ pub const Graph = struct {
         try self.store.del(key.items);
     }
 
-    /// Reads a typed property `name` of node `id`, or `null` if absent. The
-    /// `str` variant is an owned copy allocated with `allocator`.
+    /// Reads a typed property `name` of node `id`, or `null` if absent. A
+    /// `string` value is an owned copy allocated with `allocator`. O(log N).
     pub fn getProperty(self: *Graph, id: NodeId, name: []const u8, allocator: Allocator) StorageError!?Value {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -357,7 +368,7 @@ pub const Graph = struct {
     }
 
     /// Adds a directed, typed edge, storing both directions. Idempotent. Also
-    /// maintains the edge-type cardinality counter.
+    /// maintains the edge-type cardinality counter. O(log N).
     pub fn addEdge(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!void {
         if (try self.hasEdge(src, dst, edge_type)) return;
 
@@ -374,7 +385,8 @@ pub const Graph = struct {
         try self.bumpEdgeType(edge_type, true);
     }
 
-    /// Number of directed edges carrying `edge_type`.
+    /// Number of directed edges carrying `edge_type` (a maintained counter).
+    /// O(log N).
     pub fn edgeTypeCount(self: *Graph, edge_type: []const u8) StorageError!usize {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -466,7 +478,7 @@ pub const Graph = struct {
     }
 
     /// Iterates all directed edges whose property `name` equals `value` (via the
-    /// edge-property index), in ascending (src, dst) order.
+    /// edge-property index), in ascending (src, dst) order. O(log N + matches).
     pub fn edgesByProperty(self: *Graph, name: []const u8, value: Value) StorageError!EdgeIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
@@ -487,8 +499,9 @@ pub const Graph = struct {
         return try key_encoding.decodeOwnedValue(raw, allocator);
     }
 
-    /// Iterates the neighbours of `id` in the given `dir` and `edge_type`, in
-    /// ascending neighbour-id order (LMDB's lexicographic order).
+    /// Iterates the neighbours of `id` in the given `direction` and `edge_type`,
+    /// in ascending neighbour-id order (LMDB's lexicographic order).
+    /// O(log N + degree).
     pub fn neighbours(self: *Graph, id: NodeId, direction: Direction, edge_type: []const u8) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
@@ -498,6 +511,7 @@ pub const Graph = struct {
     }
 
     /// Iterates all nodes carrying `label`, in ascending node-id order.
+    /// O(log N + nodes with the label).
     pub fn nodesWithLabel(self: *Graph, label: []const u8) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
@@ -510,13 +524,16 @@ pub const Graph = struct {
 
     /// Iterates every node (labeled or not), in ascending node-id order. Scans
     /// the `n | node_id` existence markers, skipping the property keys that
-    /// share the `n` prefix.
+    /// share the `n` prefix. O(log N + nodes + node properties).
     pub fn allNodes(self: *Graph) StorageError!NodeIdIterator {
         const iterator = try self.store.scanPrefix(&.{key_encoding.node_marker});
         return .{ .inner = iterator, .key_length = 1 + key_encoding.node_id_length };
     }
 
-    /// Number of nodes carrying `label`.
+    /// Number of nodes carrying `label`. Counts by scanning the label index:
+    /// O(log N + nodes with the label). The planner calls it once per query
+    /// and label, so a maintained counter (like `edgeTypeCount`) would make
+    /// planning O(log N) on large labels.
     pub fn labelCount(self: *Graph, label: []const u8) StorageError!usize {
         var iterator = try self.nodesWithLabel(label);
         defer iterator.deinit();

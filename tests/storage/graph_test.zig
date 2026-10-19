@@ -143,7 +143,7 @@ test "labels, properties and value encoding" {
     try testing.expect((try g.getProperty(1, "nope", testing.allocator)) == null);
 }
 
-test "allocNodeId and deleteNode detach edges" {
+test "allocateNodeId and deleteNode detach edges" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -152,8 +152,8 @@ test "allocNodeId and deleteNode detach edges" {
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
-    const a = try g.allocNodeId();
-    const b = try g.allocNodeId();
+    const a = try g.allocateNodeId();
+    const b = try g.allocateNodeId();
     try testing.expect(a != b);
 
     try g.addNode(a, "Person");
@@ -189,8 +189,8 @@ test "write transactions commit and abort atomically" {
     // Commit path: batched writes are all visible, and the id counter advances
     // within the transaction (read-modify-write on the write txn).
     try g.beginWrite();
-    const a = try g.allocNodeId();
-    const b = try g.allocNodeId();
+    const a = try g.allocateNodeId();
+    const b = try g.allocateNodeId();
     try testing.expect(a != b);
     try g.addNode(a, "Person");
     try g.setProperty(a, "name", .{ .string = "A" });
@@ -202,12 +202,12 @@ test "write transactions commit and abort atomically" {
 
     // Abort path: nothing is visible, and the counter increment is rolled back.
     try g.beginWrite();
-    const c = try g.allocNodeId();
+    const c = try g.allocateNodeId();
     try g.addNode(c, "Person");
     g.abortWrite();
 
     try testing.expect(!try g.hasNode(c));
-    try testing.expectEqual(c, try g.allocNodeId()); // counter rolled back, so c is reused
+    try testing.expectEqual(c, try g.allocateNodeId()); // counter rolled back, so c is reused
 }
 
 test "property index: lookups, updates and deletes" {
