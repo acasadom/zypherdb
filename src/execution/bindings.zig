@@ -39,6 +39,27 @@ pub const Bindings = struct {
         }
     }
 
+    /// The current extent of the bindings, to `restore` on backtracking.
+    pub fn mark(self: *const Bindings) usize {
+        return self.entries.items.len;
+    }
+
+    /// Unbinds every variable bound since `saved` (a `mark`). Matching only
+    /// appends new bindings, so this undoes exactly one search branch.
+    pub fn restore(self: *Bindings, saved: usize) void {
+        self.entries.shrinkRetainingCapacity(saved);
+    }
+
+    /// Binds node variable `name` to `id`, or, if `name` is already bound
+    /// (earlier in the pattern or the query), checks that it is that node.
+    /// An anonymous node (empty name) always fits.
+    pub fn bindNode(self: *Bindings, allocator: Allocator, name: []const u8, id: NodeId) !bool {
+        if (name.len == 0) return true;
+        if (self.get(name)) |bound| return bound == .node and bound.node == id;
+        try self.entries.append(allocator, .{ .name = name, .value = .{ .node = id } });
+        return true;
+    }
+
     /// The node `name` is bound to, if it is bound to a node.
     pub fn getNode(self: *const Bindings, name: []const u8) ?NodeId {
         return switch (self.get(name) orelse return null) {

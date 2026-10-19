@@ -45,6 +45,9 @@ clauses/create/Create5.feature: [3] Create a pattern with multiple hops in varyi
 clauses/create/Create5.feature: [4] Create a pattern with multiple hops with multiple types and varying directions
 clauses/create/Create6.feature: [1] Limiting to zero results after creating nodes affects the result set but not the side effects
 clauses/create/Create6.feature: [2] Skipping all results after creating nodes affects the result set but not the side effects
+clauses/create/Create6.feature: [3] Skipping and limiting to a few results after creating nodes does not affect the result set nor the side effects
+clauses/create/Create6.feature: [4] Skipping zero result and limiting to all results after creating nodes does not affect the result set nor the side effects
+clauses/create/Create6.feature: [6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
 clauses/delete/Delete1.feature: [1] Delete nodes
 clauses/delete/Delete1.feature: [2] Detach delete node
 clauses/delete/Delete1.feature: [3] Detach deleting connected nodes and relationships
@@ -72,8 +75,11 @@ clauses/match-where/MatchWhere1.feature: [3] Filter node with property predicate
 clauses/match-where/MatchWhere1.feature: [4] Filter start node of relationship with property predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [5] Filter end node of relationship with property predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [8] Filter relationship with property predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere2.feature: [1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere3.feature: [1] Join between node identities
+clauses/match-where/MatchWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/match-where/MatchWhere3.feature: [3] Join between node properties of adjacent nodes
+clauses/match-where/MatchWhere4.feature: [1] Join nodes on inequality
 clauses/match-where/MatchWhere6.feature: [3] Filter node with property predicate on multi variables with multiple bindings after OPTIONAL MATCH
 clauses/match-where/MatchWhere6.feature: [4] Do not fail when predicates on optionally matched and missed nodes are invalid
 clauses/match-where/MatchWhere6.feature: [6] Join nodes on non-equality of properties – OPTIONAL MATCH and WHERE
@@ -110,6 +116,7 @@ clauses/match/Match1.feature: [1] Match non-existent nodes returns empty
 clauses/match/Match1.feature: [2] Matching all nodes
 clauses/match/Match1.feature: [3] Matching nodes using multiple labels
 clauses/match/Match1.feature: [4] Simple node inline property predicate
+clauses/match/Match1.feature: [5] Use multiple MATCH clauses to do a Cartesian product
 clauses/match/Match1.feature: [6] Fail when using parameter as node predicate in MATCH
 clauses/match/Match1.feature: [7] Fail when a relationship has the same variable in a preceding MATCH #1
 clauses/match/Match1.feature: [7] Fail when a relationship has the same variable in a preceding MATCH #10
@@ -253,11 +260,14 @@ clauses/match/Match3.feature: [13] Directed match on self-relationship graph
 clauses/match/Match3.feature: [14] Directed match of self-relationship on self-relationship graph
 clauses/match/Match3.feature: [15] Mixing directed and undirected pattern parts with self-relationship, simple
 clauses/match/Match3.feature: [16] Mixing directed and undirected pattern parts with self-relationship, undirected
+clauses/match/Match3.feature: [17] Handling cyclic patterns
+clauses/match/Match3.feature: [18] Handling cyclic patterns when separated into two parts
 clauses/match/Match3.feature: [1] Get neighbours
 clauses/match/Match3.feature: [24] Matching twice with duplicate relationship types on same relationship
 clauses/match/Match3.feature: [25] Matching twice with an additional node label
 clauses/match/Match3.feature: [26] Matching twice with a duplicate predicate
 clauses/match/Match3.feature: [27] Matching from null nodes should return no results owing to finding no matches
+clauses/match/Match3.feature: [28] Matching from null nodes should return no results owing to matches being filtered out
 clauses/match/Match3.feature: [29] Fail when re-using a relationship in the same pattern
 clauses/match/Match3.feature: [2] Directed match of a simple relationship
 clauses/match/Match3.feature: [30] Fail when using a list or nodes as a node
@@ -358,6 +368,7 @@ clauses/match/Match7.feature: [7] MATCH with OPTIONAL MATCH in longer pattern
 clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matches
 clauses/match/Match7.feature: [9] Longer pattern with bound nodes
 clauses/match/Match8.feature: [1] Pattern independent of bound variables results in cross product
+clauses/merge/Merge1.feature: [11] Merge should be able to merge using property of bound node
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
 clauses/merge/Merge1.feature: [16] Fail when using parameter as node predicate in MERGE
 clauses/merge/Merge1.feature: [17] Fail on merging node with null property
@@ -377,6 +388,7 @@ clauses/merge/Merge3.feature: [3] Merge node and set property on match
 clauses/merge/Merge3.feature: [4] Merge should be able to use properties of bound node in ON MATCH
 clauses/merge/Merge5.feature: [17] Aliasing of existing nodes 2
 clauses/merge/Merge5.feature: [1] Creating a relationship
+clauses/merge/Merge5.feature: [20] Do not match on deleted entities
 clauses/merge/Merge5.feature: [23] Fail when merging relationship without type
 clauses/merge/Merge5.feature: [25] Fail when merging relationship with more than one type
 clauses/merge/Merge5.feature: [27] Fail when using parameter as relationship predicate in MERGE
@@ -384,6 +396,8 @@ clauses/merge/Merge5.feature: [28] Fail when using variable length relationship 
 clauses/merge/Merge5.feature: [29] Fail on merging relationship with null property
 clauses/merge/Merge5.feature: [4] Using bound variables from other updating clause
 clauses/merge/Merge5.feature: [9] Creating relationship using merged nodes
+clauses/merge/Merge9.feature: [1] UNWIND with one MERGE
+clauses/merge/Merge9.feature: [2] UNWIND with multiple MERGE
 clauses/merge/Merge9.feature: [3] Mixing MERGE with CREATE
 clauses/remove/Remove2.feature: [1] Remove a single label from a node with a single label
 clauses/remove/Remove3.feature: [15] Limiting to zero results after removing a property from relationships affects the result set but not the side effects
@@ -549,8 +563,11 @@ clauses/with-skip-limit/WithSkipLimit2.feature: [2] Handle dependencies across W
 clauses/with-skip-limit/WithSkipLimit2.feature: [4] Ordering and limiting on aggregate
 clauses/with-skip-limit/WithSkipLimit3.feature: [1] Get rows in the middle
 clauses/with-where/WithWhere1.feature: [1] Filter node with property predicate on a single variable with multiple bindings
+clauses/with-where/WithWhere2.feature: [1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 clauses/with-where/WithWhere3.feature: [1] Join between node identities
+clauses/with-where/WithWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/with-where/WithWhere3.feature: [3] Join between node properties of adjacent nodes
+clauses/with-where/WithWhere4.feature: [1] Join nodes on inequality
 clauses/with-where/WithWhere6.feature: [1] Filter a single aggregate
 clauses/with/With1.feature: [3] Forwarding a relationship variable
 clauses/with/With1.feature: [6] Forwarding a node variable possibly null
@@ -889,4 +906,5 @@ useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [4] Directed 
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [5] Directed match of self-relationship on self-relationship graph, count
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [6] Counting undirected self-relationships in self-relationship graph
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [8] Directed match of a simple relationship, count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [9] Counting directed self-relationships
 useCases/triadicSelection/TriadicSelection1.feature: [1] Handling triadic friend of a friend

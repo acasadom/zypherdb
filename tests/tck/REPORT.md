@@ -6,16 +6,16 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 367/3202 (11.5%)** · Negative: 525/695 (75.5%)
+**Positive: 385/3202 (12.0%)** · Negative: 525/695 (75.5%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
 | clauses/call | 0/36 (0.0%) | 2/16 (12.5%) | 50 | 0 |
-| clauses/create | 35/63 (55.6%) | 10/15 (66.7%) | 0 | 1 |
+| clauses/create | 38/63 (60.3%) | 10/15 (66.7%) | 0 | 1 |
 | clauses/delete | 17/36 (47.2%) | 4/5 (80.0%) | 2 | 0 |
-| clauses/match | 39/141 (27.7%) | 241/241 (100.0%) | 5 | 1 |
-| clauses/match-where | 11/32 (34.4%) | 1/2 (50.0%) | 3 | 1 |
-| clauses/merge | 19/62 (30.6%) | 8/13 (61.5%) | 0 | 0 |
+| clauses/match | 43/141 (30.5%) | 241/241 (100.0%) | 5 | 0 |
+| clauses/match-where | 14/32 (43.8%) | 1/2 (50.0%) | 3 | 0 |
+| clauses/merge | 23/62 (37.1%) | 8/13 (61.5%) | 0 | 0 |
 | clauses/remove | 10/33 (30.3%) | – | 0 | 0 |
 | clauses/return | 17/52 (32.7%) | 9/11 (81.8%) | 1 | 0 |
 | clauses/return-orderby | 17/31 (54.8%) | 2/4 (50.0%) | 1 | 0 |
@@ -26,7 +26,7 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | clauses/with | 11/25 (44.0%) | 3/4 (75.0%) | 1 | 0 |
 | clauses/with-orderBy | 16/223 (7.2%) | 47/69 (68.1%) | 1 | 0 |
 | clauses/with-skip-limit | 6/9 (66.7%) | – | 1 | 0 |
-| clauses/with-where | 4/19 (21.1%) | – | 1 | 1 |
+| clauses/with-where | 7/19 (36.8%) | – | 1 | 0 |
 | expressions/aggregation | 7/28 (25.0%) | 0/7 (0.0%) | 0 | 0 |
 | expressions/boolean | 9/32 (28.1%) | 71/118 (60.2%) | 0 | 0 |
 | expressions/comparison | 13/71 (18.3%) | 0/1 (0.0%) | 0 | 0 |
@@ -45,7 +45,7 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | expressions/string | 23/32 (71.9%) | – | 0 | 0 |
 | expressions/temporal | 0/1004 (0.0%) | – | 0 | 0 |
 | expressions/typeConversion | 0/25 (0.0%) | 0/22 (0.0%) | 1 | 0 |
-| useCases/countingSubgraphMatches | 9/11 (81.8%) | – | 0 | 0 |
+| useCases/countingSubgraphMatches | 10/11 (90.9%) | – | 0 | 0 |
 | useCases/triadicSelection | 1/19 (5.3%) | – | 0 | 0 |
 
 ## Most common reasons for not passing
@@ -66,10 +66,10 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 47 | fail: expected SyntaxError, got TypeMismatchError: query failed: TypeMismatch |
 | 45 | fail: unexpected error: unexpected character '%' |
 | 42 | fail: expected SyntaxError, but the query succeeded |
-| 40 | fail: rows differ: expected other rows |
 | 37 | fail: unexpected error: unexpected WITH (unsupported syntax or missing clause) |
 | 35 | fail: unexpected error: unexpected MATCH (unsupported syntax or missing clause) |
 | 35 | fail: unexpected error: expected an expression, found '-' |
+| 33 | fail: rows differ: expected other rows |
 | 27 | fail: unexpected error: expected ']', found '(' |
 | 27 | fail: expected TypeError, got ParseError: unexpected character '\|' |
 | 22 | fail: unexpected error: unexpected character '/' |
@@ -90,5 +90,5 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 11 | fail: unexpected error: expected keyword AS |
 | 10 | fail: setup query failed: ParseError: expected keyword AS |
 | 10 | fail: unexpected error: unexpected '.' (unsupported syntax or missing clause) |
-| 9 | fail: side effects: expected other side effects |
 | 9 | fail: unexpected error: unexpected '{' (unsupported syntax or missing clause) |
+| 8 | fail: unexpected error: unexpected UNION (unsupported syntax or missing clause) |

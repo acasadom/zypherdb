@@ -303,3 +303,35 @@ test "a missing property reads as null" {
     try expectQuery(&ast, &g, "MATCH (d:Door) WHERE d.floor > 1 RETURN d.name", &.{&.{.{ .string = "D1" }}});
     try expectQuery(&ast, &g, "MATCH ()-[r:IN]->() RETURN r.since", &.{&.{.{ .null = {} }}});
 }
+
+test "backtracking: several patterns, cycles and per-row writes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (a:N {n: 'a'})-[:R]->(b:N {n: 'b'}), (b)-[:R]->(a), (b)-[:R]->(c:N {n: 'c'}), (:M), (:M)", &.{});
+
+    // Comma-separated patterns form a product; each keeps its own plan (this
+    // used to crash with an out-of-bounds plan step).
+    try expectQuery(&ast, &g, "MATCH (x:N)-->(y), (m:M) RETURN count(*)", &.{&.{.{ .int = 6 }}});
+    try expectQuery(&ast, &g, "MATCH (m:M), (x:N)-->(y) RETURN count(*)", &.{&.{.{ .int = 6 }}});
+
+    // A variable repeated in one pattern is the same node: a real cycle.
+    try expectQuery(&ast, &g, "MATCH (x)-->(y)-->(x) RETURN x.n, y.n", &.{
+        &.{ .{ .string = "a" }, .{ .string = "b" } },
+        &.{ .{ .string = "b" }, .{ .string = "a" } },
+    });
+
+    // Variables created for one row do not leak into the next.
+    try expectQuery(&ast, &g, "UNWIND [1, 2, 3] AS i CREATE (:U {i: i})", &.{});
+    try expectQuery(&ast, &g, "MATCH (u:U) RETURN count(*)", &.{&.{.{ .int = 3 }}});
+    try expectQuery(&ast, &g, "MATCH (m:M) CREATE (m)-[:HAS]->(t:Tag)", &.{});
+    try expectQuery(&ast, &g, "MATCH (t:Tag) RETURN count(*)", &.{&.{.{ .int = 2 }}});
+}

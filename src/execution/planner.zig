@@ -5,6 +5,7 @@
 const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
 const Direction = @import("../storage/graph.zig").Direction;
+const NodeId = @import("../storage/graph.zig").NodeId;
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -25,7 +26,7 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
             .variable_name = node_pattern.variable_name,
             .labels = node_pattern.labels,
             .seeks = .empty,
-            .bound = bindings.getNode(node_pattern.variable_name) != null,
+            .bound = node_pattern.variable_name.len > 0 and bindings.getNode(node_pattern.variable_name) != null,
         };
         for (self.ast.nodeChildren(node_pattern_index)) |property_node| {
             const property_name = self.ast.data(property_node).text;
@@ -191,6 +192,10 @@ pub const PatternNode = struct {
     labels: []const []const u8,
     seeks: std.ArrayList(Seek),
     bound: bool, // already bound by an earlier pattern in this query
+    /// The node this position is matched to on the current search branch
+    /// (set by the step that binds it; read by later expansions, so anonymous
+    /// nodes need no variable).
+    id: NodeId = undefined,
 };
 
 pub const PatternEdge = struct {

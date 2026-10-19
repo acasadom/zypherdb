@@ -39,12 +39,23 @@ pub fn matchPatterns(self: *Executor, pattern_index: usize, bindings: *Bindings)
     if (pattern_index == self.patterns.len) {
         return self.matchFound(bindings);
     }
+    // Each pattern of the MATCH plans into the executor's slots; keep the
+    // enclosing pattern's plan to put back, since it is still being run.
+    const saved_nodes = self.nodes;
+    const saved_edges = self.edges;
+    const saved_steps = self.steps;
+    defer {
+        self.nodes = saved_nodes;
+        self.edges = saved_edges;
+        self.steps = saved_steps;
+    }
     try planner.setupPattern(self, self.patterns[pattern_index], bindings);
     // A node bound by an earlier clause must still satisfy this pattern's
     // labels and properties (`MATCH (a) WITH a MATCH (a:X)`).
-    for (self.nodes.items, 0..) |node, node_index| {
+    for (self.nodes.items, 0..) |*node, node_index| {
         if (!node.bound) continue;
         const id = bindings.getNode(node.variable_name) orelse return error.UnknownVariable;
+        node.id = id;
         if (!try hasAllLabels(self, id, node.labels)) return;
         if (!try nodeSeeksMatch(self, node_index, id, bindings)) return;
     }
@@ -76,7 +87,10 @@ fn scanNodes(self: *Executor, node_index: usize, next_step: usize, pattern_index
 
     while (try iterator.next()) |id| {
         if (!(try hasAllLabels(self, id, node.labels))) continue;
-        try bindings.put(self.allocator, node.variable_name, .{ .node = id });
+        const saved = bindings.mark();
+        defer bindings.restore(saved);
+        if (!try bindings.bindNode(self.allocator, node.variable_name, id)) continue;
+        self.nodes.items[node_index].id = id;
         if (!try nodeSeeksMatch(self, node_index, id, bindings)) continue;
         try runStep(self, next_step, pattern_index, bindings);
     }
@@ -102,8 +116,12 @@ fn scanEdgeIndex(self: *Executor, edge_index: usize, next_step: usize, pattern_i
 
 fn bindEdgeEndpoints(self: *Executor, edge_index: usize, ref: Relationship, left_id: NodeId, right_id: NodeId, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
     const edge = self.edges.items[edge_index];
-    try bindings.put(self.allocator, self.nodes.items[edge_index].variable_name, .{ .node = left_id });
-    try bindings.put(self.allocator, self.nodes.items[edge_index + 1].variable_name, .{ .node = right_id });
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
+    if (!try bindings.bindNode(self.allocator, self.nodes.items[edge_index].variable_name, left_id)) return;
+    if (!try bindings.bindNode(self.allocator, self.nodes.items[edge_index + 1].variable_name, right_id)) return;
+    self.nodes.items[edge_index].id = left_id;
+    self.nodes.items[edge_index + 1].id = right_id;
     if (!try nodeSeeksMatch(self, edge_index, left_id, bindings)) return;
     if (!try nodeSeeksMatch(self, edge_index + 1, right_id, bindings)) return;
     try followEdge(self, edge, ref, next_step, pattern_index, bindings);
@@ -112,24 +130,21 @@ fn bindEdgeEndpoints(self: *Executor, edge_index: usize, ref: Relationship, left
 /// Follows the edge between pattern nodes `from` (bound) and `to`: verifies it
 /// when `to` is already bound, otherwise binds `to` to each neighbour.
 fn expandEdge(self: *Executor, from: usize, to: usize, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
-    const from_id = bindings.getNode(self.nodes.items[from].variable_name) orelse return error.UnknownVariable;
+    const from_id = self.nodes.items[from].id;
     const edge = self.edges.items[@min(from, to)];
     const to_node = self.nodes.items[to];
     const traversal: Direction = if (from < to) edge.forward_direction else opposite(edge.forward_direction);
-    const to_id: ?NodeId = if (to_node.bound)
-        bindings.getNode(to_node.variable_name) orelse return error.UnknownVariable
-    else
-        null;
 
     var edges = MatchingEdges.init(self.graph, from_id, edge, traversal);
     defer edges.deinit();
     while (try edges.next()) |found| {
-        if (to_id) |bound| {
-            if (found.neighbour != bound) continue;
-        } else {
-            if (!(try hasAllLabels(self, found.neighbour, to_node.labels))) continue;
-            try bindings.put(self.allocator, to_node.variable_name, .{ .node = found.neighbour });
-        }
+        if (!(try hasAllLabels(self, found.neighbour, to_node.labels))) continue;
+        const saved = bindings.mark();
+        defer bindings.restore(saved);
+        // A `to` variable bound already (earlier in the pattern or the
+        // query) must be this neighbour; otherwise bind it.
+        if (!try bindings.bindNode(self.allocator, to_node.variable_name, found.neighbour)) continue;
+        self.nodes.items[to].id = found.neighbour;
         if (!try nodeSeeksMatch(self, to, found.neighbour, bindings)) continue;
         const ref = Relationship{ .src = found.ref.src, .dst = found.ref.dst, .edge_type = try self.ownedEdgeType(edge, found.ref.edge_type) };
         try followEdge(self, edge, ref, next_step, pattern_index, bindings);
@@ -147,7 +162,9 @@ fn followEdge(self: *Executor, edge: PatternEdge, ref: Relationship, next_step: 
     for (self.used_edges.items[self.edge_scope_start..]) |used| {
         if (used.eql(ref)) return;
     }
-    if (edge.variable_name.len > 0) try bindings.put(self.allocator, edge.variable_name, .{ .relationship = ref });
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
+    if (edge.variable_name.len > 0 and edge.bound == null) try bindings.put(self.allocator, edge.variable_name, .{ .relationship = ref });
     if (!try edgeSeeksMatch(self, edge, ref, bindings)) return;
     try self.used_edges.append(self.allocator, ref);
     defer _ = self.used_edges.pop();
@@ -220,6 +237,8 @@ pub fn runUnwind(self: *Executor, bindings: *Bindings) ExecutionError!void {
     switch (v) {
         .list => |items| {
             for (items) |item| {
+                const saved = bindings.mark();
+                defer bindings.restore(saved);
                 try bindings.put(self.allocator, variable_name, item);
                 try self.afterOptional(bindings);
             }
@@ -255,15 +274,11 @@ pub fn runOptional(self: *Executor, bindings: *Bindings) ExecutionError!void {
     self.where_expression = optional_match_children[optional_match_children.len - 1];
     self.has_match = true;
 
-    // Unbind optional-only variables left over from a previous outer
-    // iteration so they are matched fresh (shared variables stay bound).
-    for (self.optional_variables.items) |name| {
-        if (!isMainVariable(self, name)) bindings.remove(name);
-    }
-
     try matchPatterns(self, 0, bindings);
 
     if (!self.optional_matched) {
+        const saved = bindings.mark();
+        defer bindings.restore(saved);
         try bindOptionalNulls(self, bindings);
         try self.afterOptional(bindings);
     }
