@@ -20,7 +20,8 @@ const Value = @import("../value.zig").Value;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const ErrorCode = @import("../diagnostics.zig").ErrorCode;
 
-const Group = @import("aggregation.zig").Group;
+const ValueGrouping = @import("aggregation.zig").ValueGrouping;
+const AggKind = @import("../query/ast.zig").AggKind;
 const ProjItem = @import("aggregation.zig").ProjItem;
 const Bindings = @import("bindings.zig").Bindings;
 const BindStep = @import("planner.zig").BindStep;
@@ -48,7 +49,8 @@ pub const Row = std.ArrayList(Value);
 ast: *Ast,
 graph: *Graph,
 allocator: Allocator,
-rows: std.ArrayList(Row),
+/// RETURN rows, each with its ORDER BY key.
+rows: std.ArrayList(projection.Sortable(Row)),
 
 // Match context.
 patterns: []const Index, // the MATCH clause's patterns (one or more)
@@ -77,13 +79,12 @@ optional_matched: bool,
 // UNWIND context.
 unwind: ?Index,
 
-// Result post-processing.
-row_keys: std.ArrayList([]const Value),
-
 // Aggregation.
 has_agg: bool,
 proj_items: std.ArrayList(ProjItem),
-groups: std.ArrayList(Group),
+/// The aggregate function of each `.agg` projection item, in order.
+aggregate_kinds: std.ArrayList(AggKind),
+groups: ValueGrouping,
 
 diag: ?*Diagnostic,
 
@@ -110,10 +111,10 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .in_optional = false,
         .optional_matched = false,
         .unwind = null,
-        .row_keys = .empty,
         .has_agg = false,
         .proj_items = .empty,
-        .groups = .empty,
+        .aggregate_kinds = .empty,
+        .groups = .{},
         .diag = null,
     };
 }
@@ -124,8 +125,8 @@ pub fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: an
 
 pub fn run(self: *Executor, query: Index) ExecError![]const Row {
     self.rows.clearRetainingCapacity();
-    self.row_keys = .empty;
-    self.groups = .empty;
+    self.groups = .{};
+    self.aggregate_kinds = .empty;
     self.has_agg = false;
     self.proj_items = .empty;
     self.with_rows = .empty;
@@ -177,6 +178,7 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
                 const kids = self.ast.nodeChildren(expr);
                 const arg: ?Index = if (kids.len > 0) kids[0] else null;
                 try self.proj_items.append(self.allocator, .{ .agg = .{ .kind = kind, .arg = arg } });
+                try self.aggregate_kinds.append(self.allocator, kind);
             } else {
                 try self.proj_items.append(self.allocator, .{ .key = expr });
             }
@@ -236,7 +238,9 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
         try projection.postProcess(self, rc);
     }
 
-    return self.rows.items;
+    const result = try self.allocator.alloc(Row, self.rows.items.len);
+    for (result, self.rows.items) |*row, sortable| row.* = sortable.item;
+    return result;
 }
 
 /// Runs one MATCH clause (its patterns + WHERE) from `bindings`, recursing
@@ -323,18 +327,10 @@ pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
             const v = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
             try out.append(self.allocator, v);
         }
-        try self.rows.append(self.allocator, out);
-
-        // Evaluate the ORDER BY keys alongside the row (they may reference
-        // variables that aren't projected).
-        var keys = std.ArrayList(Value).empty;
-        if (info.order_by) |ob| {
-            for (self.ast.nodeChildren(ob)) |item| {
-                const v = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
-                try keys.append(self.allocator, v);
-            }
-        }
-        try self.row_keys.append(self.allocator, keys.items);
+        // The ORDER BY key is evaluated now, against the full bindings: it may
+        // use variables that are not projected.
+        const sort_key = if (info.order_by) |ob| try projection.orderByKey(self, ob, bindings) else &.{};
+        try self.rows.append(self.allocator, .{ .item = out, .sort_key = sort_key });
     }
 }
 

@@ -24,6 +24,8 @@ pub const Value = value.Value;
 pub const eqlSequences = value.eqlSequences;
 pub const orderSequences = value.orderSequences;
 
+pub const sequence_algorithms = @import("sequence_algorithms.zig");
+
 pub const ast = @import("query/ast.zig");
 
 pub const Ast = ast.Ast;

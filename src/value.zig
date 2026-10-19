@@ -1,9 +1,9 @@
 //! `Value`: the typed value of properties and expressions.
 //!
-//! `Value` is a regular type: `eql` is an equivalence relation and `order` a
+//! `Value` is a regular type: `eql` is an equivalence relation, `order` a
 //! total order consistent with it (`order(a, b) == .eq` exactly when
-//! `eql(a, b)`). Sorting, deduplication and grouping rely on those laws; the
-//! tests below check them over random values.
+//! `eql(a, b)`), and `hash` agrees with `eql`. Sorting, deduplication and
+//! grouping rely on those laws; the tests below check them over random values.
 
 const std = @import("std");
 
@@ -40,6 +40,24 @@ pub const Value = union(enum) {
             .boolean => |x| std.math.order(@intFromBool(x), @intFromBool(b.boolean)),
             .list => |x| orderSequences(x, b.list),
         };
+    }
+
+    /// Feeds the value into `hasher`; values that are `eql` hash equally.
+    pub fn hash(self: Value, hasher: *std.hash.Wyhash) void {
+        hasher.update(&.{self.typeRank()});
+        switch (self) {
+            .null => {},
+            .int => |x| hasher.update(std.mem.asBytes(&x)),
+            .str => |x| {
+                hasher.update(std.mem.asBytes(&x.len));
+                hasher.update(x);
+            },
+            .boolean => |x| hasher.update(&.{@intFromBool(x)}),
+            .list => |items| {
+                hasher.update(std.mem.asBytes(&items.len));
+                for (items) |item| item.hash(hasher);
+            },
+        }
     }
 
     /// Position of the value's type in the global sort order.
@@ -115,6 +133,27 @@ test "order is a total order and eql its equivalence" {
                     try testing.expect(Value.order(a, c) != .gt);
                 }
             }
+        }
+    }
+}
+
+test "hash agrees with eql" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    var prng = std.Random.DefaultPrng.init(0xbeef);
+    const random = prng.random();
+
+    var values: [80]Value = undefined;
+    for (&values) |*v| v.* = try randomValue(random, arena_state.allocator(), 2);
+
+    for (values) |a| {
+        for (values) |b| {
+            if (!Value.eql(a, b)) continue;
+            var hash_a = std.hash.Wyhash.init(0);
+            var hash_b = std.hash.Wyhash.init(0);
+            a.hash(&hash_a);
+            b.hash(&hash_b);
+            try testing.expectEqual(hash_a.final(), hash_b.final());
         }
     }
 }

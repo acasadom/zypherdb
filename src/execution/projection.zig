@@ -1,5 +1,10 @@
 //! Projection: WITH (project, group, filter) and RETURN post-processing
 //! (DISTINCT, ORDER BY, SKIP, LIMIT).
+//!
+//! RETURN rows and WITH rows are different types (value rows vs. variable
+//! bindings), but DISTINCT, ORDER BY and SKIP/LIMIT are the same algorithms
+//! on both: they are written once, generically, in `sequence_algorithms` and
+//! `sortByKey` below.
 
 const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
@@ -7,20 +12,62 @@ const AggKind = @import("../query/ast.zig").AggKind;
 const Value = @import("../value.zig").Value;
 const eqlSequences = @import("../value.zig").eqlSequences;
 
+const sequence_algorithms = @import("../sequence_algorithms.zig");
+const ElementContext = sequence_algorithms.ElementContext;
+const SequenceContext = sequence_algorithms.SequenceContext;
+
 const Executor = @import("Executor.zig");
 const expressions = @import("expressions.zig");
 const aggregation = @import("aggregation.zig");
 const ExecError = Executor.ExecError;
 const Row = Executor.Row;
 
-const AggState = @import("aggregation.zig").AggState;
 const aggResult = @import("aggregation.zig").aggResult;
 const Binding = @import("bindings.zig").Binding;
 const Bindings = @import("bindings.zig").Bindings;
-const bindingKeysEq = @import("bindings.zig").bindingKeysEq;
-const bindingsEq = @import("bindings.zig").bindingsEq;
 
-/// Appends a deep copy of `bindings` to `with_rows` (used by WITH).
+/// An item paired with its ORDER BY key. The key is evaluated alongside the
+/// item because ORDER BY may use variables that are not projected.
+pub fn Sortable(comptime T: type) type {
+    return struct { item: T, sort_key: []const Value };
+}
+
+/// Stable sort of `items` by their `sort_key`, column by column, each column
+/// ascending or descending. Ties keep their input order. O(n log n).
+pub fn sortByKey(comptime T: type, items: []Sortable(T), ascending: []const bool) void {
+    std.sort.block(Sortable(T), items, ascending, struct {
+        fn lessThan(directions: []const bool, a: Sortable(T), b: Sortable(T)) bool {
+            return keyLessThan(directions, a.sort_key, b.sort_key);
+        }
+    }.lessThan);
+}
+
+fn keyLessThan(directions: []const bool, a: []const Value, b: []const Value) bool {
+    for (a, b, directions) |x, y, ascending| {
+        switch (Value.order(x, y)) {
+            .lt => return ascending,
+            .gt => return !ascending,
+            .eq => {},
+        }
+    }
+    return false;
+}
+
+/// RETURN rows are distinct by their projected values (not their sort key).
+const ReturnRowContext = struct {
+    pub fn hash(_: ReturnRowContext, row: Sortable(Row)) u64 {
+        return SequenceContext(Value).hash(.{}, row.item.items);
+    }
+
+    pub fn eql(_: ReturnRowContext, a: Sortable(Row), b: Sortable(Row)) bool {
+        return eqlSequences(a.item.items, b.item.items);
+    }
+};
+
+/// WITH groups: keyed by the bindings of the non-aggregate projection items.
+const BindingGrouping = aggregation.Grouping([]const Binding, SequenceContext(Binding));
+
+/// Appends a copy of `bindings` to `with_rows` (the input of WITH).
 pub fn collect(self: *Executor, bindings: *Bindings) ExecError!void {
     var copy = Bindings{ .entries = .empty };
     try copy.entries.appendSlice(self.allocator, bindings.entries.items);
@@ -53,10 +100,80 @@ pub fn withInfo(self: *Executor, wc: Index) WithInfo {
 /// rebinding the result into fresh variable bindings for the next clauses.
 pub fn applyWith(self: *Executor, wc: Index) ExecError!void {
     const info = withInfo(self, wc);
+    const items = try withItems(self, info.projection);
 
+    var kinds = std.ArrayList(AggKind).empty;
+    for (items) |item| {
+        if (item == .agg) try kinds.append(self.allocator, item.agg.kind);
+    }
+
+    var groups: BindingGrouping = .{};
+    for (self.with_rows.items) |*bindings| {
+        var keys = std.ArrayList(Binding).empty;
+        var args = std.ArrayList(Value).empty;
+        for (items) |item| {
+            switch (item) {
+                .pass => |p| {
+                    const b = bindings.get(p.src_name) orelse {
+                        self.fail(.unknown_var, "unknown variable '{s}'", .{p.src_name});
+                        return error.UnknownVar;
+                    };
+                    try keys.append(self.allocator, b);
+                },
+                .key => |k| try keys.append(self.allocator, .{ .value = try expressions.eval(self, k.expr, bindings) }),
+                .agg => |a| try args.append(self.allocator, try aggregation.evalAggArg(self, a.kind, a.arg, bindings)),
+            }
+        }
+        const states = try groups.statesFor(self.allocator, keys.items, kinds.items);
+        for (states, args.items) |*state, arg| try aggregation.updateAgg(self, state, arg);
+    }
+
+    // No grouping keys: zero input rows still aggregate into one row.
+    if (groups.keys.items.len == 0 and !hasWithKey(items)) {
+        _ = try groups.statesFor(self.allocator, &.{}, kinds.items);
+    }
+
+    var out = std.ArrayList(Bindings).empty;
+    for (groups.keys.items, groups.states.items) |keys, states| {
+        var b = Bindings{ .entries = .empty };
+        var key_i: usize = 0;
+        var agg_i: usize = 0;
+        for (items) |item| {
+            switch (item) {
+                .pass => |p| {
+                    try b.put(self.allocator, p.name, keys[key_i]);
+                    key_i += 1;
+                },
+                .key => |k| {
+                    try b.put(self.allocator, k.name, keys[key_i]);
+                    key_i += 1;
+                },
+                .agg => |a| {
+                    try b.put(self.allocator, a.name, .{ .value = aggResult(a.kind, states[agg_i]) });
+                    agg_i += 1;
+                },
+            }
+        }
+        // WHERE filter (always present; `true` when absent).
+        if (try expressions.evalBool(self, info.where_expr, &b)) {
+            try out.append(self.allocator, b);
+        }
+    }
+
+    if (info.distinct) {
+        try sequence_algorithms.removeDuplicates(Bindings, self.allocator, &out, ElementContext(Bindings){});
+    }
+    if (info.order_by) |ob| try sortBindings(self, &out, ob);
+    try paginate(self, Bindings, &out, info.skip, info.limit);
+
+    self.with_rows = out;
+}
+
+/// Classifies the WITH projection items: passthrough variables, aliased
+/// expressions (grouping keys) and aliased aggregates.
+fn withItems(self: *Executor, projection: Index) ExecError![]const WithItem {
     var items = std.ArrayList(WithItem).empty;
-    defer items.deinit(self.allocator);
-    for (self.ast.nodeChildren(info.projection)) |item| {
+    for (self.ast.nodeChildren(projection)) |item| {
         const expr = self.ast.nodeChildren(item)[0];
         const alias = self.ast.data(item).text;
         switch (self.ast.kind(expr)) {
@@ -84,179 +201,41 @@ pub fn applyWith(self: *Executor, wc: Index) ExecError!void {
             },
         }
     }
-
-    var groups = std.ArrayList(WithGroup).empty;
-    defer {
-        for (groups.items) |*g| {
-            g.keys.deinit(self.allocator);
-            g.aggs.deinit(self.allocator);
-        }
-        groups.deinit(self.allocator);
-    }
-    for (self.with_rows.items) |*bindings| {
-        var keys = std.ArrayList(Binding).empty;
-        defer keys.deinit(self.allocator);
-        var args = std.ArrayList(Value).empty;
-        defer args.deinit(self.allocator);
-        for (items.items) |item| {
-            switch (item) {
-                .pass => |p| {
-                    const b = bindings.get(p.src_name) orelse {
-                        self.fail(.unknown_var, "unknown variable '{s}'", .{p.src_name});
-                        return error.UnknownVar;
-                    };
-                    try keys.append(self.allocator, b);
-                },
-                .key => |k| try keys.append(self.allocator, .{ .value = try expressions.eval(self, k.expr, bindings) }),
-                .agg => |a| {
-                    if (a.arg == null) {
-                        try args.append(self.allocator, .{ .int = 0 }); // count(*) always counts
-                    } else if (a.kind == .count) {
-                        try args.append(self.allocator, try aggregation.evalCountArg(self, a.arg.?, bindings));
-                    } else {
-                        try args.append(self.allocator, try expressions.eval(self, a.arg.?, bindings));
-                    }
-                },
-            }
-        }
-        const group = try findOrCreateWithGroup(self, &groups, keys.items, items.items);
-        var arg_i: usize = 0;
-        for (group.aggs.items) |*state| {
-            try aggregation.updateAgg(self, state, args.items[arg_i]);
-            arg_i += 1;
-        }
-    }
-
-    // No grouping keys: zero input rows still aggregate into one row.
-    if (groups.items.len == 0 and !hasWithKey(items.items)) {
-        _ = try findOrCreateWithGroup(self, &groups, &.{}, items.items);
-    }
-
-    var out = std.ArrayList(Bindings).empty;
-    for (groups.items) |group| {
-        var b = Bindings{ .entries = .empty };
-        var key_i: usize = 0;
-        var agg_i: usize = 0;
-        for (items.items) |item| {
-            switch (item) {
-                .pass => |p| {
-                    try b.put(self.allocator, p.name, group.keys.items[key_i]);
-                    key_i += 1;
-                },
-                .key => |k| {
-                    try b.put(self.allocator, k.name, group.keys.items[key_i]);
-                    key_i += 1;
-                },
-                .agg => |a| {
-                    try b.put(self.allocator, a.name, .{ .value = aggResult(a.kind, group.aggs.items[agg_i]) });
-                    agg_i += 1;
-                },
-            }
-        }
-        try out.append(self.allocator, b);
-    }
-
-    // WHERE filter (always present; `true` when absent).
-    var filtered = std.ArrayList(Bindings).empty;
-    for (out.items) |*b| {
-        if (try expressions.evalBool(self, info.where_expr, b)) {
-            try filtered.append(self.allocator, b.*);
-        }
-    }
-    out = filtered;
-
-    if (info.distinct) dedupBindings(self, &out);
-
-    if (info.order_by) |ob| try sortBindings(self, &out, ob);
-
-    if (info.skip) |sk| try applyBindingsSkip(self, &out, sk);
-    if (info.limit) |lim| try applyBindingsLimit(self, &out, lim);
-
-    self.with_rows = out;
+    return items.items;
 }
 
-pub fn findOrCreateWithGroup(self: *Executor, groups: *std.ArrayList(WithGroup), keys: []const Binding, items: []const WithItem) ExecError!*WithGroup {
-    for (groups.items) |*g| {
-        if (bindingKeysEq(g.keys.items, keys)) return g;
+/// Sorts WITH rows by the ORDER BY keys, evaluated against each row.
+fn sortBindings(self: *Executor, rows: *std.ArrayList(Bindings), order_by: Index) ExecError!void {
+    const sortable = try self.allocator.alloc(Sortable(Bindings), rows.items.len);
+    for (sortable, rows.items) |*entry, *bindings| {
+        entry.* = .{ .item = bindings.*, .sort_key = try orderByKey(self, order_by, bindings) };
     }
-    var group = WithGroup{ .keys = .empty, .aggs = .empty };
-    for (keys) |k| try group.keys.append(self.allocator, k);
-    for (items) |item| {
-        switch (item) {
-            .pass, .key => {},
-            .agg => |a| try group.aggs.append(self.allocator, AggState{ .kind = a.kind }),
-        }
-    }
-    try groups.append(self.allocator, group);
-    return &groups.items[groups.items.len - 1];
+    sortByKey(Bindings, sortable, try orderByDirections(self, order_by));
+    for (rows.items, sortable) |*row, entry| row.* = entry.item;
 }
 
-pub fn dedupBindings(self: *Executor, rows: *std.ArrayList(Bindings)) void {
-    _ = self;
-    var i: usize = 0;
-    while (i < rows.items.len) : (i += 1) {
-        var j: usize = i + 1;
-        while (j < rows.items.len) {
-            if (bindingsEq(rows.items[i], rows.items[j])) {
-                _ = rows.swapRemove(j);
-            } else {
-                j += 1;
-            }
-        }
+/// Evaluates the ORDER BY expressions against `bindings`.
+pub fn orderByKey(self: *Executor, order_by: Index, bindings: *Bindings) ExecError![]const Value {
+    const order_items = self.ast.nodeChildren(order_by);
+    const key = try self.allocator.alloc(Value, order_items.len);
+    for (key, order_items) |*value, item| {
+        value.* = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
     }
+    return key;
 }
 
-pub fn applyBindingsSkip(self: *Executor, rows: *std.ArrayList(Bindings), skip: Index) ExecError!void {
-    const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(skip)[0]);
-    if (n >= rows.items.len) {
-        rows.shrinkRetainingCapacity(0);
-        return;
-    }
-    var i: usize = 0;
-    while (i + n < rows.items.len) : (i += 1) {
-        rows.items[i] = rows.items[i + n];
-    }
-    rows.shrinkRetainingCapacity(rows.items.len - n);
+/// The direction of each ORDER BY column (`true` = ascending).
+fn orderByDirections(self: *Executor, order_by: Index) ExecError![]const bool {
+    const order_items = self.ast.nodeChildren(order_by);
+    const ascending = try self.allocator.alloc(bool, order_items.len);
+    for (ascending, order_items) |*direction, item| direction.* = self.ast.data(item).order_item.ascending;
+    return ascending;
 }
 
-pub fn applyBindingsLimit(self: *Executor, rows: *std.ArrayList(Bindings), limit: Index) ExecError!void {
-    const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(limit)[0]);
-    if (n < rows.items.len) rows.shrinkRetainingCapacity(n);
-}
-
-pub fn sortBindings(self: *Executor, rows: *std.ArrayList(Bindings), ob: Index) ExecError!void {
-    const n = rows.items.len;
-    if (n <= 1) return;
-
-    const items = self.ast.nodeChildren(ob);
-    var asc = std.ArrayList(bool).empty;
-    defer asc.deinit(self.allocator);
-    for (items) |item| try asc.append(self.allocator, self.ast.data(item).order_item.ascending);
-
-    var keys = std.ArrayList(std.ArrayList(Value)).empty;
-    defer {
-        for (keys.items) |*k| k.deinit(self.allocator);
-        keys.deinit(self.allocator);
-    }
-    for (rows.items) |*b| {
-        var ks = std.ArrayList(Value).empty;
-        for (items) |item| {
-            try ks.append(self.allocator, try expressions.eval(self, self.ast.nodeChildren(item)[0], b));
-        }
-        try keys.append(self.allocator, ks);
-    }
-
-    var idx = std.ArrayList(usize).empty;
-    defer idx.deinit(self.allocator);
-    var k: usize = 0;
-    while (k < n) : (k += 1) try idx.append(self.allocator, k);
-
-    const ctx = WithSortCtx{ .keys = keys.items, .asc = asc.items };
-    std.sort.pdq(usize, idx.items, ctx, withLessThanIdx);
-
-    var new_rows = std.ArrayList(Bindings).empty;
-    for (idx.items) |i| try new_rows.append(self.allocator, rows.items[i]);
-    rows.* = new_rows;
+/// Applies SKIP then LIMIT to any row list.
+fn paginate(self: *Executor, comptime T: type, rows: *std.ArrayList(T), skip: ?Index, limit: ?Index) ExecError!void {
+    if (skip) |s| sequence_algorithms.dropFirst(T, rows, try expressions.evalCountExpr(self, self.ast.nodeChildren(s)[0]));
+    if (limit) |l| sequence_algorithms.truncate(T, rows, try expressions.evalCountExpr(self, self.ast.nodeChildren(l)[0]));
 }
 
 pub const ReturnInfo = struct {
@@ -287,81 +266,16 @@ pub fn returnInfo(self: *Executor, rc: Index) ReturnInfo {
     return info;
 }
 
+/// RETURN post-processing: aggregation, then DISTINCT, ORDER BY, SKIP, LIMIT.
 pub fn postProcess(self: *Executor, rc: Index) ExecError!void {
     const info = returnInfo(self, rc);
 
-    if (self.has_agg) {
-        try aggregation.aggregate(self);
+    if (self.has_agg) try aggregation.aggregate(self);
+    if (info.distinct) {
+        try sequence_algorithms.removeDuplicates(Sortable(Row), self.allocator, &self.rows, ReturnRowContext{});
     }
-
-    if (info.distinct) dedup(self);
-
-    if (info.order_by) |ob| {
-        try sortRows(self, ob);
-    }
-
-    if (info.skip) |sk| {
-        const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(sk)[0]);
-        if (n >= self.rows.items.len) {
-            self.rows.shrinkRetainingCapacity(0);
-            self.row_keys.shrinkRetainingCapacity(0);
-        } else if (n > 0) {
-            var i: usize = 0;
-            while (i + n < self.rows.items.len) : (i += 1) {
-                self.rows.items[i] = self.rows.items[i + n];
-                self.row_keys.items[i] = self.row_keys.items[i + n];
-            }
-            self.rows.shrinkRetainingCapacity(self.rows.items.len - n);
-            self.row_keys.shrinkRetainingCapacity(self.row_keys.items.len - n);
-        }
-    }
-
-    if (info.limit) |lim| {
-        const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(lim)[0]);
-        if (n < self.rows.items.len) self.rows.shrinkRetainingCapacity(n);
-    }
-}
-
-pub fn dedup(self: *Executor) void {
-    var i: usize = 0;
-    while (i < self.rows.items.len) : (i += 1) {
-        var j: usize = i + 1;
-        while (j < self.rows.items.len) {
-            if (eqlSequences(self.rows.items[i].items, self.rows.items[j].items)) {
-                _ = self.rows.swapRemove(j);
-                _ = self.row_keys.swapRemove(j);
-            } else {
-                j += 1;
-            }
-        }
-    }
-}
-
-pub fn sortRows(self: *Executor, ob: Index) ExecError!void {
-    const n = self.rows.items.len;
-    if (n <= 1) return;
-
-    const items = self.ast.nodeChildren(ob);
-    var asc = std.ArrayList(bool).empty;
-    defer asc.deinit(self.allocator);
-    for (items) |item| try asc.append(self.allocator, self.ast.data(item).order_item.ascending);
-
-    var idx = std.ArrayList(usize).empty;
-    defer idx.deinit(self.allocator);
-    var k: usize = 0;
-    while (k < n) : (k += 1) try idx.append(self.allocator, k);
-
-    const ctx = SortCtx{ .keys = self.row_keys.items, .asc = asc.items };
-    std.sort.pdq(usize, idx.items, ctx, lessThanIdx);
-
-    var new_rows = std.ArrayList(Row).empty;
-    var new_keys = std.ArrayList([]const Value).empty;
-    for (idx.items) |i| {
-        try new_rows.append(self.allocator, self.rows.items[i]);
-        try new_keys.append(self.allocator, self.row_keys.items[i]);
-    }
-    self.rows = new_rows;
-    self.row_keys = new_keys;
+    if (info.order_by) |ob| sortByKey(Row, self.rows.items, try orderByDirections(self, ob));
+    try paginate(self, Sortable(Row), &self.rows, info.skip, info.limit);
 }
 
 /// One `WITH` projection item: a variable passthrough (keeps its node/edge/value
@@ -373,12 +287,6 @@ pub const WithItem = union(enum) {
     agg: struct { name: []const u8, kind: AggKind, arg: ?Index },
 };
 
-/// A `WITH` group: binding-valued keys plus the usual aggregation states.
-pub const WithGroup = struct {
-    keys: std.ArrayList(Binding),
-    aggs: std.ArrayList(AggState),
-};
-
 pub const WithInfo = struct {
     projection: Index,
     order_by: ?Index,
@@ -388,39 +296,7 @@ pub const WithInfo = struct {
     distinct: bool,
 };
 
-pub fn hasWithKey(items: []const WithItem) bool {
+fn hasWithKey(items: []const WithItem) bool {
     for (items) |item| if (item != .agg) return true;
-    return false;
-}
-
-pub const SortCtx = struct {
-    keys: []const []const Value,
-    asc: []const bool,
-};
-
-pub fn lessThanIdx(ctx: SortCtx, a: usize, b: usize) bool {
-    const ka = ctx.keys[a];
-    const kb = ctx.keys[b];
-    for (ka, kb, ctx.asc) |va, vb, asc| {
-        const ord = Value.order(va, vb);
-        if (ord == .lt) return asc;
-        if (ord == .gt) return !asc;
-    }
-    return false;
-}
-
-pub const WithSortCtx = struct {
-    keys: []const std.ArrayList(Value),
-    asc: []const bool,
-};
-
-pub fn withLessThanIdx(ctx: WithSortCtx, a: usize, b: usize) bool {
-    const ka = ctx.keys[a].items;
-    const kb = ctx.keys[b].items;
-    for (ka, kb, ctx.asc) |va, vb, asc| {
-        const ord = Value.order(va, vb);
-        if (ord == .lt) return asc;
-        if (ord == .gt) return !asc;
-    }
     return false;
 }

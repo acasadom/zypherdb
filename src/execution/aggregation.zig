@@ -1,10 +1,12 @@
 //! Aggregation: count/sum/min/max/collect with implicit grouping (RETURN).
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Index = @import("../query/ast.zig").Index;
 const AggKind = @import("../query/ast.zig").AggKind;
 const Value = @import("../value.zig").Value;
-const eqlSequences = @import("../value.zig").eqlSequences;
+
+const SequenceContext = @import("../sequence_algorithms.zig").SequenceContext;
 
 const Executor = @import("Executor.zig");
 const expressions = @import("expressions.zig");
@@ -13,6 +15,7 @@ const ExecError = Executor.ExecError;
 const Bindings = @import("bindings.zig").Bindings;
 const asInt = @import("expressions.zig").asInt;
 
+/// Folds one input row into its group (RETURN with aggregates).
 pub fn accumulate(self: *Executor, bindings: *Bindings) ExecError!void {
     var keys = std.ArrayList(Value).empty;
     var args = std.ArrayList(Value).empty;
@@ -22,13 +25,8 @@ pub fn accumulate(self: *Executor, bindings: *Bindings) ExecError!void {
             .agg => |a| try args.append(self.allocator, try evalAggArg(self, a.kind, a.arg, bindings)),
         }
     }
-
-    const group = try findOrCreateGroup(self, keys.items);
-    var arg_i: usize = 0;
-    for (group.aggs.items) |*state| {
-        try updateAgg(self, state, args.items[arg_i]);
-        arg_i += 1;
-    }
+    const states = try self.groups.statesFor(self.allocator, keys.items, self.aggregate_kinds.items);
+    for (states, args.items) |*state, arg| try updateAgg(self, state, arg);
 }
 
 /// Evaluates an aggregation argument. `count(*)` (no argument) returns a
@@ -51,22 +49,6 @@ pub fn evalCountArg(self: *Executor, expr: Index, bindings: *Bindings) ExecError
         }
     }
     return expressions.eval(self, expr, bindings);
-}
-
-pub fn findOrCreateGroup(self: *Executor, keys: []const Value) ExecError!*Group {
-    for (self.groups.items) |*g| {
-        if (eqlSequences(g.keys.items, keys)) return g;
-    }
-    var group = Group{ .keys = .empty, .aggs = .empty };
-    for (keys) |k| try group.keys.append(self.allocator, k);
-    for (self.proj_items.items) |item| {
-        switch (item) {
-            .key => {},
-            .agg => |a| try group.aggs.append(self.allocator, AggState{ .kind = a.kind }),
-        }
-    }
-    try self.groups.append(self.allocator, group);
-    return &self.groups.items[self.groups.items.len - 1];
 }
 
 pub fn updateAgg(self: *Executor, state: *AggState, arg: Value) ExecError!void {
@@ -95,32 +77,32 @@ pub fn updateAgg(self: *Executor, state: *AggState, arg: Value) ExecError!void {
     }
 }
 
+/// Turns the groups into RETURN rows: grouping keys and aggregate results in
+/// projection order.
 pub fn aggregate(self: *Executor) ExecError!void {
     self.rows = .empty;
-    self.row_keys = .empty;
     // With no grouping keys, aggregating zero rows still yields one row
     // (`count` 0, `sum` 0, `min`/`max` null, `collect` []), as in openCypher.
-    if (self.groups.items.len == 0 and !hasProjKey(self.proj_items.items)) {
-        _ = try findOrCreateGroup(self, &.{});
+    if (self.groups.keys.items.len == 0 and !hasProjKey(self.proj_items.items)) {
+        _ = try self.groups.statesFor(self.allocator, &.{}, self.aggregate_kinds.items);
     }
-    for (self.groups.items) |group| {
+    for (self.groups.keys.items, self.groups.states.items) |keys, states| {
         var row = std.ArrayList(Value).empty;
         var key_i: usize = 0;
         var agg_i: usize = 0;
         for (self.proj_items.items) |item| {
             switch (item) {
                 .key => {
-                    try row.append(self.allocator, group.keys.items[key_i]);
+                    try row.append(self.allocator, keys[key_i]);
                     key_i += 1;
                 },
                 .agg => |a| {
-                    try row.append(self.allocator, aggResult(a.kind, group.aggs.items[agg_i]));
+                    try row.append(self.allocator, aggResult(a.kind, states[agg_i]));
                     agg_i += 1;
                 },
             }
         }
-        try self.rows.append(self.allocator, row);
-        try self.row_keys.append(self.allocator, @as([]const Value, &.{}));
+        try self.rows.append(self.allocator, .{ .item = row, .sort_key = &.{} });
     }
 }
 
@@ -139,10 +121,36 @@ pub const AggState = struct {
     list: std.ArrayList(Value) = .empty,
 };
 
-pub const Group = struct {
-    keys: std.ArrayList(Value),
-    aggs: std.ArrayList(AggState),
-};
+/// Rows grouped by key, each group holding one `AggState` per aggregate.
+/// Groups keep first-seen order; lookup is a hash probe (expected O(1)), so
+/// grouping n rows is O(n). `KeyContext` is a std.HashMap context for `Key`
+/// (see `sequence_algorithms`). Keys and states live in the executor's arena.
+pub fn Grouping(comptime Key: type, comptime KeyContext: type) type {
+    return struct {
+        const Self = @This();
+
+        keys: std.ArrayList(Key) = .empty,
+        states: std.ArrayList([]AggState) = .empty,
+        index: std.HashMapUnmanaged(Key, usize, KeyContext, std.hash_map.default_max_load_percentage) = .empty,
+
+        /// The aggregation states of `key`'s group, created (one per entry of
+        /// `kinds`) the first time the key is seen. `key` must outlive `self`.
+        pub fn statesFor(self: *Self, allocator: Allocator, key: Key, kinds: []const AggKind) Allocator.Error![]AggState {
+            const entry = try self.index.getOrPutContext(allocator, key, .{});
+            if (!entry.found_existing) {
+                const states = try allocator.alloc(AggState, kinds.len);
+                for (states, kinds) |*state, kind| state.* = .{ .kind = kind };
+                entry.value_ptr.* = self.keys.items.len;
+                try self.keys.append(allocator, key);
+                try self.states.append(allocator, states);
+            }
+            return self.states.items[entry.value_ptr.*];
+        }
+    };
+}
+
+/// RETURN groups: keyed by the values of the non-aggregate projection items.
+pub const ValueGrouping = Grouping([]const Value, SequenceContext(Value));
 
 pub fn hasProjKey(items: []const ProjItem) bool {
     for (items) |item| if (item == .key) return true;

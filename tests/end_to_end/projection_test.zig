@@ -78,3 +78,26 @@ test "SKIP pagination in RETURN" {
         &.{.{ .str = "John Wick" }},
     });
 }
+
+test "ORDER BY is stable: ties keep their match order" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // People are matched in id order; the key only splits them in two.
+    try expectOrdered(&ast, &g, "MATCH (p:Person) RETURN p.name ORDER BY p.born > 1962 DESC", &.{
+        &.{.{ .str = "Keanu Reeves" }},
+        &.{.{ .str = "Carrie-Anne Moss" }},
+        &.{.{ .str = "Lana Wachowski" }},
+        &.{.{ .str = "Laurence Fishburne" }},
+        &.{.{ .str = "Tom Hanks" }},
+    });
+}

@@ -3,22 +3,51 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const Wyhash = std.hash.Wyhash;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 
-const Executor = @import("Executor.zig");
 
 /// Reference to a directed edge, used to bind relationship variables.
 pub const EdgeRef = struct {
     src: NodeId,
     dst: NodeId,
     etype: []const u8,
+
+    pub fn eql(a: EdgeRef, b: EdgeRef) bool {
+        return a.src == b.src and a.dst == b.dst and std.mem.eql(u8, a.etype, b.etype);
+    }
+
+    pub fn hash(self: EdgeRef, hasher: *Wyhash) void {
+        hasher.update(std.mem.asBytes(&self.src));
+        hasher.update(std.mem.asBytes(&self.dst));
+        hasher.update(self.etype);
+    }
 };
 
+/// What one variable is bound to. A regular type (`eql` + `hash`), so
+/// bindings can be deduplicated and grouped by `sequence_algorithms`.
 pub const Binding = union(enum) {
     node: NodeId,
     edge: EdgeRef,
     value: Value, // scalar bound by a WITH projection
+
+    pub fn eql(a: Binding, b: Binding) bool {
+        return switch (a) {
+            .node => |x| b == .node and x == b.node,
+            .edge => |x| b == .edge and x.eql(b.edge),
+            .value => |x| b == .value and x.eql(b.value),
+        };
+    }
+
+    pub fn hash(self: Binding, hasher: *Wyhash) void {
+        hasher.update(&.{@intFromEnum(self)});
+        switch (self) {
+            .node => |id| hasher.update(std.mem.asBytes(&id)),
+            .edge => |edge| edge.hash(hasher),
+            .value => |value| value.hash(hasher),
+        }
+    }
 };
 
 /// Dynamic variable-name -> value bindings (nodes and relationships).
@@ -64,38 +93,22 @@ pub const Bindings = struct {
             .edge => |e| e,
         };
     }
+
+    /// Equal when both bind the same names, in the same order, to equal
+    /// values (rows of one WITH projection always share their name order).
+    pub fn eql(a: Bindings, b: Bindings) bool {
+        if (a.entries.items.len != b.entries.items.len) return false;
+        for (a.entries.items, b.entries.items) |x, y| {
+            if (!std.mem.eql(u8, x.name, y.name) or !x.value.eql(y.value)) return false;
+        }
+        return true;
+    }
+
+    pub fn hash(self: Bindings, hasher: *Wyhash) void {
+        hasher.update(std.mem.asBytes(&self.entries.items.len));
+        for (self.entries.items) |entry| {
+            hasher.update(entry.name);
+            entry.value.hash(hasher);
+        }
+    }
 };
-
-pub fn bindingEq(a: Binding, b: Binding) bool {
-    return switch (a) {
-        .node => |x| switch (b) {
-            .node => |y| x == y,
-            else => false,
-        },
-        .edge => |x| switch (b) {
-            .edge => |y| x.src == y.src and x.dst == y.dst and std.mem.eql(u8, x.etype, y.etype),
-            else => false,
-        },
-        .value => |x| switch (b) {
-            .value => |y| Value.eql(x, y),
-            else => false,
-        },
-    };
-}
-
-pub fn bindingsEq(a: Bindings, b: Bindings) bool {
-    if (a.entries.items.len != b.entries.items.len) return false;
-    for (a.entries.items) |ea| {
-        const eb = b.get(ea.name) orelse return false;
-        if (!bindingEq(ea.value, eb)) return false;
-    }
-    return true;
-}
-
-pub fn bindingKeysEq(a: []const Binding, b: []const Binding) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |av, bv| {
-        if (!bindingEq(av, bv)) return false;
-    }
-    return true;
-}
