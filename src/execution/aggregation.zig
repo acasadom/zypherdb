@@ -10,6 +10,7 @@ const SequenceContext = @import("../sequence_algorithms.zig").SequenceContext;
 
 const Executor = @import("Executor.zig");
 const expressions = @import("expressions.zig");
+const projection = @import("projection.zig");
 const ExecError = Executor.ExecError;
 
 const Bindings = @import("bindings.zig").Bindings;
@@ -79,7 +80,7 @@ pub fn updateAgg(self: *Executor, state: *AggState, arg: Value) ExecError!void {
 
 /// Turns the groups into RETURN rows: grouping keys and aggregate results in
 /// projection order.
-pub fn aggregate(self: *Executor) ExecError!void {
+pub fn aggregate(self: *Executor, info: projection.ReturnInfo) ExecError!void {
     self.rows = .empty;
     // With no grouping keys, aggregating zero rows still yields one row
     // (`count` 0, `sum` 0, `min`/`max` null, `collect` []), as in openCypher.
@@ -102,7 +103,8 @@ pub fn aggregate(self: *Executor) ExecError!void {
                 },
             }
         }
-        try self.rows.append(self.allocator, .{ .item = row, .sort_key = &.{} });
+        const sort_key = try projection.returnSortKey(self, info, row.items, null);
+        try self.rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
     }
 }
 

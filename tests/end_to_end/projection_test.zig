@@ -101,3 +101,36 @@ test "ORDER BY is stable: ties keep their match order" {
         &.{.{ .str = "Tom Hanks" }},
     });
 }
+
+test "ORDER BY sees RETURN aliases, projected expressions and aggregates" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // An alias of the RETURN clause.
+    try expectOrdered(&ast, &g, "MATCH (m:Movie) RETURN m.title AS title ORDER BY title LIMIT 2", &.{
+        &.{.{ .str = "Forrest Gump" }},
+        &.{.{ .str = "John Wick" }},
+    });
+    // Aggregated rows ordered by an aggregate alias (used to crash) ...
+    try expectOrdered(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN p.name, count(*) AS movies ORDER BY movies DESC, p.name", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 3 } },
+        &.{ .{ .str = "Carrie-Anne Moss" }, .{ .int = 1 } },
+        &.{ .{ .str = "Laurence Fishburne" }, .{ .int = 1 } },
+        &.{ .{ .str = "Tom Hanks" }, .{ .int = 1 } },
+    });
+    // ... and by a repeated aggregate expression.
+    try expectOrdered(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN p.name, count(*) ORDER BY count(*) DESC LIMIT 1", &.{
+        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 3 } },
+    });
+    // A variable that is not projected cannot order aggregated rows.
+    try expectQueryError(&ast, &g, "MATCH (p:Person) RETURN count(*) ORDER BY p.born", error.UnknownVar);
+}

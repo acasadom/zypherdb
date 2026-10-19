@@ -327,9 +327,9 @@ pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
             const v = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
             try out.append(self.allocator, v);
         }
-        // The ORDER BY key is evaluated now, against the full bindings: it may
-        // use variables that are not projected.
-        const sort_key = if (info.order_by) |ob| try projection.orderByKey(self, ob, bindings) else &.{};
+        // The ORDER BY key is evaluated now, while the row's variables are
+        // still bound: it may use variables that are not projected.
+        const sort_key = try projection.returnSortKey(self, info, out.items, bindings);
         try self.rows.append(self.allocator, .{ .item = out, .sort_key = sort_key });
     }
 }

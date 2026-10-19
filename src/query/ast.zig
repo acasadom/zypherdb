@@ -227,8 +227,39 @@ pub const Ast = struct {
 
     /// The root node (a `query`). The AST is built bottom-up, so the root is
     /// the last node added.
+    /// Structural equality of two expression subtrees: same kinds, payloads
+    /// and children. Used to recognise an ORDER BY expression that repeats a
+    /// projected one (`RETURN p.g, count(*) ORDER BY count(*)`).
+    pub fn sameExpression(self: *const Ast, a: Index, b: Index) bool {
+        if (self.kind(a) != self.kind(b)) return false;
+        if (!sameExpressionData(self.data(a), self.data(b))) return false;
+        const a_children = self.nodeChildren(a);
+        const b_children = self.nodeChildren(b);
+        if (a_children.len != b_children.len) return false;
+        for (a_children, b_children) |x, y| {
+            if (!self.sameExpression(x, y)) return false;
+        }
+        return true;
+    }
+
     pub fn root(self: *const Ast) Index {
         std.debug.assert(self.nodes.items.len > 0);
         return @intCast(self.nodes.items.len - 1);
     }
 };
+
+/// Payload equality for expression nodes; clause and pattern payloads never
+/// compare equal (they are not expressions).
+fn sameExpressionData(a: Data, b: Data) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .none => true,
+        .int => |x| x == b.int,
+        .boolean => |x| x == b.boolean,
+        .text => |x| std.mem.eql(u8, x, b.text),
+        .bin_op => |x| x == b.bin_op,
+        .un_op => |x| x == b.un_op,
+        .agg => |x| x == b.agg,
+        else => false,
+    };
+}

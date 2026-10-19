@@ -214,14 +214,50 @@ fn sortBindings(self: *Executor, rows: *std.ArrayList(Bindings), order_by: Index
     for (rows.items, sortable) |*row, entry| row.* = entry.item;
 }
 
-/// Evaluates the ORDER BY expressions against `bindings`.
-pub fn orderByKey(self: *Executor, order_by: Index, bindings: *Bindings) ExecError![]const Value {
+/// Evaluates the ORDER BY expressions against `bindings` (WITH rows, whose
+/// bindings already hold the projected names).
+fn orderByKey(self: *Executor, order_by: Index, bindings: *Bindings) ExecError![]const Value {
     const order_items = self.ast.nodeChildren(order_by);
     const key = try self.allocator.alloc(Value, order_items.len);
     for (key, order_items) |*value, item| {
         value.* = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
     }
     return key;
+}
+
+/// The ORDER BY key of one RETURN row (empty without ORDER BY). Each ORDER BY
+/// expression that repeats a projected expression reuses that column;
+/// otherwise it is evaluated with the RETURN aliases in scope, on top of the
+/// row's variables (`bindings`, null for an aggregated row, which has none).
+pub fn returnSortKey(self: *Executor, info: ReturnInfo, row: []const Value, bindings: ?*const Bindings) ExecError![]const Value {
+    const order_by = info.order_by orelse return &.{};
+    const projected = self.ast.nodeChildren(info.projection);
+
+    var scope = Bindings{ .entries = .empty };
+    if (bindings) |b| try scope.entries.appendSlice(self.allocator, b.entries.items);
+    for (projected, row) |item, value| {
+        const alias = self.ast.data(item).text;
+        if (alias.len > 0) try scope.put(self.allocator, alias, .{ .value = value });
+    }
+
+    const order_items = self.ast.nodeChildren(order_by);
+    const key = try self.allocator.alloc(Value, order_items.len);
+    for (key, order_items) |*value, order_item| {
+        const expr = self.ast.nodeChildren(order_item)[0];
+        value.* = if (projectedColumn(self, projected, expr)) |column|
+            row[column]
+        else
+            try expressions.eval(self, expr, &scope);
+    }
+    return key;
+}
+
+/// The index of the projection item whose expression is `expr`, if any.
+fn projectedColumn(self: *Executor, projected: []const Index, expr: Index) ?usize {
+    for (projected, 0..) |item, column| {
+        if (self.ast.sameExpression(self.ast.nodeChildren(item)[0], expr)) return column;
+    }
+    return null;
 }
 
 /// The direction of each ORDER BY column (`true` = ascending).
@@ -270,7 +306,7 @@ pub fn returnInfo(self: *Executor, rc: Index) ReturnInfo {
 pub fn postProcess(self: *Executor, rc: Index) ExecError!void {
     const info = returnInfo(self, rc);
 
-    if (self.has_agg) try aggregation.aggregate(self);
+    if (self.has_agg) try aggregation.aggregate(self, info);
     if (info.distinct) {
         try sequence_algorithms.removeDuplicates(Sortable(Row), self.allocator, &self.rows, ReturnRowContext{});
     }
