@@ -5,7 +5,7 @@ const testing = std.testing;
 const acmedb = @import("acmedb");
 
 const Graph = acmedb.Graph;
-const KvStore = acmedb.KvStore;
+const KeyValueStore = acmedb.KeyValueStore;
 const NodeId = acmedb.NodeId;
 const NodeIdIterator = acmedb.NodeIdIterator;
 

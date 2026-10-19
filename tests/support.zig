@@ -7,7 +7,7 @@ const acmedb = @import("acmedb");
 
 const Ast = acmedb.Ast;
 const Graph = acmedb.Graph;
-const KvStore = acmedb.KvStore;
+const KeyValueStore = acmedb.KeyValueStore;
 const NodeId = acmedb.NodeId;
 const Row = acmedb.Row;
 const Value = acmedb.Value;
@@ -21,8 +21,8 @@ pub fn testPath(tmp: *testing.TmpDir, buf: []u8) []const u8 {
 }
 
 /// Opens a fresh store in the test's temporary directory.
-pub fn openStore(tmp: *testing.TmpDir, buf: []u8) !KvStore {
-    return KvStore.open(testing.allocator, testPath(tmp, buf));
+pub fn openStore(tmp: *testing.TmpDir, buf: []u8) !KeyValueStore {
+    return KeyValueStore.open(testing.allocator, testPath(tmp, buf));
 }
 
 /// Loads the "people and movies" fixture graph (see docs/tutorial).

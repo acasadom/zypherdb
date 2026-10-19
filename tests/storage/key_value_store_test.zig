@@ -1,21 +1,21 @@
-//! KvStore: LMDB-backed keys, prefix scans and read transactions.
+//! KeyValueStore: LMDB-backed keys, prefix scans and read transactions.
 
 const std = @import("std");
 const testing = std.testing;
 const acmedb = @import("acmedb");
 
-const KvStore = acmedb.KvStore;
+const KeyValueStore = acmedb.KeyValueStore;
 
 const testPath = @import("../support.zig").testPath;
 
-test "KvStore opens, writes and reads a key" {
+test "KeyValueStore opens, writes and reads a key" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
     var path_buf: [128]u8 = undefined;
     const path = testPath(&tmp, &path_buf);
 
-    var store = try KvStore.open(testing.allocator, path);
+    var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
     try store.put("greeting", "hello acmedb");
@@ -33,7 +33,7 @@ test "get of a missing key returns null" {
     var path_buf: [128]u8 = undefined;
     const path = testPath(&tmp, &path_buf);
 
-    var store = try KvStore.open(testing.allocator, path);
+    var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
     const got = try store.get("does_not_exist");
@@ -48,7 +48,7 @@ test "exists distinguishes present from absent" {
     var path_buf: [128]u8 = undefined;
     const path = testPath(&tmp, &path_buf);
 
-    var store = try KvStore.open(testing.allocator, path);
+    var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
     try store.put("a", "1");
@@ -64,7 +64,7 @@ test "del deletes a key and is idempotent" {
     var path_buf: [128]u8 = undefined;
     const path = testPath(&tmp, &path_buf);
 
-    var store = try KvStore.open(testing.allocator, path);
+    var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
     try store.put("k", "v");
@@ -85,7 +85,7 @@ test "scanPrefix returns only the prefixed keys, in order" {
     var path_buf: [128]u8 = undefined;
     const path = testPath(&tmp, &path_buf);
 
-    var store = try KvStore.open(testing.allocator, path);
+    var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
     const pairs = [_]struct { k: []const u8, v: []const u8 }{
@@ -119,7 +119,7 @@ test "countPrefix counts the keys of a prefix" {
     var path_buf: [128]u8 = undefined;
     const path = testPath(&tmp, &path_buf);
 
-    var store = try KvStore.open(testing.allocator, path);
+    var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
     for ([_][]const u8{ "n:a", "n:b", "x:z" }) |k| try store.put(k, "v");
@@ -135,7 +135,7 @@ test "read transaction batches reads and sees a consistent snapshot" {
     var path_buf: [128]u8 = undefined;
     const path = testPath(&tmp, &path_buf);
 
-    var store = try KvStore.open(testing.allocator, path);
+    var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
     try store.put("a", "1");

@@ -1,7 +1,7 @@
 //! Minimal hand-written C bindings for LMDB (`vendor/lmdb`).
 //!
 //! Zig 0.17.0 removed `@cImport`, so instead of a generated binding we declare
-//! only the small surface `KvStore` needs: the three opaque handles, `MDB_val`,
+//! only the small surface `KeyValueStore` needs: the three opaque handles, `MDB_val`,
 //! and ~15 extern functions. Everything uses the C ABI (`extern "c"`), so these
 //! declarations link directly against the `mdb.c`/`midl.c` compiled in
 //! `build.zig`.

@@ -1,12 +1,12 @@
 //! Root of the `acmedb` library.
 //!
 //! Embedded graph database engine (a subset of openCypher).
-//! First building block: the storage layer (`KvStore` over LMDB).
+//! First building block: the storage layer (`KeyValueStore` over LMDB).
 
 pub const key_value_store = @import("storage/key_value_store.zig");
 
-pub const KvStore = key_value_store.KvStore;
-pub const KvError = key_value_store.KvError;
+pub const KeyValueStore = key_value_store.KeyValueStore;
+pub const StorageError = key_value_store.StorageError;
 pub const PrefixIterator = key_value_store.PrefixIterator;
 
 pub const graph = @import("storage/graph.zig");

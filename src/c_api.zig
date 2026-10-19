@@ -12,7 +12,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("query/ast.zig").Ast;
 const Graph = @import("storage/graph.zig").Graph;
-const KvStore = @import("storage/key_value_store.zig").KvStore;
+const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
 const Value = @import("value.zig").Value;
 const Row = @import("execution/executor.zig").Row;
 const Executor = @import("execution/executor.zig").Executor;
@@ -21,7 +21,7 @@ const ErrorCode = @import("diagnostics.zig").ErrorCode;
 const parser = @import("query/parser.zig");
 
 pub const Context = struct {
-    store: KvStore,
+    store: KeyValueStore,
     graph: Graph,
     allocator: Allocator,
     diag: Diagnostic,
@@ -45,7 +45,7 @@ pub const TYPE_LIST: c_int = 4;
 pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     const path = path_ptr[0..path_len];
     const ctx = allocator.create(Context) catch return null;
-    ctx.store = KvStore.open(allocator, path) catch {
+    ctx.store = KeyValueStore.open(allocator, path) catch {
         allocator.destroy(ctx);
         return null;
     };

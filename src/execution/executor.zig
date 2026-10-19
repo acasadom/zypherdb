@@ -25,11 +25,11 @@ const Value = @import("../value.zig").Value;
 const eqlSequences = @import("../value.zig").eqlSequences;
 const Direction = @import("../storage/graph.zig").Direction;
 const NodeIdIterator = @import("../storage/graph.zig").NodeIdIterator;
-const KvError = @import("../storage/key_value_store.zig").KvError;
+const StorageError = @import("../storage/key_value_store.zig").StorageError;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const ErrorCode = @import("../diagnostics.zig").ErrorCode;
 
-pub const ExecError = KvError || error{
+pub const ExecError = StorageError || error{
     UnknownVar,
     MissingProp,
     InvalidExpr,
@@ -509,13 +509,13 @@ pub const Executor = struct {
 
     /// Candidate nodes for a pattern: the first label's index, or every node
     /// when the pattern is unlabeled. Callers verify the remaining labels.
-    fn seedNodes(self: *Executor, labels: []const []const u8) KvError!NodeIdIterator {
+    fn seedNodes(self: *Executor, labels: []const []const u8) StorageError!NodeIdIterator {
         if (labels.len > 0) return self.graph.nodesWithLabel(labels[0]);
         return self.graph.allNodes();
     }
 
     /// True if `id` carries every label in `labels` (empty = always true).
-    fn hasAllLabels(self: *Executor, id: NodeId, labels: []const []const u8) KvError!bool {
+    fn hasAllLabels(self: *Executor, id: NodeId, labels: []const []const u8) StorageError!bool {
         for (labels) |l| {
             if (!(try self.graph.hasLabel(id, l))) return false;
         }

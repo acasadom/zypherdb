@@ -1,4 +1,4 @@
-//! Graph key encoding and a minimal index-free adjacency layer over `KvStore`.
+//! Graph key encoding and a minimal index-free adjacency layer over `KeyValueStore`.
 //!
 //! Keys are byte strings laid out so that "give me the neighbours of node X"
 //! is a single LMDB prefix scan (index-free adjacency, IFA). Each directed,
@@ -18,8 +18,8 @@
 
 const std = @import("std");
 
-const KvStore = @import("key_value_store.zig").KvStore;
-const KvError = @import("key_value_store.zig").KvError;
+const KeyValueStore = @import("key_value_store.zig").KeyValueStore;
+const StorageError = @import("key_value_store.zig").StorageError;
 const PrefixIterator = @import("key_value_store.zig").PrefixIterator;
 
 const Allocator = std.mem.Allocator;
@@ -250,26 +250,26 @@ pub fn decodeEdgeKey(key: []const u8) EdgeKey {
 }
 
 // ---------------------------------------------------------------------------
-// Graph (index-free adjacency over KvStore)
+// Graph (index-free adjacency over KeyValueStore)
 // ---------------------------------------------------------------------------
 
-/// Thin graph view over a `KvStore`, implementing index-free adjacency:
+/// Thin graph view over a `KeyValueStore`, implementing index-free adjacency:
 /// `addEdge` writes both directions, `neighbours` is a single prefix scan.
 pub const Graph = struct {
-    store: *KvStore,
+    store: *KeyValueStore,
     allocator: Allocator,
 
-    pub fn init(store: *KvStore, allocator: Allocator) Graph {
+    pub fn init(store: *KeyValueStore, allocator: Allocator) Graph {
         return .{ .store = store, .allocator = allocator };
     }
 
     /// Begins an atomic write transaction; see `commitWrite`/`abortWrite`. All
     /// mutations until then are batched into one transaction.
-    pub fn beginWrite(self: *Graph) KvError!void {
+    pub fn beginWrite(self: *Graph) StorageError!void {
         return self.store.beginWrite();
     }
 
-    pub fn commitWrite(self: *Graph) KvError!void {
+    pub fn commitWrite(self: *Graph) StorageError!void {
         return self.store.commitWrite();
     }
 
@@ -284,7 +284,7 @@ pub const Graph = struct {
 
     /// Begins an atomic read transaction (snapshot); see `commitRead`/`abortRead`.
     /// All reads until then are batched into one transaction.
-    pub fn beginRead(self: *Graph) KvError!void {
+    pub fn beginRead(self: *Graph) StorageError!void {
         return self.store.beginRead();
     }
 
@@ -299,7 +299,7 @@ pub const Graph = struct {
     /// Marks `id` as an existing node with the given `label` (empty string for
     /// an unlabeled node). Idempotent. A non-empty label also writes the label
     /// index entries so `nodesWithLabel` can find it.
-    pub fn addNode(self: *Graph, id: NodeId, label: []const u8) KvError!void {
+    pub fn addNode(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendNodeKey(&key, self.allocator, id);
@@ -309,7 +309,7 @@ pub const Graph = struct {
     }
 
     /// Adds a label to a node (forward + reverse index). Idempotent.
-    pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) KvError!void {
+    pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendLabelKey(&key, self.allocator, label, id);
@@ -321,7 +321,7 @@ pub const Graph = struct {
     }
 
     /// Removes a label from a node (forward + reverse index). Idempotent.
-    pub fn removeLabel(self: *Graph, id: NodeId, label: []const u8) KvError!void {
+    pub fn removeLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendLabelKey(&key, self.allocator, label, id);
@@ -333,7 +333,7 @@ pub const Graph = struct {
     }
 
     /// Allocates a fresh, never-used node id (persistent counter).
-    pub fn allocNodeId(self: *Graph) KvError!NodeId {
+    pub fn allocNodeId(self: *Graph) StorageError!NodeId {
         var next: NodeId = 0;
         const raw = try self.store.get(counter_key);
         if (raw) |r| {
@@ -348,21 +348,21 @@ pub const Graph = struct {
 
     /// Deletes a node; fails with `error.NodeStillConnected` if it still has
     /// relationships (use `deleteNodeDetach` to remove them too).
-    pub fn deleteNode(self: *Graph, id: NodeId) KvError!void {
+    pub fn deleteNode(self: *Graph, id: NodeId) StorageError!void {
         if (try self.hasAnyEdge(id)) return error.NodeStillConnected;
         return self.deleteNodeOnly(id);
     }
 
     /// Deletes a node and detaches it: removes all its edges (both directions)
     /// and edge properties, its label-index entry, properties and marker.
-    pub fn deleteNodeDetach(self: *Graph, id: NodeId) KvError!void {
+    pub fn deleteNodeDetach(self: *Graph, id: NodeId) StorageError!void {
         try self.deleteEdgesInDirection(id, .out);
         try self.deleteEdgesInDirection(id, .in);
         return self.deleteNodeOnly(id);
     }
 
     /// True if the node is the endpoint of at least one edge.
-    pub fn hasAnyEdge(self: *Graph, id: NodeId) KvError!bool {
+    pub fn hasAnyEdge(self: *Graph, id: NodeId) StorageError!bool {
         var out_prefix = std.ArrayList(u8).empty;
         defer out_prefix.deinit(self.allocator);
         try out_prefix.append(self.allocator, edge_marker);
@@ -378,7 +378,7 @@ pub const Graph = struct {
         return try self.store.countPrefix(in_prefix.items) > 0;
     }
 
-    fn deleteNodeOnly(self: *Graph, id: NodeId) KvError!void {
+    fn deleteNodeOnly(self: *Graph, id: NodeId) StorageError!void {
         // Enumerate and remove all labels (forward + reverse index).
         var labels = std.ArrayList([]u8).empty;
         defer {
@@ -415,7 +415,7 @@ pub const Graph = struct {
         try self.deleteKeysUnder(nprefix.items);
     }
 
-    fn deleteEdgesInDirection(self: *Graph, id: NodeId, dir: Direction) KvError!void {
+    fn deleteEdgesInDirection(self: *Graph, id: NodeId, dir: Direction) StorageError!void {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try prefix.append(self.allocator, edge_marker);
@@ -482,7 +482,7 @@ pub const Graph = struct {
 
     /// Deletes every key under `prefix` (collected first so the scan cursor is
     /// not open across the deletes).
-    fn deleteKeysUnder(self: *Graph, prefix: []const u8) KvError!void {
+    fn deleteKeysUnder(self: *Graph, prefix: []const u8) StorageError!void {
         var keys = std.ArrayList([]u8).empty;
         defer {
             for (keys.items) |k| self.allocator.free(k);
@@ -496,14 +496,14 @@ pub const Graph = struct {
         for (keys.items) |k| try self.store.del(k);
     }
 
-    pub fn hasNode(self: *Graph, id: NodeId) KvError!bool {
+    pub fn hasNode(self: *Graph, id: NodeId) StorageError!bool {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendNodeKey(&key, self.allocator, id);
         return self.store.exists(key.items);
     }
 
-    pub fn hasLabel(self: *Graph, id: NodeId, label: []const u8) KvError!bool {
+    pub fn hasLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!bool {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendLabelKey(&key, self.allocator, label, id);
@@ -512,7 +512,7 @@ pub const Graph = struct {
 
     /// Stores a typed property `name` on node `id`. Idempotent. Maintains the
     /// property index.
-    pub fn setProp(self: *Graph, id: NodeId, name: []const u8, value: Value) KvError!void {
+    pub fn setProp(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
         // Remove the previous index entry, if any.
         if (try self.getProp(id, name, self.allocator)) |old| {
             defer switch (old) {
@@ -536,7 +536,7 @@ pub const Graph = struct {
 
     /// Removes a typed property `name` from node `id` (and its index entry).
     /// Idempotent.
-    pub fn removeProp(self: *Graph, id: NodeId, name: []const u8) KvError!void {
+    pub fn removeProp(self: *Graph, id: NodeId, name: []const u8) StorageError!void {
         if (try self.getProp(id, name, self.allocator)) |old| {
             defer switch (old) {
                 .str => |s| self.allocator.free(s),
@@ -552,7 +552,7 @@ pub const Graph = struct {
 
     /// Iterates all nodes whose property `name` equals `value` (via the
     /// property index), in ascending node-id order.
-    pub fn nodesByProp(self: *Graph, name: []const u8, value: Value) KvError!NodeIdIterator {
+    pub fn nodesByProp(self: *Graph, name: []const u8, value: Value) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try appendIndexPrefix(&prefix, self.allocator, name, value);
@@ -560,14 +560,14 @@ pub const Graph = struct {
         return .{ .inner = it };
     }
 
-    fn putIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) KvError!void {
+    fn putIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendIndexKey(&key, self.allocator, name, value, id);
         try self.store.put(key.items, "");
     }
 
-    fn deleteIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) KvError!void {
+    fn deleteIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendIndexKey(&key, self.allocator, name, value, id);
@@ -576,7 +576,7 @@ pub const Graph = struct {
 
     /// Reads a typed property `name` of node `id`, or `null` if absent. The
     /// `str` variant is an owned copy allocated with `allocator`.
-    pub fn getProp(self: *Graph, id: NodeId, name: []const u8, allocator: Allocator) KvError!?Value {
+    pub fn getProp(self: *Graph, id: NodeId, name: []const u8, allocator: Allocator) StorageError!?Value {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendNodePropKey(&key, self.allocator, id, name);
@@ -587,7 +587,7 @@ pub const Graph = struct {
 
     /// Adds a directed, typed edge, storing both directions. Idempotent. Also
     /// maintains the edge-type cardinality counter.
-    pub fn addEdge(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8) KvError!void {
+    pub fn addEdge(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8) StorageError!void {
         if (try self.hasEdge(src, dst, etype)) return;
 
         var key = std.ArrayList(u8).empty;
@@ -604,7 +604,7 @@ pub const Graph = struct {
     }
 
     /// Number of directed edges carrying `etype`.
-    pub fn edgeTypeCount(self: *Graph, etype: []const u8) KvError!usize {
+    pub fn edgeTypeCount(self: *Graph, etype: []const u8) StorageError!usize {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try key.append(self.allocator, edge_type_marker);
@@ -615,7 +615,7 @@ pub const Graph = struct {
         return 0;
     }
 
-    fn bumpEdgeType(self: *Graph, etype: []const u8, increment: bool) KvError!void {
+    fn bumpEdgeType(self: *Graph, etype: []const u8, increment: bool) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try key.append(self.allocator, edge_type_marker);
@@ -634,7 +634,7 @@ pub const Graph = struct {
     }
 
     /// True if the directed, typed edge `src -> dst` exists.
-    pub fn hasEdge(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8) KvError!bool {
+    pub fn hasEdge(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8) StorageError!bool {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendEdgeKey(&key, self.allocator, src, .out, etype, dst);
@@ -643,7 +643,7 @@ pub const Graph = struct {
 
     /// Stores a typed property on the directed edge `src -> dst` of type
     /// `etype`. Idempotent. Maintains the edge-property index.
-    pub fn setEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, value: Value) KvError!void {
+    pub fn setEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, value: Value) StorageError!void {
         if (try self.getEdgeProp(src, dst, etype, name, self.allocator)) |old| {
             defer switch (old) {
                 .str => |s| self.allocator.free(s),
@@ -666,7 +666,7 @@ pub const Graph = struct {
 
     /// Removes a typed property from the directed edge `src -> dst` of type
     /// `etype`. Idempotent.
-    pub fn removeEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8) KvError!void {
+    pub fn removeEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8) StorageError!void {
         if (try self.getEdgeProp(src, dst, etype, name, self.allocator)) |old| {
             defer switch (old) {
                 .str => |s| self.allocator.free(s),
@@ -680,14 +680,14 @@ pub const Graph = struct {
         try self.store.del(key.items);
     }
 
-    fn putEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) KvError!void {
+    fn putEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
         try self.store.put(key.items, "");
     }
 
-    fn deleteEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) KvError!void {
+    fn deleteEdgeIndexEntry(self: *Graph, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendEdgeIndexKey(&key, self.allocator, prop, value, src, dst, etype);
@@ -696,7 +696,7 @@ pub const Graph = struct {
 
     /// Iterates all directed edges whose property `name` equals `value` (via the
     /// edge-property index), in ascending (src, dst) order.
-    pub fn edgesByProp(self: *Graph, name: []const u8, value: Value) KvError!EdgeIterator {
+    pub fn edgesByProp(self: *Graph, name: []const u8, value: Value) StorageError!EdgeIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try appendEdgeIndexPrefix(&prefix, self.allocator, name, value);
@@ -707,7 +707,7 @@ pub const Graph = struct {
 
     /// Reads a typed property of the directed edge `src -> dst` of type
     /// `etype`, or `null` if absent.
-    pub fn getEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, allocator: Allocator) KvError!?Value {
+    pub fn getEdgeProp(self: *Graph, src: NodeId, dst: NodeId, etype: []const u8, name: []const u8, allocator: Allocator) StorageError!?Value {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try appendEdgePropKey(&key, self.allocator, src, dst, etype, name);
@@ -718,7 +718,7 @@ pub const Graph = struct {
 
     /// Iterates the neighbours of `id` in the given `dir` and `etype`, in
     /// ascending neighbour-id order (LMDB's lexicographic order).
-    pub fn neighbours(self: *Graph, id: NodeId, dir: Direction, etype: []const u8) KvError!NodeIdIterator {
+    pub fn neighbours(self: *Graph, id: NodeId, dir: Direction, etype: []const u8) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try appendEdgePrefix(&prefix, self.allocator, id, dir, etype);
@@ -727,7 +727,7 @@ pub const Graph = struct {
     }
 
     /// Iterates all nodes carrying `label`, in ascending node-id order.
-    pub fn nodesWithLabel(self: *Graph, label: []const u8) KvError!NodeIdIterator {
+    pub fn nodesWithLabel(self: *Graph, label: []const u8) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try prefix.append(self.allocator, label_marker);
@@ -740,13 +740,13 @@ pub const Graph = struct {
     /// Iterates every node (labeled or not), in ascending node-id order. Scans
     /// the `n | node_id` existence markers, skipping the property keys that
     /// share the `n` prefix.
-    pub fn allNodes(self: *Graph) KvError!NodeIdIterator {
+    pub fn allNodes(self: *Graph) StorageError!NodeIdIterator {
         const it = try self.store.scanPrefix(&.{node_marker});
         return .{ .inner = it, .key_len = 1 + id_len };
     }
 
     /// Number of nodes carrying `label`.
-    pub fn labelCount(self: *Graph, label: []const u8) KvError!usize {
+    pub fn labelCount(self: *Graph, label: []const u8) StorageError!usize {
         var it = try self.nodesWithLabel(label);
         defer it.deinit();
         var count: usize = 0;
@@ -768,7 +768,7 @@ pub const NodeIdIterator = struct {
     }
 
     /// Returns the next node id, or `null` at the end.
-    pub fn next(self: *NodeIdIterator) KvError!?NodeId {
+    pub fn next(self: *NodeIdIterator) StorageError!?NodeId {
         while (try self.inner.next()) |entry| {
             if (self.key_len) |len| {
                 if (entry.key.len != len) continue;
@@ -793,7 +793,7 @@ pub const EdgeIterator = struct {
     }
 
     /// Returns the next `(src, dst, etype)` edge, or `null` at the end.
-    pub fn next(self: *EdgeIterator) KvError!?struct { src: NodeId, dst: NodeId, etype: []const u8 } {
+    pub fn next(self: *EdgeIterator) StorageError!?struct { src: NodeId, dst: NodeId, etype: []const u8 } {
         const entry = try self.inner.next() orelse return null;
         const src = readNodeId(entry.key[self.value_len .. self.value_len + id_len]);
         const dst = readNodeId(entry.key[self.value_len + id_len .. self.value_len + 2 * id_len]);
