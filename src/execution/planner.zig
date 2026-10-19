@@ -121,22 +121,22 @@ pub fn estimate(self: *Executor, node_index: usize) usize {
     if (node.seeks.items.len > 0) return 1;
     if (node.labels.len == 0) return std.math.maxInt(usize);
     var best: usize = std.math.maxInt(usize);
-    for (node.labels) |l| {
-        const c = self.graph.labelCount(l) catch std.math.maxInt(usize);
-        if (c < best) best = c;
+    for (node.labels) |label| {
+        const count = self.graph.labelCount(label) catch std.math.maxInt(usize);
+        if (count < best) best = count;
     }
     // Cap by the rarest incident edge type: the number of results is bounded
     // by the number of edges of that type, not just the label size.
     if (node_index > 0) {
         if (self.edges.items[node_index - 1].edge_type.len > 0) {
-            const c = self.graph.edgeTypeCount(self.edges.items[node_index - 1].edge_type) catch std.math.maxInt(usize);
-            if (c < best) best = c;
+            const count = self.graph.edgeTypeCount(self.edges.items[node_index - 1].edge_type) catch std.math.maxInt(usize);
+            if (count < best) best = count;
         }
     }
     if (node_index < self.edges.items.len) {
         if (self.edges.items[node_index].edge_type.len > 0) {
-            const c = self.graph.edgeTypeCount(self.edges.items[node_index].edge_type) catch std.math.maxInt(usize);
-            if (c < best) best = c;
+            const count = self.graph.edgeTypeCount(self.edges.items[node_index].edge_type) catch std.math.maxInt(usize);
+            if (count < best) best = count;
         }
     }
     return best;
