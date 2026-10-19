@@ -426,8 +426,14 @@ const Parser = struct {
             try clauses.append(self.ast.allocator, rc);
         }
 
-        if (self.peek().kind != .eof) return error.UnexpectedToken;
-        if (clauses.items.len == 0) return error.UnexpectedToken;
+        if (self.peek().kind != .eof) {
+            self.fail("unexpected {s} (unsupported syntax or missing clause)", .{tokenDesc(self.peek())});
+            return error.UnexpectedToken;
+        }
+        if (clauses.items.len == 0) {
+            self.fail("expected a clause (MATCH, CREATE, RETURN, ...)", .{});
+            return error.UnexpectedToken;
+        }
         return self.ast.addNode(.query, .{ .none = {} }, clauses.items);
     }
 
@@ -589,6 +595,7 @@ const Parser = struct {
                 on_match = try self.parseSetClause();
                 seen |= 2;
             } else {
+                self.fail("expected CREATE or MATCH after ON, found {s}", .{tokenDesc(self.peek())});
                 return error.UnexpectedToken;
             }
         }
@@ -866,7 +873,10 @@ const Parser = struct {
         switch (t.kind) {
             .integer => {
                 _ = self.advance();
-                const v = std.fmt.parseInt(i64, t.text, 10) catch return error.UnexpectedToken;
+                const v = std.fmt.parseInt(i64, t.text, 10) catch {
+                    self.fail("integer literal {s} does not fit in 64 bits", .{t.text});
+                    return error.UnexpectedToken;
+                };
                 return self.ast.addNode(.int_literal, .{ .int = v }, &.{});
             },
             .string => {
@@ -1262,4 +1272,22 @@ test "UTF-8 and backtick-quoted identifiers" {
     try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:`Open", &diag));
     try testing.expectEqualStrings("unterminated quoted identifier", diag.message());
     try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:``) RETURN p", null));
+}
+
+test "every parse failure carries a message" {
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    const cases = [_][]const u8{
+        "MATCH (a) WHERE a.x IS NULL RETURN a", // trailing tokens
+        "", // no clause
+        "MERGE (a) ON DELETE SET a.x = 1", // bad ON
+        "RETURN 99999999999999999999", // integer overflow
+    };
+    for (cases) |src| {
+        var diag = Diagnostic.init();
+        try testing.expectError(error.UnexpectedToken, parse(&ast, src, &diag));
+        try testing.expect(diag.message().len > 0);
+        try testing.expectEqual(@import("../diag.zig").ErrorCode.parse, diag.code);
+    }
 }

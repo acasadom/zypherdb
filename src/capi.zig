@@ -158,7 +158,10 @@ export fn acmedb_query(ctx: *Context, query_ptr: [*]const u8, query_len: usize) 
     var scratch = std.heap.ArenaAllocator.init(ctx.allocator);
     defer scratch.deinit();
     var ast = Ast.init(scratch.allocator());
-    const q = parser.parse(&ast, query, &ctx.diag) catch return null;
+    const q = parser.parse(&ast, query, &ctx.diag) catch |err| {
+        if (ctx.diag.message().len == 0) ctx.diag.set(.parse, 0, "parse failed: {s}", .{@errorName(err)});
+        return null;
+    };
     var exec = Executor.init(&ast, &ctx.graph, scratch.allocator());
     exec.diag = &ctx.diag;
     const rows = exec.run(q) catch |err| {

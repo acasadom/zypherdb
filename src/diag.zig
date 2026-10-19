@@ -32,9 +32,17 @@ pub const Diagnostic = struct {
     pub fn set(self: *Diagnostic, code: ErrorCode, pos: usize, comptime fmt: []const u8, args: anytype) void {
         self.code = code;
         self.pos = pos;
-        const written = std.fmt.bufPrint(&self.buf, fmt, args) catch {
-            self.len = 0;
-            return;
+        const written = std.fmt.bufPrint(&self.buf, fmt, args) catch |err| switch (err) {
+            // Too long for the buffer: keep the truncated prefix, marked with "...".
+            error.NoSpaceLeft => {
+                const ellipsis = "...";
+                var w: std.Io.Writer = .fixed(self.buf[0 .. self.buf.len - ellipsis.len]);
+                w.print(fmt, args) catch {};
+                const n = w.end;
+                @memcpy(self.buf[n .. n + ellipsis.len], ellipsis);
+                self.len = n + ellipsis.len;
+                return;
+            },
         };
         self.len = written.len;
     }
@@ -50,3 +58,13 @@ pub const Diagnostic = struct {
         self.code = .none;
     }
 };
+
+test "messages too long for the buffer are truncated, not dropped" {
+    var d = Diagnostic.init();
+    var long: [400]u8 = undefined;
+    @memset(&long, 'x');
+    d.set(.unknown_var, 0, "unknown variable '{s}'", .{&long});
+    try std.testing.expectEqual(d.buf.len, d.message().len);
+    try std.testing.expect(std.mem.startsWith(u8, d.message(), "unknown variable 'xxx"));
+    try std.testing.expect(std.mem.endsWith(u8, d.message(), "..."));
+}
