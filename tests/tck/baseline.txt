@@ -66,9 +66,11 @@ clauses/delete/Delete1.feature: [7] Failing when deleting connected nodes
 clauses/delete/Delete1.feature: [8] Failing when deleting a label
 clauses/delete/Delete2.feature: [1] Delete relationships
 clauses/delete/Delete2.feature: [2] Delete optionally matched relationship
+clauses/delete/Delete2.feature: [3] Delete relationship with bidirectional matching
 clauses/delete/Delete2.feature: [4] Ignore null when deleting relationship
 clauses/delete/Delete2.feature: [5] Failing when deleting a relationship type
 clauses/delete/Delete4.feature: [1] Undirected expand followed by delete and count
+clauses/delete/Delete4.feature: [2] Undirected variable length expand followed by delete and count
 clauses/delete/Delete4.feature: [3] Create and delete in same query
 clauses/delete/Delete5.feature: [9] Failing when deleting an integer expression
 clauses/delete/Delete6.feature: [10] Skipping and limiting to a few results after deleting relationships affects the result set but not the side effects
@@ -87,6 +89,8 @@ clauses/delete/Delete6.feature: [8] Limiting to zero results after deleting rela
 clauses/delete/Delete6.feature: [9] Skipping all results after deleting relationships affects the result set but not the side effects
 clauses/match-where/MatchWhere1.feature: [10] Filter node with disjunctive property predicate on single variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [11] Filter relationship with disjunctive relationship type predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere1.feature: [12] Filter path with path length predicate on multi variables with one binding
+clauses/match-where/MatchWhere1.feature: [13] Filter path with false path length predicate on multi variables with one binding
 clauses/match-where/MatchWhere1.feature: [14] Fail when filtering path with property predicate
 clauses/match-where/MatchWhere1.feature: [3] Filter node with property predicate on a single variable with multiple bindings
 clauses/match-where/MatchWhere1.feature: [4] Filter start node of relationship with property predicate on multi variables with multiple bindings
@@ -250,6 +254,7 @@ clauses/match/Match2.feature: [2] Matching a relationship pattern using a label 
 clauses/match/Match2.feature: [3] Matching a self-loop with an undirected relationship pattern
 clauses/match/Match2.feature: [4] Matching a self-loop with a directed relationship pattern
 clauses/match/Match2.feature: [5] Match relationship with inline property value
+clauses/match/Match2.feature: [6] Match relationships with multiple types
 clauses/match/Match2.feature: [7] Matching twice with conflicting relationship types on same relationship
 clauses/match/Match2.feature: [8] Fail when using parameter as relationship predicate in MATCH
 clauses/match/Match2.feature: [9] Fail when a node has the same variable in a preceding MATCH #1
@@ -306,10 +311,52 @@ clauses/match/Match3.feature: [4] Get two related nodes
 clauses/match/Match3.feature: [5] Return two subgraphs with bound undirected relationship
 clauses/match/Match3.feature: [6] Matching a relationship pattern using a label predicate
 clauses/match/Match3.feature: [7] Matching nodes with many labels
+clauses/match/Match3.feature: [8] Matching using relationship predicate with multiples of the same type
 clauses/match/Match3.feature: [9] Get related to related to
 clauses/match/Match4.feature: [10] Fail on negative bound
+clauses/match/Match4.feature: [1] Handling fixed-length variable length pattern
+clauses/match/Match4.feature: [2] Simple variable length pattern
+clauses/match/Match4.feature: [3] Zero-length variable length pattern in the middle of the pattern
+clauses/match/Match4.feature: [6] Matching variable length patterns from a bound node
+clauses/match/Match4.feature: [7] Matching variable length patterns including a bound relationship
+clauses/match/Match4.feature: [8] Matching relationships into a list and matching variable length using the list
 clauses/match/Match4.feature: [9] Fail when asterisk operator is missing
 clauses/match/Match5.feature: Background
+clauses/match/Match5.feature: [10] Handling symmetrically bounded variable length match, bounds are two
+clauses/match/Match5.feature: [11] Handling upper and lower bounded variable length match, empty interval 1
+clauses/match/Match5.feature: [12] Handling upper and lower bounded variable length match, empty interval 2
+clauses/match/Match5.feature: [13] Handling upper bounded variable length match, empty interval
+clauses/match/Match5.feature: [14] Handling upper bounded variable length match 1
+clauses/match/Match5.feature: [15] Handling upper bounded variable length match 2
+clauses/match/Match5.feature: [16] Handling lower bounded variable length match 1
+clauses/match/Match5.feature: [17] Handling lower bounded variable length match 2
+clauses/match/Match5.feature: [18] Handling lower bounded variable length match 3
+clauses/match/Match5.feature: [19] Handling a variable length relationship and a standard relationship in chain, zero length 1
+clauses/match/Match5.feature: [1] Handling unbounded variable length match
+clauses/match/Match5.feature: [20] Handling a variable length relationship and a standard relationship in chain, zero length 2
+clauses/match/Match5.feature: [21] Handling a variable length relationship and a standard relationship in chain, single length 1
+clauses/match/Match5.feature: [22] Handling a variable length relationship and a standard relationship in chain, single length 2
+clauses/match/Match5.feature: [23] Handling a variable length relationship and a standard relationship in chain, longer 1
+clauses/match/Match5.feature: [24] Handling a variable length relationship and a standard relationship in chain, longer 2
+clauses/match/Match5.feature: [2] Handling explicitly unbounded variable length match
+clauses/match/Match5.feature: [3] Handling single bounded variable length match 1
+clauses/match/Match5.feature: [4] Handling single bounded variable length match 2
+clauses/match/Match5.feature: [5] Handling single bounded variable length match 3
+clauses/match/Match5.feature: [6] Handling upper and lower bounded variable length match 1
+clauses/match/Match5.feature: [7] Handling upper and lower bounded variable length match 2
+clauses/match/Match5.feature: [8] Handling symmetrically bounded variable length match, bounds are zero
+clauses/match/Match5.feature: [9] Handling symmetrically bounded variable length match, bounds are one
+clauses/match/Match6.feature: [10] Named path with alternating directed/undirected relationships
+clauses/match/Match6.feature: [11] Named path with multiple alternating directed/undirected relationships
+clauses/match/Match6.feature: [12] Matching path with multiple bidirectional relationships
+clauses/match/Match6.feature: [13] Matching path with both directions should respect other directions
+clauses/match/Match6.feature: [15] Variable-length named path
+clauses/match/Match6.feature: [16] Return a var length path
+clauses/match/Match6.feature: [17] Return a named var length path of length zero
+clauses/match/Match6.feature: [18] Undirected named path
+clauses/match/Match6.feature: [19] Variable length relationship without lower bound
+clauses/match/Match6.feature: [1] Zero-length named path
+clauses/match/Match6.feature: [20] Variable length relationship without bounds
 clauses/match/Match6.feature: [21] Fail when a node has the same variable in a preceding MATCH #1
 clauses/match/Match6.feature: [21] Fail when a node has the same variable in a preceding MATCH #10
 clauses/match/Match6.feature: [21] Fail when a node has the same variable in a preceding MATCH #11
@@ -387,8 +434,20 @@ clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #6
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #7
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #8
+clauses/match/Match6.feature: [2] Return a simple path
+clauses/match/Match6.feature: [3] Return a three node path
+clauses/match/Match6.feature: [4] Respecting direction when matching non-existent path
+clauses/match/Match6.feature: [5] Path query should return results in written order
+clauses/match/Match6.feature: [6] Handling direction of named paths
+clauses/match/Match6.feature: [7] Respecting direction when matching existing path
+clauses/match/Match6.feature: [8] Respecting direction when matching non-existent path with multiple directions
+clauses/match/Match6.feature: [9] Longer path query should return results in written order
 clauses/match/Match7.feature: [10] Optionally matching from null nodes should return null
 clauses/match/Match7.feature: [11] Return two subgraphs with bound undirected relationship and optional relationship
+clauses/match/Match7.feature: [12] Variable length optional relationships
+clauses/match/Match7.feature: [13] Variable length optional relationships with bound nodes
+clauses/match/Match7.feature: [14] Variable length optional relationships with length predicates
+clauses/match/Match7.feature: [15] Variable length patterns and nulls
 clauses/match/Match7.feature: [1] Simple OPTIONAL MATCH on empty graph
 clauses/match/Match7.feature: [21] Handling optional matches between nulls
 clauses/match/Match7.feature: [23] OPTIONAL MATCH with labels on the optional end node
@@ -409,6 +468,14 @@ clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matche
 clauses/match/Match7.feature: [9] Longer pattern with bound nodes
 clauses/match/Match8.feature: [1] Pattern independent of bound variables results in cross product
 clauses/match/Match8.feature: [3] Matching and disregarding output, then matching again
+clauses/match/Match9.feature: [1] Variable length relationship variables are lists of relationships
+clauses/match/Match9.feature: [2] Return relationships by collecting them as a list - directed, one way
+clauses/match/Match9.feature: [3] Return relationships by collecting them as a list - undirected, starting from two extremes
+clauses/match/Match9.feature: [4] Return relationships by collecting them as a list - undirected, starting from one extreme
+clauses/match/Match9.feature: [5] Variable length pattern with label predicate on both sides
+clauses/match/Match9.feature: [6] Matching relationships into a list and matching variable length using the list, with bound nodes
+clauses/match/Match9.feature: [7] Matching relationships into a list and matching variable length using the list, with bound nodes, wrong direction
+clauses/match/Match9.feature: [8] Variable length relationship in OPTIONAL MATCH
 clauses/merge/Merge1.feature: [10] Merge must properly handle multiple labels
 clauses/merge/Merge1.feature: [11] Merge should be able to merge using property of bound node
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
@@ -491,6 +558,7 @@ clauses/return-orderby/ReturnOrderBy1.feature: [6] ORDER BY DESC should order in
 clauses/return-orderby/ReturnOrderBy1.feature: [9] ORDER BY should order lists in the expected order
 clauses/return-orderby/ReturnOrderBy2.feature: [10] Returned columns do not change from using ORDER BY
 clauses/return-orderby/ReturnOrderBy2.feature: [11] Aggregates ordered by arithmetics
+clauses/return-orderby/ReturnOrderBy2.feature: [12] Aggregation of named paths
 clauses/return-orderby/ReturnOrderBy2.feature: [14] Fail on aggregation in ORDER BY after RETURN
 clauses/return-orderby/ReturnOrderBy2.feature: [1] ORDER BY should return results in ascending order
 clauses/return-orderby/ReturnOrderBy2.feature: [2] ORDER BY DESC should return results in descending order
@@ -537,6 +605,7 @@ clauses/return-skip-limit/ReturnSkipLimit3.feature: [3] Limiting amount of rows 
 clauses/return/Return2.feature: [10] Return count aggregation over an empty graph
 clauses/return/Return2.feature: [11] RETURN does not lose precision on large integers
 clauses/return/Return2.feature: [12] Projecting a list of nodes and relationships
+clauses/return/Return2.feature: [13] Projecting a map of nodes and relationships
 clauses/return/Return2.feature: [14] Do not fail when returning type of deleted relationships
 clauses/return/Return2.feature: [15] Fail when returning properties of deleted nodes
 clauses/return/Return2.feature: [16] Fail when returning labels of deleted nodes
@@ -553,12 +622,14 @@ clauses/return/Return4.feature: [1] Honour the column name for RETURN items
 clauses/return/Return4.feature: [2] Support column renaming
 clauses/return/Return4.feature: [3] Aliasing expressions
 clauses/return/Return4.feature: [4] Keeping used expression 1
+clauses/return/Return4.feature: [5] Keeping used expression 2
 clauses/return/Return4.feature: [8] Support column renaming for aggregations
 clauses/return/Return4.feature: [9] Handle subexpression in aggregation also occurring as standalone expression with nested aggregation in a literal map
 clauses/return/Return5.feature: [2] DISTINCT on nullable values
 clauses/return/Return6.feature: [10] Multiple aggregates on same variable
 clauses/return/Return6.feature: [11] Counting matches
 clauses/return/Return6.feature: [12] Counting matches per group
+clauses/return/Return6.feature: [13] Returning the minimum length of paths
 clauses/return/Return6.feature: [14] Aggregates in aggregates
 clauses/return/Return6.feature: [15] Using `rand()` in aggregations
 clauses/return/Return6.feature: [18] Handle returned variables inside an expression which contains an aggregation expression
@@ -814,6 +885,7 @@ clauses/with-where/WithWhere3.feature: [3] Join between node properties of adjac
 clauses/with-where/WithWhere4.feature: [1] Join nodes on inequality
 clauses/with-where/WithWhere6.feature: [1] Filter a single aggregate
 clauses/with/With1.feature: [3] Forwarding a relationship variable
+clauses/with/With1.feature: [4] Forwarding a path variable
 clauses/with/With1.feature: [6] Forwarding a node variable possibly null
 clauses/with/With2.feature: [1] Forwarding a property to express a join
 clauses/with/With2.feature: [2] Forwarding a nested map literal
@@ -827,6 +899,7 @@ clauses/with/With5.feature: [1] DISTINCT on an expression
 clauses/with/With6.feature: [1] Implicit grouping with single expression as grouping key and single aggregation
 clauses/with/With6.feature: [2] Implicit grouping with single relationship variable as grouping key and single aggregation
 clauses/with/With6.feature: [3] Implicit grouping with multiple node and relationship variables as grouping key and single aggregation
+clauses/with/With6.feature: [4] Implicit grouping with single path variable as grouping key and single aggregation
 clauses/with/With6.feature: [8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 clauses/with/With6.feature: [9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
 clauses/with/With7.feature: [1] A simple pattern with one bound endpoint
@@ -981,6 +1054,7 @@ expressions/comparison/Comparison1.feature: [10] Handling inlined equality of la
 expressions/comparison/Comparison1.feature: [11] Handling explicit equality of large integer
 expressions/comparison/Comparison1.feature: [12] Handling inlined equality of large integer, non-equal values
 expressions/comparison/Comparison1.feature: [13] Handling explicit equality of large integer, non-equal values
+expressions/comparison/Comparison1.feature: [14] Direction of traversed relationship is not significant for path equality, simple
 expressions/comparison/Comparison1.feature: [15] It is unknown - i.e. null - if a null is equal to a null
 expressions/comparison/Comparison1.feature: [16] It is unknown - i.e. null - if a null is not equal to a null
 expressions/comparison/Comparison1.feature: [3] Any-typed string comparison
@@ -1017,6 +1091,10 @@ expressions/graph/Graph4.feature: [2] `type()` on two relationships
 expressions/graph/Graph4.feature: [3] `type()` on null relationship
 expressions/graph/Graph4.feature: [4] `type()` on mixed null and non-null relationships
 expressions/graph/Graph4.feature: [5] `type()` handling Any type
+expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #1
+expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #3
+expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #4
+expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #5
 expressions/graph/Graph4.feature: [7] Failing when using `type()` on a node
 expressions/graph/Graph6.feature: [1] Statically access a property of a non-null node
 expressions/graph/Graph6.feature: [2] Statically access a property of a optional non-null node
@@ -1138,6 +1216,8 @@ expressions/list/List11.feature: [5] Fail on invalid argument types for `range()
 expressions/list/List12.feature: [1] Collect and extract using a list comprehension
 expressions/list/List12.feature: [2] Collect and filter using a list comprehension
 expressions/list/List12.feature: [3] Size of list comprehension
+expressions/list/List12.feature: [4] Returning a list comprehension
+expressions/list/List12.feature: [5] Using a list comprehension in a WITH
 expressions/list/List12.feature: [6] Using a list comprehension in a WHERE
 expressions/list/List12.feature: [7] Fail when using aggregation in list comprehension
 expressions/list/List2.feature: [10] List slice with parameterised range
@@ -1396,6 +1476,9 @@ expressions/null/Null3.feature: [4] Using null in IN #4
 expressions/null/Null3.feature: [4] Using null in IN #5
 expressions/null/Null3.feature: [4] Using null in IN #6
 expressions/null/Null3.feature: [4] Using null in IN #7
+expressions/path/Path2.feature: [1] Return relationships by fetching them from the path
+expressions/path/Path2.feature: [2] Return relationships by fetching them from the path - starting from the end
+expressions/path/Path3.feature: [1] Return a var length path of length zero
 expressions/path/Path3.feature: [2] Failing when using `length()` on a node
 expressions/path/Path3.feature: [3] Failing when using `length()` on a relationship
 expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variables in pattern #10
@@ -1545,6 +1628,8 @@ expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal 
 expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #7
 expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #8
 expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier1.feature: [8] None quantifier on list containing nodes
+expressions/quantifier/Quantifier1.feature: [9] None quantifier on list containing relationships
 expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #1
 expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #2
 expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #3
@@ -1635,6 +1720,8 @@ expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list litera
 expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #7
 expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #8
 expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier2.feature: [8] Single quantifier on list containing nodes
+expressions/quantifier/Quantifier2.feature: [9] Single quantifier on list containing relationships
 expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #1
 expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #2
 expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #3
@@ -1724,6 +1811,8 @@ expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal c
 expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #7
 expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #8
 expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier3.feature: [8] Any quantifier on list containing nodes
+expressions/quantifier/Quantifier3.feature: [9] Any quantifier on list containing relationships
 expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #1
 expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #2
 expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #3
@@ -1813,6 +1902,8 @@ expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal c
 expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #7
 expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #8
 expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier4.feature: [8] All quantifier on list containing nodes
+expressions/quantifier/Quantifier4.feature: [9] All quantifier on list containing relationships
 expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #1
 expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #2
 expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #3
@@ -1957,8 +2048,23 @@ expressions/typeConversion/TypeConversion1.feature: [1] `toBoolean()` on boolean
 expressions/typeConversion/TypeConversion1.feature: [2] `toBoolean()` on valid literal string
 expressions/typeConversion/TypeConversion1.feature: [3] `toBoolean()` on variables with valid string values
 expressions/typeConversion/TypeConversion1.feature: [4] `toBoolean()` on invalid strings
+expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #1
+expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #2
+expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #4
+expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #5
+expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #6
 expressions/typeConversion/TypeConversion2.feature: [2] `toInteger()` returning null on non-numerical string
 expressions/typeConversion/TypeConversion2.feature: [6] `toInteger()` on a complex-typed expression
+expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #1
+expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #2
+expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #3
+expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #4
+expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #5
+expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #1
+expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #2
+expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #3
+expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #4
+expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #5
 expressions/typeConversion/TypeConversion4.feature: [1] `toString()` handling integer literal
 expressions/typeConversion/TypeConversion4.feature: [2] `toString()` handling boolean literal
 expressions/typeConversion/TypeConversion4.feature: [3] `toString()` handling inlined boolean

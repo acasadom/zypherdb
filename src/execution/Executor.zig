@@ -78,6 +78,8 @@ nodes: std.ArrayList(PatternNode),
 edges: std.ArrayList(PatternEdge),
 steps: std.ArrayList(PlanStep),
 matches: ?*std.ArrayList(Bindings),
+/// The path variable of the pattern being matched (`p = ...`), or empty.
+path_variable: []const u8,
 /// Relationship uniqueness: the edges bound on the current search branch of
 /// the MATCH being run.
 used_edges: std.ArrayList(Relationship),
@@ -106,6 +108,7 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .edges = .empty,
         .steps = .empty,
         .matches = null,
+        .path_variable = "",
         .used_edges = .empty,
         .has_aggregates = false,
         .projection_items = .empty,
@@ -182,7 +185,7 @@ pub fn projectedExpressions(self: *Executor, projection_node: Index) ExecutionEr
 /// AST) when it names one, else a copy of the stored type (a view into the
 /// store that does not outlive the scan).
 pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) ExecutionError![]const u8 {
-    if (edge.edge_type.len > 0) return edge.edge_type;
+    if (edge.singleType()) |edge_type| return edge_type;
     return self.allocator.dupe(u8, stored);
 }
 

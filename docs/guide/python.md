@@ -32,8 +32,8 @@ with Database(tempfile.mkdtemp()) as db:
 - `query(text, parameters=None, /, **named) -> list[list]` runs one query, with its `$name`
   parameters from a dict and/or keyword arguments (`db.query("... {id: $card} ...", card=123)`;
   values: `int`, `str`, `bool`, `None`, lists and `str`-keyed dicts); maps come back as dicts; cells become `int`, `str`, `bool`, `None` (null), a
-  `list`, or a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
-  properties)`.
+  `list`, a `dict`, a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
+  properties)`, or a `Path(nodes, relationships)`.
 - `export_graph() -> dict` returns the whole graph, read straight from storage.
 - `allocate_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_property(id, name, value)`
   write data. `set_property` accepts `int` or `str` values.

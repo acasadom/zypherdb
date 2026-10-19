@@ -46,7 +46,7 @@ def from_python(value):
         return ("list", tuple(from_python(v) for v in value))
     if isinstance(value, dict):
         return canonical_map({k: from_python(v) for k, v in value.items()})
-    from acmedb import Node, Relationship
+    from acmedb import Node, Path, Relationship
 
     if isinstance(value, Node):
         properties = {k: from_python(v) for k, v in value.properties.items()}
@@ -54,6 +54,13 @@ def from_python(value):
     if isinstance(value, Relationship):
         properties = {k: from_python(v) for k, v in value.properties.items()}
         return ("relationship", value.type, canonical_map(properties))
+    if isinstance(value, Path):
+        elements = [from_python(value.nodes[0])]
+        for previous, relationship, node in zip(value.nodes, value.relationships, value.nodes[1:]):
+            direction = "out" if relationship.source == previous.id else "in"
+            elements.append((from_python(relationship), direction))
+            elements.append(from_python(node))
+        return ("path", tuple(elements))
     raise TypeError(f"unexpected result value {value!r}")
 
 

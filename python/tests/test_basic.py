@@ -15,6 +15,7 @@ from acmedb import (
     Node,
     ParameterMissingError,
     ParseError,
+    Path,
     Relationship,
     TypeMismatchError,
     UnknownVariableError,
@@ -208,3 +209,11 @@ def test_maps(db):
     assert db.query("RETURN $m.zone, $m['floors'][0]", m={"zone": "Z1", "floors": [3]}) == [["Z1", 3]]
     with pytest.raises(TypeError):
         db.query("RETURN $m", m={1: "x"})
+
+
+def test_paths(db):
+    db.query("CREATE (:G {n: 'a'})-[:IN]->(:G {n: 'b'})-[:IN]->(:G {n: 'c'})")
+    (path,), = db.query("MATCH p = (:G {n: 'a'})-[:IN*]->(:G {n: 'c'}) RETURN p")
+    assert isinstance(path, Path)
+    assert [n.properties["n"] for n in path.nodes] == ["a", "b", "c"]
+    assert [r.type for r in path.relationships] == ["IN", "IN"]

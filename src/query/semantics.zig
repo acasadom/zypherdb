@@ -26,7 +26,7 @@ const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 
 pub const SemanticError = Allocator.Error || error{InvalidExpression};
 
-const Kind = enum { node, relationship, value };
+const Kind = enum { node, relationship, path, value };
 
 const Scope = struct {
     names: std.StringHashMapUnmanaged(Kind) = .empty,
@@ -71,16 +71,24 @@ const Checker = struct {
         var relationships = std.StringHashMapUnmanaged(void).empty;
         defer relationships.deinit(self.allocator);
         for (patterns) |pattern| {
+            // A path variable (`p = ...`) is new: it cannot rebind a name.
+            const path_variable = self.ast.data(pattern).text;
+            if (path_variable.len > 0) {
+                if (self.scope.kindOf(path_variable) != null) return self.fail("path variable '{s}' is already bound", .{path_variable});
+                try self.use(path_variable, .path);
+            }
             for (self.ast.nodeChildren(pattern)) |element| {
                 switch (self.ast.kind(element)) {
                     .node_pattern => try self.use(self.ast.data(element).node_pattern.variable_name, .node),
                     .edge_pattern => {
-                        const name = self.ast.data(element).edge_pattern.variable_name;
+                        const edge = self.ast.data(element).edge_pattern;
+                        const name = edge.variable_name;
                         if (name.len == 0) continue;
                         if (reading and (try relationships.fetchPut(self.allocator, name, {})) != null) {
                             return self.fail("relationship variable '{s}' is used twice in one pattern", .{name});
                         }
-                        try self.use(name, .relationship);
+                        // A variable-length edge's variable is a list of relationships.
+                        try self.use(name, if (edge.variable_length) .value else .relationship);
                     },
                     else => {},
                 }
@@ -130,6 +138,9 @@ const Checker = struct {
             },
             .unary_operation => if (self.ast.data(index).unary_operator == .not_ and isLiteralOf(self.ast, children[0], &non_boolean_literals)) {
                 return self.fail("NOT needs a boolean operand", .{});
+            },
+            .property_access => if (self.ast.kind(children[0]) == .variable and self.scope.kindOf(self.ast.data(children[0]).text) == .path) {
+                return self.fail("a path has no properties", .{});
             },
             .function_call => {
                 try self.checkEntityArgument(index);
@@ -225,6 +236,11 @@ const Checker = struct {
         .{ .name = "endNode", .kind = .relationship },
         .{ .name = "labels", .kind = .node },
         .{ .name = "id", .kind = .node },
+        .{ .name = "length", .kind = .path },
+        .{ .name = "nodes", .kind = .path },
+        .{ .name = "relationships", .kind = .path },
+        // A plain value: not a node, relationship or path.
+        .{ .name = "size", .kind = .value },
     };
 
     fn checkEntityArgument(self: *Checker, call: Index) SemanticError!void {

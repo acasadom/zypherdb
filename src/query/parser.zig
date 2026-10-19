@@ -414,16 +414,24 @@ pub const Parser = struct {
         return self.ast.addNode(.merge_clause, .{ .none = {} }, &.{ pattern, on_create, on_match });
     }
 
+    /// A chain `(a)-[r]->(b)...`, optionally named as a path: `p = (a)-->(b)`
+    /// (the pattern's data.text is the path variable, empty if none).
     fn parsePattern(self: *Parser) ParseError!Index {
         var children = std.ArrayList(Index).empty;
         defer children.deinit(self.ast.allocator);
+
+        var path_variable: []const u8 = "";
+        if (self.at(.identifier) and self.peekAhead(1).kind == .equal) {
+            path_variable = try self.ast.intern(self.advance().text);
+            _ = self.advance(); // `=`
+        }
 
         try children.append(self.ast.allocator, try self.parseNodePattern());
         while (self.at(.minus) or self.at(.arrow_left)) {
             try children.append(self.ast.allocator, try self.parseEdgePattern());
             try children.append(self.ast.allocator, try self.parseNodePattern());
         }
-        return self.ast.addNode(.pattern, .{ .none = {} }, children.items);
+        return self.ast.addNode(.pattern, .{ .text = path_variable }, children.items);
     }
 
     fn parseNodePattern(self: *Parser) ParseError!Index {
@@ -460,18 +468,33 @@ pub const Parser = struct {
         return self.ast.addNode(.node_pattern, .{ .node_pattern = .{ .variable_name = variable_name, .labels = labels_slice } }, properties.items);
     }
 
-    const EdgeDetails = struct { variable_name: []const u8, edge_type: []const u8, properties: std.ArrayList(Index) };
+    const EdgeDetails = struct {
+        variable_name: []const u8 = "",
+        edge_types: []const []const u8 = &.{},
+        variable_length: bool = false,
+        min_hops: u32 = 1,
+        max_hops: ?u32 = 1,
+        properties: std.ArrayList(Index) = .empty,
+    };
 
+    /// `[variable:A|B*min..max {properties}]`; every part is optional.
     fn parseEdgeDetails(self: *Parser) ParseError!EdgeDetails {
         try self.expect(.left_bracket);
-        var variable_name: []const u8 = "";
-        if (self.at(.identifier)) variable_name = try self.ast.intern(self.advance().text);
-        var edge_type: []const u8 = "";
+        var details = EdgeDetails{};
+        if (self.at(.identifier)) details.variable_name = try self.ast.intern(self.advance().text);
         if (self.at(.colon)) {
+            var types = std.ArrayList([]const u8).empty;
+            defer types.deinit(self.ast.allocator);
             _ = self.advance();
-            edge_type = try self.internIdentifier();
+            try types.append(self.ast.allocator, try self.internIdentifier());
+            while (self.at(.pipe)) {
+                _ = self.advance();
+                if (self.at(.colon)) _ = self.advance(); // `:A|:B` is accepted too
+                try types.append(self.ast.allocator, try self.internIdentifier());
+            }
+            details.edge_types = try self.ast.internSlice(types.items);
         }
-        var properties = std.ArrayList(Index).empty;
+        if (self.at(.star)) try self.parseHops(&details);
         if (self.at(.left_brace)) {
             _ = self.advance();
             while (!self.at(.right_brace)) {
@@ -479,7 +502,7 @@ pub const Parser = struct {
                 try self.expect(.colon);
                 const value = try expression_parser.parseExpression(self);
                 const property = try self.ast.addNode(.property, .{ .text = name }, &.{value});
-                try properties.append(self.ast.allocator, property);
+                try details.properties.append(self.ast.allocator, property);
                 if (self.at(.comma)) {
                     _ = self.advance();
                 } else break;
@@ -487,7 +510,32 @@ pub const Parser = struct {
             try self.expect(.right_brace);
         }
         try self.expect(.right_bracket);
-        return .{ .variable_name = variable_name, .edge_type = edge_type, .properties = properties };
+        return details;
+    }
+
+    /// `*`, `*n`, `*min..`, `*..max` or `*min..max` (`*` alone: 1 to unbounded).
+    fn parseHops(self: *Parser, details: *EdgeDetails) ParseError!void {
+        _ = self.advance(); // `*`
+        details.variable_length = true;
+        details.min_hops = 1;
+        details.max_hops = null;
+        if (self.at(.integer)) {
+            const n = try self.parseHopCount();
+            details.min_hops = n;
+            details.max_hops = n; // `*n`: exactly n, unless a range follows
+        }
+        if (self.at(.range_dots)) {
+            _ = self.advance();
+            details.max_hops = if (self.at(.integer)) try self.parseHopCount() else null;
+        }
+    }
+
+    fn parseHopCount(self: *Parser) ParseError!u32 {
+        const t = self.advance();
+        return std.fmt.parseInt(u32, t.text, 10) catch {
+            self.fail("invalid number of hops {s}", .{t.text});
+            return error.UnexpectedToken;
+        };
     }
 
     /// Parses an edge between two node patterns. Each end is read on its own:
@@ -496,10 +544,7 @@ pub const Parser = struct {
     fn parseEdgePattern(self: *Parser) ParseError!Index {
         const points_left = self.at(.arrow_left);
         if (points_left) _ = self.advance() else try self.expect(.minus);
-        var details = if (self.at(.left_bracket))
-            try self.parseEdgeDetails()
-        else
-            EdgeDetails{ .variable_name = "", .edge_type = "", .properties = .empty };
+        var details = if (self.at(.left_bracket)) try self.parseEdgeDetails() else EdgeDetails{};
         defer details.properties.deinit(self.ast.allocator);
         const points_right = self.at(.arrow_right);
         if (points_right) _ = self.advance() else try self.expect(.minus);
@@ -512,8 +557,11 @@ pub const Parser = struct {
             .right_to_left;
         return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{
             .variable_name = details.variable_name,
-            .edge_type = details.edge_type,
+            .edge_types = details.edge_types,
             .direction = direction,
+            .variable_length = details.variable_length,
+            .min_hops = details.min_hops,
+            .max_hops = details.max_hops,
         } }, details.properties.items);
     }
 

@@ -43,7 +43,10 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
                 .right_to_left => .in,
             };
             var edge = PatternEdge{
-                .edge_type = edge_pattern.edge_type,
+                .edge_types = edge_pattern.edge_types,
+                .variable_length = edge_pattern.variable_length,
+                .min_hops = edge_pattern.min_hops,
+                .max_hops = edge_pattern.max_hops,
                 .forward_direction = forward_direction,
                 .undirected = edge_pattern.direction == .undirected,
                 .variable_name = edge_pattern.variable_name,
@@ -59,6 +62,7 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
         }
     }
 
+    self.path_variable = self.ast.data(pattern).text;
     try collectWhereSeeks(self, self.where_expression);
     if (shouldEdgeAnchor(self)) {
         try buildEdgeSteps(self);
@@ -71,7 +75,7 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
 /// edge with an equality seek and both endpoints are unbound/unselective.
 pub fn shouldEdgeAnchor(self: *Executor) bool {
     if (self.nodes.items.len != 2 or self.edges.items.len != 1) return false;
-    if (self.edges.items[0].seeks.items.len == 0) return false;
+    if (self.edges.items[0].seeks.items.len == 0 or self.edges.items[0].variable_length) return false;
     const a = self.nodes.items[0];
     const b = self.nodes.items[1];
     if (a.bound or b.bound) return false;
@@ -138,15 +142,21 @@ pub fn estimate(self: *Executor, node_index: usize) usize {
     // Cap by the rarest incident edge type: the number of results is bounded
     // by the number of edges of that type, not just the label size.
     if (node_index > 0) {
-        if (self.edges.items[node_index - 1].edge_type.len > 0) {
-            const count = self.graph.edgeTypeCount(self.edges.items[node_index - 1].edge_type) catch std.math.maxInt(usize);
-            if (count < best) best = count;
+        const edge = self.edges.items[node_index - 1];
+        if (edge.singleType()) |edge_type| {
+            if (!edge.variable_length) {
+                const count = self.graph.edgeTypeCount(edge_type) catch std.math.maxInt(usize);
+                if (count < best) best = count;
+            }
         }
     }
     if (node_index < self.edges.items.len) {
-        if (self.edges.items[node_index].edge_type.len > 0) {
-            const count = self.graph.edgeTypeCount(self.edges.items[node_index].edge_type) catch std.math.maxInt(usize);
-            if (count < best) best = count;
+        const edge = self.edges.items[node_index];
+        if (edge.singleType()) |edge_type| {
+            if (!edge.variable_length) {
+                const count = self.graph.edgeTypeCount(edge_type) catch std.math.maxInt(usize);
+                if (count < best) best = count;
+            }
         }
     }
     return best;
@@ -200,12 +210,34 @@ pub const PatternNode = struct {
 };
 
 pub const PatternEdge = struct {
-    edge_type: []const u8, // empty: any type
+    edge_types: []const []const u8, // empty: any type
+    /// `*min..max`: a path of min..max edges (max null: unbounded).
+    variable_length: bool,
+    min_hops: u32,
+    max_hops: ?u32,
     forward_direction: Direction, // direction when traversing node_i -> node_{i+1}
     undirected: bool, // `-[...]-`: either direction (forward_direction unused)
     variable_name: []const u8,
     bound: ?Relationship, // the edge its variable is already bound to, if any
     seeks: std.ArrayList(Seek), // inline property equality filters
+    /// The relationships matched on the current search branch, in pattern
+    /// (left to right) order: the path variable is built from them.
+    matched: []const Relationship = &.{},
+    single_match: [1]Relationship = undefined,
+
+    /// True if an edge of type `edge_type` fits the pattern.
+    pub fn allowsType(self: PatternEdge, edge_type: []const u8) bool {
+        if (self.edge_types.len == 0) return true;
+        for (self.edge_types) |allowed| {
+            if (std.mem.eql(u8, allowed, edge_type)) return true;
+        }
+        return false;
+    }
+
+    /// The one type the pattern requires, if it names exactly one.
+    pub fn singleType(self: PatternEdge) ?[]const u8 {
+        return if (self.edge_types.len == 1) self.edge_types[0] else null;
+    }
 };
 
 pub const PlanStep = union(enum) {

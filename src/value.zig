@@ -33,6 +33,32 @@ pub const Relationship = struct {
     }
 };
 
+/// A path: `nodes.len == relationships.len + 1`, each relationship joining
+/// the nodes on either side of it (in either direction). A regular type.
+pub const Path = struct {
+    nodes: []const u64,
+    relationships: []const Relationship,
+
+    pub fn order(a: Path, b: Path) std.math.Order {
+        const common = @min(a.nodes.len, b.nodes.len);
+        for (a.nodes[0..common], b.nodes[0..common]) |x, y| {
+            if (x != y) return std.math.order(x, y);
+        }
+        const by_length = std.math.order(a.nodes.len, b.nodes.len);
+        if (by_length != .eq) return by_length;
+        for (a.relationships, b.relationships) |x, y| {
+            const by_relationship = x.order(y);
+            if (by_relationship != .eq) return by_relationship;
+        }
+        return .eq;
+    }
+
+    pub fn hash(self: Path, hasher: *std.hash.Wyhash) void {
+        hasher.update(std.mem.sliceAsBytes(self.nodes));
+        for (self.relationships) |relationship| relationship.hash(hasher);
+    }
+};
+
 /// One entry of a map value.
 pub const MapEntry = struct { key: []const u8, value: Value };
 
@@ -51,6 +77,7 @@ pub const Value = union(enum) {
     /// Entries sorted by key, keys unique (build with `mapOf`), so maps that
     /// hold the same entries are equal whatever order they were written in.
     map: []const MapEntry,
+    path: Path,
 
     pub fn isNull(self: Value) bool {
         return self == .null;
@@ -63,7 +90,7 @@ pub const Value = union(enum) {
     }
 
     /// The openCypher global sort order, ascending: map < node <
-    /// relationship < list < string < boolean < number < null. Within a type,
+    /// relationship < list < path < string < boolean < number < null. Within a type,
     /// maps compare entry by entry (key, then value), nodes by id,
     /// relationships by (source, target, type), lists lexicographically,
     /// strings by byte (= Unicode code point, for UTF-8), and `false < true`.
@@ -79,6 +106,7 @@ pub const Value = union(enum) {
             .node => |x| std.math.order(x, b.node),
             .relationship => |x| x.order(b.relationship),
             .map => |x| orderMaps(x, b.map),
+            .path => |x| x.order(b.path),
         };
     }
 
@@ -100,6 +128,11 @@ pub const Value = union(enum) {
                 const copies = try allocator.alloc(Value, items.len);
                 for (copies, items) |*copy, item| copy.* = try item.clone(allocator);
                 break :blk .{ .list = copies };
+            },
+            .path => |p| blk: {
+                const relationships = try allocator.alloc(Relationship, p.relationships.len);
+                for (relationships, p.relationships) |*copy, r| copy.* = .{ .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) };
+                break :blk .{ .path = .{ .nodes = try allocator.dupe(u64, p.nodes), .relationships = relationships } };
             },
             .map => |entries| blk: {
                 const copies = try allocator.alloc(MapEntry, entries.len);
@@ -126,6 +159,7 @@ pub const Value = union(enum) {
             },
             .node => |id| hasher.update(std.mem.asBytes(&id)),
             .relationship => |relationship| relationship.hash(hasher),
+            .path => |p| p.hash(hasher),
             .map => |entries| {
                 hasher.update(std.mem.asBytes(&entries.len));
                 for (entries) |entry| {
@@ -144,10 +178,11 @@ pub const Value = union(enum) {
             .node => 1,
             .relationship => 2,
             .list => 3,
-            .string => 4,
-            .boolean => 5,
-            .int => 6,
-            .null => 7,
+            .path => 4,
+            .string => 5,
+            .boolean => 6,
+            .int => 7,
+            .null => 8,
         };
     }
 };

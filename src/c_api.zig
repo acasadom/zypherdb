@@ -55,6 +55,8 @@ pub const TYPE_NODE: c_int = 5;
 pub const TYPE_RELATIONSHIP: c_int = 6;
 /// A map cell: read it through `acmedb_result_to_json`.
 pub const TYPE_MAP: c_int = 7;
+/// A path cell: read it through `acmedb_result_to_json`.
+pub const TYPE_PATH: c_int = 8;
 
 pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     const path = path_ptr[0..path_len];
@@ -416,6 +418,19 @@ fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: V
             try appendSnapshotProperties(buffer, result_allocator, if (data) |node| node.properties else &.{});
             try buffer.appendSlice(result_allocator, "}}");
         },
+        .path => |p| {
+            try buffer.appendSlice(result_allocator, "{\"~path\":{\"nodes\":[");
+            for (p.nodes, 0..) |node, i| {
+                if (i > 0) try buffer.append(result_allocator, ',');
+                try appendJsonValue(buffer, result_allocator, .{ .node = node }, entities);
+            }
+            try buffer.appendSlice(result_allocator, "],\"relationships\":[");
+            for (p.relationships, 0..) |relationship, i| {
+                if (i > 0) try buffer.append(result_allocator, ',');
+                try appendJsonValue(buffer, result_allocator, .{ .relationship = relationship }, entities);
+            }
+            try buffer.appendSlice(result_allocator, "]}}");
+        },
         .map => |entries| {
             try buffer.append(result_allocator, '{');
             for (entries, 0..) |entry, i| {
@@ -502,6 +517,7 @@ pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) 
         .node => TYPE_NODE,
         .relationship => TYPE_RELATIONSHIP,
         .map => TYPE_MAP,
+        .path => TYPE_PATH,
     };
 }
 
@@ -566,6 +582,7 @@ pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, co
         .node => TYPE_NODE,
         .relationship => TYPE_RELATIONSHIP,
         .map => TYPE_MAP,
+        .path => TYPE_PATH,
     };
 }
 

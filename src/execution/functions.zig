@@ -52,6 +52,9 @@ const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsci
     .{ "keys", fixed(1, keys) },
     .{ "properties", fixed(1, properties) },
     .{ "startNode", fixed(1, startNode) },
+    .{ "length", fixed(1, pathLength) },
+    .{ "nodes", fixed(1, pathNodes) },
+    .{ "relationships", fixed(1, pathRelationships) },
     .{ "endNode", fixed(1, endNode) },
     // Conversions.
     .{ "toString", fixed(1, toString) },
@@ -265,6 +268,37 @@ pub fn propertiesOf(self: *Executor, entity: Value) ExecutionError!Value {
         try entries.append(self.allocator, .{ .key = try self.allocator.dupe(u8, property.name), .value = try property.value.clone(self.allocator) });
     }
     return .{ .map = entries.items }; // stored in name order: already sorted
+}
+
+/// The number of relationships of a path.
+fn pathLength(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    return switch (arguments[0]) {
+        .null => .{ .null = {} },
+        .path => |p| .{ .int = @intCast(p.relationships.len) },
+        else => typeError(self, "length", "a path"),
+    };
+}
+
+fn pathNodes(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    const p = switch (arguments[0]) {
+        .null => return .{ .null = {} },
+        .path => |p| p,
+        else => return typeError(self, "nodes", "a path"),
+    };
+    const values = try self.allocator.alloc(Value, p.nodes.len);
+    for (values, p.nodes) |*value, node| value.* = .{ .node = node };
+    return .{ .list = values };
+}
+
+fn pathRelationships(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    const p = switch (arguments[0]) {
+        .null => return .{ .null = {} },
+        .path => |p| p,
+        else => return typeError(self, "relationships", "a path"),
+    };
+    const values = try self.allocator.alloc(Value, p.relationships.len);
+    for (values, p.relationships) |*value, relationship| value.* = .{ .relationship = relationship };
+    return .{ .list = values };
 }
 
 fn startNode(self: *Executor, arguments: []const Value) ExecutionError!Value {

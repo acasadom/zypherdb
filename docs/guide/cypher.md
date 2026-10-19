@@ -34,11 +34,18 @@ between; `RETURN`, if present, comes last; a query ends with `RETURN` or an upda
 ```text
 (n:Label1:Label2 {prop: value, ...})            # a node (multiple labels allowed)
 -[r:TYPE {prop: value, ...}]->                 # an outgoing typed edge
-<-[r:TYPE]-                                     # an incoming typed edge
+<-[r:TYPE]-   -[r]-   -->   --                  # incoming, either direction, untyped
+-[:A|B]->                                       # one of several types
+-[r:TYPE*1..3]->   -[*]->   -[*2]->   -[*..3]-> # variable length (min..max hops)
+p = (a)-[:TYPE*]->(b)                           # a path variable
 ```
 
 - A variable (`n`, `r`) is optional; an anonymous node or edge omits it.
 - `TYPE` and `Label` are optional; an edge without a type matches any type.
+- A variable-length edge matches paths of `min..max` edges (`*` alone: 1 or more; `*0..` includes
+  the start node itself); its variable is the list of the path's relationships, in pattern order.
+  Within one `MATCH` an edge is used at most once, so paths do not loop back over an edge.
+- `p = …` binds the whole path; `length(p)`, `nodes(p)` and `relationships(p)` read it.
 - A node may carry several labels; all of them must hold.
 - `{…}` holds inline equality predicates, treated as index seeks.
 
@@ -75,6 +82,7 @@ points (`size('é')` is 1); `toUpper`/`toLower` change ASCII letters only.
 | --- | --- |
 | Lists, strings | `size`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])` |
 | Null handling | `coalesce(x, …)` — the first non-null argument |
+| Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
 | Graph and maps | `id(node)`, `labels(node)`, `type(relationship)`, `keys(entity or map)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Conversions | `toString`, `toInteger` (null for a string that is not an integer), `toBoolean` |
 | Strings | `toLower`, `toUpper`, `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)` |
@@ -97,8 +105,8 @@ the projection's names with aggregates the projection computes (`ORDER BY age + 
 
 ## Types
 
-The runtime values are `int` (64-bit), `str`, `boolean`, `null`, `list`, `map`, and whole nodes
-and relationships (`RETURN n`). Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
+The runtime values are `int` (64-bit), `str`, `boolean`, `null`, `list`, `map`, whole nodes and
+relationships (`RETURN n`), and paths. Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
 `ELSE`; they propagate: a comparison or string predicate with a null operand is null, a null
 `WHERE` filters the row out, and aggregations skip nulls. Properties stored in the graph are
 `int`, `str` or `boolean` (not lists or maps); setting a property to `null` removes it.

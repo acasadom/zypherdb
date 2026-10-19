@@ -60,6 +60,15 @@ pub const Bindings = struct {
         return true;
     }
 
+    /// Binds `name` to `value`, or, if `name` is already bound, checks that
+    /// it is bound to an equal value. An empty name always fits.
+    pub fn bindValue(self: *Bindings, allocator: Allocator, name: []const u8, value: Value) !bool {
+        if (name.len == 0) return true;
+        if (self.get(name)) |bound| return bound.eql(value);
+        try self.entries.append(allocator, .{ .name = name, .value = value });
+        return true;
+    }
+
     /// The node `name` is bound to, if it is bound to a node.
     pub fn getNode(self: *const Bindings, name: []const u8) ?NodeId {
         return switch (self.get(name) orelse return null) {

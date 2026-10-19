@@ -47,6 +47,11 @@ pub const EntitySnapshot = struct {
                     }
                 },
                 .list => |items| try self.capture(graph, allocator, items),
+                .path => |p| {
+                    for (p.nodes) |node| try self.capture(graph, allocator, &.{.{ .node = node }});
+                    for (p.relationships) |r| try self.capture(graph, allocator, &.{.{ .relationship = r }});
+                },
+                .map => |entries| for (entries) |entry| try self.capture(graph, allocator, &.{entry.value}),
                 else => {},
             }
         }

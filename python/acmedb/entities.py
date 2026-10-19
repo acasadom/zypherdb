@@ -27,6 +27,14 @@ class Relationship:
     properties: dict = field(hash=False)
 
 
+@dataclass(frozen=True)
+class Path:
+    """A path: `nodes[i]` and `nodes[i + 1]` are joined by `relationships[i]`."""
+
+    nodes: tuple[Node, ...]
+    relationships: tuple[Relationship, ...]
+
+
 def decode(obj: dict):
     """`json.loads` object hook: turns acmedb's tagged objects into entities."""
     if "~node" in obj:
@@ -35,4 +43,7 @@ def decode(obj: dict):
     if "~relationship" in obj:
         rel = obj["~relationship"]
         return Relationship(rel["source"], rel["target"], rel["type"], rel["properties"])
+    if "~path" in obj:
+        path = obj["~path"]
+        return Path(tuple(path["nodes"]), tuple(path["relationships"]))
     return obj

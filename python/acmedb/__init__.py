@@ -11,7 +11,7 @@ Usage::
 """
 
 from .db import Database
-from .entities import Node, Relationship
+from .entities import Node, Path, Relationship
 from .errors import (
     AcmedbError,
     ArithmeticQueryError,
@@ -30,6 +30,7 @@ from .errors import (
 __all__ = [
     "Database",
     "Node",
+    "Path",
     "Relationship",
     "AcmedbError",
     "ArithmeticQueryError",

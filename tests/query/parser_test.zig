@@ -62,7 +62,7 @@ test "parses an edge, WHERE with AND, and multiple RETURN items" {
     const match_children = r.ast.nodeChildren(query_children[0]);
     const pattern_children = r.ast.nodeChildren(match_children[0]);
     try testing.expectEqual(@as(usize, 3), pattern_children.len);
-    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pattern_children[1]).edge_pattern.edge_type);
+    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pattern_children[1]).edge_pattern.singleType().?);
     try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pattern_children[1]).edge_pattern.direction);
 
     try testing.expectEqual(NodeKind.binary_operation, r.ast.kind(match_children[1]));
@@ -83,9 +83,9 @@ test "parses a reverse-direction edge chain" {
     const pattern_children = r.ast.nodeChildren(match_children[0]);
     try testing.expectEqual(@as(usize, 5), pattern_children.len); // node edge node edge node
     try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pattern_children[1]).edge_pattern.direction);
-    try testing.expectEqualStrings("DIRECTED", r.ast.data(pattern_children[1]).edge_pattern.edge_type);
+    try testing.expectEqualStrings("DIRECTED", r.ast.data(pattern_children[1]).edge_pattern.singleType().?);
     try testing.expectEqual(EdgeDirection.right_to_left, r.ast.data(pattern_children[3]).edge_pattern.direction);
-    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pattern_children[3]).edge_pattern.edge_type);
+    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pattern_children[3]).edge_pattern.singleType().?);
 }
 
 test "parses RETURN alias and comparison operators" {
@@ -267,7 +267,7 @@ test "parses write clauses (CREATE, SET, DELETE)" {
     const cc = r.ast.nodeChildren(query_children[1]);
     const cpc = r.ast.nodeChildren(cc[0]);
     try testing.expectEqual(@as(usize, 3), cpc.len);
-    try testing.expectEqualStrings("KNOWS", r.ast.data(cpc[1]).edge_pattern.edge_type);
+    try testing.expectEqualStrings("KNOWS", r.ast.data(cpc[1]).edge_pattern.singleType().?);
 
     // set_clause -> one set_item (property_access + value)
     const sc = r.ast.nodeChildren(query_children[2]);

@@ -16,6 +16,7 @@ Result cells are tagged by type:
 | `TYPE_NODE` | `5` | a whole node — read it through the JSON result |
 | `TYPE_RELATIONSHIP` | `6` | a whole relationship — read it through the JSON result |
 | `TYPE_MAP` | `7` | a map — a JSON object in the JSON result |
+| `TYPE_PATH` | `8` | a path — `{"~path": {"nodes": [...], "relationships": [...]}}` in the JSON result |
 
 ## Lifecycle
 

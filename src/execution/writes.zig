@@ -144,8 +144,12 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
     for (node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |left_id, right_id, i| {
         const edge_pattern_index = chain[i * 2 + 1];
         const edge_pattern = self.ast.data(edge_pattern_index).edge_pattern;
-        if (edge_pattern.edge_type.len == 0) {
+        const edge_type = edge_pattern.singleType() orelse {
             self.fail(.invalid_expression, "a created relationship needs exactly one type", .{});
+            return error.InvalidExpression;
+        };
+        if (edge_pattern.variable_length) {
+            self.fail(.invalid_expression, "CREATE and MERGE cannot write a variable-length relationship", .{});
             return error.InvalidExpression;
         }
         if (edge_pattern.direction == .undirected and !merge) {
@@ -157,14 +161,14 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
         const dst: NodeId = if (edge_pattern.direction == .right_to_left) left_id else right_id;
         if (merge) {
             try rejectNullProperties(self, edge_pattern_index, bindings);
-            if (try self.graph.hasEdge(src, dst, edge_pattern.edge_type)) continue;
-            if (edge_pattern.direction == .undirected and try self.graph.hasEdge(dst, src, edge_pattern.edge_type)) continue;
+            if (try self.graph.hasEdge(src, dst, edge_type)) continue;
+            if (edge_pattern.direction == .undirected and try self.graph.hasEdge(dst, src, edge_type)) continue;
         }
-        try self.graph.addEdge(src, dst, edge_pattern.edge_type);
+        try self.graph.addEdge(src, dst, edge_type);
         for (self.ast.nodeChildren(edge_pattern_index)) |property_node| {
             const property_name = self.ast.data(property_node).text;
             const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
-            try setEdgeProperty(self, src, dst, edge_pattern.edge_type, property_name, value);
+            try setEdgeProperty(self, src, dst, edge_type, property_name, value);
         }
     }
 }

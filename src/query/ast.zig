@@ -162,7 +162,7 @@ pub const Data = union(enum) {
     /// label, edge type) or a RETURN alias.
     text: []const u8,
     node_pattern: struct { variable_name: []const u8, labels: []const []const u8 },
-    edge_pattern: struct { variable_name: []const u8, edge_type: []const u8, direction: EdgeDirection },
+    edge_pattern: EdgePatternData,
     binary_operator: BinaryOperator,
     unary_operator: UnaryOperator,
     aggregate: AggregateKind,
@@ -175,6 +175,24 @@ pub const Data = union(enum) {
 };
 
 pub const QuantifierKind = enum { any, all, none, single };
+
+/// An edge of a pattern: `-[variable:A|B*min..max {...}]->`.
+pub const EdgePatternData = struct {
+    variable_name: []const u8,
+    /// The types it may have (`:A|B`); empty means any type.
+    edge_types: []const []const u8,
+    direction: EdgeDirection,
+    /// `*`: a path of `min_hops` to `max_hops` edges (null: unbounded); the
+    /// variable is bound to the list of its relationships.
+    variable_length: bool = false,
+    min_hops: u32 = 1,
+    max_hops: ?u32 = 1,
+
+    /// The single type a written edge must have, if there is exactly one.
+    pub fn singleType(self: EdgePatternData) ?[]const u8 {
+        return if (self.edge_types.len == 1) self.edge_types[0] else null;
+    }
+};
 
 pub const Node = struct {
     kind: NodeKind,

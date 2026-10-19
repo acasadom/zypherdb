@@ -22,6 +22,8 @@ TYPE_NULL = 3
 TYPE_LIST = 4
 TYPE_NODE = 5
 TYPE_RELATIONSHIP = 6
+TYPE_MAP = 7
+TYPE_PATH = 8
 
 
 def _candidates():
