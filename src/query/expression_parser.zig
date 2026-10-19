@@ -141,14 +141,7 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
                     return parseAggregateCall(self, kind);
                 }
             }
-            if (std.ascii.eqlIgnoreCase(t.text, "size")) {
-                if (self.at(.left_paren)) {
-                    _ = self.advance();
-                    const arg = try parseExpression(self);
-                    try self.expect(.right_paren);
-                    return self.ast.addNode(.size_function, .{ .none = {} }, &.{arg});
-                }
-            }
+            if (self.at(.left_paren)) return parseFunctionCall(self, t.text);
             return parseVariableRef(self, t.text);
         },
         .left_bracket => return parseListLiteral(self),
@@ -163,6 +156,23 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
             return error.UnexpectedToken;
         },
     }
+}
+
+/// A function call `name(argument, ...)` (the name is already consumed).
+/// Which functions exist, and their arity, is checked before execution.
+fn parseFunctionCall(self: *Parser, name: []const u8) ParseError!Index {
+    try self.expect(.left_paren);
+    var arguments = std.ArrayList(Index).empty;
+    defer arguments.deinit(self.ast.allocator);
+    if (!self.at(.right_paren)) {
+        try arguments.append(self.ast.allocator, try parseExpression(self));
+        while (self.at(.comma)) {
+            _ = self.advance();
+            try arguments.append(self.ast.allocator, try parseExpression(self));
+        }
+    }
+    try self.expect(.right_paren);
+    return self.ast.addNode(.function_call, .{ .text = try self.ast.intern(name) }, arguments.items);
 }
 
 /// A variable, optionally followed by `.property` (the name is already consumed).

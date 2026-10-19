@@ -24,6 +24,7 @@ const ValueGrouping = @import("aggregation.zig").ValueGrouping;
 const AggregateKind = @import("../query/ast.zig").AggregateKind;
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
 const semantics = @import("../query/semantics.zig");
+const functions = @import("functions.zig");
 const EntitySnapshot = @import("entities.zig").EntitySnapshot;
 const Bindings = @import("bindings.zig").Bindings;
 const Relationship = @import("../value.zig").Relationship;
@@ -151,6 +152,7 @@ pub fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: an
 /// one consistent snapshot.
 pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
     try semantics.check(self.ast, query, self.allocator, self.diagnostic);
+    try functions.checkCalls(self.ast, query, self.diagnostic);
     self.reset();
     const matches = try self.classifyClauses(query);
     try self.collectProjectionItems();

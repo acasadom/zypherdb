@@ -194,7 +194,9 @@ test "parses lists: collect, size and UNWIND" {
         defer r.ast.deinit();
         const return_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
         const item = r.ast.nodeChildren(return_children[0])[0];
-        try testing.expectEqual(NodeKind.size_function, r.ast.kind(r.ast.nodeChildren(item)[0]));
+        const call = r.ast.nodeChildren(item)[0];
+        try testing.expectEqual(NodeKind.function_call, r.ast.kind(call));
+        try testing.expectEqualStrings("size", r.ast.data(call).text);
     }
     {
         var r = try parseString("UNWIND [1, 2, 3] AS x RETURN x");

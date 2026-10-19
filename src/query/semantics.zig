@@ -95,30 +95,70 @@ const Checker = struct {
         self.scope = next;
     }
 
-    /// Checks every expression of the query for literal argument types.
+    /// Checks the expressions under `index` against the variables in scope:
+    /// literal argument types (`1 IN true`) and entity functions given a
+    /// variable of the wrong kind (`type(n)` with `n` a node).
     fn checkExpressions(self: *Checker, index: Index) SemanticError!void {
-        if (self.ast.kind(index) == .binary_operation and self.ast.data(index).binary_operator == .in_) {
-            const list = self.ast.nodeChildren(index)[1];
-            switch (self.ast.kind(list)) {
-                .integer_literal, .string_literal, .boolean_literal => return self.fail("the right side of IN must be a list", .{}),
-                else => {},
-            }
+        switch (self.ast.kind(index)) {
+            .binary_operation => if (self.ast.data(index).binary_operator == .in_) {
+                const list = self.ast.nodeChildren(index)[1];
+                switch (self.ast.kind(list)) {
+                    .integer_literal, .string_literal, .boolean_literal => return self.fail("the right side of IN must be a list", .{}),
+                    else => {},
+                }
+            },
+            .function_call => try self.checkEntityArgument(index),
+            else => {},
         }
         for (self.ast.nodeChildren(index)) |child| try self.checkExpressions(child);
     }
 
+    /// The kind of entity each entity function takes.
+    const entity_functions = [_]struct { name: []const u8, kind: Kind }{
+        .{ .name = "type", .kind = .relationship },
+        .{ .name = "startNode", .kind = .relationship },
+        .{ .name = "endNode", .kind = .relationship },
+        .{ .name = "labels", .kind = .node },
+        .{ .name = "id", .kind = .node },
+    };
+
+    fn checkEntityArgument(self: *Checker, call: Index) SemanticError!void {
+        const name = self.ast.data(call).text;
+        const arguments = self.ast.nodeChildren(call);
+        if (arguments.len != 1 or self.ast.kind(arguments[0]) != .variable) return;
+        const variable = self.ast.data(arguments[0]).text;
+        const actual = self.scope.kindOf(variable) orelse return;
+        for (entity_functions) |function| {
+            if (!std.ascii.eqlIgnoreCase(function.name, name)) continue;
+            if (actual != function.kind and actual != .value) {
+                return self.fail("{s}() takes a {s}, but '{s}' is a {s}", .{ function.name, @tagName(function.kind), variable, @tagName(actual) });
+            }
+        }
+    }
+
+    /// Clause by clause: declare what the clause binds, then check its
+    /// expressions with those variables in scope (WITH and RETURN expressions
+    /// see the scope before their projection).
     fn checkQuery(self: *Checker, query: Index) SemanticError!void {
-        try self.checkExpressions(query);
         for (self.ast.nodeChildren(query)) |clause| {
             const children = self.ast.nodeChildren(clause);
             switch (self.ast.kind(clause)) {
                 .match_clause, .optional_match_clause => try self.checkPatterns(children[0 .. children.len - 1], true),
                 .create_clause => try self.checkPatterns(children, false),
                 .merge_clause => try self.checkPatterns(children[0..1], false),
-                .unwind_clause => try self.use(self.ast.data(clause).unwind.variable_name, .value),
-                .with_clause => try self.projectScope(children[0]),
+                .unwind_clause => {
+                    try self.checkExpressions(clause);
+                    try self.use(self.ast.data(clause).unwind.variable_name, .value);
+                    continue;
+                },
+                .with_clause => {
+                    try self.checkExpressions(clause);
+                    try self.projectScope(children[0]);
+                    continue;
+                },
                 else => {},
             }
+            try self.checkExpressions(clause);
         }
     }
 };

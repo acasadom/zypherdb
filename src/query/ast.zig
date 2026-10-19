@@ -109,7 +109,7 @@ pub const NodeKind = enum {
     null_literal,
     parameter, // `$name`; data.text is the name
     list_literal,
-    size_function,
+    function_call, // `name(args...)`; data.text is the name as written, children the arguments
     case_expression,
     binary_operation,
     unary_operation,

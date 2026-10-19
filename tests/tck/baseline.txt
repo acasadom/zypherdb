@@ -56,6 +56,7 @@ clauses/delete/Delete1.feature: [5] Ignore null when deleting node
 clauses/delete/Delete1.feature: [6] Detach delete on null node
 clauses/delete/Delete1.feature: [7] Failing when deleting connected nodes
 clauses/delete/Delete1.feature: [8] Failing when deleting a label
+clauses/delete/Delete2.feature: [1] Delete relationships
 clauses/delete/Delete2.feature: [2] Delete optionally matched relationship
 clauses/delete/Delete2.feature: [4] Ignore null when deleting relationship
 clauses/delete/Delete2.feature: [5] Failing when deleting a relationship type
@@ -70,11 +71,13 @@ clauses/delete/Delete6.feature: [6] Aggregating in `RETURN` after deleting nodes
 clauses/delete/Delete6.feature: [8] Limiting to zero results after deleting relationships affects the result set but not the side effects
 clauses/delete/Delete6.feature: [9] Skipping all results after deleting relationships affects the result set but not the side effects
 clauses/match-where/MatchWhere1.feature: [10] Filter node with disjunctive property predicate on single variables with multiple bindings
+clauses/match-where/MatchWhere1.feature: [11] Filter relationship with disjunctive relationship type predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [14] Fail when filtering path with property predicate
 clauses/match-where/MatchWhere1.feature: [3] Filter node with property predicate on a single variable with multiple bindings
 clauses/match-where/MatchWhere1.feature: [4] Filter start node of relationship with property predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [5] Filter end node of relationship with property predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [6] Filter node with a parameter in a property predicate on multi variables with one binding
+clauses/match-where/MatchWhere1.feature: [7] Filter relationship with relationship type predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [8] Filter relationship with property predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [9] Filter relationship with a parameter in a property predicate on multi variables with one binding
 clauses/match-where/MatchWhere2.feature: [1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
@@ -227,6 +230,8 @@ clauses/match/Match2.feature: [13] Fail when matching a relationship variable bo
 clauses/match/Match2.feature: [13] Fail when matching a relationship variable bound to a value #8
 clauses/match/Match2.feature: [1] Match non-existent relationships returns empty
 clauses/match/Match2.feature: [2] Matching a relationship pattern using a label predicate on both sides
+clauses/match/Match2.feature: [3] Matching a self-loop with an undirected relationship pattern
+clauses/match/Match2.feature: [4] Matching a self-loop with a directed relationship pattern
 clauses/match/Match2.feature: [5] Match relationship with inline property value
 clauses/match/Match2.feature: [7] Matching twice with conflicting relationship types on same relationship
 clauses/match/Match2.feature: [8] Fail when using parameter as relationship predicate in MATCH
@@ -371,11 +376,13 @@ clauses/match/Match7.feature: [7] MATCH with OPTIONAL MATCH in longer pattern
 clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matches
 clauses/match/Match7.feature: [9] Longer pattern with bound nodes
 clauses/match/Match8.feature: [1] Pattern independent of bound variables results in cross product
+clauses/merge/Merge1.feature: [10] Merge must properly handle multiple labels
 clauses/merge/Merge1.feature: [11] Merge should be able to merge using property of bound node
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
 clauses/merge/Merge1.feature: [16] Fail when using parameter as node predicate in MERGE
 clauses/merge/Merge1.feature: [17] Fail on merging node with null property
 clauses/merge/Merge1.feature: [1] Merge node when no nodes exist
+clauses/merge/Merge1.feature: [2] Merge node with label
 clauses/merge/Merge1.feature: [3] Merge node with label when it exists
 clauses/merge/Merge1.feature: [4] Merge node should create when it doesn't match, properties
 clauses/merge/Merge1.feature: [5] Merge node should create when it doesn't match, properties and label
@@ -402,7 +409,12 @@ clauses/merge/Merge5.feature: [9] Creating relationship using merged nodes
 clauses/merge/Merge9.feature: [1] UNWIND with one MERGE
 clauses/merge/Merge9.feature: [2] UNWIND with multiple MERGE
 clauses/merge/Merge9.feature: [3] Mixing MERGE with CREATE
+clauses/remove/Remove1.feature: [2] Remove multiple node properties
+clauses/remove/Remove1.feature: [4] Remove multiple relationship properties
+clauses/remove/Remove1.feature: [7] Remove a missing node property
 clauses/remove/Remove2.feature: [1] Remove a single label from a node with a single label
+clauses/remove/Remove2.feature: [2] Remove a single label from a node with two labels
+clauses/remove/Remove2.feature: [4] Remove a non-existent node label
 clauses/remove/Remove3.feature: [15] Limiting to zero results after removing a property from relationships affects the result set but not the side effects
 clauses/remove/Remove3.feature: [16] Skipping all results after removing a property from relationships affects the result set but not the side effects
 clauses/remove/Remove3.feature: [17] Skipping and limiting to a few results after removing a property from relationships affects the result set but not the side effects
@@ -453,8 +465,10 @@ clauses/return-skip-limit/ReturnSkipLimit2.feature: [8] Limit to more rows than 
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [9] Fail when using non-constants in LIMIT
 clauses/return-skip-limit/ReturnSkipLimit3.feature: [1] Get rows in the middle
 clauses/return-skip-limit/ReturnSkipLimit3.feature: [2] Get rows in the middle by param
+clauses/return-skip-limit/ReturnSkipLimit3.feature: [3] Limiting amount of rows when there are fewer left than the LIMIT argument
 clauses/return/Return2.feature: [11] RETURN does not lose precision on large integers
 clauses/return/Return2.feature: [12] Projecting a list of nodes and relationships
+clauses/return/Return2.feature: [14] Do not fail when returning type of deleted relationships
 clauses/return/Return2.feature: [15] Fail when returning properties of deleted nodes
 clauses/return/Return2.feature: [16] Fail when returning labels of deleted nodes
 clauses/return/Return2.feature: [17] Fail when returning properties of deleted relationships
@@ -468,8 +482,10 @@ clauses/return/Return4.feature: [1] Honour the column name for RETURN items
 clauses/return/Return4.feature: [2] Support column renaming
 clauses/return/Return4.feature: [3] Aliasing expressions
 clauses/return/Return4.feature: [4] Keeping used expression 1
+clauses/return/Return4.feature: [8] Support column renaming for aggregations
 clauses/return/Return5.feature: [2] DISTINCT on nullable values
 clauses/return/Return6.feature: [10] Multiple aggregates on same variable
+clauses/return/Return6.feature: [11] Counting matches
 clauses/return/Return6.feature: [12] Counting matches per group
 clauses/return/Return6.feature: [14] Aggregates in aggregates
 clauses/return/Return6.feature: [15] Using `rand()` in aggregations
@@ -496,6 +512,7 @@ clauses/union/Union3.feature: [1] Failing when mixing UNION and UNION ALL
 clauses/union/Union3.feature: [2] Failing when mixing UNION ALL and UNION
 clauses/unwind/Unwind1.feature: [10] Unwinding list with duplicates
 clauses/unwind/Unwind1.feature: [1] Unwinding a list
+clauses/unwind/Unwind1.feature: [2] Unwinding a range
 clauses/unwind/Unwind1.feature: [8] Unwinding the empty list
 clauses/unwind/Unwind1.feature: [9] Unwinding null
 clauses/with-orderBy/WithOrderBy1.feature: [10] Sort lists in descending order
@@ -597,6 +614,7 @@ expressions/aggregation/Aggregation2.feature: [7] `max()` over strings
 expressions/aggregation/Aggregation2.feature: [8] `min()` over strings
 expressions/aggregation/Aggregation2.feature: [9] `max()` over list values
 expressions/aggregation/Aggregation3.feature: [1] Sum only non-null values
+expressions/aggregation/Aggregation3.feature: [2] No overflow during summation
 expressions/boolean/Boolean1.feature: [1] Conjunction of two truth values
 expressions/boolean/Boolean1.feature: [2] Conjunction of three truth values
 expressions/boolean/Boolean1.feature: [3] Conjunction of many truth values
@@ -690,8 +708,19 @@ expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #3
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #4
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #6
 expressions/comparison/Comparison1.feature: [9] Equality between strings and numbers #4
+expressions/conditional/Conditional1.feature: [1] Run coalesce
 expressions/existentialSubqueries/ExistentialSubquery2.feature: [3] Full existential subquery with update clause should fail
+expressions/graph/Graph3.feature: [1] Creating node without label
+expressions/graph/Graph3.feature: [2] Creating node with two labels
+expressions/graph/Graph3.feature: [3] Ignore space when creating node with labels
+expressions/graph/Graph3.feature: [4] Create node with label in pattern
+expressions/graph/Graph3.feature: [5] Using `labels()` in return clauses
+expressions/graph/Graph3.feature: [7] `labels()` on null node
 expressions/graph/Graph3.feature: [8] `labels()` failing on a path
+expressions/graph/Graph4.feature: [1] `type()`
+expressions/graph/Graph4.feature: [2] `type()` on two relationships
+expressions/graph/Graph4.feature: [3] `type()` on null relationship
+expressions/graph/Graph4.feature: [4] `type()` on mixed null and non-null relationships
 expressions/graph/Graph4.feature: [7] Failing when using `type()` on a node
 expressions/graph/Graph6.feature: [1] Statically access a property of a non-null node
 expressions/graph/Graph6.feature: [2] Statically access a property of a optional non-null node
@@ -704,9 +733,28 @@ expressions/graph/Graph6.feature: [9] Fail when performing property access on a 
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #4
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #5
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #6
+expressions/graph/Graph8.feature: [1] Using `keys()` on a single node, non-empty result
+expressions/graph/Graph8.feature: [2] Using `keys()` on multiple nodes, non-empty result
+expressions/graph/Graph8.feature: [3] Using `keys()` on a single node, empty result
+expressions/graph/Graph8.feature: [5] Using `keys()` on a relationship, non-empty result
+expressions/graph/Graph8.feature: [6] Using `keys()` on a relationship, empty result
+expressions/graph/Graph8.feature: [8] Using `keys()` and `IN` to check property existence
 expressions/graph/Graph9.feature: [5] `properties()` failing on an integer literal
 expressions/graph/Graph9.feature: [6] `properties()` failing on a string literal
 expressions/graph/Graph9.feature: [7] `properties()` failing on a list of booleans
+expressions/list/List11.feature: [1] Create list from `range()` with default step #10
+expressions/list/List11.feature: [1] Create list from `range()` with default step #11
+expressions/list/List11.feature: [1] Create list from `range()` with default step #12
+expressions/list/List11.feature: [1] Create list from `range()` with default step #13
+expressions/list/List11.feature: [1] Create list from `range()` with default step #14
+expressions/list/List11.feature: [1] Create list from `range()` with default step #9
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #16
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #17
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #18
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #19
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #20
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #21
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #22
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #1
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #2
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #3
@@ -778,6 +826,7 @@ expressions/list/List5.feature: [7] IN should return false when types of LHS and
 expressions/list/List5.feature: [8] IN should return false when types of LHS and RHS don't match - list
 expressions/list/List5.feature: [9] IN should return true when types of LHS and RHS match - singleton list
 expressions/list/List6.feature: [1] Return list size
+expressions/list/List6.feature: [4] `size()` on null list
 expressions/list/List6.feature: [5] Fail for `size()` on paths
 expressions/list/List6.feature: [6] Fail for `size()` on pattern predicates #1
 expressions/list/List6.feature: [6] Fail for `size()` on pattern predicates #2
@@ -844,6 +893,7 @@ expressions/map/Map1.feature: [6] Fail when performing property access on a non-
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #4
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #5
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #6
+expressions/map/Map3.feature: [3] Using `keys()` on null map
 expressions/mathematical/Mathematical3.feature: [1] Fail for invalid Unicode hyphen in subtraction
 expressions/null/Null3.feature: [1] The inverse of a null is a null
 expressions/null/Null3.feature: [2] It is unknown - i.e. null - if a null is equal to a null
@@ -892,6 +942,7 @@ expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mis
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #3
+expressions/string/String1.feature: [1] `substring()` with default second argument
 expressions/string/String10.feature: [1] Finding exact matches with non-proper substring
 expressions/string/String10.feature: [2] Finding substring of string
 expressions/string/String10.feature: [3] Finding the empty substring
@@ -901,6 +952,8 @@ expressions/string/String10.feature: [7] No string does not contain null
 expressions/string/String10.feature: [9] NOT with CONTAINS
 expressions/string/String11.feature: [1] Combining prefix and suffix search
 expressions/string/String11.feature: [2] Combining prefix, suffix, and substring search
+expressions/string/String3.feature: [1] `reverse()`
+expressions/string/String4.feature: [1] `split()`
 expressions/string/String8.feature: [1] Finding exact matches with non-proper prefix
 expressions/string/String8.feature: [2] Finding beginning of string
 expressions/string/String8.feature: [3] Finding the empty prefix
@@ -915,6 +968,17 @@ expressions/string/String9.feature: [4] Finding strings ending with whitespace
 expressions/string/String9.feature: [6] No string ends with null
 expressions/string/String9.feature: [7] No string does not end with null
 expressions/string/String9.feature: [9] NOT with ENDS WITH
+expressions/typeConversion/TypeConversion1.feature: [1] `toBoolean()` on booleans
+expressions/typeConversion/TypeConversion1.feature: [2] `toBoolean()` on valid literal string
+expressions/typeConversion/TypeConversion1.feature: [3] `toBoolean()` on variables with valid string values
+expressions/typeConversion/TypeConversion1.feature: [4] `toBoolean()` on invalid strings
+expressions/typeConversion/TypeConversion2.feature: [2] `toInteger()` returning null on non-numerical string
+expressions/typeConversion/TypeConversion4.feature: [1] `toString()` handling integer literal
+expressions/typeConversion/TypeConversion4.feature: [2] `toString()` handling boolean literal
+expressions/typeConversion/TypeConversion4.feature: [3] `toString()` handling inlined boolean
+expressions/typeConversion/TypeConversion4.feature: [4] `toString()` handling boolean properties
+expressions/typeConversion/TypeConversion4.feature: [8] `toString()` should accept potentially correct types 1
+expressions/typeConversion/TypeConversion4.feature: [9] `toString()` should accept potentially correct types 2
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [10] Mixing directed and undirected pattern parts with self-relationship, count
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [1] Undirected match in self-relationship graph, count

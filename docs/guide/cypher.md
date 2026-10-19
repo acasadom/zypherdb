@@ -43,8 +43,9 @@ MATCH`, `UNWIND` and `WITH`.
 
 ## Expressions
 
-Literals: integers, strings (`'…'`), booleans (`true`/`false`), and lists (`[1, 2, 3]`). Property
-access is `n.prop` (node) or `r.prop` (relationship).
+Literals: integers, strings (`'…'`), booleans (`true`/`false`), `null`, and lists (`[1, 2, 3]`).
+Property access is `n.prop` (node) or `r.prop` (relationship); a property the entity does not have
+reads as `null`.
 
 | Operator | Meaning |
 | --- | --- |
@@ -54,7 +55,24 @@ access is `n.prop` (node) or `r.prop` (relationship).
 | `IN` | list membership, with any list expression on the right (`x IN $allowed`); null-aware |
 | `$name` | a query parameter, passed with the query (see the Python and C ABI guides) |
 | `CASE WHEN cond THEN v … [ELSE v] END` | conditional expression (no `ELSE` → `null`) |
-| `size(x)` | length of a list, or of a string |
+| `name(arguments…)` | a function call (below); names are case-insensitive |
+
+## Functions
+
+Unless noted, a function returns `null` for a `null` argument. Text functions count Unicode code
+points (`size('é')` is 1); `toUpper`/`toLower` change ASCII letters only.
+
+| Group | Functions |
+| --- | --- |
+| Lists, strings | `size`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])` |
+| Null handling | `coalesce(x, …)` — the first non-null argument |
+| Graph | `id(node)`, `labels(node)`, `type(relationship)`, `keys(entity)`, `startNode(r)`, `endNode(r)` |
+| Conversions | `toString`, `toInteger` (null for a string that is not an integer), `toBoolean` |
+| Strings | `toLower`, `toUpper`, `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)` |
+| Numbers | `abs`, `sign` |
+
+An unknown function or a wrong number of arguments fails before the query runs. `id()` of a
+relationship is an error: acmedb identifies a relationship by (source, target, type).
 
 ## Aggregations
 
@@ -64,15 +82,14 @@ aggregated projected expression is an implicit grouping key; aggregations skip n
 
 ## Types
 
-The runtime values are `int` (64-bit), `str`, `boolean`, `null`, and `list`. Nulls come from
-`OPTIONAL MATCH` (and `CASE` without `ELSE`); they propagate: a comparison or string predicate
-with a null operand is null, a null `WHERE` filters the row out, and aggregations skip nulls.
-Properties stored in the graph are always `int` or `str`.
+The runtime values are `int` (64-bit), `str`, `boolean`, `null`, `list`, and whole nodes and
+relationships (`RETURN n`). Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
+`ELSE`; they propagate: a comparison or string predicate with a null operand is null, a null
+`WHERE` filters the row out, and aggregations skip nulls. Properties stored in the graph are
+`int`, `str` or `boolean`; setting a property to `null` removes it.
 
 ## Notes on the subset
 
-- `ORDER BY` and `LIMIT` after an aggregation are not applied to the aggregated result; order an
-  aggregated query with a `WITH` step instead.
 - `avg`, arithmetic, and a `WHERE` *outside* an `OPTIONAL MATCH` (post-join filter) are not yet
   supported — filter with a `WITH … WHERE` step.
 - `UNWIND` after `WITH` (unwinding a `collect`ed list) is deferred; project the list and `size`

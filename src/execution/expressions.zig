@@ -8,6 +8,7 @@ const UnaryOperator = @import("../query/ast.zig").UnaryOperator;
 const Value = @import("../value.zig").Value;
 
 const Executor = @import("Executor.zig");
+const functions = @import("functions.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
@@ -69,16 +70,7 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             }
             break :blk .{ .list = items.items };
         },
-        .size_function => blk: {
-            const v = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
-            const n: usize = switch (v) {
-                .list => |items| items.len,
-                .string => |s| s.len,
-                .null => return error.TypeMismatch,
-                else => return error.TypeMismatch,
-            };
-            break :blk .{ .int = @intCast(n) };
-        },
+        .function_call => functions.call(self, expr, bindings),
         .case_expression => blk: {
             const children = self.ast.nodeChildren(expr);
             const else_present = (children.len % 2) == 1;
