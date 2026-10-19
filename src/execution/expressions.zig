@@ -15,14 +15,14 @@ const Bindings = @import("bindings.zig").Bindings;
 /// Evaluates a non-negative integer literal (used by SKIP and LIMIT).
 pub fn evalCountExpr(self: *Executor, expr: Index) ExecError!usize {
     var empty = Bindings{ .entries = .empty };
-    return switch (try self.eval(expr, &empty)) {
+    return switch (try eval(self, expr, &empty)) {
         .int => |n| if (n < 0) 0 else @as(usize, @intCast(n)),
         else => 0,
     };
 }
 
 pub fn evalBool(self: *Executor, expr: Index, bindings: *Bindings) ExecError!bool {
-    return switch (try self.eval(expr, bindings)) {
+    return switch (try eval(self, expr, bindings)) {
         .boolean => |b| b,
         .null => false, // a null predicate filters the row out
         else => error.TypeMismatch,
@@ -34,7 +34,7 @@ pub fn evalBool(self: *Executor, expr: Index, bindings: *Bindings) ExecError!boo
 pub fn inList(self: *Executor, needle: Value, list_node: Index, bindings: *Bindings) ExecError!bool {
     if (Value.isNull(needle)) return false;
     for (self.ast.nodeChildren(list_node)) |item| {
-        const v = try self.eval(item, bindings);
+        const v = try eval(self, item, bindings);
         if (Value.eql(needle, v)) return true;
     }
     return false;
@@ -48,12 +48,12 @@ pub fn eval(self: *Executor, expr: Index, bindings: *Bindings) ExecError!Value {
         .list_literal => blk: {
             var items = std.ArrayList(Value).empty;
             for (self.ast.nodeChildren(expr)) |item| {
-                try items.append(self.allocator, try self.eval(item, bindings));
+                try items.append(self.allocator, try eval(self, item, bindings));
             }
             break :blk .{ .list = items.items };
         },
         .size_fn => blk: {
-            const v = try self.eval(self.ast.nodeChildren(expr)[0], bindings);
+            const v = try eval(self, self.ast.nodeChildren(expr)[0], bindings);
             const n: usize = switch (v) {
                 .list => |items| items.len,
                 .str => |s| s.len,
@@ -68,12 +68,12 @@ pub fn eval(self: *Executor, expr: Index, bindings: *Bindings) ExecError!Value {
             const num_pairs = kids.len / 2;
             var p: usize = 0;
             while (p < num_pairs) : (p += 1) {
-                if (try self.evalBool(kids[p * 2], bindings)) {
-                    break :blk try self.eval(kids[p * 2 + 1], bindings);
+                if (try evalBool(self, kids[p * 2], bindings)) {
+                    break :blk try eval(self, kids[p * 2 + 1], bindings);
                 }
             }
             if (else_present) {
-                break :blk try self.eval(kids[kids.len - 1], bindings);
+                break :blk try eval(self, kids[kids.len - 1], bindings);
             }
             break :blk .{ .null = {} };
         },
@@ -122,16 +122,16 @@ pub fn eval(self: *Executor, expr: Index, bindings: *Bindings) ExecError!Value {
             const kids = self.ast.nodeChildren(expr);
             if (op == .in_) {
                 // RHS is a list literal, not a scalar value.
-                const l = try self.eval(kids[0], bindings);
-                break :blk .{ .boolean = try self.inList(l, kids[1], bindings) };
+                const l = try eval(self, kids[0], bindings);
+                break :blk .{ .boolean = try inList(self, l, kids[1], bindings) };
             }
-            const l = try self.eval(kids[0], bindings);
-            const r = try self.eval(kids[1], bindings);
+            const l = try eval(self, kids[0], bindings);
+            const r = try eval(self, kids[1], bindings);
             break :blk try applyBinOp(op, l, r);
         },
         .unary_op => blk: {
             const op = self.ast.data(expr).un_op;
-            const v = try self.eval(self.ast.nodeChildren(expr)[0], bindings);
+            const v = try eval(self, self.ast.nodeChildren(expr)[0], bindings);
             break :blk try applyUnOp(op, v);
         },
         else => error.InvalidExpr,

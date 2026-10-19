@@ -27,7 +27,6 @@ const BindStep = @import("planner.zig").BindStep;
 const ChainEdge = @import("planner.zig").ChainEdge;
 const ChainNode = @import("planner.zig").ChainNode;
 
-const planner = @import("planner.zig");
 const pattern_matching = @import("pattern_matching.zig");
 const expressions = @import("expressions.zig");
 const aggregation = @import("aggregation.zig");
@@ -161,15 +160,15 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
         }
     }
     if (self.optional_match) |om| {
-        try self.collectOptionalVars(om);
+        try pattern_matching.collectOptionalVars(self, om);
     }
     if (pre_match) |pm| {
-        try self.collectClauseVars(pm, &self.main_vars);
+        try pattern_matching.collectClauseVars(self, pm, &self.main_vars);
     }
 
     // Detect aggregations in the projection (grouping).
     if (self.return_clause) |rc| {
-        const info = self.returnInfo(rc);
+        const info = projection.returnInfo(self, rc);
         for (self.ast.nodeChildren(info.projection)) |item| {
             const expr = self.ast.nodeChildren(item)[0];
             if (self.ast.kind(expr) == .agg) {
@@ -208,7 +207,7 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
         self.collecting = false;
 
         // Phase 2: project/aggregate/filter/sort/paginate with WITH.
-        try self.applyWith(wc);
+        try projection.applyWith(self, wc);
 
         // Phase 3: run the post-WITH clauses against each projected row.
         for (self.with_rows.items) |row| {
@@ -234,7 +233,7 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
     if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
 
     if (self.return_clause) |rc| {
-        try self.postProcess(rc);
+        try projection.postProcess(self, rc);
     }
 
     return self.rows.items;
@@ -248,7 +247,7 @@ pub fn runMatch(self: *Executor, mc: Index, bindings: *Bindings) ExecError!void 
     // children = [pattern0, ..., patternN, where_expr]
     self.patterns = mc_children[0 .. mc_children.len - 1];
     self.where_expr = mc_children[mc_children.len - 1];
-    try self.matchPatterns(0, bindings);
+    try pattern_matching.matchPatterns(self, 0, bindings);
 }
 
 
@@ -270,16 +269,16 @@ pub fn runMatch(self: *Executor, mc: Index, bindings: *Bindings) ExecError!void 
 /// OPTIONAL MATCH, collect the bindings (WITH pipeline), or apply updates +
 /// RETURN.
 pub fn leaf(self: *Executor, bindings: *Bindings) ExecError!void {
-    if (self.has_match and !try self.evalBool(self.where_expr, bindings)) return;
+    if (self.has_match and !try expressions.evalBool(self, self.where_expr, bindings)) return;
     if (self.in_optional) {
         self.optional_matched = true;
         return self.afterOptional(bindings);
     }
     if (self.optional_match != null) {
-        return self.runOptional(bindings);
+        return pattern_matching.runOptional(self, bindings);
     }
     if (self.unwind != null) {
-        return self.runUnwind(bindings);
+        return pattern_matching.runUnwind(self, bindings);
     }
     return self.afterOptional(bindings);
 }
@@ -287,7 +286,7 @@ pub fn leaf(self: *Executor, bindings: *Bindings) ExecError!void {
 /// Continuation after (optional) matching: collect or finish.
 pub fn afterOptional(self: *Executor, bindings: *Bindings) ExecError!void {
     if (self.collecting) {
-        return self.collect(bindings);
+        return projection.collect(self, bindings);
     }
     try self.finishBody(bindings);
 }
@@ -302,26 +301,26 @@ pub fn afterOptional(self: *Executor, bindings: *Bindings) ExecError!void {
 pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
     for (self.update_clauses.items) |clause| {
         switch (self.ast.kind(clause)) {
-            .create_clause => try self.applyCreate(self.ast.nodeChildren(clause)[0], bindings),
-            .merge_clause => try self.applyMerge(clause, bindings),
-            .set_clause => try self.applySet(clause, bindings),
-            .delete_clause => try self.applyDelete(clause, bindings),
-            .remove_clause => try self.applyRemove(clause, bindings),
+            .create_clause => try writes.applyCreate(self, self.ast.nodeChildren(clause)[0], bindings),
+            .merge_clause => try writes.applyMerge(self, clause, bindings),
+            .set_clause => try writes.applySet(self, clause, bindings),
+            .delete_clause => try writes.applyDelete(self, clause, bindings),
+            .remove_clause => try writes.applyRemove(self, clause, bindings),
             else => {},
         }
     }
 
     if (self.return_clause) |rc| {
-        const info = self.returnInfo(rc);
+        const info = projection.returnInfo(self, rc);
 
         if (self.has_agg) {
-            try self.accumulate(bindings);
+            try aggregation.accumulate(self, bindings);
             return;
         }
 
         var out = std.ArrayList(Value).empty;
         for (self.ast.nodeChildren(info.projection)) |item| {
-            const v = try self.eval(self.ast.nodeChildren(item)[0], bindings);
+            const v = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
             try out.append(self.allocator, v);
         }
         try self.rows.append(self.allocator, out);
@@ -331,7 +330,7 @@ pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
         var keys = std.ArrayList(Value).empty;
         if (info.order_by) |ob| {
             for (self.ast.nodeChildren(ob)) |item| {
-                const v = try self.eval(self.ast.nodeChildren(item)[0], bindings);
+                const v = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
                 try keys.append(self.allocator, v);
             }
         }
@@ -339,57 +338,3 @@ pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
     }
 }
 
-// Clause and expression machinery, implemented by the files above; aliased
-// here so the executor's steps call each other as methods.
-pub const setupPattern = planner.setupPattern;
-pub const shouldEdgeAnchor = planner.shouldEdgeAnchor;
-pub const buildEdgeSteps = planner.buildEdgeSteps;
-pub const nodeIndex = planner.nodeIndex;
-pub const tryAddSeek = planner.tryAddSeek;
-pub const collectWhereSeeks = planner.collectWhereSeeks;
-pub const estimate = planner.estimate;
-pub const seedNodes = pattern_matching.seedNodes;
-pub const hasAllLabels = pattern_matching.hasAllLabels;
-pub const chooseAnchor = planner.chooseAnchor;
-pub const buildSteps = planner.buildSteps;
-pub const matchPatterns = pattern_matching.matchPatterns;
-pub const execStep = pattern_matching.execStep;
-pub const runUnwind = pattern_matching.runUnwind;
-pub const runOptional = pattern_matching.runOptional;
-pub const collectOptionalVars = pattern_matching.collectOptionalVars;
-pub const collectClauseVars = pattern_matching.collectClauseVars;
-pub const isMainVar = pattern_matching.isMainVar;
-pub const bindOptionalNulls = pattern_matching.bindOptionalNulls;
-pub const collect = projection.collect;
-pub const withInfo = projection.withInfo;
-pub const applyWith = projection.applyWith;
-pub const findOrCreateWithGroup = projection.findOrCreateWithGroup;
-pub const dedupBindings = projection.dedupBindings;
-pub const applyBindingsSkip = projection.applyBindingsSkip;
-pub const applyBindingsLimit = projection.applyBindingsLimit;
-pub const sortBindings = projection.sortBindings;
-pub const evalCountExpr = expressions.evalCountExpr;
-pub const accumulate = aggregation.accumulate;
-pub const evalAggArg = aggregation.evalAggArg;
-pub const evalCountArg = aggregation.evalCountArg;
-pub const findOrCreateGroup = aggregation.findOrCreateGroup;
-pub const updateAgg = aggregation.updateAgg;
-pub const aggregate = aggregation.aggregate;
-pub const returnInfo = projection.returnInfo;
-pub const postProcess = projection.postProcess;
-pub const dedup = projection.dedup;
-pub const sortRows = projection.sortRows;
-pub const applyCreate = writes.applyCreate;
-pub const applyMerge = writes.applyMerge;
-pub const createNode = writes.createNode;
-pub const findMatchingNode = writes.findMatchingNode;
-pub const nodePropsMatch = writes.nodePropsMatch;
-pub const applyEdges = writes.applyEdges;
-pub const applySet = writes.applySet;
-pub const applyRemove = writes.applyRemove;
-pub const applyDelete = writes.applyDelete;
-pub const nodeSeeksMatch = pattern_matching.nodeSeeksMatch;
-pub const edgeSeeksMatch = pattern_matching.edgeSeeksMatch;
-pub const evalBool = expressions.evalBool;
-pub const inList = expressions.inList;
-pub const eval = expressions.eval;

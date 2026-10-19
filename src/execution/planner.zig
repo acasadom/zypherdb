@@ -50,11 +50,11 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) ExecEr
         }
     }
 
-    try self.collectWhereSeeks(self.where_expr);
-    if (self.shouldEdgeAnchor()) {
-        try self.buildEdgeSteps();
+    try collectWhereSeeks(self, self.where_expr);
+    if (shouldEdgeAnchor(self)) {
+        try buildEdgeSteps(self);
     } else {
-        try self.buildSteps(self.chooseAnchor());
+        try buildSteps(self, chooseAnchor(self));
     }
 }
 
@@ -92,7 +92,7 @@ pub fn tryAddSeek(self: *Executor, access_expr: Index, value_expr: Index) ExecEr
         else => return false,
     }
     const var_name = self.ast.data(obj).text;
-    const node_idx = self.nodeIndex(var_name) orelse return false;
+    const node_idx = nodeIndex(self, var_name) orelse return false;
     const prop = self.ast.data(access_expr).text;
     try self.nodes.items[node_idx].seeks.append(self.allocator, .{ .prop = prop, .value = value_expr });
     return true;
@@ -104,12 +104,12 @@ pub fn collectWhereSeeks(self: *Executor, expr: Index) ExecError!void {
     const kids = self.ast.nodeChildren(expr);
     switch (op) {
         .eq => {
-            _ = try self.tryAddSeek(kids[0], kids[1]);
-            _ = try self.tryAddSeek(kids[1], kids[0]);
+            _ = try tryAddSeek(self, kids[0], kids[1]);
+            _ = try tryAddSeek(self, kids[1], kids[0]);
         },
         .and_ => {
-            try self.collectWhereSeeks(kids[0]);
-            try self.collectWhereSeeks(kids[1]);
+            try collectWhereSeeks(self, kids[0]);
+            try collectWhereSeeks(self, kids[1]);
         },
         else => {},
     }
@@ -144,9 +144,9 @@ pub fn estimate(self: *Executor, node_idx: usize) usize {
 
 pub fn chooseAnchor(self: *Executor) usize {
     var best: usize = 0;
-    var best_est = self.estimate(0);
+    var best_est = estimate(self, 0);
     for (1..self.nodes.items.len) |i| {
-        const est = self.estimate(i);
+        const est = estimate(self, i);
         if (est < best_est) {
             best = i;
             best_est = est;

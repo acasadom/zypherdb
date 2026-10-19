@@ -8,6 +8,8 @@ const Value = @import("../value.zig").Value;
 const eqlSequences = @import("../value.zig").eqlSequences;
 
 const Executor = @import("Executor.zig");
+const expressions = @import("expressions.zig");
+const aggregation = @import("aggregation.zig");
 const ExecError = Executor.ExecError;
 const Row = Executor.Row;
 
@@ -50,7 +52,7 @@ pub fn withInfo(self: *Executor, wc: Index) WithInfo {
 /// aggregation), then applies WHERE / DISTINCT / ORDER BY / SKIP / LIMIT,
 /// rebinding the result into fresh variable bindings for the next clauses.
 pub fn applyWith(self: *Executor, wc: Index) ExecError!void {
-    const info = self.withInfo(wc);
+    const info = withInfo(self, wc);
 
     var items = std.ArrayList(WithItem).empty;
     defer items.deinit(self.allocator);
@@ -105,29 +107,29 @@ pub fn applyWith(self: *Executor, wc: Index) ExecError!void {
                     };
                     try keys.append(self.allocator, b);
                 },
-                .key => |k| try keys.append(self.allocator, .{ .value = try self.eval(k.expr, bindings) }),
+                .key => |k| try keys.append(self.allocator, .{ .value = try expressions.eval(self, k.expr, bindings) }),
                 .agg => |a| {
                     if (a.arg == null) {
                         try args.append(self.allocator, .{ .int = 0 }); // count(*) always counts
                     } else if (a.kind == .count) {
-                        try args.append(self.allocator, try self.evalCountArg(a.arg.?, bindings));
+                        try args.append(self.allocator, try aggregation.evalCountArg(self, a.arg.?, bindings));
                     } else {
-                        try args.append(self.allocator, try self.eval(a.arg.?, bindings));
+                        try args.append(self.allocator, try expressions.eval(self, a.arg.?, bindings));
                     }
                 },
             }
         }
-        const group = try self.findOrCreateWithGroup(&groups, keys.items, items.items);
+        const group = try findOrCreateWithGroup(self, &groups, keys.items, items.items);
         var arg_i: usize = 0;
         for (group.aggs.items) |*state| {
-            try self.updateAgg(state, args.items[arg_i]);
+            try aggregation.updateAgg(self, state, args.items[arg_i]);
             arg_i += 1;
         }
     }
 
     // No grouping keys: zero input rows still aggregate into one row.
     if (groups.items.len == 0 and !hasWithKey(items.items)) {
-        _ = try self.findOrCreateWithGroup(&groups, &.{}, items.items);
+        _ = try findOrCreateWithGroup(self, &groups, &.{}, items.items);
     }
 
     var out = std.ArrayList(Bindings).empty;
@@ -157,18 +159,18 @@ pub fn applyWith(self: *Executor, wc: Index) ExecError!void {
     // WHERE filter (always present; `true` when absent).
     var filtered = std.ArrayList(Bindings).empty;
     for (out.items) |*b| {
-        if (try self.evalBool(info.where_expr, b)) {
+        if (try expressions.evalBool(self, info.where_expr, b)) {
             try filtered.append(self.allocator, b.*);
         }
     }
     out = filtered;
 
-    if (info.distinct) self.dedupBindings(&out);
+    if (info.distinct) dedupBindings(self, &out);
 
-    if (info.order_by) |ob| try self.sortBindings(&out, ob);
+    if (info.order_by) |ob| try sortBindings(self, &out, ob);
 
-    if (info.skip) |sk| try self.applyBindingsSkip(&out, sk);
-    if (info.limit) |lim| try self.applyBindingsLimit(&out, lim);
+    if (info.skip) |sk| try applyBindingsSkip(self, &out, sk);
+    if (info.limit) |lim| try applyBindingsLimit(self, &out, lim);
 
     self.with_rows = out;
 }
@@ -205,7 +207,7 @@ pub fn dedupBindings(self: *Executor, rows: *std.ArrayList(Bindings)) void {
 }
 
 pub fn applyBindingsSkip(self: *Executor, rows: *std.ArrayList(Bindings), skip: Index) ExecError!void {
-    const n = try self.evalCountExpr(self.ast.nodeChildren(skip)[0]);
+    const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(skip)[0]);
     if (n >= rows.items.len) {
         rows.shrinkRetainingCapacity(0);
         return;
@@ -218,7 +220,7 @@ pub fn applyBindingsSkip(self: *Executor, rows: *std.ArrayList(Bindings), skip: 
 }
 
 pub fn applyBindingsLimit(self: *Executor, rows: *std.ArrayList(Bindings), limit: Index) ExecError!void {
-    const n = try self.evalCountExpr(self.ast.nodeChildren(limit)[0]);
+    const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(limit)[0]);
     if (n < rows.items.len) rows.shrinkRetainingCapacity(n);
 }
 
@@ -239,7 +241,7 @@ pub fn sortBindings(self: *Executor, rows: *std.ArrayList(Bindings), ob: Index) 
     for (rows.items) |*b| {
         var ks = std.ArrayList(Value).empty;
         for (items) |item| {
-            try ks.append(self.allocator, try self.eval(self.ast.nodeChildren(item)[0], b));
+            try ks.append(self.allocator, try expressions.eval(self, self.ast.nodeChildren(item)[0], b));
         }
         try keys.append(self.allocator, ks);
     }
@@ -286,20 +288,20 @@ pub fn returnInfo(self: *Executor, rc: Index) ReturnInfo {
 }
 
 pub fn postProcess(self: *Executor, rc: Index) ExecError!void {
-    const info = self.returnInfo(rc);
+    const info = returnInfo(self, rc);
 
     if (self.has_agg) {
-        try self.aggregate();
+        try aggregation.aggregate(self);
     }
 
-    if (info.distinct) self.dedup();
+    if (info.distinct) dedup(self);
 
     if (info.order_by) |ob| {
-        try self.sortRows(ob);
+        try sortRows(self, ob);
     }
 
     if (info.skip) |sk| {
-        const n = try self.evalCountExpr(self.ast.nodeChildren(sk)[0]);
+        const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(sk)[0]);
         if (n >= self.rows.items.len) {
             self.rows.shrinkRetainingCapacity(0);
             self.row_keys.shrinkRetainingCapacity(0);
@@ -315,7 +317,7 @@ pub fn postProcess(self: *Executor, rc: Index) ExecError!void {
     }
 
     if (info.limit) |lim| {
-        const n = try self.evalCountExpr(self.ast.nodeChildren(lim)[0]);
+        const n = try expressions.evalCountExpr(self, self.ast.nodeChildren(lim)[0]);
         if (n < self.rows.items.len) self.rows.shrinkRetainingCapacity(n);
     }
 }

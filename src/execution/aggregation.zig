@@ -7,6 +7,7 @@ const Value = @import("../value.zig").Value;
 const eqlSequences = @import("../value.zig").eqlSequences;
 
 const Executor = @import("Executor.zig");
+const expressions = @import("expressions.zig");
 const ExecError = Executor.ExecError;
 
 const Bindings = @import("bindings.zig").Bindings;
@@ -17,15 +18,15 @@ pub fn accumulate(self: *Executor, bindings: *Bindings) ExecError!void {
     var args = std.ArrayList(Value).empty;
     for (self.proj_items.items) |item| {
         switch (item) {
-            .key => |expr| try keys.append(self.allocator, try self.eval(expr, bindings)),
-            .agg => |a| try args.append(self.allocator, try self.evalAggArg(a.kind, a.arg, bindings)),
+            .key => |expr| try keys.append(self.allocator, try expressions.eval(self, expr, bindings)),
+            .agg => |a| try args.append(self.allocator, try evalAggArg(self, a.kind, a.arg, bindings)),
         }
     }
 
-    const group = try self.findOrCreateGroup(keys.items);
+    const group = try findOrCreateGroup(self, keys.items);
     var arg_i: usize = 0;
     for (group.aggs.items) |*state| {
-        try self.updateAgg(state, args.items[arg_i]);
+        try updateAgg(self, state, args.items[arg_i]);
         arg_i += 1;
     }
 }
@@ -35,8 +36,8 @@ pub fn accumulate(self: *Executor, bindings: *Bindings) ExecError!void {
 /// (a null skips it); other aggregates return the evaluated value.
 pub fn evalAggArg(self: *Executor, kind: AggKind, arg: ?Index, bindings: *Bindings) ExecError!Value {
     if (arg == null) return .{ .int = 0 }; // count(*) always counts
-    if (kind == .count) return self.evalCountArg(arg.?, bindings);
-    return self.eval(arg.?, bindings);
+    if (kind == .count) return evalCountArg(self, arg.?, bindings);
+    return expressions.eval(self, arg.?, bindings);
 }
 
 /// Evaluates `count(x)`: a bound node/edge variable is non-null; a scalar or
@@ -49,7 +50,7 @@ pub fn evalCountArg(self: *Executor, expr: Index, bindings: *Bindings) ExecError
             .value => |v| return v, // may be null
         }
     }
-    return self.eval(expr, bindings);
+    return expressions.eval(self, expr, bindings);
 }
 
 pub fn findOrCreateGroup(self: *Executor, keys: []const Value) ExecError!*Group {
@@ -100,7 +101,7 @@ pub fn aggregate(self: *Executor) ExecError!void {
     // With no grouping keys, aggregating zero rows still yields one row
     // (`count` 0, `sum` 0, `min`/`max` null, `collect` []), as in openCypher.
     if (self.groups.items.len == 0 and !hasProjKey(self.proj_items.items)) {
-        _ = try self.findOrCreateGroup(&.{});
+        _ = try findOrCreateGroup(self, &.{});
     }
     for (self.groups.items) |group| {
         var row = std.ArrayList(Value).empty;

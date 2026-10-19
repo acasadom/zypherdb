@@ -6,6 +6,8 @@ const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 
 const Executor = @import("Executor.zig");
+const pattern_matching = @import("pattern_matching.zig");
+const expressions = @import("expressions.zig");
 const ExecError = Executor.ExecError;
 
 const Bindings = @import("bindings.zig").Bindings;
@@ -18,10 +20,10 @@ pub fn applyCreate(self: *Executor, pattern: Index, bindings: *Bindings) ExecErr
         const np_idx = chain[i * 2];
         const np = self.ast.data(np_idx).node_pattern;
         if (np.var_name.len == 0 or bindings.getNode(np.var_name) != null) continue;
-        const id = try self.createNode(np_idx, bindings);
+        const id = try createNode(self, np_idx, bindings);
         try bindings.put(self.allocator, np.var_name, .{ .node = id });
     }
-    try self.applyEdges(chain, num_nodes, bindings, false);
+    try applyEdges(self, chain, num_nodes, bindings, false);
 }
 
 pub fn applyMerge(self: *Executor, mc: Index, bindings: *Bindings) ExecError!void {
@@ -37,21 +39,21 @@ pub fn applyMerge(self: *Executor, mc: Index, bindings: *Bindings) ExecError!voi
         const np_idx = chain[i * 2];
         const np = self.ast.data(np_idx).node_pattern;
         if (np.var_name.len == 0 or bindings.getNode(np.var_name) != null) continue;
-        if (try self.findMatchingNode(np_idx, bindings)) |id| {
+        if (try findMatchingNode(self, np_idx, bindings)) |id| {
             try bindings.put(self.allocator, np.var_name, .{ .node = id });
         } else {
-            const id = try self.createNode(np_idx, bindings);
+            const id = try createNode(self, np_idx, bindings);
             try bindings.put(self.allocator, np.var_name, .{ .node = id });
             created = true;
         }
     }
-    try self.applyEdges(chain, num_nodes, bindings, true);
+    try applyEdges(self, chain, num_nodes, bindings, true);
 
     // ON CREATE / ON MATCH SET (an empty set clause is a no-op).
     if (created) {
-        try self.applySet(on_create, bindings);
+        try applySet(self, on_create, bindings);
     } else {
-        try self.applySet(on_match, bindings);
+        try applySet(self, on_match, bindings);
     }
 }
 
@@ -63,7 +65,7 @@ pub fn createNode(self: *Executor, np_idx: Index, bindings: *Bindings) ExecError
     for (np.labels) |label| try self.graph.addLabel(id, label);
     for (self.ast.nodeChildren(np_idx)) |prop_idx| {
         const prop_name = self.ast.data(prop_idx).text;
-        const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
+        const value = try expressions.eval(self, self.ast.nodeChildren(prop_idx)[0], bindings);
         try self.graph.setProp(id, prop_name, value);
     }
     return id;
@@ -77,21 +79,21 @@ pub fn findMatchingNode(self: *Executor, np_idx: Index, bindings: *Bindings) Exe
     if (props.len > 0) {
         // Index lookup on the first property.
         const prop_name = self.ast.data(props[0]).text;
-        const value = try self.eval(self.ast.nodeChildren(props[0])[0], bindings);
+        const value = try expressions.eval(self, self.ast.nodeChildren(props[0])[0], bindings);
         var it = try self.graph.nodesByProp(prop_name, value);
         defer it.deinit();
         while (try it.next()) |id| {
-            if (!(try self.hasAllLabels(id, np.labels))) continue;
-            if (try self.nodePropsMatch(np_idx, id, bindings)) return id;
+            if (!(try pattern_matching.hasAllLabels(self, id, np.labels))) continue;
+            if (try nodePropsMatch(self, np_idx, id, bindings)) return id;
         }
         return null;
     }
 
-    var it = try self.seedNodes(np.labels);
+    var it = try pattern_matching.seedNodes(self, np.labels);
     defer it.deinit();
     while (try it.next()) |id| {
-        if (!(try self.hasAllLabels(id, np.labels))) continue;
-        if (try self.nodePropsMatch(np_idx, id, bindings)) return id;
+        if (!(try pattern_matching.hasAllLabels(self, id, np.labels))) continue;
+        if (try nodePropsMatch(self, np_idx, id, bindings)) return id;
     }
     return null;
 }
@@ -99,7 +101,7 @@ pub fn findMatchingNode(self: *Executor, np_idx: Index, bindings: *Bindings) Exe
 pub fn nodePropsMatch(self: *Executor, np_idx: Index, id: NodeId, bindings: *Bindings) ExecError!bool {
     for (self.ast.nodeChildren(np_idx)) |prop_idx| {
         const prop_name = self.ast.data(prop_idx).text;
-        const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
+        const value = try expressions.eval(self, self.ast.nodeChildren(prop_idx)[0], bindings);
         const actual = (try self.graph.getProp(id, prop_name, self.allocator)) orelse return false;
         if (!Value.eql(actual, value)) return false;
     }
@@ -120,7 +122,7 @@ pub fn applyEdges(self: *Executor, chain: []const Index, num_nodes: usize, bindi
         try self.graph.addEdge(src, dst, ep.etype);
         for (self.ast.nodeChildren(ep_idx)) |prop_idx| {
             const prop_name = self.ast.data(prop_idx).text;
-            const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
+            const value = try expressions.eval(self, self.ast.nodeChildren(prop_idx)[0], bindings);
             try self.graph.setEdgeProp(src, dst, ep.etype, prop_name, value);
         }
     }
@@ -134,7 +136,7 @@ pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) ExecErr
         const prop = self.ast.data(access).text;
         const obj = self.ast.nodeChildren(access)[0];
         const name = self.ast.data(obj).text;
-        const value = try self.eval(value_expr, bindings);
+        const value = try expressions.eval(self, value_expr, bindings);
         switch (bindings.get(name) orelse return error.UnknownVar) {
             .node => |id| try self.graph.setProp(id, prop, value),
             .edge => |e| try self.graph.setEdgeProp(e.src, e.dst, e.etype, prop, value),
