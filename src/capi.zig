@@ -112,19 +112,43 @@ export fn acmedb_add_node(ctx: *Context, id: u64, label_ptr: [*]const u8, label_
     return 0;
 }
 
+/// Mutator return codes: success, storage failure, and a missing node.
+const RC_OK: c_int = 0;
+const RC_STORAGE: c_int = 1;
+const RC_NO_NODE: c_int = 2;
+
+/// Returns `RC_NO_NODE` unless every id in `ids` is an existing node.
+fn requireNodes(ctx: *Context, ids: []const u64) c_int {
+    for (ids) |id| {
+        const exists = ctx.graph.hasNode(id) catch return RC_STORAGE;
+        if (!exists) return RC_NO_NODE;
+    }
+    return RC_OK;
+}
+
+/// Adds a directed edge. Both endpoints must exist (`RC_NO_NODE` otherwise), so
+/// the C ABI can never create a dangling edge.
 export fn acmedb_add_edge(ctx: *Context, src: u64, dst: u64, etype_ptr: [*]const u8, etype_len: usize) c_int {
-    ctx.graph.addEdge(src, dst, etype_ptr[0..etype_len]) catch return 1;
-    return 0;
+    const rc = requireNodes(ctx, &.{ src, dst });
+    if (rc != RC_OK) return rc;
+    ctx.graph.addEdge(src, dst, etype_ptr[0..etype_len]) catch return RC_STORAGE;
+    return RC_OK;
 }
 
+/// Sets an int property on an existing node (`RC_NO_NODE` otherwise).
 export fn acmedb_set_prop_i64(ctx: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: i64) c_int {
-    ctx.graph.setProp(id, name_ptr[0..name_len], .{ .int = value }) catch return 1;
-    return 0;
+    const rc = requireNodes(ctx, &.{id});
+    if (rc != RC_OK) return rc;
+    ctx.graph.setProp(id, name_ptr[0..name_len], .{ .int = value }) catch return RC_STORAGE;
+    return RC_OK;
 }
 
+/// Sets a string property on an existing node (`RC_NO_NODE` otherwise).
 export fn acmedb_set_prop_str(ctx: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_len: usize) c_int {
-    ctx.graph.setProp(id, name_ptr[0..name_len], .{ .str = value_ptr[0..value_len] }) catch return 1;
-    return 0;
+    const rc = requireNodes(ctx, &.{id});
+    if (rc != RC_OK) return rc;
+    ctx.graph.setProp(id, name_ptr[0..name_len], .{ .str = value_ptr[0..value_len] }) catch return RC_STORAGE;
+    return RC_OK;
 }
 
 export fn acmedb_query(ctx: *Context, query_ptr: [*]const u8, query_len: usize) ?*Result {
@@ -567,4 +591,27 @@ test "C ABI: batched write transaction commits atomically and aborts cleanly" {
     // No Ghost nodes survive the abort: the aggregation over zero matches yields
     // zero rows (acmedb does not emit a 0-count row for an empty input).
     try testing.expectEqual(@as(usize, 0), acmedb_result_rows(r2));
+}
+
+test "C ABI: mutators reject nodes that do not exist" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+
+    const ctx = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(ctx);
+
+    try testing.expectEqual(RC_OK, acmedb_add_node(ctx, 1, "P".ptr, "P".len));
+    // A dangling edge and properties on a missing node are refused.
+    try testing.expectEqual(RC_NO_NODE, acmedb_add_edge(ctx, 1, 999, "X".ptr, "X".len));
+    try testing.expectEqual(RC_NO_NODE, acmedb_add_edge(ctx, 999, 1, "X".ptr, "X".len));
+    try testing.expectEqual(RC_NO_NODE, acmedb_set_prop_i64(ctx, 999, "v".ptr, "v".len, 1));
+    try testing.expectEqual(RC_NO_NODE, acmedb_set_prop_str(ctx, 999, "v".ptr, "v".len, "a".ptr, "a".len));
+    try testing.expect(!try ctx.graph.hasNode(999));
+    try testing.expect(!try ctx.graph.hasEdge(1, 999, "X"));
+
+    try testing.expectEqual(RC_OK, acmedb_add_node(ctx, 2, "P".ptr, "P".len));
+    try testing.expectEqual(RC_OK, acmedb_add_edge(ctx, 1, 2, "X".ptr, "X".len));
 }

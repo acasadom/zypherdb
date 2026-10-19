@@ -13,8 +13,10 @@ Usage::
 from .db import Database
 from .errors import (
     AcmedbError,
+    ClosedError,
     InvalidExpressionError,
     MissingPropertyError,
+    NodeNotFoundError,
     NodeStillConnectedError,
     ParseError,
     QueryError,
@@ -33,5 +35,7 @@ __all__ = [
     "TypeMismatchError",
     "InvalidExpressionError",
     "NodeStillConnectedError",
+    "NodeNotFoundError",
+    "ClosedError",
     "StorageError",
 ]

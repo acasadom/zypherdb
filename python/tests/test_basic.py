@@ -7,7 +7,10 @@ Requires the shared library: run `zig build` first, then
 import pytest
 
 from acmedb import (
+    AcmedbError,
+    ClosedError,
     Database,
+    NodeNotFoundError,
     ParseError,
     TypeMismatchError,
     UnknownVariableError,
@@ -83,3 +86,67 @@ def test_write_abort(db):
             raise RuntimeError("boom")
     # Nothing survived the abort.
     assert db.query("MATCH (n:Ghost) RETURN count(n)") == []
+
+
+def test_closed_database_raises(tmp_path):
+    # Used to pass a NULL context into the library and segfault the interpreter.
+    db = Database(str(tmp_path))
+    db.close()
+    db.close()  # idempotent
+    with pytest.raises(ClosedError):
+        db.query("RETURN 1")
+    with pytest.raises(ClosedError):
+        db.add_node(1, "P")
+    with pytest.raises(ClosedError):
+        db.alloc_node_id()
+
+
+def test_int_range_is_enforced(db):
+    # ctypes used to truncate silently: 2**70 was stored as 0.
+    db.add_node(1, "P")
+    db.set_prop(1, "max", 2**63 - 1)
+    db.set_prop(1, "min", -(2**63))
+    assert db.query("MATCH (p:P) RETURN p.max, p.min") == [[2**63 - 1, -(2**63)]]
+    with pytest.raises(OverflowError):
+        db.set_prop(1, "big", 2**63)
+    with pytest.raises(ValueError):
+        db.add_node(-1, "P")
+    with pytest.raises(ValueError):
+        db.add_node(2**64, "P")
+
+
+def test_unsupported_property_types(db):
+    db.add_node(1, "P")
+    for bad in (True, 1.5, None, [1]):
+        with pytest.raises(TypeError):
+            db.set_prop(1, "x", bad)
+
+
+def test_non_ascii_names_use_byte_lengths(db):
+    # Lengths used to be counted in characters, truncating the UTF-8 bytes.
+    db.add_node(1, "Pérsona")
+    db.set_prop(1, "año", 2024)
+    db.set_prop(1, "nombre", "Ñandú")
+    db.add_node(2, "Pérsona")
+    db.add_edge(1, 2, "CONOCE_Ñ")
+    assert db.query(
+        "MATCH (a:Pérsona)-[:CONOCE_Ñ]->(b:Pérsona) RETURN a.año, a.nombre"
+    ) == [[2024, "Ñandú"]]
+
+
+def test_mutators_reject_missing_nodes(db):
+    db.add_node(1, "P")
+    with pytest.raises(NodeNotFoundError):
+        db.add_edge(1, 999, "X")
+    with pytest.raises(NodeNotFoundError):
+        db.set_prop(999, "v", 1)
+    assert db.query("MATCH (a)-[:X]->(b) RETURN count(*)") == []
+
+
+def test_query_inside_write_is_refused(db):
+    with pytest.raises(AcmedbError):
+        with db.write():
+            db.add_node(1, "P")
+            db.query("RETURN 1")
+    # The batch was aborted.
+    assert db.query("MATCH (n) RETURN count(*)") == []

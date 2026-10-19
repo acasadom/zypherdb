@@ -9,6 +9,14 @@ class StorageError(AcmedbError):
     """A storage-layer failure (I/O, LMDB)."""
 
 
+class ClosedError(AcmedbError):
+    """The `Database` was used after `close()`."""
+
+
+class NodeNotFoundError(AcmedbError):
+    """A mutator referenced a node id that does not exist."""
+
+
 class QueryError(AcmedbError):
     """A query failed to run. Carries the error code and message."""
 
