@@ -33,12 +33,22 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(shared);
 
-    // Tests: a single executable that walks the module's `test` blocks.
-    const tests = b.addTest(.{
+    const test_step = b.step("test", "Run the tests");
+
+    // Unit tests: the `test` blocks next to the code in src/ (private helpers).
+    const unit_tests = b.addTest(.{
         .root_module = acmedb,
     });
-    const run_tests = b.addRunArtifact(tests);
+    test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
-    const test_step = b.step("test", "Run the tests");
-    test_step.dependOn(&run_tests.step);
+    // Suite: tests/ exercises the library through its public API only.
+    const suite = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(suite).step);
 }

@@ -42,6 +42,7 @@ pub const exec = @import("exec/exec.zig");
 pub const Executor = exec.Executor;
 pub const ExecError = exec.ExecError;
 pub const Row = exec.Row;
+pub const valueEq = exec.valueEq;
 
 pub const diag = @import("diag.zig");
 

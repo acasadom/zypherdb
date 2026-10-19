@@ -1,0 +1,127 @@
+//! Shared test support: temporary stores, the "people and movies" fixture
+//! graph, and query assertions.
+
+const std = @import("std");
+const testing = std.testing;
+const acmedb = @import("acmedb");
+
+const Ast = acmedb.Ast;
+const Graph = acmedb.Graph;
+const KvStore = acmedb.KvStore;
+const NodeId = acmedb.NodeId;
+const Row = acmedb.Row;
+const Value = acmedb.Value;
+const Executor = acmedb.Executor;
+const parser = acmedb.parser;
+const valueEq = acmedb.valueEq;
+
+/// The path of a test's temporary directory, relative to the build root.
+pub fn testPath(tmp: *testing.TmpDir, buf: []u8) []const u8 {
+    return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+}
+
+/// Opens a fresh store in the test's temporary directory.
+pub fn openStore(tmp: *testing.TmpDir, buf: []u8) !KvStore {
+    return KvStore.open(testing.allocator, testPath(tmp, buf));
+}
+
+/// Loads the "people and movies" fixture graph (see docs/tutorial).
+pub fn loadMoviesGraph(g: *Graph) !void {
+    const P = struct { id: NodeId, name: []const u8, born: i64 };
+    const M = struct { id: NodeId, title: []const u8, released: i64 };
+    const people = [_]P{
+        .{ .id = 1, .name = "Keanu Reeves", .born = 1964 },
+        .{ .id = 2, .name = "Carrie-Anne Moss", .born = 1967 },
+        .{ .id = 3, .name = "Laurence Fishburne", .born = 1961 },
+        .{ .id = 4, .name = "Lana Wachowski", .born = 1965 },
+        .{ .id = 5, .name = "Tom Hanks", .born = 1956 },
+    };
+    const movies = [_]M{
+        .{ .id = 100, .title = "The Matrix", .released = 1999 },
+        .{ .id = 101, .title = "The Matrix Reloaded", .released = 2003 },
+        .{ .id = 102, .title = "John Wick", .released = 2014 },
+        .{ .id = 103, .title = "Forrest Gump", .released = 1994 },
+    };
+    for (people) |p| {
+        try g.addNode(p.id, "Person");
+        try g.setProp(p.id, "name", .{ .str = p.name });
+        try g.setProp(p.id, "born", .{ .int = p.born });
+    }
+    for (movies) |m| {
+        try g.addNode(m.id, "Movie");
+        try g.setProp(m.id, "title", .{ .str = m.title });
+        try g.setProp(m.id, "released", .{ .int = m.released });
+    }
+    const E = struct { a: NodeId, b: NodeId, t: []const u8 };
+    const edges = [_]E{
+        .{ .a = 1, .b = 100, .t = "ACTED_IN" },
+        .{ .a = 1, .b = 101, .t = "ACTED_IN" },
+        .{ .a = 1, .b = 102, .t = "ACTED_IN" },
+        .{ .a = 2, .b = 100, .t = "ACTED_IN" },
+        .{ .a = 3, .b = 100, .t = "ACTED_IN" },
+        .{ .a = 5, .b = 103, .t = "ACTED_IN" },
+        .{ .a = 4, .b = 100, .t = "DIRECTED" },
+        .{ .a = 4, .b = 101, .t = "DIRECTED" },
+    };
+    for (edges) |e| try g.addEdge(e.a, e.b, e.t);
+}
+
+fn rowsEqual(row: []const Value, expected: []const Value) bool {
+    if (row.len != expected.len) return false;
+    for (row, expected) |a, b| {
+        if (!valueEq(a, b)) return false;
+    }
+    return true;
+}
+
+/// Asserts that `rows` equals `expected` as an unordered set of rows.
+fn expectRows(rows: []const Row, expected: []const []const Value) !void {
+    try testing.expectEqual(expected.len, rows.len);
+    const used = try testing.allocator.alloc(bool, rows.len);
+    defer testing.allocator.free(used);
+    @memset(used, false);
+
+    for (expected) |expected_row| {
+        var found = false;
+        for (rows, 0..) |row, i| {
+            if (used[i]) continue;
+            if (rowsEqual(row.items, expected_row)) {
+                used[i] = true;
+                found = true;
+                break;
+            }
+        }
+        try testing.expect(found);
+    }
+}
+
+/// Parses `src`, runs it, and asserts the projected rows (as an unordered set).
+pub fn expectQuery(ast: *Ast, g: *Graph, src: []const u8, expected: []const []const Value) !void {
+    const query = try parser.parse(ast, src, null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var executor = Executor.init(ast, g, arena.allocator());
+    try expectRows(try executor.run(query), expected);
+}
+
+/// Parses `src`, runs it, and asserts the projected rows in order.
+pub fn expectOrdered(ast: *Ast, g: *Graph, src: []const u8, expected: []const []const Value) !void {
+    const query = try parser.parse(ast, src, null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var executor = Executor.init(ast, g, arena.allocator());
+    const rows = try executor.run(query);
+    try testing.expectEqual(expected.len, rows.len);
+    for (expected, rows) |expected_row, row| {
+        try testing.expect(rowsEqual(row.items, expected_row));
+    }
+}
+
+/// Parses `src`, runs it, and asserts that it fails with `expected_err`.
+pub fn expectQueryError(ast: *Ast, g: *Graph, src: []const u8, expected_err: anyerror) !void {
+    const query = try parser.parse(ast, src, null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var executor = Executor.init(ast, g, arena.allocator());
+    try testing.expectError(expected_err, executor.run(query));
+}
