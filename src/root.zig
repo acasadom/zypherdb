@@ -44,11 +44,9 @@ pub const lexer = @import("query/lexer.zig");
 pub const TokenKind = lexer.TokenKind;
 pub const Token = lexer.Token;
 
-pub const executor = @import("execution/executor.zig");
-
-pub const Executor = executor.Executor;
-pub const ExecError = executor.ExecError;
-pub const Row = executor.Row;
+pub const Executor = @import("execution/Executor.zig");
+pub const ExecError = Executor.ExecError;
+pub const Row = Executor.Row;
 
 pub const diagnostics = @import("diagnostics.zig");
 
