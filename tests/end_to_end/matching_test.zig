@@ -396,3 +396,22 @@ test "IN with a literal that is not a list is a compile-time error" {
     try expectQueryError(&ast, &g, "RETURN 1 IN true", error.InvalidExpression);
     try expectQueryError(&ast, &g, "MATCH (n) WHERE n.x IN 'abc' RETURN n", error.InvalidExpression);
 }
+
+test "IS NULL and IS NOT NULL" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Door {name: 'D1', floor: 2}), (:Door {name: 'D2'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (d:Door) WHERE d.floor IS NULL RETURN d.name", &.{&.{.{ .string = "D2" }}});
+    try expectQuery(&ast, &g, "MATCH (d:Door) WHERE d.floor IS NOT NULL AND NOT d.name IS NULL RETURN d.name", &.{&.{.{ .string = "D1" }}});
+    // Never null itself, unlike `= null`.
+    try expectQuery(&ast, &g, "RETURN null IS NULL, 1 IS NULL, null = null", &.{
+        &.{ .{ .boolean = true }, .{ .boolean = false }, .{ .null = {} } },
+    });
+}

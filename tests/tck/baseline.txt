@@ -370,7 +370,10 @@ clauses/match/Match7.feature: [1] Simple OPTIONAL MATCH on empty graph
 clauses/match/Match7.feature: [23] OPTIONAL MATCH with labels on the optional end node
 clauses/match/Match7.feature: [24] Optionally matching self-loops
 clauses/match/Match7.feature: [28] Handling optional matches with inline label predicate
+clauses/match/Match7.feature: [29] Satisfies the open world assumption, relationships between same nodes
 clauses/match/Match7.feature: [2] OPTIONAL MATCH with previously bound nodes
+clauses/match/Match7.feature: [30] Satisfies the open world assumption, single relationship
+clauses/match/Match7.feature: [31] Satisfies the open world assumption, relationships between different nodes
 clauses/match/Match7.feature: [3] OPTIONAL MATCH and bound nodes
 clauses/match/Match7.feature: [7] MATCH with OPTIONAL MATCH in longer pattern
 clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matches
@@ -410,7 +413,9 @@ clauses/merge/Merge5.feature: [9] Creating relationship using merged nodes
 clauses/merge/Merge9.feature: [1] UNWIND with one MERGE
 clauses/merge/Merge9.feature: [2] UNWIND with multiple MERGE
 clauses/merge/Merge9.feature: [3] Mixing MERGE with CREATE
+clauses/remove/Remove1.feature: [1] Remove a single node property
 clauses/remove/Remove1.feature: [2] Remove multiple node properties
+clauses/remove/Remove1.feature: [3] Remove a single relationship property
 clauses/remove/Remove1.feature: [4] Remove multiple relationship properties
 clauses/remove/Remove1.feature: [7] Remove a missing node property
 clauses/remove/Remove2.feature: [1] Remove a single label from a node with a single label
@@ -490,6 +495,7 @@ clauses/return/Return2.feature: [3] Missing node property should become null
 clauses/return/Return2.feature: [4] Returning a relationship property value
 clauses/return/Return2.feature: [5] Missing relationship property should become null
 clauses/return/Return2.feature: [6] Adding a property and a literal in projection
+clauses/return/Return3.feature: [1] Returning multiple expressions
 clauses/return/Return3.feature: [3] Projecting nodes and relationships
 clauses/return/Return4.feature: [1] Honour the column name for RETURN items
 clauses/return/Return4.feature: [2] Support column renaming
@@ -1065,6 +1071,18 @@ expressions/mathematical/Mathematical2.feature: [1] Allow addition
 expressions/mathematical/Mathematical3.feature: [1] Fail for invalid Unicode hyphen in subtraction
 expressions/mathematical/Mathematical8.feature: [1] Arithmetic precedence test
 expressions/mathematical/Mathematical8.feature: [2] Arithmetic precedence with parenthesis test
+expressions/null/Null1.feature: [1] Property null check on non-null node
+expressions/null/Null1.feature: [2] Property null check on optional non-null node
+expressions/null/Null1.feature: [3] Property null check on null node
+expressions/null/Null1.feature: [4] A literal null IS null
+expressions/null/Null1.feature: [5] IS NULL on a map #12
+expressions/null/Null1.feature: [6] IS NULL is case insensitive
+expressions/null/Null2.feature: [1] Property not null check on non-null node
+expressions/null/Null2.feature: [2] Property not null check on optional non-null node
+expressions/null/Null2.feature: [3] Property not null check on null node
+expressions/null/Null2.feature: [4] A literal null is not IS NOT null
+expressions/null/Null2.feature: [5] IS NOT NULL on a map #12
+expressions/null/Null2.feature: [6] IS NOT NULL is case insensitive
 expressions/null/Null3.feature: [1] The inverse of a null is a null
 expressions/null/Null3.feature: [2] It is unknown - i.e. null - if a null is equal to a null
 expressions/null/Null3.feature: [3] It is unknown - i.e. null - if a null is not equal to a null
@@ -1094,12 +1112,14 @@ expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variabl
 expressions/pattern/Pattern1.feature: [22] Fail on using pattern in RETURN projection
 expressions/pattern/Pattern1.feature: [23] Fail on using pattern in WITH projection
 expressions/pattern/Pattern1.feature: [24] Fail on using pattern in right-hand side of SET
+expressions/precedence/Precedence1.feature: [10] Null predicate takes precedence over boolean operator
 expressions/precedence/Precedence1.feature: [12] List predicate takes precedence over negation
 expressions/precedence/Precedence1.feature: [13] List predicate takes precedence over boolean operator
 expressions/precedence/Precedence1.feature: [3] Conjunction disjunction takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [4] Negation takes precedence over conjunction
 expressions/precedence/Precedence1.feature: [5] Negation takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [7] Comparison operator takes precedence over binary boolean operator
+expressions/precedence/Precedence1.feature: [9] Null predicate takes precedence over negation
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #1
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #10
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #11
@@ -1122,6 +1142,12 @@ expressions/precedence/Precedence2.feature: [5] Numeric unary negative takes pre
 expressions/precedence/Precedence2.feature: [5] Numeric unary negative takes precedence over numeric additive operations #2
 expressions/precedence/Precedence3.feature: [4] List appending takes precedence over list element containment
 expressions/precedence/Precedence3.feature: [5] List concatenation takes precedence over list element containment
+expressions/precedence/Precedence4.feature: [2] Null predicate takes precedence over boolean negation
+expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #1
+expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #2
+expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #3
+expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #4
+expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #5
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #3

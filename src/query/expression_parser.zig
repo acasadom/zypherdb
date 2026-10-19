@@ -49,6 +49,15 @@ pub fn parseNot(self: *Parser) ParseError!Index {
 pub fn parseComparison(self: *Parser) ParseError!Index {
     const lhs = try parseAdditive(self);
 
+    // `x IS NULL` / `x IS NOT NULL`.
+    if (self.atKeyword("IS")) {
+        _ = self.advance();
+        const negated = self.atKeyword("NOT");
+        if (negated) _ = self.advance();
+        try self.expectKeyword("NULL");
+        return self.ast.addNode(.unary_operation, .{ .unary_operator = if (negated) .is_not_null else .is_null }, &.{lhs});
+    }
+
     // Multi-word string predicates (checked before the single-token ops,
     // since `STARTS`/`ENDS`/`CONTAINS`/`IN` lex as plain identifiers).
     if (self.atKeyword("STARTS")) {

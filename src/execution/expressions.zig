@@ -198,6 +198,8 @@ pub fn applyBinaryOperator(self: *Executor, operator: BinaryOperator, left: Valu
 pub fn applyUnaryOperator(self: *Executor, operator: UnaryOperator, value: Value) ExecutionError!Value {
     return switch (operator) {
         .not_ => if (Value.isNull(value)) .{ .null = {} } else .{ .boolean = !try asBool(value) },
+        .is_null => .{ .boolean = value.isNull() },
+        .is_not_null => .{ .boolean = !value.isNull() },
         .negate => switch (value) {
             .null => .{ .null = {} },
             .int => |n| .{ .int = std.math.negate(n) catch return overflow(self) },

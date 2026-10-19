@@ -83,6 +83,8 @@ pub const BinaryOperator = enum {
 pub const UnaryOperator = enum {
     not_,
     negate,
+    is_null,
+    is_not_null,
 };
 
 /// Aggregation functions (`count`, `sum`, `min`, `max`, `collect`).

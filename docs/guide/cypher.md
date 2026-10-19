@@ -52,6 +52,7 @@ reads as `null`.
 | `+`, `-`, `*`, `/`, `%`, unary `-` | integer arithmetic (overflow and division by zero are errors; `/` truncates); `+` also joins strings and lists |
 | `=`, `<>`, `<`, `>`, `<=`, `>=` | comparison |
 | `AND`, `OR`, `NOT` | boolean logic (three-valued with null) |
+| `x IS NULL`, `x IS NOT NULL` | null tests (always true or false, unlike `x = null`) |
 | `STARTS WITH`, `ENDS WITH`, `CONTAINS` | string predicates |
 | `IN` | list membership, with any list expression on the right (`x IN $allowed`); null-aware |
 | `$name` | a query parameter, passed with the query (see the Python and C ABI guides) |

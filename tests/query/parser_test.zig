@@ -323,7 +323,7 @@ test "every parse failure carries a message" {
     defer ast.deinit();
 
     const cases = [_][]const u8{
-        "MATCH (a) WHERE a.x IS NULL RETURN a", // trailing tokens
+        "RETURN 1 2", // trailing tokens
         "", // no clause
         "MERGE (a) ON DELETE SET a.x = 1", // bad ON
         "RETURN 99999999999999999999", // integer overflow

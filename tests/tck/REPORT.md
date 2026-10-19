@@ -6,18 +6,18 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 634/3202 (19.8%)** · Negative: 551/695 (79.3%)
+**Positive: 660/3202 (20.6%)** · Negative: 551/695 (79.3%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
 | clauses/call | 0/36 (0.0%) | 2/16 (12.5%) | 50 | 0 |
 | clauses/create | 38/63 (60.3%) | 10/15 (66.7%) | 0 | 1 |
 | clauses/delete | 18/36 (50.0%) | 4/5 (80.0%) | 0 | 0 |
-| clauses/match | 46/141 (32.6%) | 241/241 (100.0%) | 5 | 0 |
+| clauses/match | 49/141 (34.8%) | 241/241 (100.0%) | 5 | 0 |
 | clauses/match-where | 19/32 (59.4%) | 1/2 (50.0%) | 0 | 0 |
 | clauses/merge | 25/62 (40.3%) | 8/13 (61.5%) | 0 | 0 |
-| clauses/remove | 15/33 (45.5%) | – | 0 | 0 |
-| clauses/return | 28/52 (53.8%) | 9/11 (81.8%) | 0 | 0 |
+| clauses/remove | 17/33 (51.5%) | – | 0 | 0 |
+| clauses/return | 29/52 (55.8%) | 9/11 (81.8%) | 0 | 0 |
 | clauses/return-orderby | 23/31 (74.2%) | 3/4 (75.0%) | 0 | 0 |
 | clauses/return-skip-limit | 13/15 (86.7%) | 13/16 (81.2%) | 0 | 0 |
 | clauses/set | 13/51 (25.5%) | 0/2 (0.0%) | 0 | 0 |
@@ -37,10 +37,10 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | expressions/literals | 53/106 (50.0%) | 24/25 (96.0%) | 0 | 0 |
 | expressions/map | 2/35 (5.7%) | 5/9 (55.6%) | 0 | 0 |
 | expressions/mathematical | 4/5 (80.0%) | 1/1 (100.0%) | 0 | 0 |
-| expressions/null | 10/44 (22.7%) | – | 0 | 0 |
+| expressions/null | 22/44 (50.0%) | – | 0 | 0 |
 | expressions/path | 0/5 (0.0%) | 2/2 (100.0%) | 0 | 0 |
 | expressions/pattern | 0/31 (0.0%) | 17/19 (89.5%) | 0 | 0 |
-| expressions/precedence | 28/121 (23.1%) | – | 0 | 0 |
+| expressions/precedence | 36/121 (29.8%) | – | 0 | 0 |
 | expressions/quantifier | 0/592 (0.0%) | 12/12 (100.0%) | 0 | 0 |
 | expressions/string | 26/32 (81.2%) | – | 0 | 0 |
 | expressions/temporal | 0/1004 (0.0%) | – | 0 | 0 |
@@ -61,18 +61,18 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 69 | fail: unexpected error: expected ']', found '.' |
 | 61 | fail: unexpected error: unexpected WITH (unsupported syntax or missing clause) |
 | 60 | fail: unexpected error: expected '(', found p |
-| 52 | fail: unexpected error: unexpected IS (unsupported syntax or missing clause) |
 | 50 | unsupported: procedures |
 | 47 | fail: expected SyntaxError, got TypeMismatchError: query failed: TypeMismatch |
+| 43 | fail: unexpected error: unknown variable '…' |
 | 35 | fail: unexpected error: unexpected MATCH (unsupported syntax or missing clause) |
 | 33 | fail: unexpected error: unexpected '[' (unsupported syntax or missing clause) |
 | 27 | fail: expected TypeError, got ParseError: unexpected character '\|' |
 | 26 | fail: rows differ: expected other rows |
-| 25 | fail: unexpected error: unknown variable '…' |
 | 22 | fail: setup query failed: ParseError: expected '}', found '.' |
 | 21 | fail: expected SyntaxError, but the query succeeded |
 | 21 | fail: setup query failed: TypeMismatchError: property '…': lists cannot be stored as property values yet |
 | 20 | fail: unexpected error: unexpected '.' (unsupported syntax or missing clause) |
+| 19 | fail: unexpected error: query failed: TypeMismatch |
 | 19 | fail: unexpected error: expected '.', found ':' |
 | 17 | fail: unexpected error: expected an expression, found '*' |
 | 17 | fail: unexpected error: expected ']', found '*' |
@@ -80,7 +80,6 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 15 | fail: unexpected error: expected an expression, found ':' |
 | 14 | fail: unexpected error: unexpected OPTIONAL (unsupported syntax or missing clause) |
 | 14 | fail: unexpected error: unknown function 'datetime' |
-| 13 | fail: unexpected error: query failed: TypeMismatch |
 | 13 | fail: expected TypeError, got ParseError: unexpected '[' (unsupported syntax or missing clause) |
 | 13 | fail: unexpected error: expected an expression, found '.' |
 | 12 | fail: unexpected error: expected keyword END |
@@ -92,3 +91,4 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 8 | fail: unexpected error: unexpected UNION (unsupported syntax or missing clause) |
 | 8 | fail: unexpected error: unknown function 'localtime' |
 | 8 | fail: unexpected error: unknown function 'localdatetime' |
+| 8 | fail: unexpected error: unknown function 'duration' |
