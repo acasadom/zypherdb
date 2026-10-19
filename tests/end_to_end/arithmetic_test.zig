@@ -76,7 +76,9 @@ test "overflow, division by zero and literal limits are errors" {
     try expectQueryError(&ast, &g, "RETURN -(-9223372036854775808)", error.IntegerOverflow);
     try expectQueryError(&ast, &g, "RETURN 1 / 0", error.DivisionByZero);
     try expectQueryError(&ast, &g, "RETURN 1 % 0", error.DivisionByZero);
-    try expectQueryError(&ast, &g, "RETURN true + 1", error.TypeMismatch);
+    // A literal of the wrong type fails before running; a runtime value at run time.
+    try expectQueryError(&ast, &g, "RETURN true + 1", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "WITH true AS t RETURN t + 1", error.TypeMismatch);
     try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "RETURN 9223372036854775808", null));
     try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "RETURN -9223372036854775809", null));
 }

@@ -14,5 +14,6 @@ test {
     _ = @import("end_to_end/functions_test.zig");
     _ = @import("end_to_end/arithmetic_test.zig");
     _ = @import("end_to_end/maps_test.zig");
+    _ = @import("end_to_end/comprehensions_test.zig");
     _ = @import("c_api_test.zig");
 }

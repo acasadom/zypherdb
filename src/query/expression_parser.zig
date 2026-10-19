@@ -8,6 +8,7 @@ const std = @import("std");
 const Index = @import("ast.zig").Index;
 const BinaryOperator = @import("ast.zig").BinaryOperator;
 const AggregateKind = @import("ast.zig").AggregateKind;
+const QuantifierKind = @import("ast.zig").QuantifierKind;
 const describeToken = @import("lexer.zig").describeToken;
 
 const Parser = @import("parser.zig").Parser;
@@ -175,6 +176,8 @@ fn parseIntegerLiteral(self: *Parser, negative: bool) ParseError!Index {
 
 /// Parses a list literal `[e0, e1, ...]` (the empty list is allowed).
 pub fn parseListLiteral(self: *Parser) ParseError!Index {
+    // `[x IN list ...]` is a comprehension, not a list holding `x IN list`.
+    if (self.peekAhead(1).kind == .identifier and self.atKeywordAhead(2, "IN")) return parseListComprehension(self);
     try self.expect(.left_bracket);
     var items = std.ArrayList(Index).empty;
     defer items.deinit(self.ast.allocator);
@@ -216,6 +219,47 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
 
 fn nullNode(self: *Parser) ParseError!Index {
     return self.ast.addNode(.null_literal, .{ .none = {} }, &.{});
+}
+
+/// `x IN list [WHERE predicate]`: the iteration of a comprehension or a
+/// quantifier. A missing predicate is `true`.
+fn parseIteration(self: *Parser) ParseError!struct { variable_name: []const u8, list: Index, predicate: Index } {
+    const variable_name = try self.internIdentifier();
+    try self.expectKeyword("IN");
+    const list = try parseExpression(self);
+    const predicate = if (self.atKeyword("WHERE")) blk: {
+        _ = self.advance();
+        break :blk try parseExpression(self);
+    } else try self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
+    return .{ .variable_name = variable_name, .list = list, .predicate = predicate };
+}
+
+/// `[x IN list WHERE predicate | projection]`; the WHERE and the projection
+/// are optional (no projection keeps the elements themselves).
+fn parseListComprehension(self: *Parser) ParseError!Index {
+    try self.expect(.left_bracket);
+    const iteration = try parseIteration(self);
+    const projection = if (self.at(.pipe)) blk: {
+        _ = self.advance();
+        break :blk try parseExpression(self);
+    } else try self.ast.addNode(.variable, .{ .text = iteration.variable_name }, &.{});
+    try self.expect(.right_bracket);
+    return self.ast.addNode(.list_comprehension, .{ .text = iteration.variable_name }, &.{ iteration.list, iteration.predicate, projection });
+}
+
+fn quantifierFromName(name: []const u8) ?QuantifierKind {
+    for ([_]QuantifierKind{ .any, .all, .none, .single }) |kind| {
+        if (std.ascii.eqlIgnoreCase(@tagName(kind), name)) return kind;
+    }
+    return null;
+}
+
+/// `any(...)`, `all(...)`, `none(...)` or `single(x IN list WHERE predicate)`.
+fn parseQuantifier(self: *Parser, kind: QuantifierKind) ParseError!Index {
+    try self.expect(.left_paren);
+    const iteration = try parseIteration(self);
+    try self.expect(.right_paren);
+    return self.ast.addNode(.quantifier, .{ .quantifier = .{ .kind = kind, .variable_name = iteration.variable_name } }, &.{ iteration.list, iteration.predicate });
 }
 
 /// A map literal `{key: value, ...}` (the empty map is allowed).
@@ -262,7 +306,13 @@ fn parseAtom(self: *Parser) ParseError!Index {
                     return parseAggregateCall(self, kind);
                 }
             }
-            if (self.at(.left_paren)) return parseFunctionCall(self, t.text);
+            if (self.at(.left_paren)) {
+                // `any(x IN ...)` etc. are quantifiers; anything else is a call.
+                if (quantifierFromName(t.text)) |kind| {
+                    if (self.peekAhead(1).kind == .identifier and self.atKeywordAhead(2, "IN")) return parseQuantifier(self, kind);
+                }
+                return parseFunctionCall(self, t.text);
+            }
             return parseVariableRef(self, t.text);
         },
         .left_bracket => return parseListLiteral(self),

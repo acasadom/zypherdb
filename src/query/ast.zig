@@ -123,6 +123,8 @@ pub const NodeKind = enum {
     map_literal, // `{key: value, ...}`; children are `property` nodes
     subscript, // `value[index]`: children [value, index]
     slice, // `list[from..to]`: children [list, from, to] (null_literal for an open end)
+    list_comprehension, // `[x IN list WHERE predicate | projection]`: data.text is x; children [list, predicate, projection]
+    quantifier, // `any(x IN list WHERE predicate)`: data.quantifier; children [list, predicate]
     function_call, // `name(args...)`; data.text is the name as written, children the arguments
     case_expression,
     binary_operation,
@@ -169,7 +171,10 @@ pub const Data = union(enum) {
     unwind: struct { variable_name: []const u8 },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
+    quantifier: struct { kind: QuantifierKind, variable_name: []const u8 },
 };
+
+pub const QuantifierKind = enum { any, all, none, single };
 
 pub const Node = struct {
     kind: NodeKind,

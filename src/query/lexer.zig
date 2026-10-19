@@ -35,6 +35,7 @@ pub const TokenKind = enum {
     plus,
     slash,
     percent,
+    pipe, // `|`
     arrow_right,
     arrow_left,
     equal,
@@ -77,6 +78,7 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
         .plus => "'+'",
         .slash => "'/'",
         .percent => "'%'",
+        .pipe => "'|'",
         .arrow_right => "'->'",
         .arrow_left => "'<-'",
         .equal => "'='",
@@ -125,6 +127,10 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
             },
             '%' => {
                 try add(&tokens, allocator, .percent, src[i .. i + 1], i);
+                i += 1;
+            },
+            '|' => {
+                try add(&tokens, allocator, .pipe, src[i .. i + 1], i);
                 i += 1;
             },
             '/' => {

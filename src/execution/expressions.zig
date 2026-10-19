@@ -108,6 +108,8 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             const object = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
             break :blk try propertyOf(self, object, self.ast.data(expr).text);
         },
+        .list_comprehension => listComprehension(self, expr, bindings),
+        .quantifier => quantifier(self, expr, bindings),
         .map_literal => blk: {
             const property_nodes = self.ast.nodeChildren(expr);
             const entries = try self.allocator.alloc(MapEntry, property_nodes.len);
@@ -138,6 +140,68 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         },
         else => error.InvalidExpression,
     };
+}
+
+/// The list a comprehension or quantifier iterates: null stays null.
+fn iterationList(self: *Executor, list_expression: Index, bindings: *Bindings) ExecutionError!?[]const Value {
+    return switch (try evaluate(self, list_expression, bindings)) {
+        .list => |items| items,
+        .null => null,
+        else => typeMismatch(self, "IN of a comprehension or quantifier needs a list"),
+    };
+}
+
+/// A scope for the iteration variable: a copy of the bindings, so the
+/// variable may shadow an outer one without touching it.
+fn iterationScope(self: *Executor, bindings: *const Bindings) ExecutionError!Bindings {
+    var scope = Bindings{ .entries = .empty };
+    try scope.entries.appendSlice(self.allocator, bindings.entries.items);
+    return scope;
+}
+
+/// `[x IN list WHERE predicate | projection]`.
+fn listComprehension(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
+    const children = self.ast.nodeChildren(expr);
+    const items = try iterationList(self, children[0], bindings) orelse return .{ .null = {} };
+    const variable_name = self.ast.data(expr).text;
+    var scope = try iterationScope(self, bindings);
+    var output = std.ArrayList(Value).empty;
+    for (items) |item| {
+        try scope.put(self.allocator, variable_name, item);
+        if (!try evaluateBool(self, children[1], &scope)) continue;
+        try output.append(self.allocator, try evaluate(self, children[2], &scope));
+    }
+    return .{ .list = output.items };
+}
+
+/// `any` / `all` / `none` / `single(x IN list WHERE predicate)`, with
+/// three-valued logic: a null predicate result makes the answer null unless
+/// the other elements already decide it.
+fn quantifier(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
+    const children = self.ast.nodeChildren(expr);
+    const items = try iterationList(self, children[0], bindings) orelse return .{ .null = {} };
+    const data = self.ast.data(expr).quantifier;
+    var scope = try iterationScope(self, bindings);
+    var trues: usize = 0;
+    var nulls: usize = 0;
+    for (items) |item| {
+        try scope.put(self.allocator, data.variable_name, item);
+        switch (try evaluate(self, children[1], &scope)) {
+            .boolean => |b| if (b) {
+                trues += 1;
+            },
+            .null => nulls += 1,
+            else => return typeMismatch(self, "a quantifier's WHERE must be a boolean"),
+        }
+    }
+    const falses = items.len - trues - nulls;
+    const answer: ?bool = switch (data.kind) {
+        .any => if (trues > 0) true else if (nulls > 0) null else false,
+        .all => if (falses > 0) false else if (nulls > 0) null else true,
+        .none => if (trues > 0) false else if (nulls > 0) null else true,
+        .single => if (trues > 1) false else if (nulls > 0) null else trues == 1,
+    };
+    return if (answer) |b| .{ .boolean = b } else .{ .null = {} };
 }
 
 /// `object.key`: a node's or relationship's property, or a map's entry; null

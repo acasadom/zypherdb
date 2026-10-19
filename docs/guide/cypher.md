@@ -62,6 +62,8 @@ property or entry reads as `null`.
 | `IN` | list membership, with any list expression on the right (`x IN $allowed`); null-aware |
 | `$name` | a query parameter, passed with the query (see the Python and C ABI guides) |
 | `CASE WHEN cond THEN v … [ELSE v] END` | conditional expression (no `ELSE` → `null`) |
+| `[x IN list WHERE pred \| expr]` | list comprehension (the `WHERE` and the `\| expr` are optional) |
+| `any` / `all` / `none` / `single(x IN list WHERE pred)` | quantifiers, three-valued with null |
 | `name(arguments…)` | a function call (below); names are case-insensitive |
 
 ## Functions

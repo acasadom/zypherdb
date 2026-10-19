@@ -52,6 +52,18 @@ pub const Parser = struct {
         return self.tokens[self.pos];
     }
 
+    /// The token `offset` places after the next one (the last token, the end
+    /// of input, when past it).
+    pub fn peekAhead(self: *const Parser, offset: usize) Token {
+        return self.tokens[@min(self.pos + offset, self.tokens.len - 1)];
+    }
+
+    /// True if the token `offset` places ahead is the (unquoted) keyword.
+    pub fn atKeywordAhead(self: *const Parser, offset: usize, keyword: []const u8) bool {
+        const t = self.peekAhead(offset);
+        return t.kind == .identifier and !t.quoted and std.ascii.eqlIgnoreCase(t.text, keyword);
+    }
+
     pub fn at(self: *const Parser, kind: TokenKind) bool {
         return self.peek().kind == kind;
     }

@@ -7,7 +7,11 @@
 //! - a name is a node, a relationship or a value, never two of them
 //!   (VariableTypeConflict), e.g. `(r)-[r]-()`, or `WITH 1 AS r MATCH ()-[r]-()`;
 //! - a literal operand has a type its operator or function accepts: `1 IN true`,
-//!   `123 AND true`, `NOT {}`, `properties(1)` fail (InvalidArgumentType).
+//!   `123 AND true`, `NOT {}`, `properties(1)` fail (InvalidArgumentType). The
+//!   variable of a comprehension or quantifier over a literal list whose
+//!   elements share a type has that type: `any(x IN ['a'] WHERE x % 2 = 0)`
+//!   fails;
+//! - no aggregate inside a comprehension or quantifier.
 //!
 //! The checks do not depend on the data, so they fail on an empty graph too.
 
@@ -17,6 +21,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("ast.zig").Ast;
 const Index = @import("ast.zig").Index;
 const NodeKind = @import("ast.zig").NodeKind;
+const BinaryOperator = @import("ast.zig").BinaryOperator;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 
 pub const SemanticError = Allocator.Error || error{InvalidExpression};
@@ -31,11 +36,18 @@ const Scope = struct {
     }
 };
 
+/// What is known statically about an expression's type.
+const StaticType = enum { number, string, boolean, list, map };
+
 const Checker = struct {
     ast: *const Ast,
     allocator: Allocator,
     diagnostic: ?*Diagnostic,
     scope: Scope = .{},
+    /// Comprehension and quantifier variables in scope with a known type.
+    local_types: std.ArrayList(struct { name: []const u8, type: StaticType }) = .empty,
+    /// Nesting depth of comprehensions and quantifiers being checked.
+    iteration_depth: usize = 0,
 
     fn fail(self: *Checker, comptime fmt: []const u8, args: anytype) SemanticError {
         if (self.diagnostic) |d| d.set(.invalid_expression, 0, fmt, args);
@@ -102,7 +114,12 @@ const Checker = struct {
     fn checkExpressions(self: *Checker, index: Index) SemanticError!void {
         const children = self.ast.nodeChildren(index);
         switch (self.ast.kind(index)) {
+            .list_comprehension, .quantifier => return self.checkIteration(index),
+            .aggregate => if (self.iteration_depth > 0) {
+                return self.fail("an aggregate cannot be used inside a list comprehension or quantifier", .{});
+            },
             .binary_operation => switch (self.ast.data(index).binary_operator) {
+                .add, .subtract, .multiply, .divide, .modulo => |operator| try self.checkArithmetic(operator, children),
                 .in_ => if (isLiteralOf(self.ast, children[1], &.{ .integer_literal, .string_literal, .boolean_literal, .map_literal })) {
                     return self.fail("the right side of IN must be a list", .{});
                 },
@@ -125,6 +142,73 @@ const Checker = struct {
             else => {},
         }
         for (self.ast.nodeChildren(index)) |child| try self.checkExpressions(child);
+    }
+
+    /// A comprehension or quantifier: its list in the enclosing scope, the
+    /// rest with its variable typed when the list is a literal of one type.
+    fn checkIteration(self: *Checker, index: Index) SemanticError!void {
+        const children = self.ast.nodeChildren(index);
+        try self.checkExpressions(children[0]);
+        const variable_name = if (self.ast.kind(index) == .quantifier) self.ast.data(index).quantifier.variable_name else self.ast.data(index).text;
+        const element_type = self.literalElementType(children[0]);
+        if (element_type) |t| try self.local_types.append(self.allocator, .{ .name = variable_name, .type = t });
+        defer if (element_type != null) {
+            _ = self.local_types.pop();
+        };
+        self.iteration_depth += 1;
+        defer self.iteration_depth -= 1;
+        for (children[1..]) |child| try self.checkExpressions(child);
+    }
+
+    /// The common type of a list literal's elements, if they all have one.
+    fn literalElementType(self: *Checker, list: Index) ?StaticType {
+        if (self.ast.kind(list) != .list_literal) return null;
+        const elements = self.ast.nodeChildren(list);
+        if (elements.len == 0) return null;
+        const first = self.staticType(elements[0]) orelse return null;
+        for (elements[1..]) |element| {
+            if (self.staticType(element) != first) return null;
+        }
+        return first;
+    }
+
+    /// The type of a literal, or of a typed comprehension variable.
+    fn staticType(self: *Checker, index: Index) ?StaticType {
+        return switch (self.ast.kind(index)) {
+            .integer_literal => .number,
+            .string_literal => .string,
+            .boolean_literal => .boolean,
+            .list_literal => .list,
+            .map_literal => .map,
+            .variable => {
+                const name = self.ast.data(index).text;
+                var i = self.local_types.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (std.mem.eql(u8, self.local_types.items[i].name, name)) return self.local_types.items[i].type;
+                }
+                return null;
+            },
+            else => null,
+        };
+    }
+
+    /// Arithmetic on numbers only, except `+`, which also joins strings and
+    /// lists (and a string with a number).
+    fn checkArithmetic(self: *Checker, operator: BinaryOperator, operands: []const Index) SemanticError!void {
+        // `list + anything` adds an element.
+        if (operator == .add) for (operands) |operand| {
+            if (self.staticType(operand) == .list) return;
+        };
+        for (operands) |operand| {
+            const t = self.staticType(operand) orelse continue;
+            const accepted = switch (t) {
+                .number => true,
+                .string, .list => operator == .add,
+                .boolean, .map => false,
+            };
+            if (!accepted) return self.fail("{s} cannot be applied to a {s}", .{ @tagName(operator), @tagName(t) });
+        }
     }
 
     /// Literals that can never be booleans (null can: it is unknown).
@@ -189,5 +273,6 @@ const Checker = struct {
 pub fn check(ast: *const Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagnostic) SemanticError!void {
     var checker = Checker{ .ast = ast, .allocator = allocator, .diagnostic = diagnostic };
     defer checker.scope.names.deinit(allocator);
+    defer checker.local_types.deinit(allocator);
     try checker.checkQuery(query);
 }

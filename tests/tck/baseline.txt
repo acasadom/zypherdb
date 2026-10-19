@@ -447,6 +447,7 @@ clauses/merge/Merge5.feature: [28] Fail when using variable length relationship 
 clauses/merge/Merge5.feature: [29] Fail on merging relationship with null property
 clauses/merge/Merge5.feature: [4] Using bound variables from other updating clause
 clauses/merge/Merge5.feature: [9] Creating relationship using merged nodes
+clauses/merge/Merge6.feature: [4] Null-setting one property with ON CREATE
 clauses/merge/Merge9.feature: [1] UNWIND with one MERGE
 clauses/merge/Merge9.feature: [2] UNWIND with multiple MERGE
 clauses/merge/Merge9.feature: [3] Mixing MERGE with CREATE
@@ -651,6 +652,7 @@ clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only 
 clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only partially orderable on a non-distinct binding table #2
 clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct #1
 clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct #2
+clauses/with-orderBy/WithOrderBy1.feature: [45] Sort order should be consistent with comparisons where comparisons are defined #Example: <exampleName> #2
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #1
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #10
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #2
@@ -1106,6 +1108,7 @@ expressions/list/List11.feature: [2] Create list from `range()` with explicitly 
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #7
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #8
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #9
+expressions/list/List11.feature: [3] Create an empty list if range direction and step direction are inconsistent
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #1
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #2
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #3
@@ -1132,6 +1135,10 @@ expressions/list/List11.feature: [5] Fail on invalid argument types for `range()
 expressions/list/List11.feature: [5] Fail on invalid argument types for `range()` #7
 expressions/list/List11.feature: [5] Fail on invalid argument types for `range()` #8
 expressions/list/List11.feature: [5] Fail on invalid argument types for `range()` #9
+expressions/list/List12.feature: [1] Collect and extract using a list comprehension
+expressions/list/List12.feature: [2] Collect and filter using a list comprehension
+expressions/list/List12.feature: [3] Size of list comprehension
+expressions/list/List12.feature: [6] Using a list comprehension in a WHERE
 expressions/list/List12.feature: [7] Fail when using aggregation in list comprehension
 expressions/list/List2.feature: [10] List slice with parameterised range
 expressions/list/List2.feature: [11] List slice with parameterised invalid range
@@ -1411,6 +1418,8 @@ expressions/pattern/Pattern1.feature: [24] Fail on using pattern in right-hand s
 expressions/precedence/Precedence1.feature: [10] Null predicate takes precedence over boolean operator
 expressions/precedence/Precedence1.feature: [12] List predicate takes precedence over negation
 expressions/precedence/Precedence1.feature: [13] List predicate takes precedence over boolean operator
+expressions/precedence/Precedence1.feature: [24] Null predicates take precedence over boolean negation on every truth values #1
+expressions/precedence/Precedence1.feature: [24] Null predicates take precedence over boolean negation on every truth values #2
 expressions/precedence/Precedence1.feature: [3] Conjunction disjunction takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [4] Negation takes precedence over conjunction
 expressions/precedence/Precedence1.feature: [5] Negation takes precedence over inclusive disjunction
@@ -1447,18 +1456,477 @@ expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence 
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #3
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #4
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #5
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #1
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #2
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #3
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #4
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #5
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #6
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #7
+expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #8
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #1
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #10
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #11
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #12
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #2
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #3
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #4
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #5
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #6
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #7
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #8
+expressions/quantifier/Quantifier1.feature: [11] None quantifier with IS NULL predicate #9
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #1
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #10
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #11
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #12
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #2
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #3
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #4
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #5
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #6
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #7
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #8
+expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #9
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #3
+expressions/quantifier/Quantifier1.feature: [1] None quantifier is always true on empty list
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #1
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #2
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #3
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #4
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #5
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #6
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #7
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #8
+expressions/quantifier/Quantifier1.feature: [2] None quantifier on list literal containing booleans #9
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #1
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #10
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #11
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #12
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #13
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #14
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #15
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #16
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #17
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #2
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #3
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #4
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #5
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #6
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #7
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #8
+expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #1
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #2
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #3
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #4
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #5
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #6
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #7
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #8
+expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #9
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #1
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #2
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #3
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #4
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #5
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #6
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #7
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #8
+expressions/quantifier/Quantifier1.feature: [6] None quantifier on list literal containing lists #9
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #1
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #2
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #3
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #4
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #5
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #6
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #7
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #8
+expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #1
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #2
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #3
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #4
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #5
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #6
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #7
+expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #8
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #1
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #10
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #11
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #12
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #2
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #3
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #4
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #5
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #6
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #7
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #8
+expressions/quantifier/Quantifier2.feature: [11] Single quantifier with IS NULL predicate #9
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #1
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #10
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #11
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #12
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #2
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #3
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #4
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #5
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #6
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #7
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #8
+expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #9
+expressions/quantifier/Quantifier2.feature: [15] Single quantifier is true if the predicate is statically true and the list has exactly one non-null element
 expressions/quantifier/Quantifier2.feature: [16] Fail single quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier2.feature: [16] Fail single quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier2.feature: [16] Fail single quantifier on type mismatch between list elements and predicate #3
+expressions/quantifier/Quantifier2.feature: [1] Single quantifier is always false on empty list
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #1
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #2
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #3
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #4
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #5
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #6
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #7
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #8
+expressions/quantifier/Quantifier2.feature: [2] Single quantifier on list literal #9
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #1
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #10
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #11
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #12
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #13
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #14
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #15
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #16
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #17
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #2
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #3
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #4
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #5
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #6
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #7
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #8
+expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #1
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #2
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #3
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #4
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #5
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #6
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #7
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #8
+expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #9
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #1
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #2
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #3
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #4
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #5
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #6
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #7
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #8
+expressions/quantifier/Quantifier2.feature: [6] Single quantifier on list literal containing lists #9
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #1
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #2
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #3
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #4
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #5
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #6
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #7
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #8
+expressions/quantifier/Quantifier2.feature: [7] Single quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #1
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #2
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #3
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #4
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #5
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #6
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #7
+expressions/quantifier/Quantifier3.feature: [10] Any quantifier on lists containing nulls #8
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #1
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #10
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #11
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #12
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #2
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #3
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #4
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #5
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #6
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #7
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #8
+expressions/quantifier/Quantifier3.feature: [11] Any quantifier with IS NULL predicate #9
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #1
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #10
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #11
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #12
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #2
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #3
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #4
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #5
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #6
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #7
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #8
+expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #9
 expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mismatch between list elements and predicate #3
+expressions/quantifier/Quantifier3.feature: [1] Any quantifier is always false on empty list
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #1
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #2
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #3
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #4
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #5
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #6
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #7
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #8
+expressions/quantifier/Quantifier3.feature: [2] Any quantifier on list literal #9
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #1
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #10
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #11
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #12
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #13
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #14
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #15
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #16
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #17
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #2
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #3
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #4
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #5
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #6
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #7
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #8
+expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #1
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #2
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #3
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #4
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #5
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #6
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #7
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #8
+expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #9
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #1
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #2
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #3
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #4
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #5
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #6
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #7
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #8
+expressions/quantifier/Quantifier3.feature: [6] Any quantifier on list literal containing lists #9
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #1
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #2
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #3
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #4
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #5
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #6
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #7
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #8
+expressions/quantifier/Quantifier3.feature: [7] Any quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #1
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #2
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #3
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #4
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #5
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #6
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #7
+expressions/quantifier/Quantifier4.feature: [10] All quantifier on lists containing nulls #8
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #1
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #10
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #11
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #12
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #2
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #3
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #4
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #5
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #6
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #7
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #8
+expressions/quantifier/Quantifier4.feature: [11] All quantifier with IS NULL predicate #9
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #1
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #10
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #11
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #12
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #2
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #3
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #4
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #5
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #6
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #7
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #8
+expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #9
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #3
+expressions/quantifier/Quantifier4.feature: [1] All quantifier is always true on empty list
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #1
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #2
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #3
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #4
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #5
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #6
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #7
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #8
+expressions/quantifier/Quantifier4.feature: [2] All quantifier on list literal #9
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #1
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #10
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #11
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #12
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #13
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #14
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #15
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #16
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #17
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #2
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #3
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #4
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #5
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #6
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #7
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #8
+expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #1
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #2
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #3
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #4
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #5
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #6
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #7
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #8
+expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #9
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #1
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #2
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #3
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #4
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #5
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #6
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #7
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #8
+expressions/quantifier/Quantifier4.feature: [6] All quantifier on list literal containing lists #9
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #1
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #2
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #3
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #4
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #5
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #6
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #7
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #8
+expressions/quantifier/Quantifier4.feature: [7] All quantifier on list literal containing maps #9
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #1
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #2
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #3
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #4
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #5
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #6
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #7
+expressions/quantifier/Quantifier5.feature: [1] None quantifier can nest itself and other quantifiers on nested lists #8
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #1
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #2
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #3
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #4
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #5
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #6
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #7
+expressions/quantifier/Quantifier5.feature: [2] None quantifier can nest itself and other quantifiers on the same list #8
+expressions/quantifier/Quantifier5.feature: [3] None quantifier is equal the boolean negative of the any quantifier #1
+expressions/quantifier/Quantifier5.feature: [3] None quantifier is equal the boolean negative of the any quantifier #2
+expressions/quantifier/Quantifier5.feature: [3] None quantifier is equal the boolean negative of the any quantifier #3
+expressions/quantifier/Quantifier5.feature: [3] None quantifier is equal the boolean negative of the any quantifier #4
+expressions/quantifier/Quantifier5.feature: [3] None quantifier is equal the boolean negative of the any quantifier #5
+expressions/quantifier/Quantifier5.feature: [4] None quantifier is equal the all quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier5.feature: [4] None quantifier is equal the all quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier5.feature: [4] None quantifier is equal the all quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier5.feature: [4] None quantifier is equal the all quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier5.feature: [4] None quantifier is equal the all quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier5.feature: [5] None quantifier is equal whether the size of the list filtered with same the predicate is zero #1
+expressions/quantifier/Quantifier5.feature: [5] None quantifier is equal whether the size of the list filtered with same the predicate is zero #2
+expressions/quantifier/Quantifier5.feature: [5] None quantifier is equal whether the size of the list filtered with same the predicate is zero #3
+expressions/quantifier/Quantifier5.feature: [5] None quantifier is equal whether the size of the list filtered with same the predicate is zero #4
+expressions/quantifier/Quantifier5.feature: [5] None quantifier is equal whether the size of the list filtered with same the predicate is zero #5
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #1
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #2
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #3
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #4
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #5
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #6
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #7
+expressions/quantifier/Quantifier6.feature: [1] Single quantifier can nest itself and other quantifiers on nested lists #8
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #1
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #2
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #3
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #4
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #5
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #6
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #7
+expressions/quantifier/Quantifier6.feature: [2] Single quantifier can nest itself and other quantifiers on the same list #8
+expressions/quantifier/Quantifier6.feature: [3] Single quantifier is equal whether the size of the list filtered with same the predicate is one #1
+expressions/quantifier/Quantifier6.feature: [3] Single quantifier is equal whether the size of the list filtered with same the predicate is one #2
+expressions/quantifier/Quantifier6.feature: [3] Single quantifier is equal whether the size of the list filtered with same the predicate is one #3
+expressions/quantifier/Quantifier6.feature: [3] Single quantifier is equal whether the size of the list filtered with same the predicate is one #4
+expressions/quantifier/Quantifier6.feature: [3] Single quantifier is equal whether the size of the list filtered with same the predicate is one #5
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #1
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #2
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #3
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #4
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #5
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #6
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #7
+expressions/quantifier/Quantifier7.feature: [1] Any quantifier can nest itself and other quantifiers on nested lists #8
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #1
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #2
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #3
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #4
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #5
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #6
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #7
+expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #8
+expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #1
+expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #2
+expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #3
+expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #4
+expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #5
+expressions/quantifier/Quantifier7.feature: [5] Any quantifier is equal the boolean negative of the all quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier7.feature: [5] Any quantifier is equal the boolean negative of the all quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier7.feature: [5] Any quantifier is equal the boolean negative of the all quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier7.feature: [5] Any quantifier is equal the boolean negative of the all quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier7.feature: [5] Any quantifier is equal the boolean negative of the all quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier7.feature: [6] Any quantifier is equal whether the size of the list filtered with same the predicate is grater zero #1
+expressions/quantifier/Quantifier7.feature: [6] Any quantifier is equal whether the size of the list filtered with same the predicate is grater zero #2
+expressions/quantifier/Quantifier7.feature: [6] Any quantifier is equal whether the size of the list filtered with same the predicate is grater zero #3
+expressions/quantifier/Quantifier7.feature: [6] Any quantifier is equal whether the size of the list filtered with same the predicate is grater zero #4
+expressions/quantifier/Quantifier7.feature: [6] Any quantifier is equal whether the size of the list filtered with same the predicate is grater zero #5
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #1
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #2
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #3
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #4
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #5
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #6
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #7
+expressions/quantifier/Quantifier8.feature: [1] All quantifier can nest itself and other quantifiers on nested lists #8
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #1
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #2
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #3
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #4
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #5
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #6
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #7
+expressions/quantifier/Quantifier8.feature: [2] All quantifier can nest itself and other quantifiers on the same list #8
+expressions/quantifier/Quantifier8.feature: [3] All quantifier is equal the none quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier8.feature: [3] All quantifier is equal the none quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier8.feature: [3] All quantifier is equal the none quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier8.feature: [3] All quantifier is equal the none quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier8.feature: [3] All quantifier is equal the none quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier8.feature: [4] All quantifier is equal the boolean negative of the any quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier8.feature: [4] All quantifier is equal the boolean negative of the any quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier8.feature: [4] All quantifier is equal the boolean negative of the any quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier8.feature: [4] All quantifier is equal the boolean negative of the any quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier8.feature: [4] All quantifier is equal the boolean negative of the any quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #1
+expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #2
+expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #3
+expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #4
+expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #5
 expressions/string/String1.feature: [1] `substring()` with default second argument
 expressions/string/String10.feature: [1] Finding exact matches with non-proper substring
 expressions/string/String10.feature: [2] Finding substring of string
@@ -1495,6 +1963,7 @@ expressions/typeConversion/TypeConversion4.feature: [1] `toString()` handling in
 expressions/typeConversion/TypeConversion4.feature: [2] `toString()` handling boolean literal
 expressions/typeConversion/TypeConversion4.feature: [3] `toString()` handling inlined boolean
 expressions/typeConversion/TypeConversion4.feature: [4] `toString()` handling boolean properties
+expressions/typeConversion/TypeConversion4.feature: [6] `toString()` on a list of integers
 expressions/typeConversion/TypeConversion4.feature: [8] `toString()` should accept potentially correct types 1
 expressions/typeConversion/TypeConversion4.feature: [9] `toString()` should accept potentially correct types 2
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [10] Mixing directed and undirected pattern parts with self-relationship, count

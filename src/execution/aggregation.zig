@@ -77,6 +77,19 @@ fn checkAggregating(self: *Executor, expr: Index, keys: []const Index, aliases: 
         },
         else => {},
     }
+    // A comprehension's or quantifier's variable is local to it.
+    const local: ?[]const u8 = switch (self.ast.kind(expr)) {
+        .list_comprehension => self.ast.data(expr).text,
+        .quantifier => self.ast.data(expr).quantifier.variable_name,
+        else => null,
+    };
+    if (local) |name| {
+        const children = self.ast.nodeChildren(expr);
+        try checkAggregating(self, children[0], keys, aliases);
+        const with_local = try std.mem.concat(self.allocator, []const u8, &.{ aliases, &.{name} });
+        for (children[1..]) |child| try checkAggregating(self, child, keys, with_local);
+        return;
+    }
     if (self.ast.kind(expr) == .variable) {
         const name = self.ast.data(expr).text;
         for (aliases) |alias| {
