@@ -14,16 +14,18 @@ const Bindings = @import("bindings.zig").Bindings;
 
 pub fn applyCreate(self: *Executor, pattern: Index, bindings: *Bindings) ExecError!void {
     const chain = self.ast.nodeChildren(pattern);
-    const num_nodes = (chain.len + 1) / 2;
-
-    for (0..num_nodes) |i| {
+    const node_ids = try self.allocator.alloc(NodeId, (chain.len + 1) / 2);
+    for (node_ids, 0..) |*id, i| {
         const np_idx = chain[i * 2];
-        const np = self.ast.data(np_idx).node_pattern;
-        if (np.var_name.len == 0 or bindings.getNode(np.var_name) != null) continue;
-        const id = try createNode(self, np_idx, bindings);
-        try bindings.put(self.allocator, np.var_name, .{ .node = id });
+        const var_name = self.ast.data(np_idx).node_pattern.var_name;
+        if (boundNode(bindings, var_name)) |bound| {
+            id.* = bound;
+            continue;
+        }
+        id.* = try createNode(self, np_idx, bindings);
+        if (var_name.len > 0) try bindings.put(self.allocator, var_name, .{ .node = id.* });
     }
-    try applyEdges(self, chain, num_nodes, bindings, false);
+    try applyEdges(self, chain, node_ids, bindings, false);
 }
 
 pub fn applyMerge(self: *Executor, mc: Index, bindings: *Bindings) ExecError!void {
@@ -32,22 +34,25 @@ pub fn applyMerge(self: *Executor, mc: Index, bindings: *Bindings) ExecError!voi
     const on_create = kids[1];
     const on_match = kids[2];
     const chain = self.ast.nodeChildren(pattern);
-    const num_nodes = (chain.len + 1) / 2;
+    const node_ids = try self.allocator.alloc(NodeId, (chain.len + 1) / 2);
 
     var created = false;
-    for (0..num_nodes) |i| {
+    for (node_ids, 0..) |*id, i| {
         const np_idx = chain[i * 2];
-        const np = self.ast.data(np_idx).node_pattern;
-        if (np.var_name.len == 0 or bindings.getNode(np.var_name) != null) continue;
-        if (try findMatchingNode(self, np_idx, bindings)) |id| {
-            try bindings.put(self.allocator, np.var_name, .{ .node = id });
+        const var_name = self.ast.data(np_idx).node_pattern.var_name;
+        if (boundNode(bindings, var_name)) |bound| {
+            id.* = bound;
+            continue;
+        }
+        if (try findMatchingNode(self, np_idx, bindings)) |found| {
+            id.* = found;
         } else {
-            const id = try createNode(self, np_idx, bindings);
-            try bindings.put(self.allocator, np.var_name, .{ .node = id });
+            id.* = try createNode(self, np_idx, bindings);
             created = true;
         }
+        if (var_name.len > 0) try bindings.put(self.allocator, var_name, .{ .node = id.* });
     }
-    try applyEdges(self, chain, num_nodes, bindings, true);
+    try applyEdges(self, chain, node_ids, bindings, true);
 
     // ON CREATE / ON MATCH SET (an empty set clause is a no-op).
     if (created) {
@@ -55,6 +60,13 @@ pub fn applyMerge(self: *Executor, mc: Index, bindings: *Bindings) ExecError!voi
     } else {
         try applySet(self, on_match, bindings);
     }
+}
+
+/// The node already bound to `var_name`, if any; an anonymous node (empty
+/// name) is never bound.
+fn boundNode(bindings: *const Bindings, var_name: []const u8) ?NodeId {
+    if (var_name.len == 0) return null;
+    return bindings.getNode(var_name);
 }
 
 /// Creates a node from a `node_pattern` and returns its fresh id.
@@ -108,14 +120,13 @@ pub fn nodePropsMatch(self: *Executor, np_idx: Index, id: NodeId, bindings: *Bin
     return true;
 }
 
-pub fn applyEdges(self: *Executor, chain: []const Index, num_nodes: usize, bindings: *Bindings, merge: bool) ExecError!void {
-    for (0..num_nodes - 1) |i| {
+/// Writes the edges of a CREATE/MERGE chain between the already resolved
+/// `node_ids` (one per node position, so anonymous nodes work too). With
+/// `merge`, an existing edge is kept instead of duplicated.
+pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeId, bindings: *Bindings, merge: bool) ExecError!void {
+    for (node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |left_id, right_id, i| {
         const ep_idx = chain[i * 2 + 1];
         const ep = self.ast.data(ep_idx).edge_pattern;
-        const left_name = self.ast.data(chain[i * 2]).node_pattern.var_name;
-        const right_name = self.ast.data(chain[i * 2 + 2]).node_pattern.var_name;
-        const left_id = bindings.getNode(left_name) orelse return error.UnknownVar;
-        const right_id = bindings.getNode(right_name) orelse return error.UnknownVar;
         const src: NodeId = if (ep.direction == .left_to_right) left_id else right_id;
         const dst: NodeId = if (ep.direction == .left_to_right) right_id else left_id;
         if (merge and (try self.graph.hasEdge(src, dst, ep.etype))) continue;

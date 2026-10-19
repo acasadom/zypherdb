@@ -215,3 +215,35 @@ test "multi-label, REMOVE, CASE and MERGE ON CREATE/MATCH" {
         &.{.{ .int = 1 }},
     });
 }
+
+test "CREATE and MERGE write anonymous nodes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // A node without a variable is still created.
+    try expectQuery(&ast, &g, "CREATE (:Door {name: 'D1'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (d:Door) RETURN d.name", &.{
+        &.{.{ .str = "D1" }},
+    });
+
+    // Anonymous endpoints of a chain get their edges.
+    try expectQuery(&ast, &g, "CREATE (:Zone {name: 'Z1'})-[:HAS]->(:Door {name: 'D2'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (z:Zone)-[:HAS]->(d:Door) RETURN z.name, d.name", &.{
+        &.{ .{ .str = "Z1" }, .{ .str = "D2" } },
+    });
+
+    // An anonymous MERGE matches the existing node instead of duplicating it.
+    try expectQuery(&ast, &g, "MERGE (:Door {name: 'D1'})", &.{});
+    try expectQuery(&ast, &g, "MERGE (:Door {name: 'D3'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (d:Door) RETURN count(*)", &.{
+        &.{.{ .int = 3 }},
+    });
+}
