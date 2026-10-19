@@ -1683,29 +1683,40 @@ fn aggResult(kind: AggKind, state: AggState) Value {
     };
 }
 
-fn compareValue(a: Value, b: Value) std.math.Order {
-    // Nulls sort after every non-null value (ascending order).
-    if (isNull(a)) return if (isNull(b)) .eq else .gt;
-    if (isNull(b)) return .lt;
-    return switch (a) {
-        .null => unreachable,
-        .list => switch (b) {
-            .list => if (listEq(a.list, b.list)) .eq else .gt,
-            else => .gt,
-        },
-        .int => |av| switch (b) {
-            .int => |bv| std.math.order(av, bv),
-            else => .lt,
-        },
-        .str => |av| switch (b) {
-            .str => |bv| std.mem.order(u8, av, bv),
-            else => .gt,
-        },
-        .boolean => |av| switch (b) {
-            .boolean => |bv| std.math.order(@intFromBool(av), @intFromBool(bv)),
-            else => .lt,
-        },
+/// Position of a value's type in the openCypher global sort order (ascending):
+/// list < string < boolean < number < null.
+fn typeRank(v: Value) u8 {
+    return switch (v) {
+        .list => 0,
+        .str => 1,
+        .boolean => 2,
+        .int => 3,
+        .null => 4,
     };
+}
+
+/// A total order over `Value` (the openCypher orderability used by ORDER BY,
+/// min and max): values of different types order by `typeRank`; lists compare
+/// lexicographically, strings by byte (= Unicode code point, for UTF-8), and
+/// `false < true`. Consistent with `valueEq`: `.eq` exactly when equal.
+fn compareValue(a: Value, b: Value) std.math.Order {
+    const rank_order = std.math.order(typeRank(a), typeRank(b));
+    if (rank_order != .eq) return rank_order;
+    return switch (a) {
+        .null => .eq,
+        .int => |x| std.math.order(x, b.int),
+        .str => |x| std.mem.order(u8, x, b.str),
+        .boolean => |x| std.math.order(@intFromBool(x), @intFromBool(b.boolean)),
+        .list => |x| compareLists(x, b.list),
+    };
+}
+
+fn compareLists(a: []const Value, b: []const Value) std.math.Order {
+    for (a[0..@min(a.len, b.len)], b[0..@min(a.len, b.len)]) |x, y| {
+        const element_order = compareValue(x, y);
+        if (element_order != .eq) return element_order;
+    }
+    return std.math.order(a.len, b.len);
 }
 
 const SortCtx = struct {
@@ -2646,4 +2657,67 @@ test "ungrouped aggregation over zero rows yields one row" {
     // With a grouping key, zero rows still yield zero groups.
     try expectQuery(&ast, &g, "MATCH (x:Nope) RETURN x.name, count(*)", &.{});
     try expectQuery(&ast, &g, "MATCH (x:Nope) WITH x.name AS n, count(*) AS c RETURN n, c", &.{});
+}
+
+/// Random values for the order-law tests: every type, with lists nested up
+/// to `depth` and small domains so that equal values actually occur.
+fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
+    const strings = [_][]const u8{ "", "a", "ab", "b", "é", "Z" };
+    const kinds: u8 = if (depth == 0) 4 else 5;
+    return switch (random.uintLessThan(u8, kinds)) {
+        0 => .{ .null = {} },
+        1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },
+        2 => .{ .str = strings[random.uintLessThan(usize, strings.len)] },
+        3 => .{ .boolean = random.boolean() },
+        else => blk: {
+            const items = try arena.alloc(Value, random.uintLessThan(usize, 3));
+            for (items) |*item| item.* = try randomValue(random, arena, depth - 1);
+            break :blk .{ .list = items };
+        },
+    };
+}
+
+test "compareValue is a total order consistent with valueEq" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var prng = std.Random.DefaultPrng.init(0xacde);
+    const random = prng.random();
+
+    var values: [60]Value = undefined;
+    for (&values) |*v| v.* = try randomValue(random, arena, 2);
+
+    for (values) |a| {
+        // Reflexive.
+        try testing.expectEqual(std.math.Order.eq, compareValue(a, a));
+        for (values) |b| {
+            const ab = compareValue(a, b);
+            // Antisymmetric, and `.eq` exactly when the values are equal.
+            try testing.expectEqual(ab.invert(), compareValue(b, a));
+            try testing.expectEqual(ab == .eq, valueEq(a, b));
+            for (values) |c| {
+                // Transitive.
+                if (ab != .gt and compareValue(b, c) != .gt) {
+                    try testing.expect(compareValue(a, c) != .gt);
+                }
+            }
+        }
+    }
+}
+
+test "compareValue follows the openCypher global sort order" {
+    const list: Value = .{ .list = &.{} };
+    const str: Value = .{ .str = "a" };
+    const boolean: Value = .{ .boolean = true };
+    const int: Value = .{ .int = 1 };
+    const null_value: Value = .{ .null = {} };
+    const ascending = [_]Value{ list, str, boolean, int, null_value };
+    for (ascending[0 .. ascending.len - 1], ascending[1..]) |lower, higher| {
+        try testing.expectEqual(std.math.Order.lt, compareValue(lower, higher));
+    }
+    // Lists: lexicographic, a proper prefix first.
+    const one: Value = .{ .int = 1 };
+    const two: Value = .{ .int = 2 };
+    try testing.expectEqual(std.math.Order.lt, compareValue(.{ .list = &.{one} }, .{ .list = &.{ one, two } }));
+    try testing.expectEqual(std.math.Order.gt, compareValue(.{ .list = &.{two} }, .{ .list = &.{ one, two } }));
 }
