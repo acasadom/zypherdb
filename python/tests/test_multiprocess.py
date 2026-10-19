@@ -20,9 +20,9 @@ from acmedb import Database
 path, n = sys.argv[1], int(sys.argv[2])
 with Database(path) as db:
     for _ in range(n):
-        nid = db.alloc_node_id()
+        nid = db.allocate_node_id()
         db.add_node(nid, "Person")
-        db.set_prop(nid, "id", nid)
+        db.set_property(nid, "id", nid)
 """
 
 

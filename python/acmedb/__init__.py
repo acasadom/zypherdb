@@ -6,7 +6,7 @@ Usage::
 
     with Database("/tmp/movies") as db:
         db.add_node(1, "Movie")
-        db.set_prop(1, "title", "The Matrix")
+        db.set_property(1, "title", "The Matrix")
         print(db.query("MATCH (m:Movie) RETURN m.title"))
 """
 

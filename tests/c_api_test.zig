@@ -12,27 +12,27 @@ const acmedb_error_code = c_api.acmedb_error_code;
 const acmedb_begin_write = c_api.acmedb_begin_write;
 const acmedb_commit_write = c_api.acmedb_commit_write;
 const acmedb_abort_write = c_api.acmedb_abort_write;
-const acmedb_alloc_node_id = c_api.acmedb_alloc_node_id;
+const acmedb_allocate_node_id = c_api.acmedb_allocate_node_id;
 const acmedb_add_node = c_api.acmedb_add_node;
 const acmedb_add_edge = c_api.acmedb_add_edge;
-const acmedb_set_prop_i64 = c_api.acmedb_set_prop_i64;
-const acmedb_set_prop_str = c_api.acmedb_set_prop_str;
+const acmedb_set_property_int64 = c_api.acmedb_set_property_int64;
+const acmedb_set_property_string = c_api.acmedb_set_property_string;
 const acmedb_query = c_api.acmedb_query;
 const acmedb_result_free = c_api.acmedb_result_free;
-const acmedb_result_rows = c_api.acmedb_result_rows;
-const acmedb_result_cols = c_api.acmedb_result_cols;
+const acmedb_result_row_count = c_api.acmedb_result_row_count;
+const acmedb_result_column_count = c_api.acmedb_result_column_count;
 const acmedb_result_type = c_api.acmedb_result_type;
 const acmedb_result_int = c_api.acmedb_result_int;
-const acmedb_result_str = c_api.acmedb_result_str;
+const acmedb_result_string = c_api.acmedb_result_string;
 const acmedb_result_to_json = c_api.acmedb_result_to_json;
-const acmedb_result_list_len = c_api.acmedb_result_list_len;
+const acmedb_result_list_length = c_api.acmedb_result_list_length;
 const acmedb_result_list_item_type = c_api.acmedb_result_list_item_type;
 const acmedb_result_list_item_int = c_api.acmedb_result_list_item_int;
-const TYPE_INT = c_api.TYPE_INT;
-const TYPE_STR = c_api.TYPE_STR;
+const TYPE_INT64 = c_api.TYPE_INT64;
+const TYPE_STRING = c_api.TYPE_STRING;
 const TYPE_LIST = c_api.TYPE_LIST;
-const RC_OK = c_api.RC_OK;
-const RC_NO_NODE = c_api.RC_NO_NODE;
+const RETURN_OK = c_api.RETURN_OK;
+const RETURN_NODE_NOT_FOUND = c_api.RETURN_NODE_NOT_FOUND;
 
 test "C ABI: open, load, query and read results" {
     var tmp = testing.tmpDir(.{});
@@ -45,22 +45,22 @@ test "C ABI: open, load, query and read results" {
     defer acmedb_close(context);
 
     try testing.expectEqual(@as(c_int, 0), acmedb_add_node(context, 1, "Person".ptr, "Person".len));
-    try testing.expectEqual(@as(c_int, 0), acmedb_set_prop_str(context, 1, "name".ptr, "name".len, "Keanu Reeves".ptr, "Keanu Reeves".len));
-    try testing.expectEqual(@as(c_int, 0), acmedb_set_prop_i64(context, 1, "born".ptr, "born".len, 1964));
+    try testing.expectEqual(@as(c_int, 0), acmedb_set_property_string(context, 1, "name".ptr, "name".len, "Keanu Reeves".ptr, "Keanu Reeves".len));
+    try testing.expectEqual(@as(c_int, 0), acmedb_set_property_int64(context, 1, "born".ptr, "born".len, 1964));
     try testing.expectEqual(@as(c_int, 0), acmedb_add_node(context, 100, "Movie".ptr, "Movie".len));
-    try testing.expectEqual(@as(c_int, 0), acmedb_set_prop_str(context, 100, "title".ptr, "title".len, "The Matrix".ptr, "The Matrix".len));
+    try testing.expectEqual(@as(c_int, 0), acmedb_set_property_string(context, 100, "title".ptr, "title".len, "The Matrix".ptr, "The Matrix".len));
     try testing.expectEqual(@as(c_int, 0), acmedb_add_edge(context, 1, 100, "ACTED_IN".ptr, "ACTED_IN".len));
 
     const q = "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title";
     const result = acmedb_query(context, q.ptr, q.len).?;
     defer acmedb_result_free(result);
 
-    try testing.expectEqual(@as(usize, 1), acmedb_result_rows(result));
-    try testing.expectEqual(@as(usize, 1), acmedb_result_cols(result));
-    try testing.expectEqual(TYPE_STR, acmedb_result_type(result, 0, 0));
+    try testing.expectEqual(@as(usize, 1), acmedb_result_row_count(result));
+    try testing.expectEqual(@as(usize, 1), acmedb_result_column_count(result));
+    try testing.expectEqual(TYPE_STRING, acmedb_result_type(result, 0, 0));
 
     var len: usize = 0;
-    const s = acmedb_result_str(result, 0, 0, &len);
+    const s = acmedb_result_string(result, 0, 0, &len);
     try testing.expectEqualStrings("The Matrix", s[0..len]);
 }
 
@@ -75,8 +75,8 @@ test "C ABI: node ids, list results and error codes" {
     defer acmedb_close(context);
 
     // Node id allocation is monotonic.
-    const a = acmedb_alloc_node_id(context);
-    const b = acmedb_alloc_node_id(context);
+    const a = acmedb_allocate_node_id(context);
+    const b = acmedb_allocate_node_id(context);
     try testing.expect(a != b);
     try testing.expectEqual(a + 1, b);
 
@@ -85,8 +85,8 @@ test "C ABI: node ids, list results and error codes" {
     const r1 = acmedb_query(context, q1.ptr, q1.len).?;
     defer acmedb_result_free(r1);
     try testing.expectEqual(TYPE_LIST, acmedb_result_type(r1, 0, 0));
-    try testing.expectEqual(@as(usize, 3), acmedb_result_list_len(r1, 0, 0));
-    try testing.expectEqual(TYPE_INT, acmedb_result_list_item_type(r1, 0, 0, 0));
+    try testing.expectEqual(@as(usize, 3), acmedb_result_list_length(r1, 0, 0));
+    try testing.expectEqual(TYPE_INT64, acmedb_result_list_item_type(r1, 0, 0, 0));
     try testing.expectEqual(@as(i64, 2), acmedb_result_list_item_int(r1, 0, 0, 1));
 
     // A parse error carries a code + message.
@@ -149,10 +149,10 @@ test "C ABI: batched write transaction commits atomically and aborts cleanly" {
     // 100 nodes in one transaction.
     try testing.expectEqual(@as(c_int, 0), acmedb_begin_write(context));
     for (0..100) |i| {
-        const id = acmedb_alloc_node_id(context);
+        const id = acmedb_allocate_node_id(context);
         try testing.expect(id != std.math.maxInt(u64));
         try testing.expectEqual(@as(c_int, 0), acmedb_add_node(context, id, "Person".ptr, "Person".len));
-        try testing.expectEqual(@as(c_int, 0), acmedb_set_prop_i64(context, id, "n".ptr, "n".len, @intCast(i)));
+        try testing.expectEqual(@as(c_int, 0), acmedb_set_property_int64(context, id, "n".ptr, "n".len, @intCast(i)));
     }
     try testing.expectEqual(@as(c_int, 0), acmedb_commit_write(context));
 
@@ -163,7 +163,7 @@ test "C ABI: batched write transaction commits atomically and aborts cleanly" {
 
     // An aborted transaction leaves nothing behind.
     try testing.expectEqual(@as(c_int, 0), acmedb_begin_write(context));
-    const id = acmedb_alloc_node_id(context);
+    const id = acmedb_allocate_node_id(context);
     try testing.expectEqual(@as(c_int, 0), acmedb_add_node(context, id, "Ghost".ptr, "Ghost".len));
     acmedb_abort_write(context);
 
@@ -171,7 +171,7 @@ test "C ABI: batched write transaction commits atomically and aborts cleanly" {
     const r2 = acmedb_query(context, q2.ptr, q2.len).?;
     defer acmedb_result_free(r2);
     // No Ghost nodes survive the abort: the count over zero matches is 0.
-    try testing.expectEqual(@as(usize, 1), acmedb_result_rows(r2));
+    try testing.expectEqual(@as(usize, 1), acmedb_result_row_count(r2));
     try testing.expectEqual(@as(i64, 0), acmedb_result_int(r2, 0, 0));
 }
 
@@ -185,15 +185,15 @@ test "C ABI: mutators reject nodes that do not exist" {
     const context = acmedb_open(path.ptr, path.len).?;
     defer acmedb_close(context);
 
-    try testing.expectEqual(RC_OK, acmedb_add_node(context, 1, "P".ptr, "P".len));
+    try testing.expectEqual(RETURN_OK, acmedb_add_node(context, 1, "P".ptr, "P".len));
     // A dangling edge and properties on a missing node are refused.
-    try testing.expectEqual(RC_NO_NODE, acmedb_add_edge(context, 1, 999, "X".ptr, "X".len));
-    try testing.expectEqual(RC_NO_NODE, acmedb_add_edge(context, 999, 1, "X".ptr, "X".len));
-    try testing.expectEqual(RC_NO_NODE, acmedb_set_prop_i64(context, 999, "v".ptr, "v".len, 1));
-    try testing.expectEqual(RC_NO_NODE, acmedb_set_prop_str(context, 999, "v".ptr, "v".len, "a".ptr, "a".len));
+    try testing.expectEqual(RETURN_NODE_NOT_FOUND, acmedb_add_edge(context, 1, 999, "X".ptr, "X".len));
+    try testing.expectEqual(RETURN_NODE_NOT_FOUND, acmedb_add_edge(context, 999, 1, "X".ptr, "X".len));
+    try testing.expectEqual(RETURN_NODE_NOT_FOUND, acmedb_set_property_int64(context, 999, "v".ptr, "v".len, 1));
+    try testing.expectEqual(RETURN_NODE_NOT_FOUND, acmedb_set_property_string(context, 999, "v".ptr, "v".len, "a".ptr, "a".len));
     try testing.expect(!try context.graph.hasNode(999));
     try testing.expect(!try context.graph.hasEdge(1, 999, "X"));
 
-    try testing.expectEqual(RC_OK, acmedb_add_node(context, 2, "P".ptr, "P".len));
-    try testing.expectEqual(RC_OK, acmedb_add_edge(context, 1, 2, "X".ptr, "X".len));
+    try testing.expectEqual(RETURN_OK, acmedb_add_node(context, 2, "P".ptr, "P".len));
+    try testing.expectEqual(RETURN_OK, acmedb_add_edge(context, 1, 2, "X".ptr, "X".len));
 }

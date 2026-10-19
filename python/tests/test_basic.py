@@ -24,18 +24,18 @@ def db(tmp_path):
 
 
 def test_write_and_read(db):
-    nid = db.alloc_node_id()
+    nid = db.allocate_node_id()
     db.add_node(nid, "Person")
-    db.set_prop(nid, "name", "Keanu Reeves")
-    db.set_prop(nid, "born", 1964)
+    db.set_property(nid, "name", "Keanu Reeves")
+    db.set_property(nid, "born", 1964)
     assert db.query("MATCH (p:Person {name: 'Keanu Reeves'}) RETURN p.born") == [[1964]]
 
 
 def test_edges(db):
     db.add_node(1, "Person")
-    db.set_prop(1, "name", "Keanu")
+    db.set_property(1, "name", "Keanu")
     db.add_node(100, "Movie")
-    db.set_prop(100, "title", "The Matrix")
+    db.set_property(100, "title", "The Matrix")
     db.add_edge(1, 100, "ACTED_IN")
     assert db.query(
         "MATCH (p:Person {name: 'Keanu'})-[:ACTED_IN]->(m:Movie) RETURN m.title"
@@ -49,7 +49,7 @@ def test_lists(db):
 
 def test_null(db):
     db.add_node(1, "Person")
-    db.set_prop(1, "name", "Keanu")
+    db.set_property(1, "name", "Keanu")
     rows = db.query(
         "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f:Person) RETURN p.name, f.name"
     )
@@ -73,9 +73,9 @@ def test_json_roundtrip(db):
 def test_batched_write(db):
     with db.write():
         for i in range(100):
-            nid = db.alloc_node_id()
+            nid = db.allocate_node_id()
             db.add_node(nid, "Person")
-            db.set_prop(nid, "id", nid)
+            db.set_property(nid, "id", nid)
     assert db.query("MATCH (n:Person) RETURN count(n)") == [[100]]
 
 
@@ -98,17 +98,17 @@ def test_closed_database_raises(tmp_path):
     with pytest.raises(ClosedError):
         db.add_node(1, "P")
     with pytest.raises(ClosedError):
-        db.alloc_node_id()
+        db.allocate_node_id()
 
 
 def test_int_range_is_enforced(db):
     # ctypes used to truncate silently: 2**70 was stored as 0.
     db.add_node(1, "P")
-    db.set_prop(1, "max", 2**63 - 1)
-    db.set_prop(1, "min", -(2**63))
+    db.set_property(1, "max", 2**63 - 1)
+    db.set_property(1, "min", -(2**63))
     assert db.query("MATCH (p:P) RETURN p.max, p.min") == [[2**63 - 1, -(2**63)]]
     with pytest.raises(OverflowError):
-        db.set_prop(1, "big", 2**63)
+        db.set_property(1, "big", 2**63)
     with pytest.raises(ValueError):
         db.add_node(-1, "P")
     with pytest.raises(ValueError):
@@ -119,14 +119,14 @@ def test_unsupported_property_types(db):
     db.add_node(1, "P")
     for bad in (True, 1.5, None, [1]):
         with pytest.raises(TypeError):
-            db.set_prop(1, "x", bad)
+            db.set_property(1, "x", bad)
 
 
 def test_non_ascii_names_use_byte_lengths(db):
     # Lengths used to be counted in characters, truncating the UTF-8 bytes.
     db.add_node(1, "Pérsona")
-    db.set_prop(1, "año", 2024)
-    db.set_prop(1, "nombre", "Ñandú")
+    db.set_property(1, "año", 2024)
+    db.set_property(1, "nombre", "Ñandú")
     db.add_node(2, "Pérsona")
     db.add_edge(1, 2, "CONOCE_Ñ")
     assert db.query(
@@ -139,7 +139,7 @@ def test_mutators_reject_missing_nodes(db):
     with pytest.raises(NodeNotFoundError):
         db.add_edge(1, 999, "X")
     with pytest.raises(NodeNotFoundError):
-        db.set_prop(999, "v", 1)
+        db.set_property(999, "v", 1)
     assert db.query("MATCH (a)-[:X]->(b) RETURN count(*)") == [[0]]
 
 

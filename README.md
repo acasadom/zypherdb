@@ -47,11 +47,11 @@ from acmedb import Database
 import tempfile
 
 with Database(tempfile.mkdtemp()) as db:
-    nid = db.alloc_node_id()
+    nid = db.allocate_node_id()
     db.add_node(nid, "Person")
-    db.set_prop(nid, "name", "Keanu Reeves")
+    db.set_property(nid, "name", "Keanu Reeves")
     db.add_node(100, "Movie")
-    db.set_prop(100, "title", "The Matrix")
+    db.set_property(100, "title", "The Matrix")
     db.add_edge(nid, 100, "ACTED_IN")
     print(db.query("MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title"))
 PY

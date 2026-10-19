@@ -36,9 +36,9 @@ const Result = struct {
 const allocator: Allocator = std.heap.c_allocator;
 
 // Cell type tags returned by acmedb_result_type.
-pub const TYPE_INT: c_int = 0;
-pub const TYPE_STR: c_int = 1;
-pub const TYPE_BOOL: c_int = 2;
+pub const TYPE_INT64: c_int = 0;
+pub const TYPE_STRING: c_int = 1;
+pub const TYPE_BOOLEAN: c_int = 2;
 pub const TYPE_NULL: c_int = 3;
 pub const TYPE_LIST: c_int = 4;
 
@@ -92,7 +92,7 @@ pub export fn acmedb_abort_write(context: *Context) void {
 
 /// Allocates a fresh, never-used node id (atomically). Returns `maxInt(u64)` on
 /// failure.
-pub export fn acmedb_alloc_node_id(context: *Context) u64 {
+pub export fn acmedb_allocate_node_id(context: *Context) u64 {
     // Inside an explicit write txn the read-modify-write is already atomic;
     // standalone it needs its own transaction.
     if (context.graph.inWriteTxn()) {
@@ -113,42 +113,42 @@ pub export fn acmedb_add_node(context: *Context, id: u64, label_ptr: [*]const u8
 }
 
 /// Mutator return codes: success, storage failure, and a missing node.
-pub const RC_OK: c_int = 0;
-pub const RC_STORAGE: c_int = 1;
-pub const RC_NO_NODE: c_int = 2;
+pub const RETURN_OK: c_int = 0;
+pub const RETURN_STORAGE_ERROR: c_int = 1;
+pub const RETURN_NODE_NOT_FOUND: c_int = 2;
 
-/// Returns `RC_NO_NODE` unless every id in `ids` is an existing node.
+/// Returns `RETURN_NODE_NOT_FOUND` unless every id in `ids` is an existing node.
 fn requireNodes(context: *Context, ids: []const u64) c_int {
     for (ids) |id| {
-        const exists = context.graph.hasNode(id) catch return RC_STORAGE;
-        if (!exists) return RC_NO_NODE;
+        const exists = context.graph.hasNode(id) catch return RETURN_STORAGE_ERROR;
+        if (!exists) return RETURN_NODE_NOT_FOUND;
     }
-    return RC_OK;
+    return RETURN_OK;
 }
 
-/// Adds a directed edge. Both endpoints must exist (`RC_NO_NODE` otherwise), so
+/// Adds a directed edge. Both endpoints must exist (`RETURN_NODE_NOT_FOUND` otherwise), so
 /// the C ABI can never create a dangling edge.
 pub export fn acmedb_add_edge(context: *Context, src: u64, dst: u64, edge_type_ptr: [*]const u8, edge_type_length: usize) c_int {
     const return_code = requireNodes(context, &.{ src, dst });
-    if (return_code != RC_OK) return return_code;
-    context.graph.addEdge(src, dst, edge_type_ptr[0..edge_type_length]) catch return RC_STORAGE;
-    return RC_OK;
+    if (return_code != RETURN_OK) return return_code;
+    context.graph.addEdge(src, dst, edge_type_ptr[0..edge_type_length]) catch return RETURN_STORAGE_ERROR;
+    return RETURN_OK;
 }
 
-/// Sets an int property on an existing node (`RC_NO_NODE` otherwise).
-pub export fn acmedb_set_prop_i64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: i64) c_int {
+/// Sets an int property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
+pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: i64) c_int {
     const return_code = requireNodes(context, &.{id});
-    if (return_code != RC_OK) return return_code;
-    context.graph.setProperty(id, name_ptr[0..name_len], .{ .int = value }) catch return RC_STORAGE;
-    return RC_OK;
+    if (return_code != RETURN_OK) return return_code;
+    context.graph.setProperty(id, name_ptr[0..name_len], .{ .int = value }) catch return RETURN_STORAGE_ERROR;
+    return RETURN_OK;
 }
 
-/// Sets a string property on an existing node (`RC_NO_NODE` otherwise).
-pub export fn acmedb_set_prop_str(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_length: usize) c_int {
+/// Sets a string property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
+pub export fn acmedb_set_property_string(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_length: usize) c_int {
     const return_code = requireNodes(context, &.{id});
-    if (return_code != RC_OK) return return_code;
-    context.graph.setProperty(id, name_ptr[0..name_len], .{ .string = value_ptr[0..value_length] }) catch return RC_STORAGE;
-    return RC_OK;
+    if (return_code != RETURN_OK) return return_code;
+    context.graph.setProperty(id, name_ptr[0..name_len], .{ .string = value_ptr[0..value_length] }) catch return RETURN_STORAGE_ERROR;
+    return RETURN_OK;
 }
 
 pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len: usize) ?*Result {
@@ -296,11 +296,11 @@ pub export fn acmedb_result_free(result: *Result) void {
     allocator.destroy(result);
 }
 
-pub export fn acmedb_result_rows(result: *const Result) usize {
+pub export fn acmedb_result_row_count(result: *const Result) usize {
     return result.rows.len;
 }
 
-pub export fn acmedb_result_cols(result: *const Result) usize {
+pub export fn acmedb_result_column_count(result: *const Result) usize {
     if (result.rows.len == 0) return 0;
     return result.rows[0].items.len;
 }
@@ -310,9 +310,9 @@ pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) 
     const r = result.rows[row];
     if (col >= r.items.len) return -1;
     return switch (r.items[col]) {
-        .int => TYPE_INT,
-        .string => TYPE_STR,
-        .boolean => TYPE_BOOL,
+        .int => TYPE_INT64,
+        .string => TYPE_STRING,
+        .boolean => TYPE_BOOLEAN,
         .null => TYPE_NULL,
         .list => TYPE_LIST,
     };
@@ -334,7 +334,7 @@ pub export fn acmedb_result_bool(result: *const Result, row: usize, col: usize) 
     };
 }
 
-pub export fn acmedb_result_str(result: *const Result, row: usize, col: usize, out_len: *usize) [*]const u8 {
+pub export fn acmedb_result_string(result: *const Result, row: usize, col: usize, out_len: *usize) [*]const u8 {
     const r = result.rows[row];
     const s: []const u8 = switch (r.items[col]) {
         .string => |s| s,
@@ -358,7 +358,7 @@ fn listItem(result: *const Result, row: usize, col: usize, item_index: usize) ?V
     return items[item_index];
 }
 
-pub export fn acmedb_result_list_len(result: *const Result, row: usize, col: usize) usize {
+pub export fn acmedb_result_list_length(result: *const Result, row: usize, col: usize) usize {
     if (row >= result.rows.len) return 0;
     const r = result.rows[row];
     if (col >= r.items.len) return 0;
@@ -371,9 +371,9 @@ pub export fn acmedb_result_list_len(result: *const Result, row: usize, col: usi
 pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, col: usize, item_index: usize) c_int {
     const item = listItem(result, row, col, item_index) orelse return -1;
     return switch (item) {
-        .int => TYPE_INT,
-        .string => TYPE_STR,
-        .boolean => TYPE_BOOL,
+        .int => TYPE_INT64,
+        .string => TYPE_STRING,
+        .boolean => TYPE_BOOLEAN,
         .null => TYPE_NULL,
         .list => TYPE_LIST,
     };
@@ -395,7 +395,7 @@ pub export fn acmedb_result_list_item_bool(result: *const Result, row: usize, co
     };
 }
 
-pub export fn acmedb_result_list_item_str(result: *const Result, row: usize, col: usize, item_index: usize, out_len: *usize) [*]const u8 {
+pub export fn acmedb_result_list_item_string(result: *const Result, row: usize, col: usize, item_index: usize, out_len: *usize) [*]const u8 {
     const item = listItem(result, row, col, item_index) orelse return "".ptr;
     const s: []const u8 = switch (item) {
         .string => |s| s,
@@ -425,26 +425,26 @@ comptime {
     _ = acmedb_close;
     _ = acmedb_add_node;
     _ = acmedb_add_edge;
-    _ = acmedb_set_prop_i64;
-    _ = acmedb_set_prop_str;
-    _ = acmedb_alloc_node_id;
+    _ = acmedb_set_property_int64;
+    _ = acmedb_set_property_string;
+    _ = acmedb_allocate_node_id;
     _ = acmedb_begin_write;
     _ = acmedb_commit_write;
     _ = acmedb_abort_write;
     _ = acmedb_query;
     _ = acmedb_result_free;
-    _ = acmedb_result_rows;
-    _ = acmedb_result_cols;
+    _ = acmedb_result_row_count;
+    _ = acmedb_result_column_count;
     _ = acmedb_result_type;
     _ = acmedb_result_int;
     _ = acmedb_result_bool;
-    _ = acmedb_result_str;
+    _ = acmedb_result_string;
     _ = acmedb_result_to_json;
     _ = acmedb_last_error;
     _ = acmedb_error_code;
-    _ = acmedb_result_list_len;
+    _ = acmedb_result_list_length;
     _ = acmedb_result_list_item_type;
     _ = acmedb_result_list_item_int;
     _ = acmedb_result_list_item_bool;
-    _ = acmedb_result_list_item_str;
+    _ = acmedb_result_list_item_string;
 }

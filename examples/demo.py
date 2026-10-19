@@ -28,28 +28,28 @@ lib.acmedb_add_node.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_
 lib.acmedb_add_node.restype = ctypes.c_int
 lib.acmedb_add_edge.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_add_edge.restype = ctypes.c_int
-lib.acmedb_set_prop_i64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int64]
-lib.acmedb_set_prop_i64.restype = ctypes.c_int
-lib.acmedb_set_prop_str.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
-lib.acmedb_set_prop_str.restype = ctypes.c_int
+lib.acmedb_set_property_int64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int64]
+lib.acmedb_set_property_int64.restype = ctypes.c_int
+lib.acmedb_set_property_string.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+lib.acmedb_set_property_string.restype = ctypes.c_int
 
 lib.acmedb_query.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_query.restype = ctypes.c_void_p
 lib.acmedb_last_error.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 lib.acmedb_last_error.restype = ctypes.c_void_p
 lib.acmedb_result_free.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_rows.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_rows.restype = ctypes.c_size_t
-lib.acmedb_result_cols.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_cols.restype = ctypes.c_size_t
+lib.acmedb_result_row_count.argtypes = [ctypes.c_void_p]
+lib.acmedb_result_row_count.restype = ctypes.c_size_t
+lib.acmedb_result_column_count.argtypes = [ctypes.c_void_p]
+lib.acmedb_result_column_count.restype = ctypes.c_size_t
 lib.acmedb_result_type.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_type.restype = ctypes.c_int
 lib.acmedb_result_int.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_int.restype = ctypes.c_int64
 lib.acmedb_result_bool.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_bool.restype = ctypes.c_bool
-lib.acmedb_result_str.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-lib.acmedb_result_str.restype = ctypes.c_void_p
+lib.acmedb_result_string.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+lib.acmedb_result_string.restype = ctypes.c_void_p
 
 _TYPE_INT, _TYPE_STR, _TYPE_BOOL = 0, 1, 2
 
@@ -64,7 +64,7 @@ def _cell(result, row: int, col: int):
         return lib.acmedb_result_int(result, row, col)
     if t == _TYPE_STR:
         n = ctypes.c_size_t(0)
-        p = lib.acmedb_result_str(result, row, col, ctypes.byref(n))
+        p = lib.acmedb_result_string(result, row, col, ctypes.byref(n))
         return ctypes.string_at(p, n.value).decode()
     if t == _TYPE_BOOL:
         return lib.acmedb_result_bool(result, row, col)
@@ -79,8 +79,8 @@ def run_query(ctx, query: str):
         msg = ctypes.string_at(p, n.value).decode() if n.value else "(unknown error)"
         raise RuntimeError(f"query failed: {query!r}: {msg}")
     try:
-        rows = lib.acmedb_result_rows(result)
-        cols = lib.acmedb_result_cols(result)
+        rows = lib.acmedb_result_row_count(result)
+        cols = lib.acmedb_result_column_count(result)
         return [[_cell(result, r, c) for c in range(cols)] for r in range(rows)]
     finally:
         lib.acmedb_result_free(result)
@@ -101,12 +101,12 @@ def main() -> None:
 
     for pid, name, born in people:
         lib.acmedb_add_node(ctx, pid, _b("Person"), 6)
-        lib.acmedb_set_prop_str(ctx, pid, _b("name"), 4, _b(name), len(name))
-        lib.acmedb_set_prop_i64(ctx, pid, _b("born"), 4, born)
+        lib.acmedb_set_property_string(ctx, pid, _b("name"), 4, _b(name), len(name))
+        lib.acmedb_set_property_int64(ctx, pid, _b("born"), 4, born)
     for mid, title, released in movies:
         lib.acmedb_add_node(ctx, mid, _b("Movie"), 5)
-        lib.acmedb_set_prop_str(ctx, mid, _b("title"), 5, _b(title), len(title))
-        lib.acmedb_set_prop_i64(ctx, mid, _b("released"), 8, released)
+        lib.acmedb_set_property_string(ctx, mid, _b("title"), 5, _b(title), len(title))
+        lib.acmedb_set_property_int64(ctx, mid, _b("released"), 8, released)
     for a, m in acted_in:
         lib.acmedb_add_edge(ctx, a, m, _b("ACTED_IN"), 8)
     for a, m in directed:

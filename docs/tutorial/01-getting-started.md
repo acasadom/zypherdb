@@ -34,24 +34,24 @@ lib.acmedb_close.argtypes = [ctypes.c_void_p]
 
 lib.acmedb_add_node.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_add_edge.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t]
-lib.acmedb_set_prop_i64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int64]
-lib.acmedb_set_prop_str.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+lib.acmedb_set_property_int64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int64]
+lib.acmedb_set_property_string.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
 
 lib.acmedb_query.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_query.restype = ctypes.c_void_p
 lib.acmedb_result_free.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_rows.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_rows.restype = ctypes.c_size_t
-lib.acmedb_result_cols.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_cols.restype = ctypes.c_size_t
+lib.acmedb_result_row_count.argtypes = [ctypes.c_void_p]
+lib.acmedb_result_row_count.restype = ctypes.c_size_t
+lib.acmedb_result_column_count.argtypes = [ctypes.c_void_p]
+lib.acmedb_result_column_count.restype = ctypes.c_size_t
 lib.acmedb_result_type.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_type.restype = ctypes.c_int
 lib.acmedb_result_int.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_int.restype = ctypes.c_int64
 lib.acmedb_result_bool.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_bool.restype = ctypes.c_bool
-lib.acmedb_result_str.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-lib.acmedb_result_str.restype = ctypes.c_void_p
+lib.acmedb_result_string.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+lib.acmedb_result_string.restype = ctypes.c_void_p
 
 INT, STR, BOOL, NULL, LIST = 0, 1, 2, 3, 4
 
@@ -60,7 +60,7 @@ def run(ctx, query):
     if not result:
         raise RuntimeError(query)
     try:
-        rows, cols = lib.acmedb_result_rows(result), lib.acmedb_result_cols(result)
+        rows, cols = lib.acmedb_result_row_count(result), lib.acmedb_result_column_count(result)
         out = []
         for r in range(rows):
             row = []
@@ -69,7 +69,7 @@ def run(ctx, query):
                 if t == INT:      row.append(lib.acmedb_result_int(result, r, c))
                 elif t == STR:
                     n = ctypes.c_size_t(0)
-                    p = lib.acmedb_result_str(result, r, c, ctypes.byref(n))
+                    p = lib.acmedb_result_string(result, r, c, ctypes.byref(n))
                     row.append(ctypes.string_at(p, n.value).decode())
                 elif t == BOOL:   row.append(lib.acmedb_result_bool(result, r, c))
                 else:             row.append(None)   # NULL / LIST
@@ -96,12 +96,12 @@ directed = [(4, 100), (4, 101)]
 
 for pid, name, born in people:
     lib.acmedb_add_node(ctx, pid, b"Person", 6)
-    lib.acmedb_set_prop_str(ctx, pid, b"name", 4, name.encode(), len(name))
-    lib.acmedb_set_prop_i64(ctx, pid, b"born", 4, born)
+    lib.acmedb_set_property_string(ctx, pid, b"name", 4, name.encode(), len(name))
+    lib.acmedb_set_property_int64(ctx, pid, b"born", 4, born)
 for mid, title, released in movies:
     lib.acmedb_add_node(ctx, mid, b"Movie", 5)
-    lib.acmedb_set_prop_str(ctx, mid, b"title", 5, title.encode(), len(title))
-    lib.acmedb_set_prop_i64(ctx, mid, b"released", 8, released)
+    lib.acmedb_set_property_string(ctx, mid, b"title", 5, title.encode(), len(title))
+    lib.acmedb_set_property_int64(ctx, mid, b"released", 8, released)
 for a, m in acted_in:
     lib.acmedb_add_edge(ctx, a, m, b"ACTED_IN", 8)
 for a, m in directed:

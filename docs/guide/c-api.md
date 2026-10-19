@@ -8,9 +8,9 @@ Result cells are tagged by type:
 
 | Tag | `acmedb_result_type` | Value |
 | --- | --- | --- |
-| `TYPE_INT` | `0` | `i64` |
-| `TYPE_STR` | `1` | UTF-8 string |
-| `TYPE_BOOL` | `2` | boolean |
+| `TYPE_INT64` | `0` | `i64` |
+| `TYPE_STRING` | `1` | UTF-8 string |
+| `TYPE_BOOLEAN` | `2` | boolean |
 | `TYPE_NULL` | `3` | null |
 | `TYPE_LIST` | `4` | list (flat lists only) |
 
@@ -43,11 +43,11 @@ function takes the returned `Context*`. Error codes (from `diag.zig`):
 ## Writing data
 
 ```c
-uint64_t acmedb_alloc_node_id(Context*);   // fresh id; maxInt(u64) on failure
+uint64_t acmedb_allocate_node_id(Context*);   // fresh id; maxInt(u64) on failure
 int acmedb_add_node(Context*, uint64_t id, const char* label, size_t label_len);
 int acmedb_add_edge(Context*, uint64_t src, uint64_t dst, const char* type, size_t type_len);
-int acmedb_set_prop_i64(Context*, uint64_t id, const char* name, size_t name_len, int64_t value);
-int acmedb_set_prop_str(Context*, uint64_t id, const char* name, size_t name_len,
+int acmedb_set_property_int64(Context*, uint64_t id, const char* name, size_t name_len, int64_t value);
+int acmedb_set_property_string(Context*, uint64_t id, const char* name, size_t name_len,
                         const char* value, size_t value_len);
 
 // batch writes into one transaction (one fsync):
@@ -56,7 +56,7 @@ int  acmedb_commit_write(Context*);
 void acmedb_abort_write(Context*);
 ```
 
-Each mutator returns `0` on success, non-zero on failure. `acmedb_alloc_node_id` allocates a
+Each mutator returns `0` on success, non-zero on failure. `acmedb_allocate_node_id` allocates a
 never-used id atomically; `acmedb_add_node` also accepts caller-supplied ids. `acmedb_add_node`
 takes a single label (add more with `acmedb_query` `CREATE`, or `SET`).
 
@@ -69,20 +69,20 @@ the bulk-ingestion path — individual mutators each commit on their own and are
 ```c
 Result* acmedb_query(Context*, const char* query, size_t query_len);   // NULL on failure
 void    acmedb_result_free(Result*);
-size_t  acmedb_result_rows(const Result*);
-size_t  acmedb_result_cols(const Result*);
+size_t  acmedb_result_row_count(const Result*);
+size_t  acmedb_result_column_count(const Result*);
 int     acmedb_result_type(const Result*, size_t row, size_t col);   // -1 out of range
 int64_t acmedb_result_int(const Result*, size_t row, size_t col);
 bool    acmedb_result_bool(const Result*, size_t row, size_t col);
-const char* acmedb_result_str(const Result*, size_t row, size_t col, size_t* out_len);
+const char* acmedb_result_string(const Result*, size_t row, size_t col, size_t* out_len);
 const char* acmedb_result_to_json(const Result*, size_t* out_len);   // whole result as JSON
 
 // list cells (TYPE_LIST) — flat lists only:
-size_t acmedb_result_list_len(const Result*, size_t row, size_t col);
+size_t acmedb_result_list_length(const Result*, size_t row, size_t col);
 int    acmedb_result_list_item_type(const Result*, size_t row, size_t col, size_t idx);
 int64_t acmedb_result_list_item_int(const Result*, size_t row, size_t col, size_t idx);
 bool   acmedb_result_list_item_bool(const Result*, size_t row, size_t col, size_t idx);
-const char* acmedb_result_list_item_str(const Result*, size_t row, size_t col, size_t idx, size_t* out_len);
+const char* acmedb_result_list_item_string(const Result*, size_t row, size_t col, size_t idx, size_t* out_len);
 ```
 
 `acmedb_query` runs one query (any subset of the [language](cypher)) and returns a self-contained

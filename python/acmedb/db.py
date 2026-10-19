@@ -13,12 +13,12 @@ from .errors import AcmedbError, ClosedError, NodeNotFoundError, StorageError, e
 # Value ranges the C ABI accepts; ctypes would silently truncate anything wider.
 _I64_MIN, _I64_MAX = -(2**63), 2**63 - 1
 _U64_MAX = 2**64 - 1
-# `acmedb_alloc_node_id` returns this on failure.
+# `acmedb_allocate_node_id` returns this on failure.
 _ALLOC_FAILED = _U64_MAX
 
-# Mutator return codes (src/c_api.zig `RC_*`).
-_RC_OK = 0
-_RC_NO_NODE = 2
+# Mutator return codes (src/c_api.zig `RETURN_*`).
+_RETURN_OK = 0
+_RETURN_NODE_NOT_FOUND = 2
 
 
 def _check_node_id(id: int) -> int:
@@ -108,14 +108,14 @@ class Database:
     def write(self):
         """Batch mutators into one write transaction (one fsync on exit).
 
-        Every `add_node`/`add_edge`/`set_prop`/`alloc_node_id` inside the block
+        Every `add_node`/`add_edge`/`set_property`/`allocate_node_id` inside the block
         commits atomically when the block exits; an exception aborts it::
 
             with db.write():
                 for i in range(100_000):
-                    nid = db.alloc_node_id()
+                    nid = db.allocate_node_id()
                     db.add_node(nid, "Person")
-                    db.set_prop(nid, "name", f"p{i}")
+                    db.set_property(nid, "name", f"p{i}")
 
         This is the bulk-ingestion path (one sync instead of one per write). Do
         not run `query()` inside the block — reads use their own transaction.
@@ -136,10 +136,10 @@ class Database:
             finally:
                 self._in_write = False
 
-    def alloc_node_id(self) -> int:
+    def allocate_node_id(self) -> int:
         """Allocate a fresh, never-used node id."""
         with self._lock:
-            nid = _ffi.lib.acmedb_alloc_node_id(self._handle())
+            nid = _ffi.lib.acmedb_allocate_node_id(self._handle())
         if nid == _ALLOC_FAILED:
             raise StorageError("could not allocate a node id")
         return nid
@@ -158,7 +158,7 @@ class Database:
         with self._lock:
             self._check(_ffi.lib.acmedb_add_edge(self._handle(), src, dst, enc, len(enc)), src, dst)
 
-    def set_prop(self, id: int, name: str, value) -> None:
+    def set_property(self, id: int, name: str, value) -> None:
         """Set an `int` (64-bit signed) or `str` property on an existing node."""
         _check_node_id(id)
         name_enc = name.encode()
@@ -170,15 +170,15 @@ class Database:
         with self._lock:
             ctx = self._handle()
             if isinstance(value, int):
-                rc = _ffi.lib.acmedb_set_prop_i64(ctx, id, name_enc, len(name_enc), value)
+                rc = _ffi.lib.acmedb_set_property_int64(ctx, id, name_enc, len(name_enc), value)
             else:
                 enc = value.encode()
-                rc = _ffi.lib.acmedb_set_prop_str(ctx, id, name_enc, len(name_enc), enc, len(enc))
+                rc = _ffi.lib.acmedb_set_property_string(ctx, id, name_enc, len(name_enc), enc, len(enc))
             self._check(rc, id)
 
     def _check(self, rc: int, *ids: int) -> None:
-        if rc == _RC_NO_NODE:
+        if rc == _RETURN_NODE_NOT_FOUND:
             raise NodeNotFoundError(f"node does not exist (ids: {', '.join(map(str, ids))})")
-        if rc != _RC_OK:
+        if rc != _RETURN_OK:
             raise StorageError("write failed")
 

@@ -15,11 +15,11 @@ from acmedb import Database
 import tempfile
 
 with Database(tempfile.mkdtemp()) as db:
-    nid = db.alloc_node_id()
+    nid = db.allocate_node_id()
     db.add_node(nid, "Person")
-    db.set_prop(nid, "name", "Keanu Reeves")
+    db.set_property(nid, "name", "Keanu Reeves")
     db.add_node(100, "Movie")
-    db.set_prop(100, "title", "The Matrix")
+    db.set_property(100, "title", "The Matrix")
     db.add_edge(nid, 100, "ACTED_IN")
 
     print(db.query("MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title"))
@@ -31,17 +31,17 @@ with Database(tempfile.mkdtemp()) as db:
 - `Database(path)` opens (or creates) the database; use it as a context manager, or call `close()`.
 - `query(text) -> list[list]` runs one query; cells become `int`, `str`, `bool`, `None` (null) or a
   `list`.
-- `alloc_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_prop(id, name, value)`
-  write data. `set_prop` accepts `int` or `str` values.
+- `allocate_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_property(id, name, value)`
+  write data. `set_property` accepts `int` or `str` values.
 - `write()` is a context manager that batches mutators into **one** write transaction (one fsync):
   the bulk-ingestion path. An exception inside the block aborts it.
 
   ```python
   with db.write():
       for i in range(100_000):
-          nid = db.alloc_node_id()
+          nid = db.allocate_node_id()
           db.add_node(nid, "Person")
-          db.set_prop(nid, "name", f"p{i}")
+          db.set_property(nid, "name", f"p{i}")
   ```
 
   Each mutator on its own is a separate transaction (slow, durable); a `write()` block does one
@@ -57,7 +57,7 @@ standard install path.
 
 LMDB is **single-writer / multi-reader**. Reads (queries) can run concurrently, but writes are
 serialized: the `Database` object holds a lock around every mutator (`add_node`, `add_edge`,
-`set_prop`, `alloc_node_id`). Do not share one `Database` across processes; the multi-process model
+`set_property`, `allocate_node_id`). Do not share one `Database` across processes; the multi-process model
 is read replication (a writer → N replicas), which is future work.
 
 ## Under the hood

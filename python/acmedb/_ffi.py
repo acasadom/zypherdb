@@ -15,9 +15,9 @@ from pathlib import Path
 _LIBNAME = "libacmedb.dylib" if platform.system() == "Darwin" else "libacmedb.so"
 
 # Result cell type tags (src/c_api.zig).
-TYPE_INT = 0
-TYPE_STR = 1
-TYPE_BOOL = 2
+TYPE_INT64 = 0
+TYPE_STRING = 1
+TYPE_BOOLEAN = 2
 TYPE_NULL = 3
 TYPE_LIST = 4
 
@@ -57,8 +57,8 @@ lib.acmedb_error_code.argtypes = [ctypes.c_void_p]
 lib.acmedb_error_code.restype = ctypes.c_int
 
 # --- Writes ------------------------------------------------------------------
-lib.acmedb_alloc_node_id.argtypes = [ctypes.c_void_p]
-lib.acmedb_alloc_node_id.restype = ctypes.c_uint64
+lib.acmedb_allocate_node_id.argtypes = [ctypes.c_void_p]
+lib.acmedb_allocate_node_id.restype = ctypes.c_uint64
 lib.acmedb_begin_write.argtypes = [ctypes.c_void_p]
 lib.acmedb_begin_write.restype = ctypes.c_int
 lib.acmedb_commit_write.argtypes = [ctypes.c_void_p]
@@ -68,38 +68,38 @@ lib.acmedb_add_node.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_
 lib.acmedb_add_node.restype = ctypes.c_int
 lib.acmedb_add_edge.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_add_edge.restype = ctypes.c_int
-lib.acmedb_set_prop_i64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int64]
-lib.acmedb_set_prop_i64.restype = ctypes.c_int
-lib.acmedb_set_prop_str.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
-lib.acmedb_set_prop_str.restype = ctypes.c_int
+lib.acmedb_set_property_int64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int64]
+lib.acmedb_set_property_int64.restype = ctypes.c_int
+lib.acmedb_set_property_string.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+lib.acmedb_set_property_string.restype = ctypes.c_int
 
 # --- Queries -----------------------------------------------------------------
 lib.acmedb_query.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_query.restype = ctypes.c_void_p
 lib.acmedb_result_free.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_rows.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_rows.restype = ctypes.c_size_t
-lib.acmedb_result_cols.argtypes = [ctypes.c_void_p]
-lib.acmedb_result_cols.restype = ctypes.c_size_t
+lib.acmedb_result_row_count.argtypes = [ctypes.c_void_p]
+lib.acmedb_result_row_count.restype = ctypes.c_size_t
+lib.acmedb_result_column_count.argtypes = [ctypes.c_void_p]
+lib.acmedb_result_column_count.restype = ctypes.c_size_t
 lib.acmedb_result_type.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_type.restype = ctypes.c_int
 lib.acmedb_result_int.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_int.restype = ctypes.c_int64
 lib.acmedb_result_bool.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_bool.restype = ctypes.c_bool
-lib.acmedb_result_str.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-lib.acmedb_result_str.restype = ctypes.c_void_p
+lib.acmedb_result_string.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+lib.acmedb_result_string.restype = ctypes.c_void_p
 lib.acmedb_result_to_json.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 lib.acmedb_result_to_json.restype = ctypes.c_void_p
 
 # --- List cells (flat lists) -------------------------------------------------
-lib.acmedb_result_list_len.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
-lib.acmedb_result_list_len.restype = ctypes.c_size_t
+lib.acmedb_result_list_length.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+lib.acmedb_result_list_length.restype = ctypes.c_size_t
 lib.acmedb_result_list_item_type.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_list_item_type.restype = ctypes.c_int
 lib.acmedb_result_list_item_int.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_list_item_int.restype = ctypes.c_int64
 lib.acmedb_result_list_item_bool.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_list_item_bool.restype = ctypes.c_bool
-lib.acmedb_result_list_item_str.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-lib.acmedb_result_list_item_str.restype = ctypes.c_void_p
+lib.acmedb_result_list_item_string.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+lib.acmedb_result_list_item_string.restype = ctypes.c_void_p
