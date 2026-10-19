@@ -580,6 +580,15 @@ pub const Graph = struct {
         return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
     }
 
+    /// Iterates the edges of node `id` in `direction` with type `edge_type`,
+    /// as `EdgeKey`s. O(log N + edges of that type).
+    pub fn edgesOfType(self: *Graph, id: NodeId, direction: Direction, edge_type: []const u8) StorageError!EdgeKeyIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try key_encoding.appendEdgePrefix(&prefix, self.allocator, id, direction, edge_type);
+        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+    }
+
     /// Number of nodes carrying `label`. Counts by scanning the label index:
     /// O(log N + nodes with the label). The planner calls it once per query
     /// and label, so a maintained counter (like `edgeTypeCount`) would make

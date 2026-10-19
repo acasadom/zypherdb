@@ -23,7 +23,9 @@ const ErrorCode = @import("../diagnostics.zig").ErrorCode;
 const ValueGrouping = @import("aggregation.zig").ValueGrouping;
 const AggregateKind = @import("../query/ast.zig").AggregateKind;
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
+const semantics = @import("../query/semantics.zig");
 const Bindings = @import("bindings.zig").Bindings;
+const EdgeRef = @import("bindings.zig").EdgeRef;
 const PlanStep = @import("planner.zig").PlanStep;
 const PatternEdge = @import("planner.zig").PatternEdge;
 const PatternNode = @import("planner.zig").PatternNode;
@@ -77,6 +79,11 @@ main_variables: std.ArrayList([]const u8),
 in_optional: bool,
 optional_matched: bool,
 
+// Relationship uniqueness: the edges bound by the MATCH being run, from
+// `edge_scope_start` (an OPTIONAL MATCH opens its own scope).
+used_edges: std.ArrayList(EdgeRef),
+edge_scope_start: usize,
+
 // UNWIND context.
 unwind: ?Index,
 
@@ -111,6 +118,8 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .main_variables = .empty,
         .in_optional = false,
         .optional_matched = false,
+        .used_edges = .empty,
+        .edge_scope_start = 0,
         .unwind = null,
         .has_aggregates = false,
         .projection_items = .empty,
@@ -128,6 +137,7 @@ pub fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: an
 /// All writes of the query commit or abort together; a read-only query reads
 /// one consistent snapshot.
 pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
+    try semantics.check(self.ast, query, self.allocator, self.diagnostic);
     self.reset();
     const matches = try self.classifyClauses(query);
     try self.collectProjectionItems();
@@ -171,6 +181,8 @@ fn reset(self: *Executor) void {
     self.in_optional = false;
     self.optional_matched = false;
     self.unwind = null;
+    self.used_edges = .empty;
+    self.edge_scope_start = 0;
     self.with_clause = null;
     self.update_clauses = .empty;
     self.return_clause = null;
@@ -247,6 +259,14 @@ fn runFrom(self: *Executor, match_clause: ?Index, bindings: *Bindings, without_m
         .match_found => try self.matchFound(bindings),
         .finish_body => try self.finishBody(bindings),
     }
+}
+
+/// The edge type to bind for a matched edge: the pattern's own (owned by the
+/// AST) when it names one, else a copy of the stored type (a view into the
+/// store that does not outlive the scan).
+pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) ExecutionError![]const u8 {
+    if (edge.edge_type.len > 0) return edge.edge_type;
+    return self.allocator.dupe(u8, stored);
 }
 
 /// Runs one MATCH clause (its patterns + WHERE) from `bindings`, recursing

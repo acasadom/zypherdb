@@ -418,7 +418,9 @@ pub const Parser = struct {
         return self.ast.addNode(.node_pattern, .{ .node_pattern = .{ .variable_name = variable_name, .labels = labels_slice } }, properties.items);
     }
 
-    fn parseEdgeDetails(self: *Parser) ParseError!struct { variable_name: []const u8, edge_type: []const u8, properties: std.ArrayList(Index) } {
+    const EdgeDetails = struct { variable_name: []const u8, edge_type: []const u8, properties: std.ArrayList(Index) };
+
+    fn parseEdgeDetails(self: *Parser) ParseError!EdgeDetails {
         try self.expect(.left_bracket);
         var variable_name: []const u8 = "";
         if (self.at(.identifier)) variable_name = try self.ast.intern(self.advance().text);
@@ -446,22 +448,31 @@ pub const Parser = struct {
         return .{ .variable_name = variable_name, .edge_type = edge_type, .properties = properties };
     }
 
+    /// Parses an edge between two node patterns. Each end is read on its own:
+    /// `<-` or `-` before, `->` or `-` after, with optional `[...]` details in
+    /// between. One arrow gives the direction; none or both mean either way.
     fn parseEdgePattern(self: *Parser) ParseError!Index {
-        var direction: EdgeDirection = undefined;
-        if (self.at(.minus)) {
-            _ = self.advance(); // -[...]->
-            direction = .left_to_right;
-            var d = try self.parseEdgeDetails();
-            defer d.properties.deinit(self.ast.allocator);
-            try self.expect(.arrow_right);
-            return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{ .variable_name = d.variable_name, .edge_type = d.edge_type, .direction = direction } }, d.properties.items);
-        }
-        _ = self.advance(); // <-[...]-
-        direction = .right_to_left;
-        var d = try self.parseEdgeDetails();
-        defer d.properties.deinit(self.ast.allocator);
-        try self.expect(.minus);
-        return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{ .variable_name = d.variable_name, .edge_type = d.edge_type, .direction = direction } }, d.properties.items);
+        const points_left = self.at(.arrow_left);
+        if (points_left) _ = self.advance() else try self.expect(.minus);
+        var details = if (self.at(.left_bracket))
+            try self.parseEdgeDetails()
+        else
+            EdgeDetails{ .variable_name = "", .edge_type = "", .properties = .empty };
+        defer details.properties.deinit(self.ast.allocator);
+        const points_right = self.at(.arrow_right);
+        if (points_right) _ = self.advance() else try self.expect(.minus);
+
+        const direction: EdgeDirection = if (points_left == points_right)
+            .undirected
+        else if (points_right)
+            .left_to_right
+        else
+            .right_to_left;
+        return self.ast.addNode(.edge_pattern, .{ .edge_pattern = .{
+            .variable_name = details.variable_name,
+            .edge_type = details.edge_type,
+            .direction = direction,
+        } }, details.properties.items);
     }
 
     fn parseProjection(self: *Parser) ParseError!Index {

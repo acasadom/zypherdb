@@ -11,6 +11,7 @@ const support = @import("../support.zig");
 const openStore = support.openStore;
 const loadMoviesGraph = support.loadMoviesGraph;
 const expectQuery = support.expectQuery;
+const expectQueryError = support.expectQueryError;
 
 test "runs the vertical-slice queries end to end" {
     var tmp = testing.tmpDir(.{});
@@ -211,4 +212,72 @@ test "string predicates and IN membership" {
 
     // IN with no match.
     try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.name IN ['Nobody'] RETURN p.name", &.{});
+}
+
+test "untyped and undirected relationship patterns" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (a:P {n: 'a'})-[:KNOWS {w: 1}]->(b:P {n: 'b'}), (a)-[:OWNS {w: 2}]->(c:P {n: 'c'}), (c)-[:SELF {w: 3}]->(c)", &.{});
+
+    // `-[r]->` without a type follows every type and binds the real edge.
+    try expectQuery(&ast, &g, "MATCH (x {n: 'a'})-[r]->(y) RETURN y.n, r.w", &.{
+        &.{ .{ .string = "b" }, .{ .int = 1 } },
+        &.{ .{ .string = "c" }, .{ .int = 2 } },
+    });
+    try expectQuery(&ast, &g, "MATCH (x)-->(y) RETURN count(*)", &.{&.{.{ .int = 3 }}});
+    try expectQuery(&ast, &g, "MATCH (x)<--(y {n: 'a'}) RETURN x.n", &.{
+        &.{.{ .string = "b" }},
+        &.{.{ .string = "c" }},
+    });
+
+    // Undirected: each edge both ways, a self-loop once.
+    try expectQuery(&ast, &g, "MATCH (x {n: 'b'})--(y) RETURN y.n", &.{&.{.{ .string = "a" }}});
+    try expectQuery(&ast, &g, "MATCH (x)-[r]-(y) RETURN count(*)", &.{&.{.{ .int = 5 }}});
+    try expectQuery(&ast, &g, "MATCH (x {n: 'a'})-[r:OWNS]-(y) RETURN y.n", &.{&.{.{ .string = "c" }}});
+
+    // Relationship uniqueness: a path never reuses an edge, so b--a--b is
+    // not a match, but b--a--c is.
+    try expectQuery(&ast, &g, "MATCH (x {n: 'b'})--(y)--(z) RETURN z.n", &.{&.{.{ .string = "c" }}});
+
+    // A created relationship needs one type and a direction.
+    try expectQueryError(&ast, &g, "CREATE (:P)-[:R]-(:P)", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CREATE (:P)-->(:P)", error.InvalidExpression);
+    // An undirected MERGE finds the edge in either direction.
+    try expectQuery(&ast, &g, "MATCH (x {n: 'b'}), (y {n: 'a'}) MERGE (x)-[:KNOWS]-(y)", &.{});
+    try expectQuery(&ast, &g, "MATCH ()-[r:KNOWS]->() RETURN count(*)", &.{&.{.{ .int = 1 }}});
+}
+
+test "variables keep their kind and their binding across clauses" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Static checks: they fail even on an empty graph.
+    try expectQueryError(&ast, &g, "MATCH ()-[r]-()-[r]-() RETURN count(*)", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (r)-[r]->() RETURN count(*)", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "WITH 1 AS r MATCH ()-[r]-() RETURN count(*)", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (n) WITH [n] AS users MATCH (users)-->(m) RETURN count(*)", error.InvalidExpression);
+
+    try expectQuery(&ast, &g, "CREATE (a:A)-[:T {w: 1}]->(b:B), (a)-[:T {w: 2}]->(c:B)", &.{});
+    // A bound node is checked against the new pattern's labels.
+    try expectQuery(&ast, &g, "MATCH (a)-[r]->() WITH r, a MATCH (a:X)-[r]->(b) RETURN count(*)", &.{&.{.{ .int = 0 }}});
+    try expectQuery(&ast, &g, "MATCH (a)-[r]->() WITH r, a MATCH (a:A)-[r]->(b) RETURN count(*)", &.{&.{.{ .int = 2 }}});
+    // A bound relationship only matches itself, not every edge of its shape.
+    try expectQuery(&ast, &g, "MATCH ()-[r {w: 1}]->() WITH r MATCH (a)-[r]->(b) RETURN r.w", &.{&.{.{ .int = 1 }}});
 }

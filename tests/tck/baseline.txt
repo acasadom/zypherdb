@@ -45,6 +45,7 @@ clauses/delete/Delete6.feature: [1] Limiting to zero results after deleting node
 clauses/delete/Delete6.feature: [2] Skipping all results after deleting nodes affects the result set but not the side effects
 clauses/delete/Delete6.feature: [6] Aggregating in `RETURN` after deleting nodes affects the result set but not the side effects
 clauses/match-where/MatchWhere1.feature: [14] Fail when filtering path with property predicate
+clauses/match-where/MatchWhere6.feature: [4] Do not fail when predicates on optionally matched and missed nodes are invalid
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #1
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #10
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #11
@@ -65,7 +66,12 @@ clauses/match/Match1.feature: [10] Fail when a path has the same variable in the
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #7
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #8
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #9
+clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #1
+clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #2
 clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #3
+clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #4
+clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #5
+clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #6
 clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #7
 clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #8
 clauses/match/Match1.feature: [1] Match non-existent nodes returns empty
@@ -108,15 +114,19 @@ clauses/match/Match1.feature: [9] Fail when a relationship has the same variable
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #17
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #18
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #19
+clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #2
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #20
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #21
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #22
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #23
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #24
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #25
+clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #3
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #4
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #5
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #6
+clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #7
+clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #8
 clauses/match/Match1.feature: [9] Fail when a relationship has the same variable in the same pattern #9
 clauses/match/Match2.feature: [10] Fail when a path has the same variable in a preceding MATCH #1
 clauses/match/Match2.feature: [10] Fail when a path has the same variable in a preceding MATCH #10
@@ -146,7 +156,11 @@ clauses/match/Match2.feature: [11] Fail when a node has the same variable in the
 clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #15
 clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #16
 clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #17
+clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #2
+clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #3
 clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #4
+clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #5
+clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #6
 clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #7
 clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #8
 clauses/match/Match2.feature: [11] Fail when a node has the same variable in the same pattern #9
@@ -195,7 +209,10 @@ clauses/match/Match2.feature: [9] Fail when a node has the same variable in a pr
 clauses/match/Match2.feature: [9] Fail when a node has the same variable in a preceding MATCH #7
 clauses/match/Match2.feature: [9] Fail when a node has the same variable in a preceding MATCH #8
 clauses/match/Match2.feature: [9] Fail when a node has the same variable in a preceding MATCH #9
+clauses/match/Match3.feature: [10] Matching using self-referencing pattern returns no result
 clauses/match/Match3.feature: [25] Matching twice with an additional node label
+clauses/match/Match3.feature: [27] Matching from null nodes should return no results owing to finding no matches
+clauses/match/Match3.feature: [29] Fail when re-using a relationship in the same pattern
 clauses/match/Match3.feature: [30] Fail when using a list or nodes as a node
 clauses/match/Match4.feature: [10] Fail on negative bound
 clauses/match/Match4.feature: [9] Fail when asterisk operator is missing
@@ -278,6 +295,8 @@ clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #7
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #8
 clauses/match/Match7.feature: [1] Simple OPTIONAL MATCH on empty graph
+clauses/match/Match7.feature: [28] Handling optional matches with inline label predicate
+clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matches
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
 clauses/merge/Merge1.feature: [16] Fail when using parameter as node predicate in MERGE
 clauses/merge/Merge1.feature: [17] Fail on merging node with null property
@@ -337,12 +356,15 @@ clauses/return-skip-limit/ReturnSkipLimit2.feature: [1] Limit to two hits
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [4] Handle ORDER BY with LIMIT 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [5] ORDER BY with LIMIT 0 should not generate errors
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [7] Limit to more rows than actual results 1
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [8] Limit to more rows than actual results 2
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [9] Fail when using non-constants in LIMIT
 clauses/return/Return2.feature: [11] RETURN does not lose precision on large integers
 clauses/return/Return2.feature: [15] Fail when returning properties of deleted nodes
 clauses/return/Return2.feature: [16] Fail when returning labels of deleted nodes
+clauses/return/Return2.feature: [17] Fail when returning properties of deleted relationships
 clauses/return/Return2.feature: [18] Fail on projecting a non-existent function
 clauses/return/Return2.feature: [2] Returning a node property value
+clauses/return/Return2.feature: [4] Returning a relationship property value
 clauses/return/Return4.feature: [1] Honour the column name for RETURN items
 clauses/return/Return4.feature: [3] Aliasing expressions
 clauses/return/Return4.feature: [4] Keeping used expression 1
@@ -429,6 +451,7 @@ clauses/with/With5.feature: [1] DISTINCT on an expression
 clauses/with/With6.feature: [1] Implicit grouping with single expression as grouping key and single aggregation
 clauses/with/With6.feature: [8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 clauses/with/With6.feature: [9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
+expressions/aggregation/Aggregation1.feature: [2] Counting loop relationships
 expressions/aggregation/Aggregation2.feature: [10] `min()` over list values
 expressions/aggregation/Aggregation2.feature: [7] `max()` over strings
 expressions/aggregation/Aggregation2.feature: [8] `min()` over strings
@@ -705,3 +728,13 @@ expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mis
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #3
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [10] Mixing directed and undirected pattern parts with self-relationship, count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [11] Mixing directed and undirected pattern parts with self-relationship, undirected count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [1] Undirected match in self-relationship graph, count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [2] Undirected match of self-relationship in self-relationship graph, count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [3] Undirected match on simple relationship graph, count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [4] Directed match on self-relationship graph, count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [5] Directed match of self-relationship on self-relationship graph, count
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [6] Counting undirected self-relationships in self-relationship graph
+useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [8] Directed match of a simple relationship, count
+useCases/triadicSelection/TriadicSelection1.feature: [1] Handling triadic friend of a friend

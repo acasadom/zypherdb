@@ -92,6 +92,7 @@ pub const AggregateKind = enum {
 pub const EdgeDirection = enum {
     left_to_right, // -[...]->
     right_to_left, // <-[...]-
+    undirected, // -[...]- (or <-[...]->): either direction
 };
 
 pub const NodeKind = enum {

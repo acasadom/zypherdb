@@ -10,6 +10,7 @@ const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
+const EdgeRef = @import("bindings.zig").EdgeRef;
 
 pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) ExecutionError!void {
     const chain = self.ast.nodeChildren(pattern);
@@ -37,10 +38,17 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
             const edge_pattern_index = chain[i * 2 + 1];
             const edge_pattern = self.ast.data(edge_pattern_index).edge_pattern;
             const forward_direction: Direction = switch (edge_pattern.direction) {
-                .left_to_right => .out,
+                .left_to_right, .undirected => .out,
                 .right_to_left => .in,
             };
-            var edge = PatternEdge{ .edge_type = edge_pattern.edge_type, .forward_direction = forward_direction, .variable_name = edge_pattern.variable_name, .seeks = .empty };
+            var edge = PatternEdge{
+                .edge_type = edge_pattern.edge_type,
+                .forward_direction = forward_direction,
+                .undirected = edge_pattern.direction == .undirected,
+                .variable_name = edge_pattern.variable_name,
+                .bound = if (edge_pattern.variable_name.len > 0) bindings.getEdge(edge_pattern.variable_name) else null,
+                .seeks = .empty,
+            };
             for (self.ast.nodeChildren(edge_pattern_index)) |property_node| {
                 const property_name = self.ast.data(property_node).text;
                 const value = self.ast.nodeChildren(property_node)[0];
@@ -186,9 +194,11 @@ pub const PatternNode = struct {
 };
 
 pub const PatternEdge = struct {
-    edge_type: []const u8,
+    edge_type: []const u8, // empty: any type
     forward_direction: Direction, // direction when traversing node_i -> node_{i+1}
+    undirected: bool, // `-[...]-`: either direction (forward_direction unused)
     variable_name: []const u8,
+    bound: ?EdgeRef, // the edge its variable is already bound to, if any
     seeks: std.ArrayList(Seek), // inline property equality filters
 };
 
