@@ -23,6 +23,7 @@ const Graph = @import("../storage/graph.zig").Graph;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../storage/graph.zig").Value;
 const Direction = @import("../storage/graph.zig").Direction;
+const NodeIdIterator = @import("../storage/graph.zig").NodeIdIterator;
 const KvError = @import("../storage/kv_store.zig").KvError;
 const Diagnostic = @import("../diag.zig").Diagnostic;
 const ErrorCode = @import("../diag.zig").ErrorCode;
@@ -505,6 +506,13 @@ pub const Executor = struct {
         return best;
     }
 
+    /// Candidate nodes for a pattern: the first label's index, or every node
+    /// when the pattern is unlabeled. Callers verify the remaining labels.
+    fn seedNodes(self: *Executor, labels: []const []const u8) KvError!NodeIdIterator {
+        if (labels.len > 0) return self.graph.nodesWithLabel(labels[0]);
+        return self.graph.allNodes();
+    }
+
     /// True if `id` carries every label in `labels` (empty = always true).
     fn hasAllLabels(self: *Executor, id: NodeId, labels: []const []const u8) KvError!bool {
         for (labels) |l| {
@@ -574,8 +582,7 @@ pub const Executor = struct {
                     }
                 } else {
                     // Scan the first label as the seed, then verify the rest.
-                    const seed = if (node.labels.len > 0) node.labels[0] else "";
-                    var it = try self.graph.nodesWithLabel(seed);
+                    var it = try self.seedNodes(node.labels);
                     defer it.deinit();
                     while (try it.next()) |id| {
                         if (!(try self.hasAllLabels(id, node.labels))) continue;
@@ -1352,8 +1359,7 @@ pub const Executor = struct {
             return null;
         }
 
-        const seed = if (np.labels.len > 0) np.labels[0] else "";
-        var it = try self.graph.nodesWithLabel(seed);
+        var it = try self.seedNodes(np.labels);
         defer it.deinit();
         while (try it.next()) |id| {
             if (!(try self.hasAllLabels(id, np.labels))) continue;
@@ -2541,5 +2547,36 @@ test "edge-property index anchors unlabeled edge patterns" {
     // The edge-property index anchors the match: only weight=5 edges match.
     try expectQuery(&ast, &g, "MATCH (a)-[r:KNOWS {weight: 5}]->(b) RETURN a.name, b.name", &.{
         &.{ .{ .str = "A" }, .{ .str = "B" } },
+    });
+}
+
+test "unlabeled node patterns scan every node" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (a:P {v: 1})", &.{});
+    try expectQuery(&ast, &g, "CREATE (b {v: 2})", &.{});
+
+    // MATCH without a label sees labeled and unlabeled nodes alike.
+    try expectQuery(&ast, &g, "MATCH (n) RETURN n.v", &.{
+        &.{.{ .int = 1 }},
+        &.{.{ .int = 2 }},
+    });
+    try expectQuery(&ast, &g, "MATCH (n) WHERE n.v > 1 RETURN n.v", &.{
+        &.{.{ .int = 2 }},
+    });
+
+    // A bare MERGE matches an existing node instead of creating a new one.
+    try expectQuery(&ast, &g, "MERGE (n)", &.{});
+    try expectQuery(&ast, &g, "MATCH (n) RETURN count(*)", &.{
+        &.{.{ .int = 2 }},
     });
 }

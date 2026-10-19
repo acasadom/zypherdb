@@ -746,6 +746,14 @@ pub const Graph = struct {
         return .{ .inner = it };
     }
 
+    /// Iterates every node (labeled or not), in ascending node-id order. Scans
+    /// the `n | node_id` existence markers, skipping the property keys that
+    /// share the `n` prefix.
+    pub fn allNodes(self: *Graph) KvError!NodeIdIterator {
+        const it = try self.store.scanPrefix(&.{node_marker});
+        return .{ .inner = it, .key_len = 1 + id_len };
+    }
+
     /// Number of nodes carrying `label`.
     pub fn labelCount(self: *Graph, label: []const u8) KvError!usize {
         var it = try self.nodesWithLabel(label);
@@ -761,6 +769,8 @@ pub const Graph = struct {
 /// transaction/cursor; `deinit` releases them.
 pub const NodeIdIterator = struct {
     inner: PrefixIterator,
+    /// When set, only keys of exactly this length are yielded (others skipped).
+    key_len: ?usize = null,
 
     pub fn deinit(self: *NodeIdIterator) void {
         self.inner.deinit();
@@ -768,8 +778,13 @@ pub const NodeIdIterator = struct {
 
     /// Returns the next node id, or `null` at the end.
     pub fn next(self: *NodeIdIterator) KvError!?NodeId {
-        const entry = try self.inner.next() orelse return null;
-        return readNodeId(entry.key[entry.key.len - id_len ..]);
+        while (try self.inner.next()) |entry| {
+            if (self.key_len) |len| {
+                if (entry.key.len != len) continue;
+            }
+            return readNodeId(entry.key[entry.key.len - id_len ..]);
+        }
+        return null;
     }
 };
 
@@ -895,6 +910,27 @@ test "addNode and hasNode track node existence" {
     try g.addNode(7, "");
     try testing.expect(try g.hasNode(7));
     try testing.expect(!try g.hasNode(8));
+}
+
+test "allNodes yields labeled and unlabeled nodes, skipping property keys" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(3, "");
+    try g.addNode(1, "Person");
+    try g.setProp(1, "name", .{ .str = "A" });
+    try g.setProp(3, "v", .{ .int = 7 });
+
+    var it = try g.allNodes();
+    defer it.deinit();
+    try expectNext(&it, 1);
+    try expectNext(&it, 3);
+    try testing.expect((try it.next()) == null);
 }
 
 test "labels, properties and value encoding" {
