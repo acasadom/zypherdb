@@ -39,8 +39,10 @@ pub const EdgeDirection = ast.EdgeDirection;
 pub const parser = @import("query/parser.zig");
 
 pub const ParseError = parser.ParseError;
-pub const TokenKind = parser.TokenKind;
-pub const Token = parser.Token;
+pub const lexer = @import("query/lexer.zig");
+
+pub const TokenKind = lexer.TokenKind;
+pub const Token = lexer.Token;
 
 pub const executor = @import("execution/executor.zig");
 
