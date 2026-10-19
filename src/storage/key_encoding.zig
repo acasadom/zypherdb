@@ -62,6 +62,19 @@ pub const Value = @import("../value.zig").Value;
 
 pub const value_tag_int: u8 = 0x01;
 pub const value_tag_string: u8 = 0x02;
+pub const value_tag_boolean: u8 = 0x03;
+/// Index-lookup tag for a value that is never stored (`null`, a list): no
+/// index entry carries it, so a lookup by such a value finds nothing.
+pub const value_tag_never_stored: u8 = 0xff;
+
+/// True if `value` can be stored as a property: `int`, `string` or
+/// `boolean`. (`null` is never stored: setting a property to null removes it.)
+pub fn isStorable(value: Value) bool {
+    return switch (value) {
+        .int, .string, .boolean => true,
+        .null, .list => false,
+    };
+}
 
 /// Appends the storage encoding of `value`: `tag | payload`.
 pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) !void {
@@ -76,17 +89,17 @@ pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value)
             try list.append(allocator, value_tag_string);
             try list.appendSlice(allocator, s);
         },
-        .boolean, .null, .list => unreachable, // not stored as properties
+        .boolean => |b| try list.appendSlice(allocator, &.{ value_tag_boolean, @intFromBool(b) }),
+        .null, .list => unreachable, // callers check `isStorable` first
     }
 }
 
-/// Decodes a stored value, returning a `Value` whose `str` variant is an owned
-/// copy allocated with `allocator` (free it, or use an arena).
+/// Decodes a stored value, returning a `Value` whose `string` variant is an
+/// owned copy allocated with `allocator` (free it, or use an arena).
 pub fn decodeOwnedValue(raw: []const u8, allocator: Allocator) !Value {
     return switch (raw[0]) {
-        value_tag_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
         value_tag_string => .{ .string = try allocator.dupe(u8, raw[1..]) },
-        else => unreachable,
+        else => decodeValue(raw),
     };
 }
 
@@ -95,6 +108,7 @@ pub fn decodeValue(raw: []const u8) Value {
     return switch (raw[0]) {
         value_tag_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
         value_tag_string => .{ .string = raw[1..] },
+        value_tag_boolean => .{ .boolean = raw[1] != 0 },
         else => unreachable,
     };
 }
@@ -115,7 +129,9 @@ pub fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: V
             try list.appendSlice(allocator, s);
             try list.append(allocator, separator);
         },
-        .boolean, .null, .list => unreachable, // not stored as properties
+        .boolean => |b| try list.appendSlice(allocator, &.{ value_tag_boolean, @intFromBool(b) }),
+        // Never stored, so never indexed: the lookup prefix matches no entry.
+        .null, .list => try list.append(allocator, value_tag_never_stored),
     }
 }
 

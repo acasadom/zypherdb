@@ -243,3 +243,59 @@ test "CREATE and MERGE write anonymous nodes" {
         &.{.{ .int = 3 }},
     });
 }
+
+test "boolean properties are stored, null removes, lists are refused cleanly" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Booleans round-trip and are indexed (an inline property is a seek).
+    try expectQuery(&ast, &g, "CREATE (:Card {active: true, code: 1})", &.{});
+    try expectQuery(&ast, &g, "CREATE (:Card {active: false, code: 2})", &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card {active: true}) RETURN c.code, c.active", &.{
+        &.{ .{ .int = 1 }, .{ .boolean = true } },
+    });
+
+    // Setting a property to null removes it.
+    try expectQuery(&ast, &g, "MATCH (c:Card {code: 1}) SET c.active = null", &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card) WHERE c.code = 1 RETURN count(*)", &.{
+        &.{.{ .int = 1 }},
+    });
+    try expectQuery(&ast, &g, "MATCH (c:Card {active: true}) RETURN count(*)", &.{
+        &.{.{ .int = 0 }},
+    });
+
+    // A list is refused with an error instead of aborting the process.
+    try expectQueryError(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = [1, 2]", error.UnsupportedPropertyType);
+}
+
+test "null property values: MATCH finds nothing, MERGE is refused" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Door {num: 1})", &.{});
+    // An inline null (an index lookup) and a list match nothing; neither aborts.
+    try expectQuery(&ast, &g, "MATCH (d {num: null}) RETURN count(*)", &.{
+        &.{.{ .int = 0 }},
+    });
+    try expectQuery(&ast, &g, "MATCH (d {num: [1]}) RETURN count(*)", &.{
+        &.{.{ .int = 0 }},
+    });
+    try expectQueryError(&ast, &g, "MERGE ({num: null})", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (a:Door) MERGE (a)-[:R {since: null}]->(b:Door)", error.InvalidExpression);
+}

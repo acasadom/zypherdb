@@ -131,6 +131,7 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
             _ = self.advance();
             if (std.ascii.eqlIgnoreCase(t.text, "true")) return self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
             if (std.ascii.eqlIgnoreCase(t.text, "false")) return self.ast.addNode(.boolean_literal, .{ .boolean = false }, &.{});
+            if (std.ascii.eqlIgnoreCase(t.text, "null")) return self.ast.addNode(.null_literal, .{ .none = {} }, &.{});
             if (aggregateKindFromName(t.text)) |kind| {
                 if (self.at(.left_paren)) {
                     return parseAggregateCall(self, kind);

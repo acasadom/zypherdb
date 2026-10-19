@@ -45,6 +45,7 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         .integer_literal => .{ .int = self.ast.data(expr).int },
         .string_literal => .{ .string = self.ast.data(expr).text },
         .boolean_literal => .{ .boolean = self.ast.data(expr).boolean },
+        .null_literal => .{ .null = {} },
         .list_literal => blk: {
             var items = std.ArrayList(Value).empty;
             for (self.ast.nodeChildren(expr)) |item| {

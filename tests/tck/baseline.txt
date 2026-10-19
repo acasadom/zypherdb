@@ -8,6 +8,7 @@ clauses/create/Create1.feature: [1] Create a single node
 clauses/create/Create1.feature: [20] Fail when creating a node using undefined variable in pattern
 clauses/create/Create1.feature: [3] Create a single node with a label
 clauses/create/Create1.feature: [5] Create a single node with multiple labels
+clauses/create/Create1.feature: [7] Create a single node with a property
 clauses/create/Create1.feature: [8] Create a single node with a property and return it
 clauses/create/Create1.feature: [9] Create a single node with two properties
 clauses/create/Create2.feature: [10] Create a single self loop on an existing node
@@ -290,12 +291,14 @@ clauses/remove/Remove2.feature: [1] Remove a single label from a node with a sin
 clauses/remove/Remove3.feature: [17] Skipping and limiting to a few results after removing a property from relationships affects the result set but not the side effects
 clauses/remove/Remove3.feature: [18] Skipping zero result and limiting to all results after removing a property from relationships does not affect the result set nor the side effects
 clauses/remove/Remove3.feature: [20] Aggregating in `RETURN` after removing a property from relationships affects the result set but not the side effects
+clauses/return-orderby/ReturnOrderBy1.feature: [10] ORDER BY DESC should order lists in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [1] ORDER BY should order booleans in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [2] ORDER BY DESC should order booleans in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [3] ORDER BY should order strings in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [4] ORDER BY DESC should order strings in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [5] ORDER BY should order ints in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [6] ORDER BY DESC should order ints in the expected order
+clauses/return-orderby/ReturnOrderBy1.feature: [9] ORDER BY should order lists in the expected order
 clauses/return-orderby/ReturnOrderBy2.feature: [7] Ordering with aggregation
 clauses/return-orderby/ReturnOrderBy3.feature: [1] Sort on aggregate function and normal property
 clauses/return-orderby/ReturnOrderBy6.feature: [4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
@@ -333,6 +336,8 @@ clauses/union/Union3.feature: [2] Failing when mixing UNION ALL and UNION
 clauses/unwind/Unwind1.feature: [10] Unwinding list with duplicates
 clauses/unwind/Unwind1.feature: [1] Unwinding a list
 clauses/unwind/Unwind1.feature: [8] Unwinding the empty list
+clauses/unwind/Unwind1.feature: [9] Unwinding null
+clauses/with-orderBy/WithOrderBy1.feature: [10] Sort lists in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [1] Sort booleans in ascending order
 clauses/with-orderBy/WithOrderBy1.feature: [2] Sort booleans in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [3] Sort integers in ascending order
@@ -341,6 +346,7 @@ clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only 
 clauses/with-orderBy/WithOrderBy1.feature: [4] Sort integers in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [7] Sort strings in ascending order
 clauses/with-orderBy/WithOrderBy1.feature: [8] Sort strings in descending order
+clauses/with-orderBy/WithOrderBy1.feature: [9] Sort lists in ascending order
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #12
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #14
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #4
@@ -384,10 +390,13 @@ clauses/with/With4.feature: [5] Fail when not aliasing expressions in WITH
 clauses/with/With6.feature: [8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 clauses/with/With6.feature: [9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
 expressions/aggregation/Aggregation2.feature: [10] `min()` over list values
+expressions/aggregation/Aggregation2.feature: [7] `max()` over strings
+expressions/aggregation/Aggregation2.feature: [8] `min()` over strings
 expressions/aggregation/Aggregation2.feature: [9] `max()` over list values
+expressions/boolean/Boolean1.feature: [1] Conjunction of two truth values
+expressions/boolean/Boolean1.feature: [2] Conjunction of three truth values
+expressions/boolean/Boolean1.feature: [3] Conjunction of many truth values
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #11
-expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #13
-expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #16
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #17
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #18
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #2
@@ -395,12 +404,12 @@ expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one no
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #21
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #23
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #3
-expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #7
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #8
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #9
+expressions/boolean/Boolean2.feature: [1] Disjunction of two truth values
+expressions/boolean/Boolean2.feature: [2] Disjunction of three truth values
+expressions/boolean/Boolean2.feature: [3] Disjunction of many truth values
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #11
-expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #13
-expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #16
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #17
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #18
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #2
@@ -408,7 +417,6 @@ expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one no
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #21
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #23
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #3
-expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #7
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #8
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #9
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #1
@@ -434,7 +442,8 @@ expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at le
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #7
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #8
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #9
-expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #10
+expressions/boolean/Boolean4.feature: [1] Logical negation of truth values
+expressions/boolean/Boolean4.feature: [2] Double logical negation of truth values
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #18
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #19
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #20
@@ -467,8 +476,12 @@ expressions/comparison/Comparison1.feature: [10] Handling inlined equality of la
 expressions/comparison/Comparison1.feature: [11] Handling explicit equality of large integer
 expressions/comparison/Comparison1.feature: [12] Handling inlined equality of large integer, non-equal values
 expressions/comparison/Comparison1.feature: [13] Handling explicit equality of large integer, non-equal values
+expressions/comparison/Comparison1.feature: [15] It is unknown - i.e. null - if a null is equal to a null
+expressions/comparison/Comparison1.feature: [16] It is unknown - i.e. null - if a null is not equal to a null
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #1
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #3
+expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #4
+expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #6
 expressions/comparison/Comparison1.feature: [9] Equality between strings and numbers #4
 expressions/existentialSubqueries/ExistentialSubquery2.feature: [3] Full existential subquery with update clause should fail
 expressions/graph/Graph4.feature: [7] Failing when using `type()` on a node
@@ -510,6 +523,10 @@ expressions/list/List11.feature: [5] Fail on invalid argument types for `range()
 expressions/list/List11.feature: [5] Fail on invalid argument types for `range()` #9
 expressions/list/List12.feature: [7] Fail when using aggregation in list comprehension
 expressions/list/List3.feature: [1] Equality between list and literal should return false
+expressions/list/List3.feature: [2] Equality of lists of different length should return false despite nulls
+expressions/list/List3.feature: [3] Equality between different lists with null should return false
+expressions/list/List3.feature: [5] Equality of nested lists of different length should return false despite nulls
+expressions/list/List3.feature: [6] Equality between different nested lists with null should return false
 expressions/list/List5.feature: [10] IN should return true when types of LHS and RHS match - list
 expressions/list/List5.feature: [11] IN should return false when order of elements in LHS list and RHS list don't match
 expressions/list/List5.feature: [12] IN with different length lists should return false
@@ -520,7 +537,14 @@ expressions/list/List5.feature: [16] IN should return true when LHS and RHS cont
 expressions/list/List5.feature: [17] IN should return true when LHS and RHS contain a nested list
 expressions/list/List5.feature: [18] IN should return false when LHS contains a nested list and type mismatch on RHS - singleton version
 expressions/list/List5.feature: [19] IN should return false when LHS contains a nested list and type mismatch on RHS
+expressions/list/List5.feature: [23] IN with different length lists should return false despite nulls
+expressions/list/List5.feature: [24] IN should return true if match despite nulls
+expressions/list/List5.feature: [26] IN should return true if correct list found despite other lists having nulls
 expressions/list/List5.feature: [27] IN should return true if correct list found despite null being another element within containing list
+expressions/list/List5.feature: [28] IN should return false if no match can be found, despite nulls
+expressions/list/List5.feature: [30] IN should return false if different length lists compared, even if the extra element is null
+expressions/list/List5.feature: [32] IN should return true with previous null match, list version
+expressions/list/List5.feature: [33] IN should return false if different length lists with nested elements compared, even if the extra element is null
 expressions/list/List5.feature: [35] IN should work with an empty list
 expressions/list/List5.feature: [36] IN should return false for the empty list if the LHS and RHS types differ
 expressions/list/List5.feature: [37] IN should work with an empty list in the presence of other list elements: matching
@@ -551,6 +575,8 @@ expressions/literals/Literals1.feature: [1] Return a boolean true lower case
 expressions/literals/Literals1.feature: [2] Return a boolean true upper case
 expressions/literals/Literals1.feature: [3] Return a boolean false lower case
 expressions/literals/Literals1.feature: [4] Return a boolean false upper case
+expressions/literals/Literals1.feature: [5] Return null lower case
+expressions/literals/Literals1.feature: [6] Return null upper case
 expressions/literals/Literals2.feature: [10] Fail on a too small integer
 expressions/literals/Literals2.feature: [11] Fail on an integer containing a alphabetic character
 expressions/literals/Literals2.feature: [12] Fail on an integer containing a invalid symbol character
@@ -579,6 +605,7 @@ expressions/literals/Literals7.feature: [1] Return an empty list
 expressions/literals/Literals7.feature: [20] Fail on a nested list with non-matching brackets
 expressions/literals/Literals7.feature: [21] Fail on a nested list with missing commas
 expressions/literals/Literals7.feature: [2] Return a list containing a boolean
+expressions/literals/Literals7.feature: [3] Return a list containing a null
 expressions/literals/Literals7.feature: [4] Return a list containing a integer
 expressions/literals/Literals7.feature: [8] Return a list containing a string
 expressions/literals/Literals8.feature: [19] Fail on a map containing key starting with a number
@@ -590,12 +617,16 @@ expressions/literals/Literals8.feature: [24] Fail on a map containing a value wi
 expressions/literals/Literals8.feature: [25] Fail on a map containing a list without key
 expressions/literals/Literals8.feature: [26] Fail on a map containing a map without key
 expressions/literals/Literals8.feature: [27] Fail on a nested map with non-matching braces
+expressions/map/Map1.feature: [2] Statically access a field of a null map
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #1
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #3
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #4
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #5
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #6
 expressions/mathematical/Mathematical3.feature: [1] Fail for invalid Unicode hyphen in subtraction
+expressions/null/Null3.feature: [1] The inverse of a null is a null
+expressions/null/Null3.feature: [2] It is unknown - i.e. null - if a null is equal to a null
+expressions/null/Null3.feature: [3] It is unknown - i.e. null - if a null is not equal to a null
 expressions/path/Path3.feature: [2] Failing when using `length()` on a node
 expressions/path/Path3.feature: [3] Failing when using `length()` on a relationship
 expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variables in pattern #10

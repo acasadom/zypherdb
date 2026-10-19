@@ -105,6 +105,7 @@ pub const NodeKind = enum {
     integer_literal,
     string_literal,
     boolean_literal,
+    null_literal,
     list_literal,
     size_function,
     case_expression,

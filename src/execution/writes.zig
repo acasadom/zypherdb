@@ -4,6 +4,7 @@ const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
+const GraphError = @import("../storage/graph.zig").GraphError;
 
 const Executor = @import("Executor.zig");
 const pattern_matching = @import("pattern_matching.zig");
@@ -44,7 +45,8 @@ pub fn applyMerge(self: *Executor, merge_clause: Index, bindings: *Bindings) Exe
             id.* = bound;
             continue;
         }
-        if (try findMatchingNode(self, node_pattern_index, bindings)) |found| {
+            try rejectNullProperties(self, node_pattern_index, bindings);
+    if (try findMatchingNode(self, node_pattern_index, bindings)) |found| {
             id.* = found;
         } else {
             id.* = try createNode(self, node_pattern_index, bindings);
@@ -78,7 +80,7 @@ pub fn createNode(self: *Executor, node_pattern_index: Index, bindings: *Binding
     for (self.ast.nodeChildren(node_pattern_index)) |property_node| {
         const property_name = self.ast.data(property_node).text;
         const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
-        try self.graph.setProperty(id, property_name, value);
+        try setNodeProperty(self, id, property_name, value);
     }
     return id;
 }
@@ -129,12 +131,15 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
         const edge_pattern = self.ast.data(edge_pattern_index).edge_pattern;
         const src: NodeId = if (edge_pattern.direction == .left_to_right) left_id else right_id;
         const dst: NodeId = if (edge_pattern.direction == .left_to_right) right_id else left_id;
-        if (merge and (try self.graph.hasEdge(src, dst, edge_pattern.edge_type))) continue;
+        if (merge) {
+            try rejectNullProperties(self, edge_pattern_index, bindings);
+            if (try self.graph.hasEdge(src, dst, edge_pattern.edge_type)) continue;
+        }
         try self.graph.addEdge(src, dst, edge_pattern.edge_type);
         for (self.ast.nodeChildren(edge_pattern_index)) |property_node| {
             const property_name = self.ast.data(property_node).text;
             const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
-            try self.graph.setEdgeProperty(src, dst, edge_pattern.edge_type, property_name, value);
+            try setEdgeProperty(self, src, dst, edge_pattern.edge_type, property_name, value);
         }
     }
 }
@@ -149,8 +154,8 @@ pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) Executi
         const name = self.ast.data(object).text;
         const value = try expressions.evaluate(self, value_expression, bindings);
         switch (bindings.get(name) orelse return error.UnknownVariable) {
-            .node => |id| try self.graph.setProperty(id, property, value),
-            .edge => |e| try self.graph.setEdgeProperty(e.src, e.dst, e.edge_type, property, value),
+            .node => |id| try setNodeProperty(self, id, property, value),
+            .edge => |e| try setEdgeProperty(self, e.src, e.dst, e.edge_type, property, value),
             .value => return error.TypeMismatch,
         }
     }
@@ -194,6 +199,35 @@ pub fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) E
                 }
                 return err;
             };
+        }
+    }
+}
+
+/// Sets a node property, explaining an unstorable value in the diagnostic.
+fn setNodeProperty(self: *Executor, id: NodeId, name: []const u8, value: Value) ExecutionError!void {
+    self.graph.setProperty(id, name, value) catch |err| return reportPropertyError(self, name, err);
+}
+
+/// Sets an edge property, explaining an unstorable value in the diagnostic.
+fn setEdgeProperty(self: *Executor, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value) ExecutionError!void {
+    self.graph.setEdgeProperty(src, dst, edge_type, name, value) catch |err| return reportPropertyError(self, name, err);
+}
+
+fn reportPropertyError(self: *Executor, name: []const u8, err: GraphError) ExecutionError {
+    if (err == error.UnsupportedPropertyType) {
+        self.fail(.type_mismatch, "property '{s}': lists cannot be stored as property values yet", .{name});
+    }
+    return err;
+}
+
+/// MERGE cannot match or create on a null property value (openCypher raises a
+/// semantic error rather than guessing).
+fn rejectNullProperties(self: *Executor, pattern_index: Index, bindings: *Bindings) ExecutionError!void {
+    for (self.ast.nodeChildren(pattern_index)) |property_node| {
+        const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
+        if (value == .null) {
+            self.fail(.invalid_expression, "cannot MERGE on a null value for property '{s}'", .{self.ast.data(property_node).text});
+            return error.InvalidExpression;
         }
     }
 }

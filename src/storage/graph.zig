@@ -30,6 +30,10 @@ pub const Direction = key_encoding.Direction;
 pub const EdgeKey = key_encoding.EdgeKey;
 pub const Value = key_encoding.Value;
 
+/// Errors of graph writes: storage failures, or a value that cannot be stored
+/// as a property (see `key_encoding.isStorable`).
+pub const GraphError = StorageError || error{UnsupportedPropertyType};
+
 // ---------------------------------------------------------------------------
 // Graph (index-free adjacency over KeyValueStore)
 // ---------------------------------------------------------------------------
@@ -293,8 +297,11 @@ pub const Graph = struct {
     }
 
     /// Stores a typed property `name` on node `id`. Idempotent. Maintains the
-    /// property index. O(log N).
-    pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
+    /// property index. Setting `null` removes the property (as in Cypher); a
+    /// list fails with `UnsupportedPropertyType`. O(log N).
+    pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) GraphError!void {
+        if (value == .null) return self.removeProperty(id, name);
+        if (!key_encoding.isStorable(value)) return error.UnsupportedPropertyType;
         // Remove the previous index entry, if any.
         if (try self.getProperty(id, name, self.allocator)) |old| {
             defer switch (old) {
@@ -425,8 +432,12 @@ pub const Graph = struct {
     }
 
     /// Stores a typed property on the directed edge `src -> dst` of type
-    /// `edge_type`. Idempotent. Maintains the edge-property index.
-    pub fn setEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value) StorageError!void {
+    /// `edge_type`. Idempotent. Maintains the edge-property index. Setting
+    /// `null` removes the property; a list fails with
+    /// `UnsupportedPropertyType`. O(log N).
+    pub fn setEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value) GraphError!void {
+        if (value == .null) return self.removeEdgeProperty(src, dst, edge_type, name);
+        if (!key_encoding.isStorable(value)) return error.UnsupportedPropertyType;
         if (try self.getEdgeProperty(src, dst, edge_type, name, self.allocator)) |old| {
             defer switch (old) {
                 .string => |s| self.allocator.free(s),

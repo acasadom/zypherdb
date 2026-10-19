@@ -37,6 +37,7 @@ const writes = @import("writes.zig");
 const Executor = @This();
 
 pub const ExecutionError = StorageError || error{
+    UnsupportedPropertyType,
     UnknownVariable,
     MissingProperty,
     InvalidExpression,
