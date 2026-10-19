@@ -150,3 +150,16 @@ def test_query_inside_write_is_refused(db):
             db.query("RETURN 1")
     # The batch was aborted.
     assert db.query("MATCH (n) RETURN count(*)") == [[0]]
+
+
+def test_export_graph(db):
+    db.query("CREATE (a:Person {name: 'Ana'})-[:KNOWS {since: 2020}]->(:Person {name: 'Bo'})")
+    assert db.export_graph() == {
+        "nodes": [
+            {"id": 0, "labels": ["Person"], "properties": {"name": "Ana"}},
+            {"id": 1, "labels": ["Person"], "properties": {"name": "Bo"}},
+        ],
+        "relationships": [
+            {"source": 0, "target": 1, "type": "KNOWS", "properties": {"since": 2020}},
+        ],
+    }

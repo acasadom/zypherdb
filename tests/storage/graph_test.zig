@@ -361,3 +361,55 @@ test "edge-type cardinality tracks add and delete" {
     try testing.expectEqual(@as(usize, 0), try g.edgeTypeCount("KNOWS"));
     try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
 }
+
+test "labelsOf, propertiesOf, edgePropertiesOf and edgesOf enumerate a node" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(1, "Person");
+    try g.addLabel(1, "Admin");
+    try g.setProperty(1, "name", .{ .string = "Ana" });
+    try g.setProperty(1, "age", .{ .int = 40 });
+    try g.addNode(2, "");
+    try g.addNode(3, "");
+    try g.addEdge(1, 2, "KNOWS");
+    try g.addEdge(1, 3, "OWNS");
+    try g.setEdgeProperty(1, 2, "KNOWS", "since", .{ .int = 2020 });
+
+    var labels = try g.labelsOf(1);
+    defer labels.deinit();
+    try testing.expectEqualStrings("Admin", (try labels.next()).?);
+    try testing.expectEqualStrings("Person", (try labels.next()).?);
+    try testing.expect((try labels.next()) == null);
+
+    var properties = try g.propertiesOf(1);
+    defer properties.deinit();
+    const age = (try properties.next()).?;
+    try testing.expectEqualStrings("age", age.name);
+    try testing.expectEqual(@as(i64, 40), age.value.int);
+    try testing.expectEqualStrings("name", (try properties.next()).?.name);
+    try testing.expect((try properties.next()) == null);
+
+    var edge_properties = try g.edgePropertiesOf(1, 2, "KNOWS");
+    defer edge_properties.deinit();
+    try testing.expectEqualStrings("since", (try edge_properties.next()).?.name);
+    try testing.expect((try edge_properties.next()) == null);
+
+    // Every outgoing edge, whatever its type.
+    var edges = try g.edgesOf(1, .out);
+    defer edges.deinit();
+    const first = (try edges.next()).?;
+    try testing.expectEqualStrings("KNOWS", first.edge_type);
+    try testing.expectEqual(@as(NodeId, 2), first.neighbour);
+    try testing.expectEqualStrings("OWNS", (try edges.next()).?.edge_type);
+    try testing.expect((try edges.next()) == null);
+
+    var incoming = try g.edgesOf(2, .in);
+    defer incoming.deinit();
+    try testing.expectEqual(@as(NodeId, 1), (try incoming.next()).?.neighbour);
+}

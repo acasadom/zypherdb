@@ -102,6 +102,22 @@ class Database:
             finally:
                 _ffi.lib.acmedb_result_free(result)
 
+    def export_graph(self) -> dict:
+        """Return the whole graph, read straight from storage (not through the
+        query engine)::
+
+            {"nodes": [{"id": 0, "labels": ["Person"], "properties": {"name": "Ana"}}],
+             "relationships": [{"source": 0, "target": 1, "type": "KNOWS", "properties": {}}]}
+
+        Nodes come in id order. Reads one consistent snapshot; O(size of the graph).
+        """
+        with self._lock:
+            n = ctypes.c_size_t()
+            p = _ffi.lib.acmedb_export_json(self._handle(), ctypes.byref(n))
+            if not p:
+                raise StorageError("graph export failed")
+            return json.loads(ctypes.string_at(p, n.value))
+
     # --- Writes --------------------------------------------------------------
 
     @contextlib.contextmanager

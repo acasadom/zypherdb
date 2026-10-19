@@ -530,6 +530,45 @@ pub const Graph = struct {
         return .{ .inner = iterator, .key_length = 1 + key_encoding.node_id_length };
     }
 
+    /// Iterates the labels of node `id` (views into the store). O(log N + labels).
+    pub fn labelsOf(self: *Graph, id: NodeId) StorageError!LabelIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try prefix.append(self.allocator, key_encoding.reverse_label_marker);
+        try key_encoding.appendNodeId(&prefix, self.allocator, id);
+        try prefix.append(self.allocator, key_encoding.separator);
+        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+    }
+
+    /// Iterates the properties of node `id`, in name order (views into the
+    /// store). O(log N + properties).
+    pub fn propertiesOf(self: *Graph, id: NodeId) StorageError!PropertyIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try key_encoding.appendNodePropertyKey(&prefix, self.allocator, id, "");
+        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+    }
+
+    /// Iterates the properties of the edge `src -> dst` of type `edge_type`, in
+    /// name order (views into the store). O(log N + properties).
+    pub fn edgePropertiesOf(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!PropertyIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try key_encoding.appendEdgePropertyPrefix(&prefix, self.allocator, src, dst, edge_type);
+        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+    }
+
+    /// Iterates the edges of node `id` in `direction`, of every type, as
+    /// `EdgeKey`s (`edge_type` is a view into the store). O(log N + degree).
+    pub fn edgesOf(self: *Graph, id: NodeId, direction: Direction) StorageError!EdgeKeyIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try prefix.append(self.allocator, key_encoding.edge_marker);
+        try key_encoding.appendNodeId(&prefix, self.allocator, id);
+        try prefix.append(self.allocator, @backingInt(direction));
+        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+    }
+
     /// Number of nodes carrying `label`. Counts by scanning the label index:
     /// O(log N + nodes with the label). The planner calls it once per query
     /// and label, so a maintained counter (like `edgeTypeCount`) would make
@@ -572,6 +611,46 @@ pub const NeighbourIterator = NodeIdIterator;
 
 /// Iterator over directed edges (`src`, `dst`) decoded from edge-property index
 /// keys. Owns the underlying LMDB transaction/cursor.
+/// An iterator over the keys under one prefix that yields `decode(entry,
+/// prefix_length)` for each. It follows the module's iterator contract.
+fn KeyRangeIterator(comptime Item: type, comptime decode: fn (PrefixIterator.Entry, usize) Item) type {
+    return struct {
+        inner: PrefixIterator,
+        prefix_length: usize,
+
+        pub fn deinit(self: *@This()) void {
+            self.inner.deinit();
+        }
+
+        /// Returns the next item, or `null` at the end.
+        pub fn next(self: *@This()) StorageError!?Item {
+            const entry = try self.inner.next() orelse return null;
+            return decode(entry, self.prefix_length);
+        }
+    };
+}
+
+/// A stored property: its name and value (views into the store).
+pub const Property = struct { name: []const u8, value: Value };
+
+pub const LabelIterator = KeyRangeIterator([]const u8, struct {
+    fn decode(entry: PrefixIterator.Entry, prefix_length: usize) []const u8 {
+        return entry.key[prefix_length..];
+    }
+}.decode);
+
+pub const PropertyIterator = KeyRangeIterator(Property, struct {
+    fn decode(entry: PrefixIterator.Entry, prefix_length: usize) Property {
+        return .{ .name = entry.key[prefix_length..], .value = key_encoding.decodeValue(entry.value) };
+    }
+}.decode);
+
+pub const EdgeKeyIterator = KeyRangeIterator(EdgeKey, struct {
+    fn decode(entry: PrefixIterator.Entry, _: usize) EdgeKey {
+        return key_encoding.decodeEdgeKey(entry.key);
+    }
+}.decode);
+
 pub const EdgeIterator = struct {
     inner: PrefixIterator,
     value_length: usize,

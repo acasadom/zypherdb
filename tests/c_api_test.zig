@@ -197,3 +197,28 @@ test "C ABI: mutators reject nodes that do not exist" {
     try testing.expectEqual(RETURN_OK, acmedb_add_node(context, 2, "P".ptr, "P".len));
     try testing.expectEqual(RETURN_OK, acmedb_add_edge(context, 1, 2, "X".ptr, "X".len));
 }
+
+test "C ABI: export the whole graph as JSON" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(context);
+
+    const create = "CREATE (a:Person:Admin {name: 'Ana', age: 40})-[:KNOWS {since: 2020}]->(b {name: 'Bo'})";
+    acmedb_result_free(acmedb_query(context, create.ptr, create.len).?);
+
+    var length: usize = 0;
+    const json = c_api.acmedb_export_json(context, &length).?;
+    try testing.expectEqualStrings(
+        "{\"nodes\":[" ++
+            "{\"id\":0,\"labels\":[\"Admin\",\"Person\"],\"properties\":{\"age\":40,\"name\":\"Ana\"}}," ++
+            "{\"id\":1,\"labels\":[],\"properties\":{\"name\":\"Bo\"}}" ++
+            "],\"relationships\":[" ++
+            "{\"source\":0,\"target\":1,\"type\":\"KNOWS\",\"properties\":{\"since\":2020}}" ++
+            "]}",
+        json[0..length],
+    );
+}

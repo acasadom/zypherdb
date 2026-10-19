@@ -12,7 +12,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("query/ast.zig").Ast;
 const Graph = @import("storage/graph.zig").Graph;
+const PropertyIterator = @import("storage/graph.zig").PropertyIterator;
 const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
+const StorageError = @import("storage/key_value_store.zig").StorageError;
 const Value = @import("value.zig").Value;
 const Executor = @import("execution/Executor.zig");
 const Row = Executor.Row;
@@ -25,6 +27,8 @@ pub const Context = struct {
     graph: Graph,
     allocator: Allocator,
     diagnostic: Diagnostic,
+    /// The last `acmedb_export_json` document, owned by the context.
+    export_json: []u8 = &.{},
 };
 
 const Result = struct {
@@ -52,10 +56,12 @@ pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     context.graph = Graph.init(&context.store, allocator);
     context.allocator = allocator;
     context.diagnostic = Diagnostic.init();
+    context.export_json = &.{};
     return context;
 }
 
 pub export fn acmedb_close(context: *Context) void {
+    allocator.free(context.export_json);
     context.store.deinit();
     allocator.destroy(context);
 }
@@ -191,6 +197,99 @@ pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len:
 pub export fn acmedb_result_to_json(result: *const Result, out_len: *usize) [*]const u8 {
     out_len.* = result.json.len;
     return result.json.ptr;
+}
+
+/// Exports the whole graph as one JSON document, read from storage (not
+/// through the query engine):
+///
+///   {"nodes": [{"id": 1, "labels": ["A"], "properties": {"name": "x"}}, ...],
+///    "relationships": [{"source": 1, "target": 2, "type": "R", "properties": {}}, ...]}
+///
+/// Nodes are in id order; relationships by source, then type and target. The
+/// returned buffer belongs to the context and stays valid until the next
+/// export or `acmedb_close`. Returns null on failure. O(N) in the store size.
+pub export fn acmedb_export_json(context: *Context, out_len: *usize) ?[*]const u8 {
+    const json = exportGraph(context) catch return null;
+    allocator.free(context.export_json);
+    context.export_json = json;
+    out_len.* = json.len;
+    return json.ptr;
+}
+
+fn exportGraph(context: *Context) (StorageError || Allocator.Error)![]u8 {
+    const graph = &context.graph;
+    // Reuse an explicit write transaction if one is open; otherwise read one
+    // consistent snapshot.
+    const own_transaction = !graph.inWriteTransaction();
+    if (own_transaction) try graph.beginRead();
+    defer if (own_transaction) graph.commitRead();
+
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(allocator);
+    try buffer.appendSlice(allocator, "{\"nodes\":[");
+    try appendNodesJson(graph, &buffer);
+    try buffer.appendSlice(allocator, "],\"relationships\":[");
+    try appendRelationshipsJson(graph, &buffer);
+    try buffer.appendSlice(allocator, "]}");
+    return buffer.toOwnedSlice(allocator);
+}
+
+fn appendNodesJson(graph: *Graph, buffer: *std.ArrayList(u8)) (StorageError || Allocator.Error)!void {
+    var nodes = try graph.allNodes();
+    defer nodes.deinit();
+    var first = true;
+    while (try nodes.next()) |id| {
+        if (!first) try buffer.append(allocator, ',');
+        first = false;
+        try buffer.print(allocator, "{{\"id\":{d},\"labels\":[", .{id});
+        var labels = try graph.labelsOf(id);
+        defer labels.deinit();
+        var first_label = true;
+        while (try labels.next()) |label| {
+            if (!first_label) try buffer.append(allocator, ',');
+            first_label = false;
+            try appendJsonString(buffer, allocator, label);
+        }
+        try buffer.appendSlice(allocator, "],\"properties\":");
+        var properties = try graph.propertiesOf(id);
+        defer properties.deinit();
+        try appendPropertiesJson(&properties, buffer);
+        try buffer.append(allocator, '}');
+    }
+}
+
+fn appendRelationshipsJson(graph: *Graph, buffer: *std.ArrayList(u8)) (StorageError || Allocator.Error)!void {
+    var nodes = try graph.allNodes();
+    defer nodes.deinit();
+    var first = true;
+    while (try nodes.next()) |source| {
+        var edges = try graph.edgesOf(source, .out);
+        defer edges.deinit();
+        while (try edges.next()) |edge| {
+            if (!first) try buffer.append(allocator, ',');
+            first = false;
+            try buffer.print(allocator, "{{\"source\":{d},\"target\":{d},\"type\":", .{ source, edge.neighbour });
+            try appendJsonString(buffer, allocator, edge.edge_type);
+            try buffer.appendSlice(allocator, ",\"properties\":");
+            var properties = try graph.edgePropertiesOf(source, edge.neighbour, edge.edge_type);
+            defer properties.deinit();
+            try appendPropertiesJson(&properties, buffer);
+            try buffer.append(allocator, '}');
+        }
+    }
+}
+
+fn appendPropertiesJson(properties: *PropertyIterator, buffer: *std.ArrayList(u8)) (StorageError || Allocator.Error)!void {
+    try buffer.append(allocator, '{');
+    var first = true;
+    while (try properties.next()) |property| {
+        if (!first) try buffer.append(allocator, ',');
+        first = false;
+        try appendJsonString(buffer, allocator, property.name);
+        try buffer.append(allocator, ':');
+        try appendJsonValue(buffer, allocator, property.value);
+    }
+    try buffer.append(allocator, '}');
 }
 
 fn appendJsonString(buffer: *std.ArrayList(u8), result_allocator: Allocator, s: []const u8) Allocator.Error!void {
@@ -447,4 +546,5 @@ comptime {
     _ = acmedb_result_list_item_int;
     _ = acmedb_result_list_item_bool;
     _ = acmedb_result_list_item_string;
+    _ = acmedb_export_json;
 }

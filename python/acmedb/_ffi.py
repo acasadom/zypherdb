@@ -92,6 +92,10 @@ lib.acmedb_result_string.restype = ctypes.c_void_p
 lib.acmedb_result_to_json.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 lib.acmedb_result_to_json.restype = ctypes.c_void_p
 
+# --- Export ------------------------------------------------------------------
+lib.acmedb_export_json.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
+lib.acmedb_export_json.restype = ctypes.c_void_p
+
 # --- List cells (flat lists) -------------------------------------------------
 lib.acmedb_result_list_length.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_list_length.restype = ctypes.c_size_t

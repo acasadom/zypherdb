@@ -90,7 +90,7 @@ pub fn decodeOwnedValue(raw: []const u8, allocator: Allocator) !Value {
     };
 }
 
-/// Decodes a stored value without copying; `str` is a view into `raw`.
+/// Decodes a stored value without copying; a `string` is a view into `raw`.
 pub fn decodeValue(raw: []const u8) Value {
     return switch (raw[0]) {
         value_tag_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
