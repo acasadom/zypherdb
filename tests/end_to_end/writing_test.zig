@@ -6,14 +6,10 @@ const acmedb = @import("acmedb");
 
 const Ast = acmedb.Ast;
 const Graph = acmedb.Graph;
-const NodeId = acmedb.NodeId;
-const Value = acmedb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
-const loadSlice = support.loadMoviesGraph;
 const expectQuery = support.expectQuery;
-const expectOrdered = support.expectOrdered;
 const expectQueryError = support.expectQueryError;
 
 test "write clauses: CREATE, SET and DELETE" {

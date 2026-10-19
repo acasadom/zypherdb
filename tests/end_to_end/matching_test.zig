@@ -6,15 +6,11 @@ const acmedb = @import("acmedb");
 
 const Ast = acmedb.Ast;
 const Graph = acmedb.Graph;
-const NodeId = acmedb.NodeId;
-const Value = acmedb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
-const loadSlice = support.loadMoviesGraph;
+const loadMoviesGraph = support.loadMoviesGraph;
 const expectQuery = support.expectQuery;
-const expectOrdered = support.expectOrdered;
-const expectQueryError = support.expectQueryError;
 
 test "runs the vertical-slice queries end to end" {
     var tmp = testing.tmpDir(.{});
@@ -24,7 +20,7 @@ test "runs the vertical-slice queries end to end" {
     var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
-    try loadSlice(&g);
+    try loadMoviesGraph(&g);
 
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
@@ -179,7 +175,7 @@ test "string predicates and IN membership" {
     var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
-    try loadSlice(&g);
+    try loadMoviesGraph(&g);
 
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();

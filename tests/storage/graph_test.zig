@@ -5,12 +5,10 @@ const testing = std.testing;
 const acmedb = @import("acmedb");
 
 const Graph = acmedb.Graph;
-const KeyValueStore = acmedb.KeyValueStore;
 const NodeId = acmedb.NodeId;
 const NodeIdIterator = acmedb.NodeIdIterator;
 
 const support = @import("../support.zig");
-const testPath = support.testPath;
 const openStore = support.openStore;
 
 fn expectNext(iterator: *NodeIdIterator, expected: NodeId) !void {

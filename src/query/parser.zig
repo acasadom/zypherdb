@@ -12,13 +12,10 @@
 
 const std = @import("std");
 
-const Allocator = std.mem.Allocator;
 const Ast = @import("ast.zig").Ast;
 const Index = @import("ast.zig").Index;
 const NodeKind = @import("ast.zig").NodeKind;
-const BinaryOperator = @import("ast.zig").BinaryOperator;
 const EdgeDirection = @import("ast.zig").EdgeDirection;
-const AggregateKind = @import("ast.zig").AggregateKind;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const lexer = @import("lexer.zig");
 const Token = lexer.Token;
@@ -26,17 +23,9 @@ const TokenKind = lexer.TokenKind;
 const tokenize = lexer.tokenize;
 const describeTokenKind = lexer.describeTokenKind;
 const describeToken = lexer.describeToken;
+const expression_parser = @import("expression_parser.zig");
 
 pub const ParseError = lexer.LexError;
-
-fn aggregateKindFromName(name: []const u8) ?AggregateKind {
-    if (std.ascii.eqlIgnoreCase(name, "count")) return .count;
-    if (std.ascii.eqlIgnoreCase(name, "sum")) return .sum;
-    if (std.ascii.eqlIgnoreCase(name, "min")) return .min;
-    if (std.ascii.eqlIgnoreCase(name, "max")) return .max;
-    if (std.ascii.eqlIgnoreCase(name, "collect")) return .collect;
-    return null;
-}
 
 /// Parses `src` into `ast` and returns the root `query` node index. On error,
 /// `diagnostic` (if non-null) is populated with a message and byte offset.
@@ -53,36 +42,36 @@ pub fn parse(ast: *Ast, src: []const u8, diagnostic: ?*Diagnostic) ParseError!In
     return parser.parseQuery();
 }
 
-const Parser = struct {
+pub const Parser = struct {
     ast: *Ast,
     tokens: []const Token,
     pos: usize,
     diagnostic: ?*Diagnostic,
 
-    fn peek(self: *const Parser) Token {
+    pub fn peek(self: *const Parser) Token {
         return self.tokens[self.pos];
     }
 
-    fn at(self: *const Parser, kind: TokenKind) bool {
+    pub fn at(self: *const Parser, kind: TokenKind) bool {
         return self.peek().kind == kind;
     }
 
-    fn advance(self: *Parser) Token {
+    pub fn advance(self: *Parser) Token {
         const t = self.tokens[self.pos];
         if (t.kind != .end_of_input) self.pos += 1;
         return t;
     }
 
-    fn atKeyword(self: *const Parser, keyword: []const u8) bool {
+    pub fn atKeyword(self: *const Parser, keyword: []const u8) bool {
         const t = self.peek();
         return t.kind == .identifier and !t.quoted and std.ascii.eqlIgnoreCase(t.text, keyword);
     }
 
-    fn fail(self: *Parser, comptime fmt: []const u8, args: anytype) void {
+    pub fn fail(self: *Parser, comptime fmt: []const u8, args: anytype) void {
         if (self.diagnostic) |d| d.set(.parse, self.peek().pos, fmt, args);
     }
 
-    fn expect(self: *Parser, kind: TokenKind) ParseError!void {
+    pub fn expect(self: *Parser, kind: TokenKind) ParseError!void {
         const t = self.peek();
         if (t.kind != kind) {
             self.fail("expected {s}, found {s}", .{ describeTokenKind(kind), describeToken(t) });
@@ -91,7 +80,7 @@ const Parser = struct {
         _ = self.advance();
     }
 
-    fn expectKeyword(self: *Parser, keyword: []const u8) ParseError!void {
+    pub fn expectKeyword(self: *Parser, keyword: []const u8) ParseError!void {
         if (!self.atKeyword(keyword)) {
             self.fail("expected keyword {s}", .{keyword});
             return error.UnexpectedToken;
@@ -99,7 +88,7 @@ const Parser = struct {
         _ = self.advance();
     }
 
-    fn expectIdentifier(self: *Parser) ParseError!Token {
+    pub fn expectIdentifier(self: *Parser) ParseError!Token {
         const t = self.peek();
         if (t.kind != .identifier) {
             self.fail("expected an identifier, found {s}", .{describeToken(t)});
@@ -109,13 +98,13 @@ const Parser = struct {
     }
 
     /// Consumes an identifier and interns its text into the AST arena.
-    fn internIdentifier(self: *Parser) ParseError![]const u8 {
+    pub fn internIdentifier(self: *Parser) ParseError![]const u8 {
         const t = try self.expectIdentifier();
         return self.ast.intern(t.text);
     }
 
     /// Unescapes `\'` and `\\` and interns the result into the AST arena.
-    fn internString(self: *Parser, raw: []const u8) ParseError![]const u8 {
+    pub fn internString(self: *Parser, raw: []const u8) ParseError![]const u8 {
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) {
             return self.ast.intern(raw);
         }
@@ -221,7 +210,7 @@ const Parser = struct {
 
     fn parseUnwindClause(self: *Parser) ParseError!Index {
         _ = self.advance(); // UNWIND
-        const expr = try self.parseExpression();
+        const expr = try expression_parser.parseExpression(self);
         try self.expectKeyword("AS");
         const variable_name = try self.internIdentifier();
         return self.ast.addNode(.unwind_clause, .{ .unwind = .{ .variable_name = variable_name } }, &.{expr});
@@ -240,7 +229,7 @@ const Parser = struct {
         var where_expression: Index = undefined;
         if (self.atKeyword("WHERE")) {
             _ = self.advance();
-            where_expression = try self.parseExpression();
+            where_expression = try expression_parser.parseExpression(self);
         } else {
             where_expression = try self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
         }
@@ -268,17 +257,17 @@ const Parser = struct {
         }
         if (self.atKeyword("SKIP")) {
             _ = self.advance();
-            const expr = try self.parseExpression();
+            const expr = try expression_parser.parseExpression(self);
             try children.append(self.ast.allocator, try self.ast.addNode(.skip, .{ .none = {} }, &.{expr}));
         }
         if (self.atKeyword("LIMIT")) {
             _ = self.advance();
-            const expr = try self.parseExpression();
+            const expr = try expression_parser.parseExpression(self);
             try children.append(self.ast.allocator, try self.ast.addNode(.limit, .{ .none = {} }, &.{expr}));
         }
         if (self.atKeyword("WHERE")) {
             _ = self.advance();
-            try children.append(self.ast.allocator, try self.parseExpression());
+            try children.append(self.ast.allocator, try expression_parser.parseExpression(self));
         } else {
             try children.append(self.ast.allocator, try self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{}));
         }
@@ -296,7 +285,7 @@ const Parser = struct {
             const var_node = try self.ast.addNode(.variable, .{ .text = variable_name }, &.{});
             const access = try self.ast.addNode(.property_access, .{ .text = property }, &.{var_node});
             try self.expect(.equal);
-            const value = try self.parseExpression();
+            const value = try expression_parser.parseExpression(self);
             const item = try self.ast.addNode(.set_item, .{ .none = {} }, &.{ access, value });
             try items.append(self.ast.allocator, item);
             if (self.at(.comma)) {
@@ -405,7 +394,7 @@ const Parser = struct {
             while (!self.at(.right_brace)) {
                 const name = try self.internIdentifier();
                 try self.expect(.colon);
-                const value = try self.parsePrimary();
+                const value = try expression_parser.parsePrimary(self);
                 const property = try self.ast.addNode(.property, .{ .text = name }, &.{value});
                 try properties.append(self.ast.allocator, property);
                 if (self.at(.comma)) {
@@ -434,7 +423,7 @@ const Parser = struct {
             while (!self.at(.right_brace)) {
                 const name = try self.internIdentifier();
                 try self.expect(.colon);
-                const value = try self.parsePrimary();
+                const value = try expression_parser.parsePrimary(self);
                 const property = try self.ast.addNode(.property, .{ .text = name }, &.{value});
                 try properties.append(self.ast.allocator, property);
                 if (self.at(.comma)) {
@@ -478,7 +467,7 @@ const Parser = struct {
     }
 
     fn parseProjectionItem(self: *Parser) ParseError!Index {
-        const expr = try self.parseExpression();
+        const expr = try expression_parser.parseExpression(self);
         var alias: []const u8 = "";
         if (self.atKeyword("AS")) {
             _ = self.advance();
@@ -508,14 +497,14 @@ const Parser = struct {
 
         if (self.atKeyword("SKIP")) {
             _ = self.advance();
-            const expr = try self.parseExpression();
+            const expr = try expression_parser.parseExpression(self);
             const skip = try self.ast.addNode(.skip, .{ .none = {} }, &.{expr});
             try children.append(self.ast.allocator, skip);
         }
 
         if (self.atKeyword("LIMIT")) {
             _ = self.advance();
-            const expr = try self.parseExpression();
+            const expr = try expression_parser.parseExpression(self);
             const limit = try self.ast.addNode(.limit, .{ .none = {} }, &.{expr});
             try children.append(self.ast.allocator, limit);
         }
@@ -527,7 +516,7 @@ const Parser = struct {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
         while (true) {
-            const expr = try self.parseExpression();
+            const expr = try expression_parser.parseExpression(self);
             var ascending = true;
             if (self.atKeyword("DESC")) {
                 _ = self.advance();
@@ -542,196 +531,5 @@ const Parser = struct {
             } else break;
         }
         return self.ast.addNode(.order_by, .{ .none = {} }, items.items);
-    }
-
-    fn parseExpression(self: *Parser) ParseError!Index {
-        return self.parseOr();
-    }
-
-    fn parseOr(self: *Parser) ParseError!Index {
-        var lhs = try self.parseAnd();
-        while (self.atKeyword("OR")) {
-            _ = self.advance();
-            const rhs = try self.parseAnd();
-            lhs = try self.ast.addNode(.binary_operation, .{ .binary_operator = .or_ }, &.{ lhs, rhs });
-        }
-        return lhs;
-    }
-
-    fn parseAnd(self: *Parser) ParseError!Index {
-        var lhs = try self.parseNot();
-        while (self.atKeyword("AND")) {
-            _ = self.advance();
-            const rhs = try self.parseNot();
-            lhs = try self.ast.addNode(.binary_operation, .{ .binary_operator = .and_ }, &.{ lhs, rhs });
-        }
-        return lhs;
-    }
-
-    fn parseNot(self: *Parser) ParseError!Index {
-        if (self.atKeyword("NOT")) {
-            _ = self.advance();
-            const operand = try self.parseNot();
-            return self.ast.addNode(.unary_operation, .{ .unary_operator = .not_ }, &.{operand});
-        }
-        return self.parseComparison();
-    }
-
-    fn parseComparison(self: *Parser) ParseError!Index {
-        const lhs = try self.parsePrimary();
-
-        // Multi-word string predicates (checked before the single-token ops,
-        // since `STARTS`/`ENDS`/`CONTAINS`/`IN` lex as plain identifiers).
-        if (self.atKeyword("STARTS")) {
-            _ = self.advance();
-            try self.expectKeyword("WITH");
-            const rhs = try self.parsePrimary();
-            return self.ast.addNode(.binary_operation, .{ .binary_operator = .starts_with }, &.{ lhs, rhs });
-        }
-        if (self.atKeyword("ENDS")) {
-            _ = self.advance();
-            try self.expectKeyword("WITH");
-            const rhs = try self.parsePrimary();
-            return self.ast.addNode(.binary_operation, .{ .binary_operator = .ends_with }, &.{ lhs, rhs });
-        }
-        if (self.atKeyword("CONTAINS")) {
-            _ = self.advance();
-            const rhs = try self.parsePrimary();
-            return self.ast.addNode(.binary_operation, .{ .binary_operator = .contains }, &.{ lhs, rhs });
-        }
-        if (self.atKeyword("IN")) {
-            _ = self.advance();
-            const list = try self.parseListLiteral();
-            return self.ast.addNode(.binary_operation, .{ .binary_operator = .in_ }, &.{ lhs, list });
-        }
-
-        const operator: ?BinaryOperator = switch (self.peek().kind) {
-            .equal => .equal,
-            .not_equal => .not_equal,
-            .less_than => .less_than,
-            .greater_than => .greater_than,
-            .less_or_equal => .less_or_equal,
-            .greater_or_equal => .greater_or_equal,
-            else => null,
-        };
-        if (operator) |o| {
-            _ = self.advance();
-            const rhs = try self.parsePrimary();
-            return self.ast.addNode(.binary_operation, .{ .binary_operator = o }, &.{ lhs, rhs });
-        }
-        return lhs;
-    }
-
-    /// Parses a list literal `[e0, e1, ...]` (elements are primary expressions;
-    /// the empty list is allowed).
-    fn parseListLiteral(self: *Parser) ParseError!Index {
-        try self.expect(.left_bracket);
-        var items = std.ArrayList(Index).empty;
-        defer items.deinit(self.ast.allocator);
-        while (!self.at(.right_bracket)) {
-            try items.append(self.ast.allocator, try self.parsePrimary());
-            if (self.at(.comma)) {
-                _ = self.advance();
-            } else break;
-        }
-        try self.expect(.right_bracket);
-        return self.ast.addNode(.list_literal, .{ .none = {} }, items.items);
-    }
-
-    fn parsePrimary(self: *Parser) ParseError!Index {
-        if (self.atKeyword("CASE")) return self.parseCaseExpression();
-        const t = self.peek();
-        switch (t.kind) {
-            .integer => {
-                _ = self.advance();
-                const v = std.fmt.parseInt(i64, t.text, 10) catch {
-                    self.fail("integer literal {s} does not fit in 64 bits", .{t.text});
-                    return error.UnexpectedToken;
-                };
-                return self.ast.addNode(.integer_literal, .{ .int = v }, &.{});
-            },
-            .string => {
-                _ = self.advance();
-                const s = try self.internString(t.text);
-                return self.ast.addNode(.string_literal, .{ .text = s }, &.{});
-            },
-            .identifier => if (t.quoted) {
-                _ = self.advance();
-                return self.parseVariableRef(t.text);
-            } else {
-                _ = self.advance();
-                if (std.ascii.eqlIgnoreCase(t.text, "true")) return self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
-                if (std.ascii.eqlIgnoreCase(t.text, "false")) return self.ast.addNode(.boolean_literal, .{ .boolean = false }, &.{});
-                if (aggregateKindFromName(t.text)) |kind| {
-                    if (self.at(.left_paren)) {
-                        return self.parseAggregateCall(kind);
-                    }
-                }
-                if (std.ascii.eqlIgnoreCase(t.text, "size")) {
-                    if (self.at(.left_paren)) {
-                        _ = self.advance();
-                        const arg = try self.parseExpression();
-                        try self.expect(.right_paren);
-                        return self.ast.addNode(.size_function, .{ .none = {} }, &.{arg});
-                    }
-                }
-                return self.parseVariableRef(t.text);
-            },
-            .left_bracket => return self.parseListLiteral(),
-            .left_paren => {
-                _ = self.advance();
-                const e = try self.parseExpression();
-                try self.expect(.right_paren);
-                return e;
-            },
-            else => {
-                self.fail("expected an expression, found {s}", .{describeToken(t)});
-                return error.UnexpectedToken;
-            },
-        }
-    }
-
-    /// A variable, optionally followed by `.property` (the name is already consumed).
-    fn parseVariableRef(self: *Parser, text: []const u8) ParseError!Index {
-        const name = try self.ast.intern(text);
-        const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
-        if (self.at(.dot)) {
-            _ = self.advance();
-            const property = try self.internIdentifier();
-            return self.ast.addNode(.property_access, .{ .text = property }, &.{var_node});
-        }
-        return var_node;
-    }
-
-    fn parseCaseExpression(self: *Parser) ParseError!Index {
-        _ = self.advance(); // CASE
-        var children = std.ArrayList(Index).empty;
-        defer children.deinit(self.ast.allocator);
-        while (self.atKeyword("WHEN")) {
-            _ = self.advance();
-            const cond = try self.parseExpression();
-            try self.expectKeyword("THEN");
-            const result = try self.parseExpression();
-            try children.append(self.ast.allocator, cond);
-            try children.append(self.ast.allocator, result);
-        }
-        if (self.atKeyword("ELSE")) {
-            _ = self.advance();
-            try children.append(self.ast.allocator, try self.parseExpression());
-        }
-        try self.expectKeyword("END");
-        return self.ast.addNode(.case_expression, .{ .none = {} }, children.items);
-    }
-
-    fn parseAggregateCall(self: *Parser, kind: AggregateKind) ParseError!Index {
-        try self.expect(.left_paren);
-        if (kind == .count and self.at(.star)) {
-            _ = self.advance();
-            try self.expect(.right_paren);
-            return self.ast.addNode(.aggregate, .{ .aggregate = kind }, &.{});
-        }
-        const arg = try self.parseExpression();
-        try self.expect(.right_paren);
-        return self.ast.addNode(.aggregate, .{ .aggregate = kind }, &.{arg});
     }
 };
