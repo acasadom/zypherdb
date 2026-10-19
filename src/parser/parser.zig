@@ -59,6 +59,8 @@ pub const Token = struct {
     text: []const u8,
     /// Byte offset of the token start in the source.
     pos: usize,
+    /// A backtick-quoted identifier: never a keyword or function name.
+    quoted: bool = false,
 };
 
 fn tokenKindName(kind: TokenKind) []const u8 {
@@ -105,12 +107,14 @@ fn aggKindFromName(name: []const u8) ?AggKind {
     return null;
 }
 
+/// Identifiers are ASCII letters/digits/`_` plus any non-ASCII byte, so UTF-8
+/// names (`Pérsona`, `año`) lex as one identifier. The bytes are kept verbatim.
 fn isIdentStart(c: u8) bool {
-    return std.ascii.isAlphabetic(c) or c == '_';
+    return std.ascii.isAlphabetic(c) or c == '_' or c >= 0x80;
 }
 
 fn isIdentCont(c: u8) bool {
-    return std.ascii.isAlphanumeric(c) or c == '_';
+    return std.ascii.isAlphanumeric(c) or c == '_' or c >= 0x80;
 }
 
 fn add(tokens: *std.ArrayList(Token), allocator: Allocator, kind: TokenKind, text: []const u8, pos: usize) ParseError!void {
@@ -184,6 +188,20 @@ fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) ParseErro
                 }
                 try add(&tokens, allocator, .string, src[content_start..i], start);
                 i += 1; // closing quote
+            },
+            '`' => {
+                // Quoted identifier: any bytes up to the closing backtick.
+                const start = i;
+                const end = std.mem.indexOfScalarPos(u8, src, i + 1, '`') orelse {
+                    if (diag) |d| d.set(.parse, start, "unterminated quoted identifier", .{});
+                    return error.UnexpectedEof;
+                };
+                if (end == i + 1) {
+                    if (diag) |d| d.set(.parse, start, "empty quoted identifier", .{});
+                    return error.UnexpectedToken;
+                }
+                try tokens.append(allocator, .{ .kind = .ident, .text = src[i + 1 .. end], .pos = start, .quoted = true });
+                i = end + 1;
             },
             '0'...'9' => {
                 const start = i;
@@ -286,7 +304,7 @@ const Parser = struct {
 
     fn atKeyword(self: *const Parser, kw: []const u8) bool {
         const t = self.peek();
-        return t.kind == .ident and std.ascii.eqlIgnoreCase(t.text, kw);
+        return t.kind == .ident and !t.quoted and std.ascii.eqlIgnoreCase(t.text, kw);
     }
 
     fn fail(self: *Parser, comptime fmt: []const u8, args: anytype) void {
@@ -856,7 +874,10 @@ const Parser = struct {
                 const s = try self.internString(t.text);
                 return self.ast.addNode(.string_literal, .{ .text = s }, &.{});
             },
-            .ident => {
+            .ident => if (t.quoted) {
+                _ = self.advance();
+                return self.parseVariableRef(t.text);
+            } else {
                 _ = self.advance();
                 if (std.ascii.eqlIgnoreCase(t.text, "true")) return self.ast.addNode(.bool_literal, .{ .boolean = true }, &.{});
                 if (std.ascii.eqlIgnoreCase(t.text, "false")) return self.ast.addNode(.bool_literal, .{ .boolean = false }, &.{});
@@ -873,14 +894,7 @@ const Parser = struct {
                         return self.ast.addNode(.size_fn, .{ .none = {} }, &.{arg});
                     }
                 }
-                const name = try self.ast.intern(t.text);
-                const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
-                if (self.at(.dot)) {
-                    _ = self.advance();
-                    const prop = try self.internIdent();
-                    return self.ast.addNode(.property_access, .{ .text = prop }, &.{var_node});
-                }
-                return var_node;
+                return self.parseVariableRef(t.text);
             },
             .l_bracket => return self.parseListLiteral(),
             .l_paren => {
@@ -894,6 +908,18 @@ const Parser = struct {
                 return error.UnexpectedToken;
             },
         }
+    }
+
+    /// A variable, optionally followed by `.prop` (the name is already consumed).
+    fn parseVariableRef(self: *Parser, text: []const u8) ParseError!Index {
+        const name = try self.ast.intern(text);
+        const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
+        if (self.at(.dot)) {
+            _ = self.advance();
+            const prop = try self.internIdent();
+            return self.ast.addNode(.property_access, .{ .text = prop }, &.{var_node});
+        }
+        return var_node;
     }
 
     fn parseCaseExpr(self: *Parser) ParseError!Index {
@@ -1222,4 +1248,18 @@ test "diagnostics carry a message and position" {
     var diag2 = Diagnostic.init();
     try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:Person {name: 'Keanu}) RETURN p.born", &diag2));
     try testing.expectEqualStrings("unterminated string literal", diag2.message());
+}
+
+test "UTF-8 and backtick-quoted identifiers" {
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    _ = try parse(&ast, "MATCH (p:Pérsona {año: 2024}) RETURN p.año", null);
+    // A quoted identifier may hold spaces and keywords, and is never a keyword.
+    _ = try parse(&ast, "MATCH (`my node`:`Zona Norte`)-[:`ACCEDE A`]->(m:`MATCH`) RETURN `my node`.`full name`, m.count", null);
+
+    var diag = Diagnostic.init();
+    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:`Open", &diag));
+    try testing.expectEqualStrings("unterminated quoted identifier", diag.message());
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:``) RETURN p", null));
 }

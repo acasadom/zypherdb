@@ -2580,3 +2580,26 @@ test "unlabeled node patterns scan every node" {
         &.{.{ .int = 2 }},
     });
 }
+
+test "UTF-8 and quoted names round-trip through labels and properties" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (a:Pérsona {año: 1990, nombre: 'Ñandú'})-[:`TRABAJA EN`]->(z:`Zona Norte`)", &.{});
+    try expectQuery(&ast, &g, "MATCH (p:Pérsona)-[:`TRABAJA EN`]->(z:`Zona Norte`) RETURN p.año, p.`nombre`", &.{
+        &.{ .{ .int = 1990 }, .{ .str = "Ñandú" } },
+    });
+    // A quoted keyword is a plain name.
+    try expectQuery(&ast, &g, "CREATE (n:`MATCH` {`count`: 3})", &.{});
+    try expectQuery(&ast, &g, "MATCH (n:`MATCH`) RETURN n.`count`", &.{
+        &.{.{ .int = 3 }},
+    });
+}
