@@ -41,6 +41,8 @@ function takes the returned `Context*`. Error codes (from `diagnostics.zig`):
 | `5` | invalid expression (e.g. `WITH` without an alias) |
 | `6` | node still connected (`DELETE` without `DETACH`) |
 | `7` | storage error |
+| `8` | a `$name` parameter was not given |
+| `9` | arithmetic error: integer overflow or division by zero |
 
 ## Writing data
 

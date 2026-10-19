@@ -8,6 +8,7 @@ import pytest
 
 from acmedb import (
     AcmedbError,
+    ArithmeticQueryError,
     ClosedError,
     Database,
     NodeNotFoundError,
@@ -192,3 +193,11 @@ def test_query_parameters(db):
         db.query("RETURN $x", x=1.5)
     with pytest.raises(OverflowError):
         db.query("RETURN $x", x=[2**64])
+
+
+def test_arithmetic(db):
+    assert db.query("RETURN 1 + 2 * 3, -7 / 2, 'n' + 1") == [[7, -3, "n1"]]
+    with pytest.raises(ArithmeticError):  # ArithmeticQueryError is one
+        db.query("RETURN 1 / 0")
+    with pytest.raises(ArithmeticQueryError):
+        db.query("RETURN 9223372036854775807 + 1")

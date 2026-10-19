@@ -73,10 +73,16 @@ pub const BinaryOperator = enum {
     ends_with,
     contains,
     in_,
+    add,
+    subtract,
+    multiply,
+    divide,
+    modulo,
 };
 
 pub const UnaryOperator = enum {
     not_,
+    negate,
 };
 
 /// Aggregation functions (`count`, `sum`, `min`, `max`, `collect`).

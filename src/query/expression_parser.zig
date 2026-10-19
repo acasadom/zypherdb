@@ -47,30 +47,30 @@ pub fn parseNot(self: *Parser) ParseError!Index {
 }
 
 pub fn parseComparison(self: *Parser) ParseError!Index {
-    const lhs = try parsePrimary(self);
+    const lhs = try parseAdditive(self);
 
     // Multi-word string predicates (checked before the single-token ops,
     // since `STARTS`/`ENDS`/`CONTAINS`/`IN` lex as plain identifiers).
     if (self.atKeyword("STARTS")) {
         _ = self.advance();
         try self.expectKeyword("WITH");
-        const rhs = try parsePrimary(self);
+        const rhs = try parseAdditive(self);
         return self.ast.addNode(.binary_operation, .{ .binary_operator = .starts_with }, &.{ lhs, rhs });
     }
     if (self.atKeyword("ENDS")) {
         _ = self.advance();
         try self.expectKeyword("WITH");
-        const rhs = try parsePrimary(self);
+        const rhs = try parseAdditive(self);
         return self.ast.addNode(.binary_operation, .{ .binary_operator = .ends_with }, &.{ lhs, rhs });
     }
     if (self.atKeyword("CONTAINS")) {
         _ = self.advance();
-        const rhs = try parsePrimary(self);
+        const rhs = try parseAdditive(self);
         return self.ast.addNode(.binary_operation, .{ .binary_operator = .contains }, &.{ lhs, rhs });
     }
     if (self.atKeyword("IN")) {
         _ = self.advance();
-        const list = try parsePrimary(self); // any expression yielding a list
+        const list = try parseAdditive(self); // any expression yielding a list
         return self.ast.addNode(.binary_operation, .{ .binary_operator = .in_ }, &.{ lhs, list });
     }
 
@@ -85,20 +85,92 @@ pub fn parseComparison(self: *Parser) ParseError!Index {
     };
     if (operator) |o| {
         _ = self.advance();
-        const rhs = try parsePrimary(self);
+        const rhs = try parseAdditive(self);
         return self.ast.addNode(.binary_operation, .{ .binary_operator = o }, &.{ lhs, rhs });
     }
     return lhs;
 }
 
-/// Parses a list literal `[e0, e1, ...]` (elements are primary expressions;
-/// the empty list is allowed).
+/// `+` and `-`, left-associative, over multiplicative operands.
+pub fn parseAdditive(self: *Parser) ParseError!Index {
+    var left = try parseMultiplicative(self);
+    while (true) {
+        const operator: BinaryOperator = switch (self.peek().kind) {
+            .plus => .add,
+            .minus => .subtract,
+            else => return left,
+        };
+        _ = self.advance();
+        const right = try parseMultiplicative(self);
+        left = try self.ast.addNode(.binary_operation, .{ .binary_operator = operator }, &.{ left, right });
+    }
+}
+
+/// `*`, `/` and `%`, left-associative, over unary operands.
+fn parseMultiplicative(self: *Parser) ParseError!Index {
+    var left = try parseUnary(self);
+    while (true) {
+        const operator: BinaryOperator = switch (self.peek().kind) {
+            .star => .multiply,
+            .slash => .divide,
+            .percent => .modulo,
+            else => return left,
+        };
+        _ = self.advance();
+        const right = try parseUnary(self);
+        left = try self.ast.addNode(.binary_operation, .{ .binary_operator = operator }, &.{ left, right });
+    }
+}
+
+/// A sign before an operand. `-` directly before an integer literal is part
+/// of the literal, so the most negative integer is writable.
+fn parseUnary(self: *Parser) ParseError!Index {
+    if (self.at(.plus)) {
+        _ = self.advance();
+        return parseUnary(self);
+    }
+    if (self.at(.minus)) {
+        _ = self.advance();
+        if (self.at(.integer)) return parseIntegerLiteral(self, true);
+        const operand = try parseUnary(self);
+        return self.ast.addNode(.unary_operation, .{ .unary_operator = .negate }, &.{operand});
+    }
+    return parsePrimary(self);
+}
+
+/// An integer literal token: decimal, `0x` hexadecimal or `0o` octal.
+fn parseIntegerLiteral(self: *Parser, negative: bool) ParseError!Index {
+    const t = self.advance();
+    const digits, const base: u8 = if (std.ascii.startsWithIgnoreCase(t.text, "0x"))
+        .{ t.text[2..], 16 }
+    else if (std.ascii.startsWithIgnoreCase(t.text, "0o"))
+        .{ t.text[2..], 8 }
+    else
+        .{ t.text, 10 };
+    const magnitude = std.fmt.parseInt(u64, digits, base) catch |err| {
+        if (err == error.Overflow) {
+            self.fail("integer literal {s}{s} does not fit in 64 bits", .{ if (negative) "-" else "", t.text });
+        } else {
+            self.fail("invalid integer literal {s}", .{t.text});
+        }
+        return error.UnexpectedToken;
+    };
+    const limit: u64 = if (negative) @as(u64, std.math.maxInt(i64)) + 1 else std.math.maxInt(i64);
+    if (magnitude > limit) {
+        self.fail("integer literal {s}{s} does not fit in 64 bits", .{ if (negative) "-" else "", t.text });
+        return error.UnexpectedToken;
+    }
+    const value: i64 = if (negative) @intCast(-@as(i128, magnitude)) else @intCast(magnitude);
+    return self.ast.addNode(.integer_literal, .{ .int = value }, &.{});
+}
+
+/// Parses a list literal `[e0, e1, ...]` (the empty list is allowed).
 pub fn parseListLiteral(self: *Parser) ParseError!Index {
     try self.expect(.left_bracket);
     var items = std.ArrayList(Index).empty;
     defer items.deinit(self.ast.allocator);
     while (!self.at(.right_bracket)) {
-        try items.append(self.ast.allocator, try parsePrimary(self));
+        try items.append(self.ast.allocator, try parseExpression(self));
         if (self.at(.comma)) {
             _ = self.advance();
         } else break;
@@ -111,14 +183,7 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
     if (self.atKeyword("CASE")) return parseCaseExpression(self);
     const t = self.peek();
     switch (t.kind) {
-        .integer => {
-            _ = self.advance();
-            const v = std.fmt.parseInt(i64, t.text, 10) catch {
-                self.fail("integer literal {s} does not fit in 64 bits", .{t.text});
-                return error.UnexpectedToken;
-            };
-            return self.ast.addNode(.integer_literal, .{ .int = v }, &.{});
-        },
+        .integer => return parseIntegerLiteral(self, false),
         .string => {
             _ = self.advance();
             const s = try self.internString(t.text);

@@ -37,8 +37,7 @@ test "list and string functions" {
     try expectQuery(&ast, &g, "RETURN size([1, 2]), size('añu'), head([1, 2]), last([1, 2]), tail([1, 2, 3]), head([])", &.{
         &.{ int(2), int(3), int(1), int(2), .{ .list = &.{ int(2), int(3) } }, null_value },
     });
-    // (Negative literals arrive with arithmetic; a parameter stands in.)
-    try support.expectQueryWithParameters(&ast, &g, "RETURN reverse('añb'), reverse([1, 2]), range(1, 3), range(5, 1, $step)", &.{.{ "step", int(-2) }}, &.{
+    try expectQuery(&ast, &g, "RETURN reverse('añb'), reverse([1, 2]), range(1, 3), range(5, 1, -2)", &.{
         &.{ string("bña"), .{ .list = &.{ int(2), int(1) } }, .{ .list = &.{ int(1), int(2), int(3) } }, .{ .list = &.{ int(5), int(3), int(1) } } },
     });
     try expectQuery(&ast, &g, "RETURN toUpper('aB'), toLower('aB'), trim('  x '), lTrim('  x '), rTrim('  x ')", &.{
@@ -62,7 +61,7 @@ test "conversions, numbers and null handling" {
     try expectQuery(&ast, &g, "RETURN toString(42), toString(true), toInteger('17'), toInteger('x'), toBoolean('TRUE'), toBoolean('no')", &.{
         &.{ string("42"), string("true"), int(17), null_value, .{ .boolean = true }, null_value },
     });
-    try support.expectQueryWithParameters(&ast, &g, "RETURN abs($n), sign($n), coalesce(null, null, 2, 3), coalesce(null), toUpper(null)", &.{.{ "n", int(-3) }}, &.{
+    try expectQuery(&ast, &g, "RETURN abs(-3), sign(-3), coalesce(null, null, 2, 3), coalesce(null), toUpper(null)", &.{
         &.{ int(3), int(-1), int(2), null_value, null_value },
     });
     // Unknown functions and wrong arity fail before running; wrong types at run time.

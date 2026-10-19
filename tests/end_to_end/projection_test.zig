@@ -161,3 +161,18 @@ test "nodes and relationships are values: returned, distinct, ordered, collected
         &.{ .{ .node = 4 }, .{ .list = &.{ .{ .node = 100 }, .{ .node = 101 } } } },
     });
 }
+
+test "SKIP and LIMIT reject negative and non-integer counts" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQueryError(&ast, &g, "MATCH (n) RETURN n SKIP -1", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (n) RETURN n LIMIT -2", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (n) RETURN n LIMIT 'x'", error.InvalidExpression);
+}

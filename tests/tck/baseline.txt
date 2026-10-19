@@ -433,6 +433,8 @@ clauses/return-orderby/ReturnOrderBy1.feature: [5] ORDER BY should order ints in
 clauses/return-orderby/ReturnOrderBy1.feature: [6] ORDER BY DESC should order ints in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [9] ORDER BY should order lists in the expected order
 clauses/return-orderby/ReturnOrderBy2.feature: [10] Returned columns do not change from using ORDER BY
+clauses/return-orderby/ReturnOrderBy2.feature: [1] ORDER BY should return results in ascending order
+clauses/return-orderby/ReturnOrderBy2.feature: [2] ORDER BY DESC should return results in descending order
 clauses/return-orderby/ReturnOrderBy2.feature: [3] Sort on aggregated function
 clauses/return-orderby/ReturnOrderBy2.feature: [4] Support sort and distinct
 clauses/return-orderby/ReturnOrderBy2.feature: [5] Support ordering by a property after being distinct-ified
@@ -441,16 +443,21 @@ clauses/return-orderby/ReturnOrderBy2.feature: [7] Ordering with aggregation
 clauses/return-orderby/ReturnOrderBy2.feature: [9] Using aliased DISTINCT expression in ORDER BY
 clauses/return-orderby/ReturnOrderBy3.feature: [1] Sort on aggregate function and normal property
 clauses/return-orderby/ReturnOrderBy4.feature: [2] Handle projections with ORDER BY
+clauses/return-orderby/ReturnOrderBy5.feature: [1] Renaming columns before ORDER BY should return results in ascending order
+clauses/return-orderby/ReturnOrderBy6.feature: [2] Handle returned aliases inside an order by item which contains an aggregation expression
+clauses/return-orderby/ReturnOrderBy6.feature: [3] Handle returned property accesses inside an order by item which contains an aggregation expression
 clauses/return-orderby/ReturnOrderBy6.feature: [4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
-clauses/return-orderby/ReturnOrderBy6.feature: [5] Fail if more complex expressions, even if returned, are used inside an order by item which contains an aggregation expression
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [10] Fail when using non-constants in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [11] Fail when using negative value in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [1] Start the result from the second row
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [2] Start the result from the second row by param
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [4] Accept skip zero
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [5] SKIP with an expression that depends on variables should fail
+clauses/return-skip-limit/ReturnSkipLimit1.feature: [6] Negative parameter for SKIP should fail
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [7] Negative SKIP should fail
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [9] Floating point SKIP should fail
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [10] Negative parameter for LIMIT should fail
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [11] Negative parameter for LIMIT with ORDER BY should fail
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [12] Fail when using negative value in LIMIT 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [13] Fail when using negative value in LIMIT 2
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [16] Fail when using floating point in LIMIT 1
@@ -477,6 +484,7 @@ clauses/return/Return2.feature: [2] Returning a node property value
 clauses/return/Return2.feature: [3] Missing node property should become null
 clauses/return/Return2.feature: [4] Returning a relationship property value
 clauses/return/Return2.feature: [5] Missing relationship property should become null
+clauses/return/Return2.feature: [6] Adding a property and a literal in projection
 clauses/return/Return3.feature: [3] Projecting nodes and relationships
 clauses/return/Return4.feature: [1] Honour the column name for RETURN items
 clauses/return/Return4.feature: [2] Support column renaming
@@ -489,14 +497,15 @@ clauses/return/Return6.feature: [11] Counting matches
 clauses/return/Return6.feature: [12] Counting matches per group
 clauses/return/Return6.feature: [14] Aggregates in aggregates
 clauses/return/Return6.feature: [15] Using `rand()` in aggregations
+clauses/return/Return6.feature: [18] Handle returned variables inside an expression which contains an aggregation expression
+clauses/return/Return6.feature: [19] Handle returned property accesses inside an expression which contains an aggregation expression
 clauses/return/Return6.feature: [1] Return count aggregation over nodes
-clauses/return/Return6.feature: [20] Fail if not returned variables are used inside an expression which contains an aggregation expression
-clauses/return/Return6.feature: [21] Fail if more complex expressions, even if returned, are used inside expression which contains an aggregation expression
 clauses/return/Return6.feature: [7] Aggregate on property
 clauses/return/Return7.feature: [2] Fail when using RETURN * without variables in scope
 clauses/return/Return8.feature: [1] Return aggregation after With filtering
 clauses/set/Set1.feature: [11] Set multiple node properties
 clauses/set/Set1.feature: [1] Set a property
+clauses/set/Set1.feature: [2] Set a property to an expression
 clauses/set/Set2.feature: [1] Setting a node property to null removes the existing property
 clauses/set/Set2.feature: [2] Setting a node property to null removes the existing property, but not before SET
 clauses/set/Set2.feature: [3] Setting a relationship property to null removes the existing property
@@ -505,6 +514,7 @@ clauses/set/Set6.feature: [16] Skipping all results after setting a property on 
 clauses/set/Set6.feature: [17] Skipping and limiting to a few results after setting a property on relationships affects the result set but not the side effects
 clauses/set/Set6.feature: [18] Skipping zero result and limiting to all results after setting a property on relationships does not affect the result set nor the side effects
 clauses/set/Set6.feature: [1] Limiting to zero results after setting a property on nodes affects the result set but not the side effects
+clauses/set/Set6.feature: [20] Aggregating in `RETURN` after setting a property on relationships affects the result set but not the side effects
 clauses/set/Set6.feature: [2] Skipping all results after setting a property on nodes affects the result set but not the side effects
 clauses/union/Union1.feature: [5] Failing when UNION has different columns
 clauses/union/Union2.feature: [5] Failing when UNION ALL has different columns
@@ -539,12 +549,62 @@ clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in a
 clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #12
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #14
-clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #4
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #7
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #9
 clauses/with-orderBy/WithOrderBy2.feature: [2] Sort by a boolean expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [4] Sort by an integer expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [7] Sort by a string expression in ascending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [7] Sort by a string expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [8] Sort by a string expression in descending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #2
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #4
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #5
+clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #3
+clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #2
+clauses/with-orderBy/WithOrderBy3.feature: [4] Sort by two expressions, both in descending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [5] An expression without explicit sort direction is sorted in ascending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [5] An expression without explicit sort direction is sorted in ascending order #2
+clauses/with-orderBy/WithOrderBy3.feature: [5] An expression without explicit sort direction is sorted in ascending order #3
+clauses/with-orderBy/WithOrderBy3.feature: [5] An expression without explicit sort direction is sorted in ascending order #4
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #1
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #10
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #11
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #12
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #13
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #14
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #15
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #16
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #17
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #18
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #19
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #2
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #20
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #21
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #22
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #23
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #24
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #3
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #4
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #5
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #6
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #7
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #8
+clauses/with-orderBy/WithOrderBy3.feature: [6] An constant expression does not influence the order determined by other expression before and after the constant expression #9
 clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #1
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #10
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #2
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #3
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #4
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #5
 clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #6
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #7
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #8
+clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #9
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #1
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #10
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #11
@@ -575,9 +635,20 @@ clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of 
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #7
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #8
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #9
+clauses/with-orderBy/WithOrderBy4.feature: [12] Sort by an aliased aggregate projection
+clauses/with-orderBy/WithOrderBy4.feature: [13] Fail on sorting by a non-projected aggregation on a variable
+clauses/with-orderBy/WithOrderBy4.feature: [14] Fail on sorting by a non-projected aggregation on an expression
 clauses/with-orderBy/WithOrderBy4.feature: [15] Sort by an aliased aggregate projection does allow subsequent matching
+clauses/with-orderBy/WithOrderBy4.feature: [17] Handle projected variables inside an order by item which contains an aggregation expression
+clauses/with-orderBy/WithOrderBy4.feature: [18]  Handle projected property accesses inside an order by item which contains an aggregation expression
 clauses/with-orderBy/WithOrderBy4.feature: [19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
+clauses/with-orderBy/WithOrderBy4.feature: [1] Sort by a projected expression
 clauses/with-orderBy/WithOrderBy4.feature: [20] Fail if more complex expressions, even if projected, are used inside an order by item which contains an aggregation expression
+clauses/with-orderBy/WithOrderBy4.feature: [2] Sort by an alias of a projected expression
+clauses/with-orderBy/WithOrderBy4.feature: [3] Sort by two projected expressions with order priority being different than projection order
+clauses/with-orderBy/WithOrderBy4.feature: [4] Sort by one projected expression and one alias of a projected expression with order priority being different than projection order
+clauses/with-orderBy/WithOrderBy4.feature: [5] Sort by one alias of a projected expression and one projected expression with order priority being different than projection order
+clauses/with-orderBy/WithOrderBy4.feature: [6] Sort by aliases of two projected expressions with order priority being different than projection order
 clauses/with-skip-limit/WithSkipLimit1.feature: [1] Handle dependencies across WITH with SKIP
 clauses/with-skip-limit/WithSkipLimit1.feature: [2] Ordering and skipping on aggregate
 clauses/with-skip-limit/WithSkipLimit2.feature: [1] ORDER BY and LIMIT can be used
@@ -610,6 +681,8 @@ clauses/with/With6.feature: [9] Fail if more complex expression, even if project
 expressions/aggregation/Aggregation1.feature: [1] Count only non-null values
 expressions/aggregation/Aggregation1.feature: [2] Counting loop relationships
 expressions/aggregation/Aggregation2.feature: [10] `min()` over list values
+expressions/aggregation/Aggregation2.feature: [1] `max()` over integers
+expressions/aggregation/Aggregation2.feature: [2] `min()` over integers
 expressions/aggregation/Aggregation2.feature: [7] `max()` over strings
 expressions/aggregation/Aggregation2.feature: [8] `min()` over strings
 expressions/aggregation/Aggregation2.feature: [9] `max()` over list values
@@ -742,19 +815,46 @@ expressions/graph/Graph8.feature: [8] Using `keys()` and `IN` to check property 
 expressions/graph/Graph9.feature: [5] `properties()` failing on an integer literal
 expressions/graph/Graph9.feature: [6] `properties()` failing on a string literal
 expressions/graph/Graph9.feature: [7] `properties()` failing on a list of booleans
+expressions/list/List11.feature: [1] Create list from `range()` with default step #1
 expressions/list/List11.feature: [1] Create list from `range()` with default step #10
 expressions/list/List11.feature: [1] Create list from `range()` with default step #11
 expressions/list/List11.feature: [1] Create list from `range()` with default step #12
 expressions/list/List11.feature: [1] Create list from `range()` with default step #13
 expressions/list/List11.feature: [1] Create list from `range()` with default step #14
+expressions/list/List11.feature: [1] Create list from `range()` with default step #2
+expressions/list/List11.feature: [1] Create list from `range()` with default step #3
+expressions/list/List11.feature: [1] Create list from `range()` with default step #4
+expressions/list/List11.feature: [1] Create list from `range()` with default step #5
+expressions/list/List11.feature: [1] Create list from `range()` with default step #6
+expressions/list/List11.feature: [1] Create list from `range()` with default step #7
+expressions/list/List11.feature: [1] Create list from `range()` with default step #8
 expressions/list/List11.feature: [1] Create list from `range()` with default step #9
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #1
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #10
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #11
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #12
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #13
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #14
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #15
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #16
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #17
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #18
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #19
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #2
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #20
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #21
 expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #22
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #23
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #24
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #25
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #26
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #3
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #4
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #5
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #6
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #7
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #8
+expressions/list/List11.feature: [2] Create list from `range()` with explicitly given step #9
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #1
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #2
 expressions/list/List11.feature: [4] Fail on invalid arguments for `range()` #3
@@ -787,6 +887,8 @@ expressions/list/List3.feature: [2] Equality of lists of different length should
 expressions/list/List3.feature: [3] Equality between different lists with null should return false
 expressions/list/List3.feature: [5] Equality of nested lists of different length should return false despite nulls
 expressions/list/List3.feature: [6] Equality between different nested lists with null should return false
+expressions/list/List4.feature: [1] Concatenating lists of same type
+expressions/list/List4.feature: [2] Concatenating a list with a scalar of same type
 expressions/list/List5.feature: [10] IN should return true when types of LHS and RHS match - list
 expressions/list/List5.feature: [11] IN should return false when order of elements in LHS list and RHS list don't match
 expressions/list/List5.feature: [12] IN with different length lists should return false
@@ -826,6 +928,7 @@ expressions/list/List5.feature: [7] IN should return false when types of LHS and
 expressions/list/List5.feature: [8] IN should return false when types of LHS and RHS don't match - list
 expressions/list/List5.feature: [9] IN should return true when types of LHS and RHS match - singleton list
 expressions/list/List6.feature: [1] Return list size
+expressions/list/List6.feature: [3] Concatenating and returning the size of literal lists
 expressions/list/List6.feature: [4] `size()` on null list
 expressions/list/List6.feature: [5] Fail for `size()` on paths
 expressions/list/List6.feature: [6] Fail for `size()` on pattern predicates #1
@@ -849,13 +952,36 @@ expressions/literals/Literals2.feature: [1] Return a short positive integer
 expressions/literals/Literals2.feature: [2] Return a long positive integer
 expressions/literals/Literals2.feature: [3] Return the largest integer
 expressions/literals/Literals2.feature: [4] Return a positive zero
+expressions/literals/Literals2.feature: [5] Return a negative zero
+expressions/literals/Literals2.feature: [6] Return a short negative integer
+expressions/literals/Literals2.feature: [7] Return a long negative integer
+expressions/literals/Literals2.feature: [8] Return the smallest integer
 expressions/literals/Literals2.feature: [9] Fail on a too large integer
+expressions/literals/Literals3.feature: [10] Return a upper case hexadecimal integer
+expressions/literals/Literals3.feature: [11] Return a mixed case hexadecimal integer
 expressions/literals/Literals3.feature: [12] Fail on an incomplete hexadecimal integer
 expressions/literals/Literals3.feature: [13] Fail on an hexadecimal literal containing a lower case invalid alphanumeric character
 expressions/literals/Literals3.feature: [14] Fail on an hexadecimal literal containing a upper case invalid alphanumeric character
 expressions/literals/Literals3.feature: [16] Fail on a too large hexadecimal integer
 expressions/literals/Literals3.feature: [17] Fail on a too small hexadecimal integer
+expressions/literals/Literals3.feature: [1] Return a short positive hexadecimal integer
+expressions/literals/Literals3.feature: [2] Return a long positive hexadecimal integer
+expressions/literals/Literals3.feature: [3] Return the largest hexadecimal integer
+expressions/literals/Literals3.feature: [4] Return a positive hexadecimal zero
+expressions/literals/Literals3.feature: [5] Return a negative hexadecimal zero
+expressions/literals/Literals3.feature: [6] Return a short negative hexadecimal integer
+expressions/literals/Literals3.feature: [7] Return a long negative hexadecimal integer
+expressions/literals/Literals3.feature: [8] Return the smallest hexadecimal integer
+expressions/literals/Literals3.feature: [9] Return a lower case hexadecimal integer
 expressions/literals/Literals4.feature: [10] Fail on a too small octal integer
+expressions/literals/Literals4.feature: [1] Return a short positive octal integer
+expressions/literals/Literals4.feature: [2] Return a long positive octal integer
+expressions/literals/Literals4.feature: [3] Return the largest octal integer
+expressions/literals/Literals4.feature: [4] Return a positive octal zero
+expressions/literals/Literals4.feature: [5] Return a negative octal zero
+expressions/literals/Literals4.feature: [6] Return a short negative octal integer
+expressions/literals/Literals4.feature: [7] Return a long negative octal integer
+expressions/literals/Literals4.feature: [8] Return the smallest octal integer
 expressions/literals/Literals4.feature: [9] Fail on a too large octal integer
 expressions/literals/Literals5.feature: [27] Fail when float value is too large
 expressions/literals/Literals6.feature: [1] Return a single-quoted empty string
@@ -868,6 +994,7 @@ expressions/literals/Literals6.feature: [8] Return a single-quoted string with 1
 expressions/literals/Literals7.feature: [10] Return seven-deep nested empty lists
 expressions/literals/Literals7.feature: [11] Return 20-deep nested empty lists
 expressions/literals/Literals7.feature: [12] Return 40-deep nested empty lists
+expressions/literals/Literals7.feature: [14] Return a list containing multiple integer
 expressions/literals/Literals7.feature: [17] Return a list containing real and fake nested lists
 expressions/literals/Literals7.feature: [19] Fail on a list containing only a comma
 expressions/literals/Literals7.feature: [1] Return an empty list
@@ -876,6 +1003,8 @@ expressions/literals/Literals7.feature: [21] Fail on a nested list with missing 
 expressions/literals/Literals7.feature: [2] Return a list containing a boolean
 expressions/literals/Literals7.feature: [3] Return a list containing a null
 expressions/literals/Literals7.feature: [4] Return a list containing a integer
+expressions/literals/Literals7.feature: [5] Return a list containing a hexadecimal integer
+expressions/literals/Literals7.feature: [6] Return a list containing a octal integer
 expressions/literals/Literals7.feature: [8] Return a list containing a string
 expressions/literals/Literals7.feature: [9] Return a list containing an empty lists
 expressions/literals/Literals8.feature: [19] Fail on a map containing key starting with a number
@@ -894,7 +1023,11 @@ expressions/map/Map1.feature: [6] Fail when performing property access on a non-
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #5
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #6
 expressions/map/Map3.feature: [3] Using `keys()` on null map
+expressions/mathematical/Mathematical11.feature: [1] Absolute function
+expressions/mathematical/Mathematical2.feature: [1] Allow addition
 expressions/mathematical/Mathematical3.feature: [1] Fail for invalid Unicode hyphen in subtraction
+expressions/mathematical/Mathematical8.feature: [1] Arithmetic precedence test
+expressions/mathematical/Mathematical8.feature: [2] Arithmetic precedence with parenthesis test
 expressions/null/Null3.feature: [1] The inverse of a null is a null
 expressions/null/Null3.feature: [2] It is unknown - i.e. null - if a null is equal to a null
 expressions/null/Null3.feature: [3] It is unknown - i.e. null - if a null is not equal to a null
@@ -930,6 +1063,28 @@ expressions/precedence/Precedence1.feature: [3] Conjunction disjunction takes pr
 expressions/precedence/Precedence1.feature: [4] Negation takes precedence over conjunction
 expressions/precedence/Precedence1.feature: [5] Negation takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [7] Comparison operator takes precedence over binary boolean operator
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #1
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #10
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #11
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #12
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #13
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #14
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #15
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #16
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #17
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #18
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #2
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #3
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #4
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #5
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #6
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #7
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #8
+expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #9
+expressions/precedence/Precedence2.feature: [5] Numeric unary negative takes precedence over numeric additive operations #1
+expressions/precedence/Precedence2.feature: [5] Numeric unary negative takes precedence over numeric additive operations #2
+expressions/precedence/Precedence3.feature: [4] List appending takes precedence over list element containment
+expressions/precedence/Precedence3.feature: [5] List concatenation takes precedence over list element containment
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #3
@@ -973,6 +1128,7 @@ expressions/typeConversion/TypeConversion1.feature: [2] `toBoolean()` on valid l
 expressions/typeConversion/TypeConversion1.feature: [3] `toBoolean()` on variables with valid string values
 expressions/typeConversion/TypeConversion1.feature: [4] `toBoolean()` on invalid strings
 expressions/typeConversion/TypeConversion2.feature: [2] `toInteger()` returning null on non-numerical string
+expressions/typeConversion/TypeConversion2.feature: [6] `toInteger()` on a complex-typed expression
 expressions/typeConversion/TypeConversion4.feature: [1] `toString()` handling integer literal
 expressions/typeConversion/TypeConversion4.feature: [2] `toString()` handling boolean literal
 expressions/typeConversion/TypeConversion4.feature: [3] `toString()` handling inlined boolean

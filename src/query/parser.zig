@@ -404,7 +404,7 @@ pub const Parser = struct {
             while (!self.at(.right_brace)) {
                 const name = try self.internIdentifier();
                 try self.expect(.colon);
-                const value = try expression_parser.parsePrimary(self);
+                const value = try expression_parser.parseExpression(self);
                 const property = try self.ast.addNode(.property, .{ .text = name }, &.{value});
                 try properties.append(self.ast.allocator, property);
                 if (self.at(.comma)) {
@@ -435,7 +435,7 @@ pub const Parser = struct {
             while (!self.at(.right_brace)) {
                 const name = try self.internIdentifier();
                 try self.expect(.colon);
-                const value = try expression_parser.parsePrimary(self);
+                const value = try expression_parser.parseExpression(self);
                 const property = try self.ast.addNode(.property, .{ .text = name }, &.{value});
                 try properties.append(self.ast.allocator, property);
                 if (self.at(.comma)) {

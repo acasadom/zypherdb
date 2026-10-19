@@ -578,6 +578,7 @@ fn noteError(diagnostic: *Diagnostic, err: anyerror) void {
         error.UnknownVariable => .unknown_variable,
         error.TypeMismatch, error.UnsupportedPropertyType => .type_mismatch,
         error.ParameterMissing => .parameter_missing,
+        error.IntegerOverflow, error.DivisionByZero => .arithmetic,
         error.InvalidExpression => .invalid_expression,
         error.NodeStillConnected => .node_still_connected,
         else => .storage,

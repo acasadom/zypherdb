@@ -13,12 +13,18 @@ const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
 
-/// Evaluates a non-negative integer literal (used by SKIP and LIMIT).
+/// Evaluates a SKIP or LIMIT count: a non-negative integer, else an error.
 pub fn evaluateCount(self: *Executor, expr: Index) ExecutionError!usize {
     var empty = Bindings{ .entries = .empty };
     return switch (try evaluate(self, expr, &empty)) {
-        .int => |n| if (n < 0) 0 else @as(usize, @intCast(n)),
-        else => 0,
+        .int => |n| if (n >= 0) @intCast(n) else {
+            self.fail(.invalid_expression, "SKIP and LIMIT need a non-negative integer, got {d}", .{n});
+            return error.InvalidExpression;
+        },
+        else => {
+            self.fail(.invalid_expression, "SKIP and LIMIT need an integer", .{});
+            return error.InvalidExpression;
+        },
     };
 }
 
@@ -124,19 +130,20 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             const children = self.ast.nodeChildren(expr);
             const l = try evaluate(self, children[0], bindings);
             const r = try evaluate(self, children[1], bindings);
-            break :blk try applyBinaryOperator(operator, l, r);
+            break :blk try applyBinaryOperator(self, operator, l, r);
         },
         .unary_operation => blk: {
             const operator = self.ast.data(expr).unary_operator;
             const v = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
-            break :blk try applyUnaryOperator(operator, v);
+            break :blk try applyUnaryOperator(self, operator, v);
         },
         else => error.InvalidExpression,
     };
 }
 
-pub fn applyBinaryOperator(operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {
+pub fn applyBinaryOperator(self: *Executor, operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {
     return switch (operator) {
+        .add, .subtract, .multiply, .divide, .modulo => arithmetic(self, operator, left, right),
         .equal, .not_equal, .less_than, .greater_than, .less_or_equal, .greater_or_equal, .starts_with, .ends_with, .contains => blk: {
             // Three-valued logic: any null operand yields null.
             if (Value.isNull(left) or Value.isNull(right)) break :blk .{ .null = {} };
@@ -185,10 +192,75 @@ pub fn applyBinaryOperator(operator: BinaryOperator, left: Value, right: Value) 
     };
 }
 
-pub fn applyUnaryOperator(operator: UnaryOperator, value: Value) ExecutionError!Value {
+pub fn applyUnaryOperator(self: *Executor, operator: UnaryOperator, value: Value) ExecutionError!Value {
     return switch (operator) {
         .not_ => if (Value.isNull(value)) .{ .null = {} } else .{ .boolean = !try asBool(value) },
+        .negate => switch (value) {
+            .null => .{ .null = {} },
+            .int => |n| .{ .int = std.math.negate(n) catch return overflow(self) },
+            else => typeMismatch(self, "unary minus needs a number"),
+        },
     };
+}
+
+/// `+ - * / %`. Integers overflow-checked (an error, never a silent
+/// wrap-around), `/` truncating toward zero and `%` taking the dividend's
+/// sign; `+` also concatenates strings (a number is written in decimal) and
+/// lists (or adds an element to either end). Null with anything is null.
+fn arithmetic(self: *Executor, operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {
+    if (left.isNull() or right.isNull()) return .{ .null = {} };
+    if (left == .int and right == .int) {
+        const a = left.int;
+        const b = right.int;
+        const result = switch (operator) {
+            .add => std.math.add(i64, a, b),
+            .subtract => std.math.sub(i64, a, b),
+            .multiply => std.math.mul(i64, a, b),
+            .divide => if (b == 0) return divisionByZero(self) else std.math.divTrunc(i64, a, b),
+            .modulo => if (b == 0) return divisionByZero(self) else if (b == -1) 0 else @rem(a, b),
+            else => unreachable,
+        } catch return overflow(self);
+        return .{ .int = result };
+    }
+    if (operator != .add) return typeMismatch(self, "arithmetic needs numbers");
+    if (left == .list or right == .list) return concatenateLists(self, left, right);
+    if (left == .string or right == .string) {
+        const left_text = try textOf(self, left);
+        const right_text = try textOf(self, right);
+        return .{ .string = try std.mem.concat(self.allocator, u8, &.{ left_text, right_text }) };
+    }
+    return typeMismatch(self, "+ needs numbers, strings or lists");
+}
+
+/// `list + list`, `list + element` or `element + list`.
+fn concatenateLists(self: *Executor, left: Value, right: Value) ExecutionError!Value {
+    const left_items: []const Value = if (left == .list) left.list else &.{left};
+    const right_items: []const Value = if (right == .list) right.list else &.{right};
+    return .{ .list = try std.mem.concat(self.allocator, Value, &.{ left_items, right_items }) };
+}
+
+/// A string operand of `+`: a string, or an integer in decimal.
+fn textOf(self: *Executor, value: Value) ExecutionError![]const u8 {
+    return switch (value) {
+        .string => |s| s,
+        .int => |n| try std.fmt.allocPrint(self.allocator, "{d}", .{n}),
+        else => typeMismatch(self, "+ can join a string only with a string or a number"),
+    };
+}
+
+fn overflow(self: *Executor) ExecutionError {
+    self.fail(.arithmetic, "integer overflow: the result does not fit in 64 bits", .{});
+    return error.IntegerOverflow;
+}
+
+fn divisionByZero(self: *Executor) ExecutionError {
+    self.fail(.arithmetic, "division by zero", .{});
+    return error.DivisionByZero;
+}
+
+fn typeMismatch(self: *Executor, comptime message: []const u8) ExecutionError {
+    self.fail(.type_mismatch, message, .{});
+    return error.TypeMismatch;
 }
 
 pub fn asInt(value: Value) ExecutionError!i64 {

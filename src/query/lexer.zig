@@ -31,6 +31,9 @@ pub const TokenKind = enum {
     dot,
     minus,
     star,
+    plus,
+    slash,
+    percent,
     arrow_right,
     arrow_left,
     equal,
@@ -69,6 +72,9 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
         .dot => "'.'",
         .minus => "'-'",
         .star => "'*'",
+        .plus => "'+'",
+        .slash => "'/'",
+        .percent => "'%'",
         .arrow_right => "'->'",
         .arrow_left => "'<-'",
         .equal => "'='",
@@ -111,6 +117,30 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
         const c = src[i];
         switch (c) {
             ' ', '\t', '\n', '\r' => i += 1,
+            '+' => {
+                try add(&tokens, allocator, .plus, src[i .. i + 1], i);
+                i += 1;
+            },
+            '%' => {
+                try add(&tokens, allocator, .percent, src[i .. i + 1], i);
+                i += 1;
+            },
+            '/' => {
+                if (std.mem.startsWith(u8, src[i..], "//")) {
+                    // Line comment, to the end of the line.
+                    while (i < src.len and src[i] != '\n') i += 1;
+                } else if (std.mem.startsWith(u8, src[i..], "/*")) {
+                    // Block comment.
+                    const end = std.mem.indexOfPos(u8, src, i + 2, "*/") orelse {
+                        if (diagnostic) |d| d.set(.parse, i, "unterminated comment", .{});
+                        return error.UnexpectedEof;
+                    };
+                    i = end + 2;
+                } else {
+                    try add(&tokens, allocator, .slash, src[i .. i + 1], i);
+                    i += 1;
+                }
+            },
             '(' => {
                 try add(&tokens, allocator, .left_paren, src[i .. i + 1], i);
                 i += 1;
@@ -197,8 +227,10 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 i = end + 1;
             },
             '0'...'9' => {
+                // Decimal, or hexadecimal (`0x1F`) / octal (`0o17`): the parser
+                // reads the digits and reports a malformed literal.
                 const start = i;
-                while (i < src.len and std.ascii.isDigit(src[i])) i += 1;
+                while (i < src.len and (std.ascii.isAlphanumeric(src[i]) or src[i] == '_')) i += 1;
                 try add(&tokens, allocator, .integer, src[start..i], start);
             },
             '<' => {

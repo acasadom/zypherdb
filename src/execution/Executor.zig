@@ -41,6 +41,8 @@ const writes = @import("writes.zig");
 const Executor = @This();
 
 pub const ExecutionError = StorageError || error{
+    IntegerOverflow,
+    DivisionByZero,
     ParameterMissing,
     UnsupportedPropertyType,
     UnknownVariable,

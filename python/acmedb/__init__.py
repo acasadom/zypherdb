@@ -14,6 +14,7 @@ from .db import Database
 from .entities import Node, Relationship
 from .errors import (
     AcmedbError,
+    ArithmeticQueryError,
     ClosedError,
     InvalidExpressionError,
     NodeNotFoundError,
@@ -31,6 +32,7 @@ __all__ = [
     "Node",
     "Relationship",
     "AcmedbError",
+    "ArithmeticQueryError",
     "QueryError",
     "ParseError",
     "UnknownVariableError",
