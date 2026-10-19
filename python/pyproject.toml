@@ -9,5 +9,8 @@ description = "Python bindings for acmedb, an embedded graph database (openCyphe
 requires-python = ">=3.9"
 license = { text = "See the repository LICENSE" }
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [tool.setuptools]
 packages = ["acmedb"]

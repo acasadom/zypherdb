@@ -96,7 +96,7 @@ make docs    # or: sphinx-build -b html docs docs/_build/html
 zig build test    # build and run the test suite
 zig build         # static + shared libraries into zig-out/
 make docs         # build the HTML documentation
-python -m pytest python/tests   # Python bindings (needs `zig build` first)
+make test-py      # Python bindings (pip install -e "python[dev]" once)
 ```
 
 See `STATUS.md` (kept out of git) for the working notes and the roadmap.
