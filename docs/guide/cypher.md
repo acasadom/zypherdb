@@ -20,8 +20,8 @@ MATCH …  [OPTIONAL MATCH …]  [UNWIND …]  [WITH …]  [MATCH …]  [writes 
 | `WITH` | project/aggregate the rows, then continue the pipeline (with `WHERE`, `ORDER BY`, `SKIP`, `LIMIT`) |
 | `CREATE` | create nodes and edges |
 | `MERGE` | create-or-match, with `ON CREATE SET` / `ON MATCH SET` |
-| `SET` | set a property |
-| `DELETE` / `DETACH DELETE` | delete nodes (detach also removes their edges) |
+| `SET` | `n.prop = v`; `n = map` (replace all properties); `n += map` (merge; a `null` entry removes); `n:Label` |
+| `DELETE` / `DETACH DELETE` | delete nodes or relationships (detach also removes a node's edges) |
 | `REMOVE` | remove a property (`n.prop`) or a label (`n:Label`) |
 | `RETURN` | project the result (`DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`) |
 

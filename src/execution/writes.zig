@@ -4,11 +4,13 @@ const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
+const MapEntry = @import("../value.zig").MapEntry;
 const GraphError = @import("../storage/graph.zig").GraphError;
 
 const Executor = @import("Executor.zig");
 const pattern_matching = @import("pattern_matching.zig");
 const expressions = @import("expressions.zig");
+const functions = @import("functions.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
@@ -170,17 +172,71 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
 pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) ExecutionError!void {
     for (self.ast.nodeChildren(set_clause)) |item| {
         const item_children = self.ast.nodeChildren(item);
-        const access = item_children[0];
-        const value_expression = item_children[1];
-        const property = self.ast.data(access).text;
-        const name = try targetVariable(self, self.ast.nodeChildren(access)[0]);
-        const value = try expressions.evaluate(self, value_expression, bindings);
-        switch (bindings.get(name) orelse return error.UnknownVariable) {
-            .node => |id| try setNodeProperty(self, id, property, value),
-            .relationship => |r| try setEdgeProperty(self, r.src, r.dst, r.edge_type, property, value),
-            else => return error.TypeMismatch,
+        switch (self.ast.kind(item)) {
+            .set_item => {
+                const access = item_children[0];
+                const property = self.ast.data(access).text;
+                const name = try targetVariable(self, self.ast.nodeChildren(access)[0]);
+                const value = try expressions.evaluate(self, item_children[1], bindings);
+                try setProperty(self, try targetEntity(self, name, bindings), property, value);
+            },
+            .set_properties => {
+                const target = try targetEntity(self, try targetVariable(self, item_children[0]), bindings);
+                const replace = !self.ast.data(item).boolean;
+                try setProperties(self, target, try expressions.evaluate(self, item_children[1], bindings), replace);
+            },
+            .label_reference => {
+                const name = try targetVariable(self, item_children[0]);
+                const id = bindings.getNode(name) orelse return error.TypeMismatch;
+                try self.graph.addLabel(id, self.ast.data(item).text);
+            },
+            else => {},
         }
     }
+}
+
+/// The node or relationship a SET writes to (`null` from an OPTIONAL MATCH
+/// that found nothing: the item does nothing).
+fn targetEntity(self: *Executor, name: []const u8, bindings: *Bindings) ExecutionError!Value {
+    const target = bindings.get(name) orelse return error.UnknownVariable;
+    return switch (target) {
+        .node, .relationship, .null => target,
+        else => {
+            self.fail(.type_mismatch, "SET writes to a node or a relationship; '{s}' is neither", .{name});
+            return error.TypeMismatch;
+        },
+    };
+}
+
+fn setProperty(self: *Executor, target: Value, name: []const u8, value: Value) ExecutionError!void {
+    switch (target) {
+        .node => |id| try setNodeProperty(self, id, name, value),
+        .relationship => |r| try setEdgeProperty(self, r.src, r.dst, r.edge_type, name, value),
+        else => {},
+    }
+}
+
+/// `SET n = source` (`replace`: drop every other property) or `SET n +=
+/// source`, where `source` is a map, or a node or relationship whose
+/// properties are copied. A null entry removes its property.
+fn setProperties(self: *Executor, target: Value, source: Value, replace: bool) ExecutionError!void {
+    if (target == .null) return;
+    const entries: []const MapEntry = switch (source) {
+        .map => |entries| entries,
+        .node, .relationship => (try functions.propertiesOf(self, source)).map,
+        .null => &.{},
+        else => {
+            self.fail(.type_mismatch, "SET n = / += needs a map, a node or a relationship", .{});
+            return error.TypeMismatch;
+        },
+    };
+    if (replace) {
+        const current = try functions.propertiesOf(self, target);
+        for (current.map) |entry| {
+            if (Value.mapGet(entries, entry.key).isNull()) try setProperty(self, target, entry.key, .{ .null = {} });
+        }
+    }
+    for (entries) |entry| try setProperty(self, target, entry.key, entry.value);
 }
 
 pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) ExecutionError!void {

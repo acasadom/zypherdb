@@ -393,11 +393,14 @@ clauses/merge/Merge1.feature: [5] Merge node should create when it doesn't match
 clauses/merge/Merge1.feature: [6] Merge node with prop and label
 clauses/merge/Merge1.feature: [7] Merge should work when finding multiple elements
 clauses/merge/Merge1.feature: [8] Merge should handle argument properly
+clauses/merge/Merge2.feature: [1] Merge node with label add label on create
 clauses/merge/Merge2.feature: [2] ON CREATE on created nodes
 clauses/merge/Merge2.feature: [3] Merge node with label add property on create
 clauses/merge/Merge2.feature: [4] Merge node with label add property on update when it exists
 clauses/merge/Merge2.feature: [5] Merge should be able to use properties of bound node in ON CREATE
 clauses/merge/Merge2.feature: [6] Fail when using undefined variable in ON CREATE
+clauses/merge/Merge3.feature: [1] Merge should be able to set labels on match
+clauses/merge/Merge3.feature: [2] Merge node with label add label on match when it exists
 clauses/merge/Merge3.feature: [3] Merge node and set property on match
 clauses/merge/Merge3.feature: [4] Merge should be able to use properties of bound node in ON MATCH
 clauses/merge/Merge5.feature: [17] Aliasing of existing nodes 2
@@ -526,9 +529,30 @@ clauses/set/Set1.feature: [10] Failing when setting a list of maps as a property
 clauses/set/Set1.feature: [11] Set multiple node properties
 clauses/set/Set1.feature: [1] Set a property
 clauses/set/Set1.feature: [2] Set a property to an expression
+clauses/set/Set1.feature: [8] Ignore null when setting property
 clauses/set/Set2.feature: [1] Setting a node property to null removes the existing property
 clauses/set/Set2.feature: [2] Setting a node property to null removes the existing property, but not before SET
 clauses/set/Set2.feature: [3] Setting a relationship property to null removes the existing property
+clauses/set/Set3.feature: [1] Add a single label to a node with no label
+clauses/set/Set3.feature: [2] Adding multiple labels to a node with no label
+clauses/set/Set3.feature: [3] Add a single label to a node with an existing label
+clauses/set/Set3.feature: [4] Adding multiple labels to a node with an existing label
+clauses/set/Set3.feature: [5] Ignore whitespace before colon 1
+clauses/set/Set3.feature: [6] Ignore whitespace before colon 2
+clauses/set/Set3.feature: [7] Ignore whitespace before colon 3
+clauses/set/Set4.feature: [1] Set multiple properties with a property map
+clauses/set/Set4.feature: [2] Non-existent values in a property map are removed with SET
+clauses/set/Set4.feature: [3] Null values in a property map are removed with SET
+clauses/set/Set4.feature: [4] All properties are removed if node is set to empty property map
+clauses/set/Set4.feature: [5] Ignore null when setting properties using an overriding map
+clauses/set/Set5.feature: [1] Ignore null when setting properties using an appending map
+clauses/set/Set5.feature: [2] Overwrite values when using +=
+clauses/set/Set5.feature: [3] Retain old values when using +=
+clauses/set/Set5.feature: [4] Explicit null values in a map remove old values
+clauses/set/Set5.feature: [5] Set an empty map when using += has no effect
+clauses/set/Set6.feature: [10] Skipping and limiting to a few results after adding a label on nodes affects the result set but not the side effects
+clauses/set/Set6.feature: [11] Skipping zero result and limiting to all results after adding a label on nodes does not affect the result set nor the side effects
+clauses/set/Set6.feature: [13] Aggregating in `RETURN` after adding a label on nodes affects the result set but not the side effects
 clauses/set/Set6.feature: [15] Limiting to zero results after setting a property on relationships affects the result set but not the side effects
 clauses/set/Set6.feature: [16] Skipping all results after setting a property on relationships affects the result set but not the side effects
 clauses/set/Set6.feature: [17] Skipping and limiting to a few results after setting a property on relationships affects the result set but not the side effects
@@ -536,6 +560,8 @@ clauses/set/Set6.feature: [18] Skipping zero result and limiting to all results 
 clauses/set/Set6.feature: [1] Limiting to zero results after setting a property on nodes affects the result set but not the side effects
 clauses/set/Set6.feature: [20] Aggregating in `RETURN` after setting a property on relationships affects the result set but not the side effects
 clauses/set/Set6.feature: [2] Skipping all results after setting a property on nodes affects the result set but not the side effects
+clauses/set/Set6.feature: [8] Limiting to zero results after adding a label on nodes affects the result set but not the side effects
+clauses/set/Set6.feature: [9] Skipping all results after adding a label on nodes affects the result set but not the side effects
 clauses/union/Union1.feature: [5] Failing when UNION has different columns
 clauses/union/Union2.feature: [5] Failing when UNION ALL has different columns
 clauses/union/Union3.feature: [1] Failing when mixing UNION and UNION ALL

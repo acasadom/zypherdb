@@ -37,7 +37,10 @@
 //! - `property` children are `[value_expression]` (the name is in `.text`).
 //! - `property_access` children are `[object_expression]` (the property name is in
 //!   `.text`).
-//! - `set_item` children are `[property_access, value_expression]`.
+//! - `set_item` children are `[property_access, value_expression]`;
+//!   `set_properties` children are `[variable, value_expression]`, data.boolean
+//!   true for `+=` (merge) and false for `=` (replace); a `label_reference`
+//!   item (data.text the label, child the variable) adds a label.
 //! - `delete_item` children are `[variable]`.
 //! - `agg` children are `[argument_expression]` (empty for `count(*)`); the function is in
 //!   the `agg` payload.
@@ -139,6 +142,7 @@ pub const NodeKind = enum {
     unwind_clause,
     return_clause,
     set_item,
+    set_properties,
     delete_item,
     order_by,
     order_item,

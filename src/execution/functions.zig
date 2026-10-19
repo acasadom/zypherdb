@@ -249,7 +249,12 @@ fn keys(self: *Executor, arguments: []const Value) ExecutionError!Value {
 fn properties(self: *Executor, arguments: []const Value) ExecutionError!Value {
     if (arguments[0] == .map or arguments[0] == .null) return arguments[0];
     try requireExisting(self, arguments[0], "properties");
-    var iterator = switch (arguments[0]) {
+    return propertiesOf(self, arguments[0]);
+}
+
+/// The properties of an existing node or relationship as a map.
+pub fn propertiesOf(self: *Executor, entity: Value) ExecutionError!Value {
+    var iterator = switch (entity) {
         .node => |node| try self.graph.propertiesOf(node),
         .relationship => |r| try self.graph.edgePropertiesOf(r.src, r.dst, r.edge_type),
         else => return typeError(self, "properties", "a map, a node or a relationship"),

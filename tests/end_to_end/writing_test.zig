@@ -384,3 +384,30 @@ test "DELETE removes relationships and ignores null" {
     try expectQuery(&ast, &g, "MATCH (n) RETURN count(*)", &.{&.{.{ .int = 0 }}});
     try expectQuery(&ast, &g, "OPTIONAL MATCH (n:Missing) DELETE n RETURN n", &.{&.{.{ .null = {} }}});
 }
+
+test "SET n = map, SET n += map and SET n:Label" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Card {id: 1, holder: 'Ana', pin: 1234})", &.{});
+    // += merges: new keys added, existing ones overwritten, null removes.
+    try expectQuery(&ast, &g, "MATCH (c:Card) SET c += {holder: 'Bo', active: true, pin: null}", &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card) RETURN properties(c)", &.{&.{.{ .map = &.{
+        .{ .key = "active", .value = .{ .boolean = true } },
+        .{ .key = "holder", .value = .{ .string = "Bo" } },
+        .{ .key = "id", .value = .{ .int = 1 } },
+    } }}});
+    // = replaces every property.
+    try expectQuery(&ast, &g, "MATCH (c:Card) SET c = {id: 2}", &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card) RETURN properties(c)", &.{&.{.{ .map = &.{.{ .key = "id", .value = .{ .int = 2 } }} }}});
+    // Labels, and SET on null (from OPTIONAL MATCH) does nothing.
+    try expectQuery(&ast, &g, "MATCH (c:Card) SET c:Blocked:Audited", &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card:Blocked:Audited) RETURN c.id", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Missing) SET x += {a: 1}, x.b = 2", &.{});
+}

@@ -277,15 +277,29 @@ pub const Parser = struct {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
         while (true) {
+            // `n.prop = v`, `n = map`, `n += map` or `n:Label...`.
             const variable_name = try self.internIdentifier();
-            try self.expect(.dot);
-            const property = try self.internIdentifier();
             const var_node = try self.ast.addNode(.variable, .{ .text = variable_name }, &.{});
-            const access = try self.ast.addNode(.property_access, .{ .text = property }, &.{var_node});
-            try self.expect(.equal);
-            const value = try expression_parser.parseExpression(self);
-            const item = try self.ast.addNode(.set_item, .{ .none = {} }, &.{ access, value });
-            try items.append(self.ast.allocator, item);
+            if (self.at(.colon)) {
+                while (self.at(.colon)) {
+                    _ = self.advance();
+                    const label = try self.internIdentifier();
+                    try items.append(self.ast.allocator, try self.ast.addNode(.label_reference, .{ .text = label }, &.{var_node}));
+                }
+            } else if (self.at(.dot)) {
+                _ = self.advance();
+                const property = try self.internIdentifier();
+                const access = try self.ast.addNode(.property_access, .{ .text = property }, &.{var_node});
+                try self.expect(.equal);
+                const value = try expression_parser.parseExpression(self);
+                try items.append(self.ast.allocator, try self.ast.addNode(.set_item, .{ .none = {} }, &.{ access, value }));
+            } else {
+                const merge = self.at(.plus);
+                if (merge) _ = self.advance();
+                try self.expect(.equal);
+                const value = try expression_parser.parseExpression(self);
+                try items.append(self.ast.allocator, try self.ast.addNode(.set_properties, .{ .boolean = merge }, &.{ var_node, value }));
+            }
             if (self.at(.comma)) {
                 _ = self.advance();
             } else break;
