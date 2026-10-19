@@ -9,22 +9,22 @@ const std = @import("std");
 pub const ErrorCode = enum(u32) {
     none = 0,
     parse = 1,
-    unknown_var = 2,
-    missing_prop = 3,
+    unknown_variable = 2,
+    missing_property = 3,
     type_mismatch = 4,
-    invalid_expr = 5,
+    invalid_expression = 5,
     node_still_connected = 6,
     storage = 7,
 };
 
 pub const Diagnostic = struct {
-    buf: [256]u8,
+    buffer: [256]u8,
     len: usize,
     pos: usize, // byte offset in the source; 0 when not applicable
     code: ErrorCode,
 
     pub fn init() Diagnostic {
-        return .{ .buf = undefined, .len = 0, .pos = 0, .code = .none };
+        return .{ .buffer = undefined, .len = 0, .pos = 0, .code = .none };
     }
 
     /// Formats a message (truncated to the buffer if necessary) and records the
@@ -32,14 +32,14 @@ pub const Diagnostic = struct {
     pub fn set(self: *Diagnostic, code: ErrorCode, pos: usize, comptime fmt: []const u8, args: anytype) void {
         self.code = code;
         self.pos = pos;
-        const written = std.fmt.bufPrint(&self.buf, fmt, args) catch |err| switch (err) {
+        const written = std.fmt.bufPrint(&self.buffer, fmt, args) catch |err| switch (err) {
             // Too long for the buffer: keep the truncated prefix, marked with "...".
             error.NoSpaceLeft => {
                 const ellipsis = "...";
-                var w: std.Io.Writer = .fixed(self.buf[0 .. self.buf.len - ellipsis.len]);
+                var w: std.Io.Writer = .fixed(self.buffer[0 .. self.buffer.len - ellipsis.len]);
                 w.print(fmt, args) catch {};
                 const n = w.end;
-                @memcpy(self.buf[n .. n + ellipsis.len], ellipsis);
+                @memcpy(self.buffer[n .. n + ellipsis.len], ellipsis);
                 self.len = n + ellipsis.len;
                 return;
             },
@@ -48,7 +48,7 @@ pub const Diagnostic = struct {
     }
 
     pub fn message(self: *const Diagnostic) []const u8 {
-        return self.buf[0..self.len];
+        return self.buffer[0..self.len];
     }
 
     /// Resets the diagnostic (a new operation starts from "no error").
@@ -63,8 +63,8 @@ test "messages too long for the buffer are truncated, not dropped" {
     var d = Diagnostic.init();
     var long: [400]u8 = undefined;
     @memset(&long, 'x');
-    d.set(.unknown_var, 0, "unknown variable '{s}'", .{&long});
-    try std.testing.expectEqual(d.buf.len, d.message().len);
+    d.set(.unknown_variable, 0, "unknown variable '{s}'", .{&long});
+    try std.testing.expectEqual(d.buffer.len, d.message().len);
     try std.testing.expect(std.mem.startsWith(u8, d.message(), "unknown variable 'xxx"));
     try std.testing.expect(std.mem.endsWith(u8, d.message(), "..."));
 }

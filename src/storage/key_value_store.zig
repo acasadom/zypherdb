@@ -174,11 +174,11 @@ pub const KeyValueStore = struct {
     }
 
     pub fn countPrefix(self: *KeyValueStore, prefix: []const u8) StorageError!usize {
-        var it = try self.scanPrefix(prefix);
-        defer it.deinit();
+        var iterator = try self.scanPrefix(prefix);
+        defer iterator.deinit();
 
         var count: usize = 0;
-        while (try it.next()) |_| count += 1;
+        while (try iterator.next()) |_| count += 1;
         return count;
     }
 

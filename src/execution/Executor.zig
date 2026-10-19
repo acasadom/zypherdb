@@ -21,12 +21,12 @@ const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const ErrorCode = @import("../diagnostics.zig").ErrorCode;
 
 const ValueGrouping = @import("aggregation.zig").ValueGrouping;
-const AggKind = @import("../query/ast.zig").AggKind;
-const ProjItem = @import("aggregation.zig").ProjItem;
+const AggregateKind = @import("../query/ast.zig").AggregateKind;
+const ProjectionItem = @import("aggregation.zig").ProjectionItem;
 const Bindings = @import("bindings.zig").Bindings;
-const BindStep = @import("planner.zig").BindStep;
-const ChainEdge = @import("planner.zig").ChainEdge;
-const ChainNode = @import("planner.zig").ChainNode;
+const PlanStep = @import("planner.zig").PlanStep;
+const PatternEdge = @import("planner.zig").PatternEdge;
+const PatternNode = @import("planner.zig").PatternNode;
 
 const pattern_matching = @import("pattern_matching.zig");
 const expressions = @import("expressions.zig");
@@ -36,10 +36,10 @@ const writes = @import("writes.zig");
 
 const Executor = @This();
 
-pub const ExecError = StorageError || error{
-    UnknownVar,
-    MissingProp,
-    InvalidExpr,
+pub const ExecutionError = StorageError || error{
+    UnknownVariable,
+    MissingProperty,
+    InvalidExpression,
     TypeMismatch,
 };
 
@@ -54,10 +54,10 @@ rows: std.ArrayList(projection.Sortable(Row)),
 
 // Match context.
 patterns: []const Index, // the MATCH clause's patterns (one or more)
-nodes: std.ArrayList(ChainNode),
-edges: std.ArrayList(ChainEdge),
-steps: std.ArrayList(BindStep),
-where_expr: Index,
+nodes: std.ArrayList(PatternNode),
+edges: std.ArrayList(PatternEdge),
+steps: std.ArrayList(PlanStep),
+where_expression: Index,
 has_match: bool,
 
 // Write context.
@@ -80,13 +80,13 @@ optional_matched: bool,
 unwind: ?Index,
 
 // Aggregation.
-has_agg: bool,
-proj_items: std.ArrayList(ProjItem),
-/// The aggregate function of each `.agg` projection item, in order.
-aggregate_kinds: std.ArrayList(AggKind),
+has_aggregates: bool,
+projection_items: std.ArrayList(ProjectionItem),
+/// The aggregate function of each `.aggregate` projection item, in order.
+aggregate_kinds: std.ArrayList(AggregateKind),
 groups: ValueGrouping,
 
-diag: ?*Diagnostic,
+diagnostic: ?*Diagnostic,
 
 pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
     return .{
@@ -98,7 +98,7 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .nodes = .empty,
         .edges = .empty,
         .steps = .empty,
-        .where_expr = 0,
+        .where_expression = 0,
         .has_match = false,
         .update_clauses = .empty,
         .return_clause = null,
@@ -111,24 +111,24 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .in_optional = false,
         .optional_matched = false,
         .unwind = null,
-        .has_agg = false,
-        .proj_items = .empty,
+        .has_aggregates = false,
+        .projection_items = .empty,
         .aggregate_kinds = .empty,
         .groups = .{},
-        .diag = null,
+        .diagnostic = null,
     };
 }
 
 pub fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: anytype) void {
-    if (self.diag) |d| d.set(code, 0, fmt, args);
+    if (self.diagnostic) |d| d.set(code, 0, fmt, args);
 }
 
-pub fn run(self: *Executor, query: Index) ExecError![]const Row {
+pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
     self.rows.clearRetainingCapacity();
     self.groups = .{};
     self.aggregate_kinds = .empty;
-    self.has_agg = false;
-    self.proj_items = .empty;
+    self.has_aggregates = false;
+    self.projection_items = .empty;
     self.with_rows = .empty;
     self.collecting = false;
     self.optional_match = null;
@@ -169,18 +169,18 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
 
     // Detect aggregations in the projection (grouping).
     if (self.return_clause) |rc| {
-        const info = projection.returnInfo(self, rc);
+        const info = projection.returnClauseParts(self, rc);
         for (self.ast.nodeChildren(info.projection)) |item| {
             const expr = self.ast.nodeChildren(item)[0];
-            if (self.ast.kind(expr) == .agg) {
-                self.has_agg = true;
-                const kind = self.ast.data(expr).agg;
-                const kids = self.ast.nodeChildren(expr);
-                const arg: ?Index = if (kids.len > 0) kids[0] else null;
-                try self.proj_items.append(self.allocator, .{ .agg = .{ .kind = kind, .arg = arg } });
+            if (self.ast.kind(expr) == .aggregate) {
+                self.has_aggregates = true;
+                const kind = self.ast.data(expr).aggregate;
+                const children = self.ast.nodeChildren(expr);
+                const arg: ?Index = if (children.len > 0) children[0] else null;
+                try self.projection_items.append(self.allocator, .{ .aggregate = .{ .kind = kind, .arg = arg } });
                 try self.aggregate_kinds.append(self.allocator, kind);
             } else {
-                try self.proj_items.append(self.allocator, .{ .key = expr });
+                try self.projection_items.append(self.allocator, .{ .key = expr });
             }
         }
     }
@@ -204,7 +204,7 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
             try self.runMatch(pm, &start);
         } else {
             self.has_match = false;
-            try self.leaf(&start);
+            try self.matchFound(&start);
         }
         self.collecting = false;
 
@@ -228,7 +228,7 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
             try self.runMatch(pm, &bindings);
         } else {
             self.has_match = false;
-            try self.leaf(&bindings);
+            try self.matchFound(&bindings);
         }
     }
 
@@ -244,36 +244,21 @@ pub fn run(self: *Executor, query: Index) ExecError![]const Row {
 }
 
 /// Runs one MATCH clause (its patterns + WHERE) from `bindings`, recursing
-/// through `matchPatterns`/`execStep` down to `leaf`.
-pub fn runMatch(self: *Executor, mc: Index, bindings: *Bindings) ExecError!void {
-    const mc_children = self.ast.nodeChildren(mc);
+/// through `matchPatterns`/`runStep` down to `matchFound`.
+pub fn runMatch(self: *Executor, mc: Index, bindings: *Bindings) ExecutionError!void {
+    const match_children = self.ast.nodeChildren(mc);
     self.has_match = true;
-    // children = [pattern0, ..., patternN, where_expr]
-    self.patterns = mc_children[0 .. mc_children.len - 1];
-    self.where_expr = mc_children[mc_children.len - 1];
+    // children = [pattern0, ..., patternN, where_expression]
+    self.patterns = match_children[0 .. match_children.len - 1];
+    self.where_expression = match_children[match_children.len - 1];
     try pattern_matching.matchPatterns(self, 0, bindings);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 /// Leaf of a match: apply the MATCH `WHERE`, then either outer-join through
 /// OPTIONAL MATCH, collect the bindings (WITH pipeline), or apply updates +
 /// RETURN.
-pub fn leaf(self: *Executor, bindings: *Bindings) ExecError!void {
-    if (self.has_match and !try expressions.evalBool(self, self.where_expr, bindings)) return;
+pub fn matchFound(self: *Executor, bindings: *Bindings) ExecutionError!void {
+    if (self.has_match and !try expressions.evaluateBool(self, self.where_expression, bindings)) return;
     if (self.in_optional) {
         self.optional_matched = true;
         return self.afterOptional(bindings);
@@ -288,21 +273,14 @@ pub fn leaf(self: *Executor, bindings: *Bindings) ExecError!void {
 }
 
 /// Continuation after (optional) matching: collect or finish.
-pub fn afterOptional(self: *Executor, bindings: *Bindings) ExecError!void {
+pub fn afterOptional(self: *Executor, bindings: *Bindings) ExecutionError!void {
     if (self.collecting) {
         return projection.collect(self, bindings);
     }
     try self.finishBody(bindings);
 }
 
-
-
-
-
-
-
-
-pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
+pub fn finishBody(self: *Executor, bindings: *Bindings) ExecutionError!void {
     for (self.update_clauses.items) |clause| {
         switch (self.ast.kind(clause)) {
             .create_clause => try writes.applyCreate(self, self.ast.nodeChildren(clause)[0], bindings),
@@ -315,16 +293,16 @@ pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
     }
 
     if (self.return_clause) |rc| {
-        const info = projection.returnInfo(self, rc);
+        const info = projection.returnClauseParts(self, rc);
 
-        if (self.has_agg) {
+        if (self.has_aggregates) {
             try aggregation.accumulate(self, bindings);
             return;
         }
 
         var out = std.ArrayList(Value).empty;
         for (self.ast.nodeChildren(info.projection)) |item| {
-            const v = try expressions.eval(self, self.ast.nodeChildren(item)[0], bindings);
+            const v = try expressions.evaluate(self, self.ast.nodeChildren(item)[0], bindings);
             try out.append(self.allocator, v);
         }
         // The ORDER BY key is evaluated now, while the row's variables are
@@ -333,4 +311,3 @@ pub fn finishBody(self: *Executor, bindings: *Bindings) ExecError!void {
         try self.rows.append(self.allocator, .{ .item = out, .sort_key = sort_key });
     }
 }
-

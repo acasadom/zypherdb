@@ -33,9 +33,9 @@ pub const Index = ast.Index;
 pub const NodeKind = ast.NodeKind;
 pub const Node = ast.Node;
 pub const Data = ast.Data;
-pub const BinOp = ast.BinOp;
-pub const UnOp = ast.UnOp;
-pub const AggKind = ast.AggKind;
+pub const BinaryOperator = ast.BinaryOperator;
+pub const UnaryOperator = ast.UnaryOperator;
+pub const AggregateKind = ast.AggregateKind;
 pub const EdgeDirection = ast.EdgeDirection;
 
 pub const parser = @import("query/parser.zig");
@@ -47,7 +47,7 @@ pub const TokenKind = lexer.TokenKind;
 pub const Token = lexer.Token;
 
 pub const Executor = @import("execution/Executor.zig");
-pub const ExecError = Executor.ExecError;
+pub const ExecutionError = Executor.ExecutionError;
 pub const Row = Executor.Row;
 
 pub const diagnostics = @import("diagnostics.zig");

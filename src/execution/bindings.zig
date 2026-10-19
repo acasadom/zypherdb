@@ -7,21 +7,20 @@ const Wyhash = std.hash.Wyhash;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 
-
 /// Reference to a directed edge, used to bind relationship variables.
 pub const EdgeRef = struct {
     src: NodeId,
     dst: NodeId,
-    etype: []const u8,
+    edge_type: []const u8,
 
     pub fn eql(a: EdgeRef, b: EdgeRef) bool {
-        return a.src == b.src and a.dst == b.dst and std.mem.eql(u8, a.etype, b.etype);
+        return a.src == b.src and a.dst == b.dst and std.mem.eql(u8, a.edge_type, b.edge_type);
     }
 
     pub fn hash(self: EdgeRef, hasher: *Wyhash) void {
         hasher.update(std.mem.asBytes(&self.src));
         hasher.update(std.mem.asBytes(&self.dst));
-        hasher.update(self.etype);
+        hasher.update(self.edge_type);
     }
 };
 
@@ -41,7 +40,7 @@ pub const Binding = union(enum) {
     }
 
     pub fn hash(self: Binding, hasher: *Wyhash) void {
-        hasher.update(&.{@intFromEnum(self)});
+        hasher.update(&.{@backingInt(self)});
         switch (self) {
             .node => |id| hasher.update(std.mem.asBytes(&id)),
             .edge => |edge| edge.hash(hasher),

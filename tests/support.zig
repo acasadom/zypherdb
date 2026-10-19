@@ -16,13 +16,13 @@ const parser = acmedb.parser;
 const eqlSequences = acmedb.eqlSequences;
 
 /// The path of a test's temporary directory, relative to the build root.
-pub fn testPath(tmp: *testing.TmpDir, buf: []u8) []const u8 {
-    return std.fmt.bufPrint(buf, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+pub fn testPath(tmp: *testing.TmpDir, buffer: []u8) []const u8 {
+    return std.fmt.bufPrint(buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
 }
 
 /// Opens a fresh store in the test's temporary directory.
-pub fn openStore(tmp: *testing.TmpDir, buf: []u8) !KeyValueStore {
-    return KeyValueStore.open(testing.allocator, testPath(tmp, buf));
+pub fn openStore(tmp: *testing.TmpDir, buffer: []u8) !KeyValueStore {
+    return KeyValueStore.open(testing.allocator, testPath(tmp, buffer));
 }
 
 /// Loads the "people and movies" fixture graph (see docs/tutorial).
@@ -44,13 +44,13 @@ pub fn loadMoviesGraph(g: *Graph) !void {
     };
     for (people) |p| {
         try g.addNode(p.id, "Person");
-        try g.setProp(p.id, "name", .{ .str = p.name });
-        try g.setProp(p.id, "born", .{ .int = p.born });
+        try g.setProperty(p.id, "name", .{ .string = p.name });
+        try g.setProperty(p.id, "born", .{ .int = p.born });
     }
     for (movies) |m| {
         try g.addNode(m.id, "Movie");
-        try g.setProp(m.id, "title", .{ .str = m.title });
-        try g.setProp(m.id, "released", .{ .int = m.released });
+        try g.setProperty(m.id, "title", .{ .string = m.title });
+        try g.setProperty(m.id, "released", .{ .int = m.released });
     }
     const E = struct { a: NodeId, b: NodeId, t: []const u8 };
     const edges = [_]E{

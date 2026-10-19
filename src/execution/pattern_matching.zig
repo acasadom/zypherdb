@@ -12,10 +12,10 @@ const Value = @import("../value.zig").Value;
 const Executor = @import("Executor.zig");
 const planner = @import("planner.zig");
 const expressions = @import("expressions.zig");
-const ExecError = Executor.ExecError;
+const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
-const ChainEdge = @import("planner.zig").ChainEdge;
+const PatternEdge = @import("planner.zig").PatternEdge;
 
 /// Candidate nodes for a pattern: the first label's index, or every node
 /// when the pattern is unlabeled. Callers verify the remaining labels.
@@ -32,100 +32,100 @@ pub fn hasAllLabels(self: *Executor, id: NodeId, labels: []const []const u8) Sto
     return true;
 }
 
-pub fn matchPatterns(self: *Executor, pat_idx: usize, bindings: *Bindings) ExecError!void {
-    if (pat_idx == self.patterns.len) {
-        return self.leaf(bindings);
+pub fn matchPatterns(self: *Executor, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
+    if (pattern_index == self.patterns.len) {
+        return self.matchFound(bindings);
     }
-    try planner.setupPattern(self, self.patterns[pat_idx], bindings);
-    try execStep(self, 0, pat_idx, bindings);
+    try planner.setupPattern(self, self.patterns[pattern_index], bindings);
+    try runStep(self, 0, pattern_index, bindings);
 }
 
-pub fn execStep(self: *Executor, step_idx: usize, pat_idx: usize, bindings: *Bindings) ExecError!void {
-    if (step_idx == self.steps.items.len) {
-        return matchPatterns(self, pat_idx + 1, bindings);
+pub fn runStep(self: *Executor, step_index: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
+    if (step_index == self.steps.items.len) {
+        return matchPatterns(self, pattern_index + 1, bindings);
     }
-    switch (self.steps.items[step_idx]) {
+    switch (self.steps.items[step_index]) {
         .scan => |s| {
             const node = self.nodes.items[s.node];
             if (node.seeks.items.len > 0) {
                 // Index lookup on the first equality predicate.
                 const seek = node.seeks.items[0];
-                const value = try expressions.eval(self, seek.value, bindings);
-                var it = try self.graph.nodesByProp(seek.prop, value);
-                defer it.deinit();
-                while (try it.next()) |id| {
+                const value = try expressions.evaluate(self, seek.value, bindings);
+                var iterator = try self.graph.nodesByProperty(seek.property, value);
+                defer iterator.deinit();
+                while (try iterator.next()) |id| {
                     if (!(try hasAllLabels(self, id, node.labels))) continue;
-                    try bindings.put(self.allocator, node.var_name, .{ .node = id });
+                    try bindings.put(self.allocator, node.variable_name, .{ .node = id });
                     if (!try nodeSeeksMatch(self, s.node, id, bindings)) continue;
-                    try execStep(self, step_idx + 1, pat_idx, bindings);
+                    try runStep(self, step_index + 1, pattern_index, bindings);
                 }
             } else {
                 // Scan the first label as the seed, then verify the rest.
-                var it = try seedNodes(self, node.labels);
-                defer it.deinit();
-                while (try it.next()) |id| {
+                var iterator = try seedNodes(self, node.labels);
+                defer iterator.deinit();
+                while (try iterator.next()) |id| {
                     if (!(try hasAllLabels(self, id, node.labels))) continue;
-                    try bindings.put(self.allocator, node.var_name, .{ .node = id });
+                    try bindings.put(self.allocator, node.variable_name, .{ .node = id });
                     if (!try nodeSeeksMatch(self, s.node, id, bindings)) continue;
-                    try execStep(self, step_idx + 1, pat_idx, bindings);
+                    try runStep(self, step_index + 1, pattern_index, bindings);
                 }
             }
         },
         .edge_scan => |es| {
             const edge = self.edges.items[es.edge];
             const seek = edge.seeks.items[0];
-            const value = try expressions.eval(self, seek.value, bindings);
-            var it = try self.graph.edgesByProp(seek.prop, value);
-            defer it.deinit();
+            const value = try expressions.evaluate(self, seek.value, bindings);
+            var iterator = try self.graph.edgesByProperty(seek.property, value);
+            defer iterator.deinit();
             const left = self.nodes.items[es.edge];
             const right = self.nodes.items[es.edge + 1];
-            while (try it.next()) |e| {
-                if (edge.etype.len > 0 and !std.mem.eql(u8, e.etype, edge.etype)) continue;
-                const left_id: NodeId = if (edge.fwd_dir == .out) e.src else e.dst;
-                const right_id: NodeId = if (edge.fwd_dir == .out) e.dst else e.src;
-                try bindings.put(self.allocator, left.var_name, .{ .node = left_id });
-                try bindings.put(self.allocator, right.var_name, .{ .node = right_id });
-                if (edge.var_name.len > 0) {
-                    try bindings.put(self.allocator, edge.var_name, .{ .edge = .{ .src = e.src, .dst = e.dst, .etype = edge.etype } });
+            while (try iterator.next()) |e| {
+                if (edge.edge_type.len > 0 and !std.mem.eql(u8, e.edge_type, edge.edge_type)) continue;
+                const left_id: NodeId = if (edge.forward_direction == .out) e.src else e.dst;
+                const right_id: NodeId = if (edge.forward_direction == .out) e.dst else e.src;
+                try bindings.put(self.allocator, left.variable_name, .{ .node = left_id });
+                try bindings.put(self.allocator, right.variable_name, .{ .node = right_id });
+                if (edge.variable_name.len > 0) {
+                    try bindings.put(self.allocator, edge.variable_name, .{ .edge = .{ .src = e.src, .dst = e.dst, .edge_type = edge.edge_type } });
                 }
                 if (!try edgeSeeksMatch(self, edge, e.src, e.dst, bindings)) continue;
                 if (!try nodeSeeksMatch(self, es.edge, left_id, bindings)) continue;
                 if (!try nodeSeeksMatch(self, es.edge + 1, right_id, bindings)) continue;
-                try execStep(self, step_idx + 1, pat_idx, bindings);
+                try runStep(self, step_index + 1, pattern_index, bindings);
             }
         },
         .expand => |e| {
-            const from_name = self.nodes.items[e.from].var_name;
-            const from_id = bindings.getNode(from_name) orelse return error.UnknownVar;
+            const from_name = self.nodes.items[e.from].variable_name;
+            const from_id = bindings.getNode(from_name) orelse return error.UnknownVariable;
             const edge = self.edges.items[@min(e.from, e.to)];
             const to_node = self.nodes.items[e.to];
 
             if (to_node.bound) {
                 // Verify the already-bound neighbour satisfies this edge.
-                const to_id = bindings.getNode(to_node.var_name) orelse return error.UnknownVar;
-                const sd = edgeSrcDst(edge.fwd_dir, e.from, e.to, from_id, to_id);
-                if (try self.graph.hasEdge(sd.src, sd.dst, edge.etype)) {
-                    if (edge.var_name.len > 0) {
-                        try bindings.put(self.allocator, edge.var_name, .{ .edge = .{ .src = sd.src, .dst = sd.dst, .etype = edge.etype } });
+                const to_id = bindings.getNode(to_node.variable_name) orelse return error.UnknownVariable;
+                const endpoints = edgeSrcDst(edge.forward_direction, e.from, e.to, from_id, to_id);
+                if (try self.graph.hasEdge(endpoints.src, endpoints.dst, edge.edge_type)) {
+                    if (edge.variable_name.len > 0) {
+                        try bindings.put(self.allocator, edge.variable_name, .{ .edge = .{ .src = endpoints.src, .dst = endpoints.dst, .edge_type = edge.edge_type } });
                     }
                     if (!try nodeSeeksMatch(self, e.to, to_id, bindings)) return;
-                    if (!try edgeSeeksMatch(self, edge, sd.src, sd.dst, bindings)) return;
-                    try execStep(self, step_idx + 1, pat_idx, bindings);
+                    if (!try edgeSeeksMatch(self, edge, endpoints.src, endpoints.dst, bindings)) return;
+                    try runStep(self, step_index + 1, pattern_index, bindings);
                 }
             } else {
-                const dir: Direction = if (e.from < e.to) edge.fwd_dir else opposite(edge.fwd_dir);
-                var it = try self.graph.neighbours(from_id, dir, edge.etype);
-                defer it.deinit();
-                while (try it.next()) |nid| {
-                    if (!(try hasAllLabels(self, nid, to_node.labels))) continue;
-                    try bindings.put(self.allocator, to_node.var_name, .{ .node = nid });
-                    if (!try nodeSeeksMatch(self, e.to, nid, bindings)) continue;
-                    const sd = edgeSrcDst(edge.fwd_dir, e.from, e.to, from_id, nid);
-                    if (edge.var_name.len > 0) {
-                        try bindings.put(self.allocator, edge.var_name, .{ .edge = .{ .src = sd.src, .dst = sd.dst, .etype = edge.etype } });
+                const direction: Direction = if (e.from < e.to) edge.forward_direction else opposite(edge.forward_direction);
+                var iterator = try self.graph.neighbours(from_id, direction, edge.edge_type);
+                defer iterator.deinit();
+                while (try iterator.next()) |neighbour_id| {
+                    if (!(try hasAllLabels(self, neighbour_id, to_node.labels))) continue;
+                    try bindings.put(self.allocator, to_node.variable_name, .{ .node = neighbour_id });
+                    if (!try nodeSeeksMatch(self, e.to, neighbour_id, bindings)) continue;
+                    const endpoints = edgeSrcDst(edge.forward_direction, e.from, e.to, from_id, neighbour_id);
+                    if (edge.variable_name.len > 0) {
+                        try bindings.put(self.allocator, edge.variable_name, .{ .edge = .{ .src = endpoints.src, .dst = endpoints.dst, .edge_type = edge.edge_type } });
                     }
-                    if (!try edgeSeeksMatch(self, edge, sd.src, sd.dst, bindings)) continue;
-                    try execStep(self, step_idx + 1, pat_idx, bindings);
+                    if (!try edgeSeeksMatch(self, edge, endpoints.src, endpoints.dst, bindings)) continue;
+                    try runStep(self, step_index + 1, pattern_index, bindings);
                 }
             }
         },
@@ -134,15 +134,15 @@ pub fn execStep(self: *Executor, step_idx: usize, pat_idx: usize, bindings: *Bin
 
 /// UNWIND: for each element of the evaluated list, bind the variable and
 /// continue (collect or finish). A null list yields no rows.
-pub fn runUnwind(self: *Executor, bindings: *Bindings) ExecError!void {
-    const u = self.unwind.?;
-    const expr = self.ast.nodeChildren(u)[0];
-    const var_name = self.ast.data(u).unwind.var_name;
-    const v = try expressions.eval(self, expr, bindings);
+pub fn runUnwind(self: *Executor, bindings: *Bindings) ExecutionError!void {
+    const unwind = self.unwind.?;
+    const expr = self.ast.nodeChildren(unwind)[0];
+    const variable_name = self.ast.data(unwind).unwind.variable_name;
+    const v = try expressions.evaluate(self, expr, bindings);
     switch (v) {
         .list => |items| {
             for (items) |item| {
-                try bindings.put(self.allocator, var_name, .{ .value = item });
+                try bindings.put(self.allocator, variable_name, .{ .value = item });
                 try self.afterOptional(bindings);
             }
         },
@@ -154,14 +154,14 @@ pub fn runUnwind(self: *Executor, bindings: *Bindings) ExecError!void {
 /// Outer-joins the OPTIONAL MATCH pattern onto `bindings`: emits one row per
 /// match, or (if none match) one row with the optional variables bound to
 /// null.
-pub fn runOptional(self: *Executor, bindings: *Bindings) ExecError!void {
-    const om = self.optional_match.?;
-    const om_children = self.ast.nodeChildren(om);
+pub fn runOptional(self: *Executor, bindings: *Bindings) ExecutionError!void {
+    const optional_match = self.optional_match.?;
+    const optional_match_children = self.ast.nodeChildren(optional_match);
 
     // Save the in-flight match context; the optional match reuses the same
-    // slots (`patterns`/`nodes`/`edges`/`steps`/`where_expr`/`has_match`).
+    // slots (`patterns`/`nodes`/`edges`/`steps`/`where_expression`/`has_match`).
     const saved_patterns = self.patterns;
-    const saved_where = self.where_expr;
+    const saved_where = self.where_expression;
     const saved_has_match = self.has_match;
     const saved_nodes = self.nodes;
     const saved_edges = self.edges;
@@ -170,14 +170,14 @@ pub fn runOptional(self: *Executor, bindings: *Bindings) ExecError!void {
 
     self.in_optional = true;
     self.optional_matched = false;
-    self.patterns = om_children[0 .. om_children.len - 1];
-    self.where_expr = om_children[om_children.len - 1];
+    self.patterns = optional_match_children[0 .. optional_match_children.len - 1];
+    self.where_expression = optional_match_children[optional_match_children.len - 1];
     self.has_match = true;
 
     // Unbind optional-only variables left over from a previous outer
     // iteration so they are matched fresh (shared variables stay bound).
     for (self.optional_vars.items) |name| {
-        if (!isMainVar(self, name)) bindings.remove(name);
+        if (!isMainVariable(self, name)) bindings.remove(name);
     }
 
     try matchPatterns(self, 0, bindings);
@@ -189,7 +189,7 @@ pub fn runOptional(self: *Executor, bindings: *Bindings) ExecError!void {
 
     // Restore the outer match context.
     self.patterns = saved_patterns;
-    self.where_expr = saved_where;
+    self.where_expression = saved_where;
     self.has_match = saved_has_match;
     self.nodes = saved_nodes;
     self.edges = saved_edges;
@@ -198,25 +198,25 @@ pub fn runOptional(self: *Executor, bindings: *Bindings) ExecError!void {
 }
 
 /// Collects the variable names introduced by the OPTIONAL MATCH patterns.
-pub fn collectOptionalVars(self: *Executor, om: Index) ExecError!void {
+pub fn collectOptionalVars(self: *Executor, optional_match: Index) ExecutionError!void {
     self.optional_vars = .empty;
-    try collectClauseVars(self, om, &self.optional_vars);
+    try collectClauseVars(self, optional_match, &self.optional_vars);
 }
 
 /// Appends every node/edge variable name of a MATCH/OPTIONAL MATCH clause's
 /// patterns to `out`.
-pub fn collectClauseVars(self: *Executor, clause: Index, out: *std.ArrayList([]const u8)) ExecError!void {
-    const kids = self.ast.nodeChildren(clause);
-    for (kids[0 .. kids.len - 1]) |pattern| {
+pub fn collectClauseVars(self: *Executor, clause: Index, out: *std.ArrayList([]const u8)) ExecutionError!void {
+    const children = self.ast.nodeChildren(clause);
+    for (children[0 .. children.len - 1]) |pattern| {
         const chain = self.ast.nodeChildren(pattern);
         for (chain) |c| {
             switch (self.ast.kind(c)) {
                 .node_pattern => {
-                    const v = self.ast.data(c).node_pattern.var_name;
+                    const v = self.ast.data(c).node_pattern.variable_name;
                     if (v.len > 0) try out.append(self.allocator, v);
                 },
                 .edge_pattern => {
-                    const v = self.ast.data(c).edge_pattern.var_name;
+                    const v = self.ast.data(c).edge_pattern.variable_name;
                     if (v.len > 0) try out.append(self.allocator, v);
                 },
                 else => {},
@@ -225,7 +225,7 @@ pub fn collectClauseVars(self: *Executor, clause: Index, out: *std.ArrayList([]c
     }
 }
 
-pub fn isMainVar(self: *Executor, name: []const u8) bool {
+pub fn isMainVariable(self: *Executor, name: []const u8) bool {
     for (self.main_vars.items) |v| {
         if (std.mem.eql(u8, v, name)) return true;
     }
@@ -234,45 +234,45 @@ pub fn isMainVar(self: *Executor, name: []const u8) bool {
 
 /// Binds every optional-only variable to null (unmatched outer row, or a
 /// match whose WHERE filtered it out). Shared variables stay bound.
-pub fn bindOptionalNulls(self: *Executor, bindings: *Bindings) ExecError!void {
+pub fn bindOptionalNulls(self: *Executor, bindings: *Bindings) ExecutionError!void {
     for (self.optional_vars.items) |name| {
-        if (isMainVar(self, name)) continue;
+        if (isMainVariable(self, name)) continue;
         try bindings.put(self.allocator, name, .{ .value = .null });
     }
 }
 
-pub fn nodeSeeksMatch(self: *Executor, node_idx: usize, id: NodeId, bindings: *Bindings) ExecError!bool {
-    for (self.nodes.items[node_idx].seeks.items) |seek| {
-        const expected = try expressions.eval(self, seek.value, bindings);
-        const actual = (try self.graph.getProp(id, seek.prop, self.allocator)) orelse return false;
+pub fn nodeSeeksMatch(self: *Executor, node_index: usize, id: NodeId, bindings: *Bindings) ExecutionError!bool {
+    for (self.nodes.items[node_index].seeks.items) |seek| {
+        const expected = try expressions.evaluate(self, seek.value, bindings);
+        const actual = (try self.graph.getProperty(id, seek.property, self.allocator)) orelse return false;
         if (!Value.eql(actual, expected)) return false;
     }
     return true;
 }
 
-pub fn edgeSeeksMatch(self: *Executor, edge: ChainEdge, src: NodeId, dst: NodeId, bindings: *Bindings) ExecError!bool {
+pub fn edgeSeeksMatch(self: *Executor, edge: PatternEdge, src: NodeId, dst: NodeId, bindings: *Bindings) ExecutionError!bool {
     for (edge.seeks.items) |seek| {
-        const expected = try expressions.eval(self, seek.value, bindings);
-        const actual = (try self.graph.getEdgeProp(src, dst, edge.etype, seek.prop, self.allocator)) orelse return false;
+        const expected = try expressions.evaluate(self, seek.value, bindings);
+        const actual = (try self.graph.getEdgeProperty(src, dst, edge.edge_type, seek.property, self.allocator)) orelse return false;
         if (!Value.eql(actual, expected)) return false;
     }
     return true;
 }
 
-pub fn opposite(dir: Direction) Direction {
-    return switch (dir) {
+pub fn opposite(direction: Direction) Direction {
+    return switch (direction) {
         .out => .in,
         .in => .out,
     };
 }
 
 /// Computes the written edge's source/destination ids, given the two endpoint
-/// node indices (`from`/`to`) and their ids. `fwd_dir` is the direction when
+/// node indices (`from`/`to`) and their ids. `forward_direction` is the direction when
 /// traversing the lower index to the higher index.
-pub fn edgeSrcDst(fwd_dir: Direction, from: usize, to: usize, from_id: NodeId, to_id: NodeId) struct { src: NodeId, dst: NodeId } {
+pub fn edgeSrcDst(forward_direction: Direction, from: usize, to: usize, from_id: NodeId, to_id: NodeId) struct { src: NodeId, dst: NodeId } {
     const left_id = if (from < to) from_id else to_id;
     const right_id = if (from < to) to_id else from_id;
-    return switch (fwd_dir) {
+    return switch (forward_direction) {
         .out => .{ .src = left_id, .dst = right_id },
         .in => .{ .src = right_id, .dst = left_id },
     };

@@ -6,7 +6,7 @@ const acmedb = @import("acmedb");
 
 const Ast = acmedb.Ast;
 const NodeKind = acmedb.NodeKind;
-const BinOp = acmedb.BinOp;
+const BinaryOperator = acmedb.BinaryOperator;
 
 test "builds and walks the AST for a MATCH/RETURN query" {
     var ast = Ast.init(testing.allocator);
@@ -20,14 +20,14 @@ test "builds and walks the AST for a MATCH/RETURN query" {
 
     // (p:Person {name: 'Keanu Reeves'})
     const lit = try ast.addNode(.string_literal, .{ .text = "Keanu Reeves" }, &.{});
-    const prop = try ast.addNode(.property, .{ .text = "name" }, &.{lit});
-    const np = try ast.addNode(.node_pattern, .{ .node_pattern = .{ .var_name = "p", .labels = &.{"Person"} } }, &.{prop});
-    const pattern = try ast.addNode(.pattern, .{ .none = {} }, &.{np});
+    const property = try ast.addNode(.property, .{ .text = "name" }, &.{lit});
+    const node_pattern = try ast.addNode(.node_pattern, .{ .node_pattern = .{ .variable_name = "p", .labels = &.{"Person"} } }, &.{property});
+    const pattern = try ast.addNode(.pattern, .{ .none = {} }, &.{node_pattern});
 
     // no WHERE -> true
-    const true_expr = try ast.addNode(.bool_literal, .{ .boolean = true }, &.{});
+    const true_expression = try ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
 
-    const match_clause = try ast.addNode(.match_clause, .{ .none = {} }, &.{ pattern, true_expr });
+    const match_clause = try ast.addNode(.match_clause, .{ .none = {} }, &.{ pattern, true_expression });
     const return_clause = try ast.addNode(.return_clause, .{ .none = {} }, &.{projection});
     const query = try ast.addNode(.query, .{ .none = {} }, &.{ match_clause, return_clause });
 
@@ -43,14 +43,14 @@ test "builds and walks the AST for a MATCH/RETURN query" {
     const mc = ast.nodeChildren(qc[0]);
     try testing.expectEqual(@as(usize, 2), mc.len);
     try testing.expectEqual(NodeKind.pattern, ast.kind(mc[0]));
-    try testing.expectEqual(NodeKind.bool_literal, ast.kind(mc[1]));
+    try testing.expectEqual(NodeKind.boolean_literal, ast.kind(mc[1]));
 
     // pattern -> node_pattern
     const pc = ast.nodeChildren(mc[0]);
     try testing.expectEqual(@as(usize, 1), pc.len);
     try testing.expectEqual(NodeKind.node_pattern, ast.kind(pc[0]));
     try testing.expectEqualStrings("Person", ast.data(pc[0]).node_pattern.labels[0]);
-    try testing.expectEqualStrings("p", ast.data(pc[0]).node_pattern.var_name);
+    try testing.expectEqualStrings("p", ast.data(pc[0]).node_pattern.variable_name);
 
     // node_pattern -> one property {name: 'Keanu Reeves'}
     const nprops = ast.nodeChildren(pc[0]);
@@ -86,13 +86,13 @@ test "intern owns strings and binary_op holds two children" {
     const lit = try ast.addNode(.string_literal, .{ .text = name }, &.{});
     const v_p = try ast.addNode(.variable, .{ .text = "p" }, &.{});
     const access = try ast.addNode(.property_access, .{ .text = "name" }, &.{v_p});
-    const eq = try ast.addNode(.binary_op, .{ .bin_op = .eq }, &.{ access, lit });
+    const eq = try ast.addNode(.binary_operation, .{ .binary_operator = .equal }, &.{ access, lit });
 
-    try testing.expectEqual(NodeKind.binary_op, ast.kind(eq));
-    try testing.expectEqual(BinOp.eq, ast.data(eq).bin_op);
+    try testing.expectEqual(NodeKind.binary_operation, ast.kind(eq));
+    try testing.expectEqual(BinaryOperator.equal, ast.data(eq).binary_operator);
 
-    const kids = ast.nodeChildren(eq);
-    try testing.expectEqual(@as(usize, 2), kids.len);
-    try testing.expectEqual(NodeKind.property_access, ast.kind(kids[0]));
-    try testing.expectEqualStrings("Keanu Reeves", ast.data(kids[1]).text);
+    const children = ast.nodeChildren(eq);
+    try testing.expectEqual(@as(usize, 2), children.len);
+    try testing.expectEqual(NodeKind.property_access, ast.kind(children[0]));
+    try testing.expectEqualStrings("Keanu Reeves", ast.data(children[1]).text);
 }

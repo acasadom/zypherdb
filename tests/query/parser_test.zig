@@ -7,8 +7,8 @@ const acmedb = @import("acmedb");
 const Ast = acmedb.Ast;
 const Index = acmedb.Index;
 const NodeKind = acmedb.NodeKind;
-const BinOp = acmedb.BinOp;
-const AggKind = acmedb.AggKind;
+const BinaryOperator = acmedb.BinaryOperator;
+const AggregateKind = acmedb.AggregateKind;
 const EdgeDirection = acmedb.EdgeDirection;
 const Diagnostic = acmedb.Diagnostic;
 const parse = acmedb.parser.parse;
@@ -25,31 +25,31 @@ test "parses a simple MATCH/RETURN query" {
     defer r.ast.deinit();
 
     try testing.expectEqual(NodeKind.query, r.ast.kind(r.root));
-    const qc = r.ast.nodeChildren(r.root);
-    try testing.expectEqual(@as(usize, 2), qc.len);
-    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(qc[0]));
-    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(qc[1]));
+    const query_children = r.ast.nodeChildren(r.root);
+    try testing.expectEqual(@as(usize, 2), query_children.len);
+    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(query_children[0]));
+    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(query_children[1]));
 
     // match_clause -> [pattern, where=true]
-    const mc = r.ast.nodeChildren(qc[0]);
-    try testing.expectEqual(@as(usize, 2), mc.len);
-    try testing.expectEqual(NodeKind.pattern, r.ast.kind(mc[0]));
-    try testing.expectEqual(NodeKind.bool_literal, r.ast.kind(mc[1]));
-    try testing.expect(r.ast.data(mc[1]).boolean);
+    const match_children = r.ast.nodeChildren(query_children[0]);
+    try testing.expectEqual(@as(usize, 2), match_children.len);
+    try testing.expectEqual(NodeKind.pattern, r.ast.kind(match_children[0]));
+    try testing.expectEqual(NodeKind.boolean_literal, r.ast.kind(match_children[1]));
+    try testing.expect(r.ast.data(match_children[1]).boolean);
 
     // pattern -> single node
-    const pc = r.ast.nodeChildren(mc[0]);
-    try testing.expectEqual(@as(usize, 1), pc.len);
-    try testing.expectEqualStrings("p", r.ast.data(pc[0]).node_pattern.var_name);
-    try testing.expectEqualStrings("Person", r.ast.data(pc[0]).node_pattern.labels[0]);
+    const pattern_children = r.ast.nodeChildren(match_children[0]);
+    try testing.expectEqual(@as(usize, 1), pattern_children.len);
+    try testing.expectEqualStrings("p", r.ast.data(pattern_children[0]).node_pattern.variable_name);
+    try testing.expectEqualStrings("Person", r.ast.data(pattern_children[0]).node_pattern.labels[0]);
 
     // return_clause -> projection -> property_access("born")
-    const rc = r.ast.nodeChildren(qc[1]);
-    const projc = r.ast.nodeChildren(rc[0]);
-    try testing.expectEqual(@as(usize, 1), projc.len);
-    const ic = r.ast.nodeChildren(projc[0]);
-    try testing.expectEqual(NodeKind.property_access, r.ast.kind(ic[0]));
-    try testing.expectEqualStrings("born", r.ast.data(ic[0]).text);
+    const return_children = r.ast.nodeChildren(query_children[1]);
+    const projection_children = r.ast.nodeChildren(return_children[0]);
+    try testing.expectEqual(@as(usize, 1), projection_children.len);
+    const item_children = r.ast.nodeChildren(projection_children[0]);
+    try testing.expectEqual(NodeKind.property_access, r.ast.kind(item_children[0]));
+    try testing.expectEqualStrings("born", r.ast.data(item_children[0]).text);
 }
 
 test "parses an edge, WHERE with AND, and multiple RETURN items" {
@@ -58,18 +58,18 @@ test "parses an edge, WHERE with AND, and multiple RETURN items" {
     );
     defer r.ast.deinit();
 
-    const qc = r.ast.nodeChildren(r.root);
-    const mc = r.ast.nodeChildren(qc[0]);
-    const pc = r.ast.nodeChildren(mc[0]);
-    try testing.expectEqual(@as(usize, 3), pc.len);
-    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pc[1]).edge_pattern.etype);
-    try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pc[1]).edge_pattern.direction);
+    const query_children = r.ast.nodeChildren(r.root);
+    const match_children = r.ast.nodeChildren(query_children[0]);
+    const pattern_children = r.ast.nodeChildren(match_children[0]);
+    try testing.expectEqual(@as(usize, 3), pattern_children.len);
+    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pattern_children[1]).edge_pattern.edge_type);
+    try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pattern_children[1]).edge_pattern.direction);
 
-    try testing.expectEqual(NodeKind.binary_op, r.ast.kind(mc[1]));
-    try testing.expectEqual(BinOp.and_, r.ast.data(mc[1]).bin_op);
+    try testing.expectEqual(NodeKind.binary_operation, r.ast.kind(match_children[1]));
+    try testing.expectEqual(BinaryOperator.and_, r.ast.data(match_children[1]).binary_operator);
 
-    const rc = r.ast.nodeChildren(qc[1]);
-    try testing.expectEqual(@as(usize, 2), r.ast.nodeChildren(rc[0]).len);
+    const return_children = r.ast.nodeChildren(query_children[1]);
+    try testing.expectEqual(@as(usize, 2), r.ast.nodeChildren(return_children[0]).len);
 }
 
 test "parses a reverse-direction edge chain" {
@@ -78,57 +78,57 @@ test "parses a reverse-direction edge chain" {
     );
     defer r.ast.deinit();
 
-    const qc = r.ast.nodeChildren(r.root);
-    const mc = r.ast.nodeChildren(qc[0]);
-    const pc = r.ast.nodeChildren(mc[0]);
-    try testing.expectEqual(@as(usize, 5), pc.len); // node edge node edge node
-    try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pc[1]).edge_pattern.direction);
-    try testing.expectEqualStrings("DIRECTED", r.ast.data(pc[1]).edge_pattern.etype);
-    try testing.expectEqual(EdgeDirection.right_to_left, r.ast.data(pc[3]).edge_pattern.direction);
-    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pc[3]).edge_pattern.etype);
+    const query_children = r.ast.nodeChildren(r.root);
+    const match_children = r.ast.nodeChildren(query_children[0]);
+    const pattern_children = r.ast.nodeChildren(match_children[0]);
+    try testing.expectEqual(@as(usize, 5), pattern_children.len); // node edge node edge node
+    try testing.expectEqual(EdgeDirection.left_to_right, r.ast.data(pattern_children[1]).edge_pattern.direction);
+    try testing.expectEqualStrings("DIRECTED", r.ast.data(pattern_children[1]).edge_pattern.edge_type);
+    try testing.expectEqual(EdgeDirection.right_to_left, r.ast.data(pattern_children[3]).edge_pattern.direction);
+    try testing.expectEqualStrings("ACTED_IN", r.ast.data(pattern_children[3]).edge_pattern.edge_type);
 }
 
 test "parses RETURN alias and comparison operators" {
     var r = try parseString("MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2000 RETURN m.title AS movie");
     defer r.ast.deinit();
 
-    const qc = r.ast.nodeChildren(r.root);
-    const mc = r.ast.nodeChildren(qc[0]);
-    try testing.expectEqual(NodeKind.binary_op, r.ast.kind(mc[1]));
-    try testing.expectEqual(BinOp.ge, r.ast.data(mc[1]).bin_op);
+    const query_children = r.ast.nodeChildren(r.root);
+    const match_children = r.ast.nodeChildren(query_children[0]);
+    try testing.expectEqual(NodeKind.binary_operation, r.ast.kind(match_children[1]));
+    try testing.expectEqual(BinaryOperator.greater_or_equal, r.ast.data(match_children[1]).binary_operator);
 
-    const rc = r.ast.nodeChildren(qc[1]);
-    const projc = r.ast.nodeChildren(rc[0]);
-    try testing.expectEqualStrings("movie", r.ast.data(projc[0]).text);
+    const return_children = r.ast.nodeChildren(query_children[1]);
+    const projection_children = r.ast.nodeChildren(return_children[0]);
+    try testing.expectEqualStrings("movie", r.ast.data(projection_children[0]).text);
 }
 
 test "parses string predicates and IN lists" {
     {
         var r = try parseString("MATCH (m:Movie) WHERE m.title STARTS WITH 'The' RETURN m.title");
         defer r.ast.deinit();
-        const mc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
-        try testing.expectEqual(BinOp.starts_with, r.ast.data(mc[1]).bin_op);
-        try testing.expectEqual(NodeKind.string_literal, r.ast.kind(r.ast.nodeChildren(mc[1])[1]));
+        const match_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
+        try testing.expectEqual(BinaryOperator.starts_with, r.ast.data(match_children[1]).binary_operator);
+        try testing.expectEqual(NodeKind.string_literal, r.ast.kind(r.ast.nodeChildren(match_children[1])[1]));
     }
     {
         var r = try parseString("MATCH (m:Movie) WHERE m.title ENDS WITH 'Wick' RETURN m.title");
         defer r.ast.deinit();
-        const mc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
-        try testing.expectEqual(BinOp.ends_with, r.ast.data(mc[1]).bin_op);
+        const match_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
+        try testing.expectEqual(BinaryOperator.ends_with, r.ast.data(match_children[1]).binary_operator);
     }
     {
         var r = try parseString("MATCH (m:Movie) WHERE m.title CONTAINS 'Matrix' RETURN m.title");
         defer r.ast.deinit();
-        const mc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
-        try testing.expectEqual(BinOp.contains, r.ast.data(mc[1]).bin_op);
+        const match_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
+        try testing.expectEqual(BinaryOperator.contains, r.ast.data(match_children[1]).binary_operator);
     }
     {
         var r = try parseString("MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Tom Hanks'] RETURN p.name");
         defer r.ast.deinit();
-        const mc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
-        const where_expr = mc[1];
-        try testing.expectEqual(BinOp.in_, r.ast.data(where_expr).bin_op);
-        const list = r.ast.nodeChildren(where_expr)[1];
+        const match_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
+        const where_expression = match_children[1];
+        try testing.expectEqual(BinaryOperator.in_, r.ast.data(where_expression).binary_operator);
+        const list = r.ast.nodeChildren(where_expression)[1];
         try testing.expectEqual(NodeKind.list_literal, r.ast.kind(list));
         try testing.expectEqual(@as(usize, 2), r.ast.nodeChildren(list).len);
     }
@@ -140,26 +140,26 @@ test "parses WITH and SKIP clauses" {
     );
     defer r.ast.deinit();
 
-    const qc = r.ast.nodeChildren(r.root);
-    try testing.expectEqual(@as(usize, 3), qc.len);
-    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(qc[0]));
-    try testing.expectEqual(NodeKind.with_clause, r.ast.kind(qc[1]));
-    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(qc[2]));
+    const query_children = r.ast.nodeChildren(r.root);
+    try testing.expectEqual(@as(usize, 3), query_children.len);
+    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(query_children[0]));
+    try testing.expectEqual(NodeKind.with_clause, r.ast.kind(query_children[1]));
+    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(query_children[2]));
 
     // with_clause children: [projection, order_by, skip, limit, where].
-    const wc = r.ast.nodeChildren(qc[1]);
-    try testing.expectEqual(@as(usize, 5), wc.len);
-    try testing.expectEqual(NodeKind.projection, r.ast.kind(wc[0]));
-    try testing.expectEqual(NodeKind.order_by, r.ast.kind(wc[1]));
-    try testing.expectEqual(NodeKind.skip, r.ast.kind(wc[2]));
-    try testing.expectEqual(NodeKind.limit, r.ast.kind(wc[3]));
-    try testing.expectEqual(NodeKind.binary_op, r.ast.kind(wc[4]));
+    const where_children = r.ast.nodeChildren(query_children[1]);
+    try testing.expectEqual(@as(usize, 5), where_children.len);
+    try testing.expectEqual(NodeKind.projection, r.ast.kind(where_children[0]));
+    try testing.expectEqual(NodeKind.order_by, r.ast.kind(where_children[1]));
+    try testing.expectEqual(NodeKind.skip, r.ast.kind(where_children[2]));
+    try testing.expectEqual(NodeKind.limit, r.ast.kind(where_children[3]));
+    try testing.expectEqual(NodeKind.binary_operation, r.ast.kind(where_children[4]));
 
     // projection has two items: `p` and `count(m) AS cnt`.
-    const projc = r.ast.nodeChildren(wc[0]);
-    try testing.expectEqual(@as(usize, 2), projc.len);
-    try testing.expectEqual(NodeKind.variable, r.ast.kind(r.ast.nodeChildren(projc[0])[0]));
-    try testing.expectEqualStrings("cnt", r.ast.data(projc[1]).text);
+    const projection_children = r.ast.nodeChildren(where_children[0]);
+    try testing.expectEqual(@as(usize, 2), projection_children.len);
+    try testing.expectEqual(NodeKind.variable, r.ast.kind(r.ast.nodeChildren(projection_children[0])[0]));
+    try testing.expectEqualStrings("cnt", r.ast.data(projection_children[1]).text);
 }
 
 test "parses OPTIONAL MATCH" {
@@ -168,14 +168,14 @@ test "parses OPTIONAL MATCH" {
     );
     defer r.ast.deinit();
 
-    const qc = r.ast.nodeChildren(r.root);
-    try testing.expectEqual(@as(usize, 3), qc.len);
-    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(qc[0]));
-    try testing.expectEqual(NodeKind.optional_match_clause, r.ast.kind(qc[1]));
-    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(qc[2]));
+    const query_children = r.ast.nodeChildren(r.root);
+    try testing.expectEqual(@as(usize, 3), query_children.len);
+    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(query_children[0]));
+    try testing.expectEqual(NodeKind.optional_match_clause, r.ast.kind(query_children[1]));
+    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(query_children[2]));
 
     // optional_match_clause children: [pattern, where].
-    const omc = r.ast.nodeChildren(qc[1]);
+    const omc = r.ast.nodeChildren(query_children[1]);
     try testing.expectEqual(@as(usize, 2), omc.len);
     try testing.expectEqual(NodeKind.pattern, r.ast.kind(omc[0]));
 }
@@ -184,26 +184,26 @@ test "parses lists: collect, size and UNWIND" {
     {
         var r = try parseString("MATCH (m:Movie) RETURN collect(m.title)");
         defer r.ast.deinit();
-        const rc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[1]);
-        const item = r.ast.nodeChildren(rc[0])[0];
-        try testing.expectEqual(NodeKind.agg, r.ast.kind(r.ast.nodeChildren(item)[0]));
-        try testing.expectEqual(AggKind.collect, r.ast.data(r.ast.nodeChildren(item)[0]).agg);
+        const return_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[1]);
+        const item = r.ast.nodeChildren(return_children[0])[0];
+        try testing.expectEqual(NodeKind.aggregate, r.ast.kind(r.ast.nodeChildren(item)[0]));
+        try testing.expectEqual(AggregateKind.collect, r.ast.data(r.ast.nodeChildren(item)[0]).aggregate);
     }
     {
         var r = try parseString("RETURN size([1, 2, 3])");
         defer r.ast.deinit();
-        const rc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
-        const item = r.ast.nodeChildren(rc[0])[0];
-        try testing.expectEqual(NodeKind.size_fn, r.ast.kind(r.ast.nodeChildren(item)[0]));
+        const return_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
+        const item = r.ast.nodeChildren(return_children[0])[0];
+        try testing.expectEqual(NodeKind.size_function, r.ast.kind(r.ast.nodeChildren(item)[0]));
     }
     {
         var r = try parseString("UNWIND [1, 2, 3] AS x RETURN x");
         defer r.ast.deinit();
-        const qc = r.ast.nodeChildren(r.root);
-        try testing.expectEqual(@as(usize, 2), qc.len);
-        try testing.expectEqual(NodeKind.unwind_clause, r.ast.kind(qc[0]));
-        try testing.expectEqualStrings("x", r.ast.data(qc[0]).unwind.var_name);
-        const expr = r.ast.nodeChildren(qc[0])[0];
+        const query_children = r.ast.nodeChildren(r.root);
+        try testing.expectEqual(@as(usize, 2), query_children.len);
+        try testing.expectEqual(NodeKind.unwind_clause, r.ast.kind(query_children[0]));
+        try testing.expectEqualStrings("x", r.ast.data(query_children[0]).unwind.variable_name);
+        const expr = r.ast.nodeChildren(query_children[0])[0];
         try testing.expectEqual(NodeKind.list_literal, r.ast.kind(expr));
     }
 }
@@ -212,38 +212,38 @@ test "parses multi-label, CASE, REMOVE and MERGE ON" {
     {
         var r = try parseString("MATCH (n:Person:Employee) RETURN n.name");
         defer r.ast.deinit();
-        const mc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
-        const np = r.ast.data(r.ast.nodeChildren(mc[0])[0]).node_pattern;
-        try testing.expectEqual(@as(usize, 2), np.labels.len);
-        try testing.expectEqualStrings("Person", np.labels[0]);
-        try testing.expectEqualStrings("Employee", np.labels[1]);
+        const match_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
+        const node_pattern = r.ast.data(r.ast.nodeChildren(match_children[0])[0]).node_pattern;
+        try testing.expectEqual(@as(usize, 2), node_pattern.labels.len);
+        try testing.expectEqualStrings("Person", node_pattern.labels[0]);
+        try testing.expectEqualStrings("Employee", node_pattern.labels[1]);
     }
     {
         var r = try parseString("RETURN CASE WHEN 1 > 0 THEN 'yes' ELSE 'no' END");
         defer r.ast.deinit();
-        const rc = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
-        const item = r.ast.nodeChildren(rc[0])[0];
-        try testing.expectEqual(NodeKind.case_expr, r.ast.kind(r.ast.nodeChildren(item)[0]));
+        const return_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[0]);
+        const item = r.ast.nodeChildren(return_children[0])[0];
+        try testing.expectEqual(NodeKind.case_expression, r.ast.kind(r.ast.nodeChildren(item)[0]));
     }
     {
         var r = try parseString("MATCH (n:Person) REMOVE n.name, n:Person");
         defer r.ast.deinit();
-        const qc = r.ast.nodeChildren(r.root);
-        try testing.expectEqual(NodeKind.remove_clause, r.ast.kind(qc[1]));
-        const rc = r.ast.nodeChildren(qc[1]);
-        try testing.expectEqual(@as(usize, 2), rc.len);
-        try testing.expectEqual(NodeKind.property_access, r.ast.kind(rc[0]));
-        try testing.expectEqual(NodeKind.label_ref, r.ast.kind(rc[1]));
+        const query_children = r.ast.nodeChildren(r.root);
+        try testing.expectEqual(NodeKind.remove_clause, r.ast.kind(query_children[1]));
+        const return_children = r.ast.nodeChildren(query_children[1]);
+        try testing.expectEqual(@as(usize, 2), return_children.len);
+        try testing.expectEqual(NodeKind.property_access, r.ast.kind(return_children[0]));
+        try testing.expectEqual(NodeKind.label_reference, r.ast.kind(return_children[1]));
     }
     {
         var r = try parseString("MERGE (n:Person {name: 'X'}) ON CREATE SET n.c = 1 ON MATCH SET n.m = 1");
         defer r.ast.deinit();
-        const qc = r.ast.nodeChildren(r.root);
-        const mc = r.ast.nodeChildren(qc[0]);
-        try testing.expectEqual(@as(usize, 3), mc.len); // pattern + on_create + on_match
-        try testing.expectEqual(NodeKind.pattern, r.ast.kind(mc[0]));
-        try testing.expectEqual(NodeKind.set_clause, r.ast.kind(mc[1]));
-        try testing.expectEqual(NodeKind.set_clause, r.ast.kind(mc[2]));
+        const query_children = r.ast.nodeChildren(r.root);
+        const match_children = r.ast.nodeChildren(query_children[0]);
+        try testing.expectEqual(@as(usize, 3), match_children.len); // pattern + on_create + on_match
+        try testing.expectEqual(NodeKind.pattern, r.ast.kind(match_children[0]));
+        try testing.expectEqual(NodeKind.set_clause, r.ast.kind(match_children[1]));
+        try testing.expectEqual(NodeKind.set_clause, r.ast.kind(match_children[2]));
     }
 }
 
@@ -253,27 +253,27 @@ test "parses write clauses (CREATE, SET, DELETE)" {
     );
     defer r.ast.deinit();
 
-    const qc = r.ast.nodeChildren(r.root);
-    try testing.expectEqual(@as(usize, 5), qc.len);
-    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(qc[0]));
-    try testing.expectEqual(NodeKind.create_clause, r.ast.kind(qc[1]));
-    try testing.expectEqual(NodeKind.set_clause, r.ast.kind(qc[2]));
-    try testing.expectEqual(NodeKind.delete_clause, r.ast.kind(qc[3]));
-    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(qc[4]));
+    const query_children = r.ast.nodeChildren(r.root);
+    try testing.expectEqual(@as(usize, 5), query_children.len);
+    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(query_children[0]));
+    try testing.expectEqual(NodeKind.create_clause, r.ast.kind(query_children[1]));
+    try testing.expectEqual(NodeKind.set_clause, r.ast.kind(query_children[2]));
+    try testing.expectEqual(NodeKind.delete_clause, r.ast.kind(query_children[3]));
+    try testing.expectEqual(NodeKind.return_clause, r.ast.kind(query_children[4]));
 
     // create_clause -> pattern (node edge node)
-    const cc = r.ast.nodeChildren(qc[1]);
+    const cc = r.ast.nodeChildren(query_children[1]);
     const cpc = r.ast.nodeChildren(cc[0]);
     try testing.expectEqual(@as(usize, 3), cpc.len);
-    try testing.expectEqualStrings("KNOWS", r.ast.data(cpc[1]).edge_pattern.etype);
+    try testing.expectEqualStrings("KNOWS", r.ast.data(cpc[1]).edge_pattern.edge_type);
 
     // set_clause -> one set_item (property_access + value)
-    const sc = r.ast.nodeChildren(qc[2]);
+    const sc = r.ast.nodeChildren(query_children[2]);
     try testing.expectEqual(@as(usize, 1), sc.len);
     try testing.expectEqual(NodeKind.set_item, r.ast.kind(sc[0]));
-    const sic = r.ast.nodeChildren(sc[0]);
-    try testing.expectEqual(NodeKind.property_access, r.ast.kind(sic[0]));
-    try testing.expectEqualStrings("born", r.ast.data(sic[0]).text);
+    const set_item_children = r.ast.nodeChildren(sc[0]);
+    try testing.expectEqual(NodeKind.property_access, r.ast.kind(set_item_children[0]));
+    try testing.expectEqualStrings("born", r.ast.data(set_item_children[0]).text);
 }
 
 test "reports unterminated string" {
@@ -292,14 +292,14 @@ test "diagnostics carry a message and position" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
 
-    var diag = Diagnostic.init();
-    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:Person) RETURN )", &diag));
-    try testing.expectEqualStrings("expected an expression, found ')'", diag.message());
-    try testing.expectEqual(@as(usize, 24), diag.pos);
+    var diagnostic = Diagnostic.init();
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:Person) RETURN )", &diagnostic));
+    try testing.expectEqualStrings("expected an expression, found ')'", diagnostic.message());
+    try testing.expectEqual(@as(usize, 24), diagnostic.pos);
 
-    var diag2 = Diagnostic.init();
-    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:Person {name: 'Keanu}) RETURN p.born", &diag2));
-    try testing.expectEqualStrings("unterminated string literal", diag2.message());
+    var second_diagnostic = Diagnostic.init();
+    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:Person {name: 'Keanu}) RETURN p.born", &second_diagnostic));
+    try testing.expectEqualStrings("unterminated string literal", second_diagnostic.message());
 }
 
 test "UTF-8 and backtick-quoted identifiers" {
@@ -310,9 +310,9 @@ test "UTF-8 and backtick-quoted identifiers" {
     // A quoted identifier may hold spaces and keywords, and is never a keyword.
     _ = try parse(&ast, "MATCH (`my node`:`Zona Norte`)-[:`ACCEDE A`]->(m:`MATCH`) RETURN `my node`.`full name`, m.count", null);
 
-    var diag = Diagnostic.init();
-    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:`Open", &diag));
-    try testing.expectEqualStrings("unterminated quoted identifier", diag.message());
+    var diagnostic = Diagnostic.init();
+    try testing.expectError(error.UnexpectedEof, parse(&ast, "MATCH (p:`Open", &diagnostic));
+    try testing.expectEqualStrings("unterminated quoted identifier", diagnostic.message());
     try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (p:``) RETURN p", null));
 }
 
@@ -327,9 +327,9 @@ test "every parse failure carries a message" {
         "RETURN 99999999999999999999", // integer overflow
     };
     for (cases) |src| {
-        var diag = Diagnostic.init();
-        try testing.expectError(error.UnexpectedToken, parse(&ast, src, &diag));
-        try testing.expect(diag.message().len > 0);
-        try testing.expectEqual(acmedb.diagnostics.ErrorCode.parse, diag.code);
+        var diagnostic = Diagnostic.init();
+        try testing.expectError(error.UnexpectedToken, parse(&ast, src, &diagnostic));
+        try testing.expect(diagnostic.message().len > 0);
+        try testing.expectEqual(acmedb.diagnostics.ErrorCode.parse, diagnostic.code);
     }
 }

@@ -11,7 +11,7 @@ const std = @import("std");
 /// properties; `boolean`, `null` and `list` exist during evaluation.
 pub const Value = union(enum) {
     int: i64,
-    str: []const u8,
+    string: []const u8,
     boolean: bool,
     null: void,
     list: []const Value,
@@ -36,7 +36,7 @@ pub const Value = union(enum) {
         return switch (a) {
             .null => .eq,
             .int => |x| std.math.order(x, b.int),
-            .str => |x| std.mem.order(u8, x, b.str),
+            .string => |x| std.mem.order(u8, x, b.string),
             .boolean => |x| std.math.order(@intFromBool(x), @intFromBool(b.boolean)),
             .list => |x| orderSequences(x, b.list),
         };
@@ -48,7 +48,7 @@ pub const Value = union(enum) {
         switch (self) {
             .null => {},
             .int => |x| hasher.update(std.mem.asBytes(&x)),
-            .str => |x| {
+            .string => |x| {
                 hasher.update(std.mem.asBytes(&x.len));
                 hasher.update(x);
             },
@@ -64,7 +64,7 @@ pub const Value = union(enum) {
     fn typeRank(self: Value) u8 {
         return switch (self) {
             .list => 0,
-            .str => 1,
+            .string => 1,
             .boolean => 2,
             .int => 3,
             .null => 4,
@@ -101,7 +101,7 @@ fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
     return switch (random.uintLessThan(u8, kinds)) {
         0 => .{ .null = {} },
         1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },
-        2 => .{ .str = strings[random.uintLessThan(usize, strings.len)] },
+        2 => .{ .string = strings[random.uintLessThan(usize, strings.len)] },
         3 => .{ .boolean = random.boolean() },
         else => blk: {
             const items = try arena.alloc(Value, random.uintLessThan(usize, 3));
@@ -161,7 +161,7 @@ test "hash agrees with eql" {
 test "order follows the openCypher global sort order" {
     const ascending = [_]Value{
         .{ .list = &.{} },
-        .{ .str = "a" },
+        .{ .string = "a" },
         .{ .boolean = true },
         .{ .int = 1 },
         .{ .null = {} },

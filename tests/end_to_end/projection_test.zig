@@ -20,8 +20,8 @@ test "ORDER BY, LIMIT and DISTINCT" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);
@@ -31,27 +31,27 @@ test "ORDER BY, LIMIT and DISTINCT" {
 
     // ORDER BY ascending.
     try expectOrdered(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title ORDER BY m.released", &.{
-        &.{.{ .str = "The Matrix" }},
-        &.{.{ .str = "The Matrix Reloaded" }},
-        &.{.{ .str = "John Wick" }},
+        &.{.{ .string = "The Matrix" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
+        &.{.{ .string = "John Wick" }},
     });
 
     // ORDER BY descending.
     try expectOrdered(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title ORDER BY m.released DESC", &.{
-        &.{.{ .str = "John Wick" }},
-        &.{.{ .str = "The Matrix Reloaded" }},
-        &.{.{ .str = "The Matrix" }},
+        &.{.{ .string = "John Wick" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
+        &.{.{ .string = "The Matrix" }},
     });
 
     // LIMIT after ORDER BY.
     try expectOrdered(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title ORDER BY m.released LIMIT 2", &.{
-        &.{.{ .str = "The Matrix" }},
-        &.{.{ .str = "The Matrix Reloaded" }},
+        &.{.{ .string = "The Matrix" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
     });
 
     // DISTINCT collapses duplicate projected rows.
     try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie {title: 'The Matrix'}) RETURN DISTINCT m.title", &.{
-        &.{.{ .str = "The Matrix" }},
+        &.{.{ .string = "The Matrix" }},
     });
 }
 
@@ -59,8 +59,8 @@ test "SKIP pagination in RETURN" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);
@@ -69,13 +69,13 @@ test "SKIP pagination in RETURN" {
     defer ast.deinit();
 
     try expectOrdered(&ast, &g, "MATCH (m:Movie) RETURN m.title ORDER BY m.released SKIP 1 LIMIT 2", &.{
-        &.{.{ .str = "The Matrix" }},
-        &.{.{ .str = "The Matrix Reloaded" }},
+        &.{.{ .string = "The Matrix" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
     });
 
     // SKIP without LIMIT.
     try expectOrdered(&ast, &g, "MATCH (m:Movie) RETURN m.title ORDER BY m.released SKIP 3", &.{
-        &.{.{ .str = "John Wick" }},
+        &.{.{ .string = "John Wick" }},
     });
 }
 
@@ -83,8 +83,8 @@ test "ORDER BY is stable: ties keep their match order" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);
@@ -94,11 +94,11 @@ test "ORDER BY is stable: ties keep their match order" {
 
     // People are matched in id order; the key only splits them in two.
     try expectOrdered(&ast, &g, "MATCH (p:Person) RETURN p.name ORDER BY p.born > 1962 DESC", &.{
-        &.{.{ .str = "Keanu Reeves" }},
-        &.{.{ .str = "Carrie-Anne Moss" }},
-        &.{.{ .str = "Lana Wachowski" }},
-        &.{.{ .str = "Laurence Fishburne" }},
-        &.{.{ .str = "Tom Hanks" }},
+        &.{.{ .string = "Keanu Reeves" }},
+        &.{.{ .string = "Carrie-Anne Moss" }},
+        &.{.{ .string = "Lana Wachowski" }},
+        &.{.{ .string = "Laurence Fishburne" }},
+        &.{.{ .string = "Tom Hanks" }},
     });
 }
 
@@ -106,8 +106,8 @@ test "ORDER BY sees RETURN aliases, projected expressions and aggregates" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);
@@ -117,20 +117,20 @@ test "ORDER BY sees RETURN aliases, projected expressions and aggregates" {
 
     // An alias of the RETURN clause.
     try expectOrdered(&ast, &g, "MATCH (m:Movie) RETURN m.title AS title ORDER BY title LIMIT 2", &.{
-        &.{.{ .str = "Forrest Gump" }},
-        &.{.{ .str = "John Wick" }},
+        &.{.{ .string = "Forrest Gump" }},
+        &.{.{ .string = "John Wick" }},
     });
     // Aggregated rows ordered by an aggregate alias (used to crash) ...
     try expectOrdered(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN p.name, count(*) AS movies ORDER BY movies DESC, p.name", &.{
-        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 3 } },
-        &.{ .{ .str = "Carrie-Anne Moss" }, .{ .int = 1 } },
-        &.{ .{ .str = "Laurence Fishburne" }, .{ .int = 1 } },
-        &.{ .{ .str = "Tom Hanks" }, .{ .int = 1 } },
+        &.{ .{ .string = "Keanu Reeves" }, .{ .int = 3 } },
+        &.{ .{ .string = "Carrie-Anne Moss" }, .{ .int = 1 } },
+        &.{ .{ .string = "Laurence Fishburne" }, .{ .int = 1 } },
+        &.{ .{ .string = "Tom Hanks" }, .{ .int = 1 } },
     });
     // ... and by a repeated aggregate expression.
     try expectOrdered(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN p.name, count(*) ORDER BY count(*) DESC LIMIT 1", &.{
-        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 3 } },
+        &.{ .{ .string = "Keanu Reeves" }, .{ .int = 3 } },
     });
     // A variable that is not projected cannot order aggregated rows.
-    try expectQueryError(&ast, &g, "MATCH (p:Person) RETURN count(*) ORDER BY p.born", error.UnknownVar);
+    try expectQueryError(&ast, &g, "MATCH (p:Person) RETURN count(*) ORDER BY p.born", error.UnknownVariable);
 }

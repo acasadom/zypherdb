@@ -20,8 +20,8 @@ test "runs the vertical-slice queries end to end" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);
@@ -33,22 +33,22 @@ test "runs the vertical-slice queries end to end" {
         &.{.{ .int = 1964 }},
     });
     try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title", &.{
-        &.{.{ .str = "The Matrix" }},
-        &.{.{ .str = "The Matrix Reloaded" }},
-        &.{.{ .str = "John Wick" }},
+        &.{.{ .string = "The Matrix" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
+        &.{.{ .string = "John Wick" }},
     });
     try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2000 RETURN m.title AS movie", &.{
-        &.{.{ .str = "The Matrix Reloaded" }},
-        &.{.{ .str = "John Wick" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
+        &.{.{ .string = "John Wick" }},
     });
     try expectQuery(&ast, &g, "MATCH (d:Person)-[:DIRECTED]->(m:Movie)<-[:ACTED_IN]-(a:Person) WHERE m.title = 'The Matrix' RETURN a.name", &.{
-        &.{.{ .str = "Keanu Reeves" }},
-        &.{.{ .str = "Carrie-Anne Moss" }},
-        &.{.{ .str = "Laurence Fishburne" }},
+        &.{.{ .string = "Keanu Reeves" }},
+        &.{.{ .string = "Carrie-Anne Moss" }},
+        &.{.{ .string = "Laurence Fishburne" }},
     });
     try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE p.name = 'Keanu Reeves' AND m.released > 2000 RETURN p.name, m.title", &.{
-        &.{ .{ .str = "Keanu Reeves" }, .{ .str = "The Matrix Reloaded" } },
-        &.{ .{ .str = "Keanu Reeves" }, .{ .str = "John Wick" } },
+        &.{ .{ .string = "Keanu Reeves" }, .{ .string = "The Matrix Reloaded" } },
+        &.{ .{ .string = "Keanu Reeves" }, .{ .string = "John Wick" } },
     });
 }
 
@@ -56,18 +56,18 @@ test "MATCH multi-pattern: join and shared variables" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
     // People with a KNOWS chain: A -> B -> C.
     try g.addNode(1, "Person");
-    try g.setProp(1, "name", .{ .str = "A" });
+    try g.setProperty(1, "name", .{ .string = "A" });
     try g.addNode(2, "Person");
-    try g.setProp(2, "name", .{ .str = "B" });
+    try g.setProperty(2, "name", .{ .string = "B" });
     try g.addNode(3, "Person");
-    try g.setProp(3, "name", .{ .str = "C" });
+    try g.setProperty(3, "name", .{ .string = "C" });
     try g.addEdge(1, 2, "KNOWS");
     try g.addEdge(2, 3, "KNOWS");
 
@@ -76,14 +76,14 @@ test "MATCH multi-pattern: join and shared variables" {
 
     // Shared variable across two patterns: a 2-hop path A -> ? -> ?.
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[:KNOWS]->(b), (b)-[:KNOWS]->(c) RETURN c.name", &.{
-        &.{.{ .str = "C" }},
+        &.{.{ .string = "C" }},
     });
 
     // Join two independent matched nodes and connect them.
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}), (c:Person {name: 'C'}) CREATE (a)-[:KNOWS]->(c)", &.{});
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[:KNOWS]->(c:Person) RETURN c.name", &.{
-        &.{.{ .str = "B" }},
-        &.{.{ .str = "C" }},
+        &.{.{ .string = "B" }},
+        &.{.{ .string = "C" }},
     });
 }
 
@@ -91,29 +91,29 @@ test "edge-property index anchors unlabeled edge patterns" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
     // Unlabeled nodes connected by a typed edge carrying a property.
     try g.addNode(1, "");
-    try g.setProp(1, "name", .{ .str = "A" });
+    try g.setProperty(1, "name", .{ .string = "A" });
     try g.addNode(2, "");
-    try g.setProp(2, "name", .{ .str = "B" });
+    try g.setProperty(2, "name", .{ .string = "B" });
     try g.addNode(3, "");
-    try g.setProp(3, "name", .{ .str = "C" });
+    try g.setProperty(3, "name", .{ .string = "C" });
     try g.addEdge(1, 2, "KNOWS");
-    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 5 });
+    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 5 });
     try g.addEdge(1, 3, "KNOWS");
-    try g.setEdgeProp(1, 3, "KNOWS", "weight", .{ .int = 9 });
+    try g.setEdgeProperty(1, 3, "KNOWS", "weight", .{ .int = 9 });
 
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
 
     // The edge-property index anchors the match: only weight=5 edges match.
     try expectQuery(&ast, &g, "MATCH (a)-[r:KNOWS {weight: 5}]->(b) RETURN a.name, b.name", &.{
-        &.{ .{ .str = "A" }, .{ .str = "B" } },
+        &.{ .{ .string = "A" }, .{ .string = "B" } },
     });
 }
 
@@ -121,8 +121,8 @@ test "unlabeled node patterns scan every node" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -152,8 +152,8 @@ test "UTF-8 and quoted names round-trip through labels and properties" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -162,7 +162,7 @@ test "UTF-8 and quoted names round-trip through labels and properties" {
 
     try expectQuery(&ast, &g, "CREATE (a:Pérsona {año: 1990, nombre: 'Ñandú'})-[:`TRABAJA EN`]->(z:`Zona Norte`)", &.{});
     try expectQuery(&ast, &g, "MATCH (p:Pérsona)-[:`TRABAJA EN`]->(z:`Zona Norte`) RETURN p.año, p.`nombre`", &.{
-        &.{ .{ .int = 1990 }, .{ .str = "Ñandú" } },
+        &.{ .{ .int = 1990 }, .{ .string = "Ñandú" } },
     });
     // A quoted keyword is a plain name.
     try expectQuery(&ast, &g, "CREATE (n:`MATCH` {`count`: 3})", &.{});
@@ -175,8 +175,8 @@ test "string predicates and IN membership" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);
@@ -186,31 +186,31 @@ test "string predicates and IN membership" {
 
     // STARTS WITH.
     try expectQuery(&ast, &g, "MATCH (m:Movie) WHERE m.title STARTS WITH 'The' RETURN m.title", &.{
-        &.{.{ .str = "The Matrix" }},
-        &.{.{ .str = "The Matrix Reloaded" }},
+        &.{.{ .string = "The Matrix" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
     });
 
     // ENDS WITH.
     try expectQuery(&ast, &g, "MATCH (m:Movie) WHERE m.title ENDS WITH 'Wick' RETURN m.title", &.{
-        &.{.{ .str = "John Wick" }},
+        &.{.{ .string = "John Wick" }},
     });
 
     // CONTAINS.
     try expectQuery(&ast, &g, "MATCH (m:Movie) WHERE m.title CONTAINS 'Matrix' RETURN m.title", &.{
-        &.{.{ .str = "The Matrix" }},
-        &.{.{ .str = "The Matrix Reloaded" }},
+        &.{.{ .string = "The Matrix" }},
+        &.{.{ .string = "The Matrix Reloaded" }},
     });
 
     // IN with strings.
     try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.name IN ['Keanu Reeves', 'Tom Hanks'] RETURN p.name", &.{
-        &.{.{ .str = "Keanu Reeves" }},
-        &.{.{ .str = "Tom Hanks" }},
+        &.{.{ .string = "Keanu Reeves" }},
+        &.{.{ .string = "Tom Hanks" }},
     });
 
     // IN with ints.
     try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.born IN [1961, 1964] RETURN p.name", &.{
-        &.{.{ .str = "Keanu Reeves" }},
-        &.{.{ .str = "Laurence Fishburne" }},
+        &.{.{ .string = "Keanu Reeves" }},
+        &.{.{ .string = "Laurence Fishburne" }},
     });
 
     // IN with no match.

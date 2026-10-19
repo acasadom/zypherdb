@@ -16,15 +16,15 @@ pub const LexError = error{
 };
 
 pub const TokenKind = enum {
-    ident,
+    identifier,
     string,
     integer,
-    l_paren,
-    r_paren,
-    l_bracket,
-    r_bracket,
-    l_brace,
-    r_brace,
+    left_paren,
+    right_paren,
+    left_bracket,
+    right_bracket,
+    left_brace,
+    right_brace,
     colon,
     comma,
     dot,
@@ -32,13 +32,13 @@ pub const TokenKind = enum {
     star,
     arrow_right,
     arrow_left,
-    eq,
-    ne,
-    lt,
-    gt,
-    le,
-    ge,
-    eof,
+    equal,
+    not_equal,
+    less_than,
+    greater_than,
+    less_or_equal,
+    greater_or_equal,
+    end_of_input,
 };
 
 pub const Token = struct {
@@ -51,17 +51,17 @@ pub const Token = struct {
     quoted: bool = false,
 };
 
-pub fn tokenKindName(kind: TokenKind) []const u8 {
+pub fn describeTokenKind(kind: TokenKind) []const u8 {
     return switch (kind) {
-        .ident => "an identifier",
+        .identifier => "an identifier",
         .string => "a string",
         .integer => "an integer",
-        .l_paren => "'('",
-        .r_paren => "')'",
-        .l_bracket => "'['",
-        .r_bracket => "']'",
-        .l_brace => "'{'",
-        .r_brace => "'}'",
+        .left_paren => "'('",
+        .right_paren => "')'",
+        .left_bracket => "'['",
+        .right_bracket => "']'",
+        .left_brace => "'{'",
+        .right_brace => "'}'",
         .colon => "':'",
         .comma => "','",
         .dot => "'.'",
@@ -69,31 +69,30 @@ pub fn tokenKindName(kind: TokenKind) []const u8 {
         .star => "'*'",
         .arrow_right => "'->'",
         .arrow_left => "'<-'",
-        .eq => "'='",
-        .ne => "'<>'",
-        .lt => "'<'",
-        .gt => "'>'",
-        .le => "'<='",
-        .ge => "'>='",
-        .eof => "end of query",
+        .equal => "'='",
+        .not_equal => "'<>'",
+        .less_than => "'<'",
+        .greater_than => "'>'",
+        .less_or_equal => "'<='",
+        .greater_or_equal => "'>='",
+        .end_of_input => "end of query",
     };
 }
 
-pub fn tokenDesc(t: Token) []const u8 {
+pub fn describeToken(t: Token) []const u8 {
     return switch (t.kind) {
-        .ident, .string, .integer => t.text,
-        else => tokenKindName(t.kind),
+        .identifier, .string, .integer => t.text,
+        else => describeTokenKind(t.kind),
     };
 }
-
 
 /// Identifiers are ASCII letters/digits/`_` plus any non-ASCII byte, so UTF-8
 /// names (`Pérsona`, `año`) lex as one identifier. The bytes are kept verbatim.
-fn isIdentStart(c: u8) bool {
+fn isIdentifierStart(c: u8) bool {
     return std.ascii.isAlphabetic(c) or c == '_' or c >= 0x80;
 }
 
-fn isIdentCont(c: u8) bool {
+fn isIdentifierContinuation(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c >= 0x80;
 }
 
@@ -101,7 +100,7 @@ fn add(tokens: *std.ArrayList(Token), allocator: Allocator, kind: TokenKind, tex
     try tokens.append(allocator, .{ .kind = kind, .text = text, .pos = pos });
 }
 
-pub fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) LexError!std.ArrayList(Token) {
+pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic) LexError!std.ArrayList(Token) {
     var tokens = std.ArrayList(Token).empty;
     errdefer tokens.deinit(allocator);
 
@@ -111,27 +110,27 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) LexEr
         switch (c) {
             ' ', '\t', '\n', '\r' => i += 1,
             '(' => {
-                try add(&tokens, allocator, .l_paren, src[i .. i + 1], i);
+                try add(&tokens, allocator, .left_paren, src[i .. i + 1], i);
                 i += 1;
             },
             ')' => {
-                try add(&tokens, allocator, .r_paren, src[i .. i + 1], i);
+                try add(&tokens, allocator, .right_paren, src[i .. i + 1], i);
                 i += 1;
             },
             '[' => {
-                try add(&tokens, allocator, .l_bracket, src[i .. i + 1], i);
+                try add(&tokens, allocator, .left_bracket, src[i .. i + 1], i);
                 i += 1;
             },
             ']' => {
-                try add(&tokens, allocator, .r_bracket, src[i .. i + 1], i);
+                try add(&tokens, allocator, .right_bracket, src[i .. i + 1], i);
                 i += 1;
             },
             '{' => {
-                try add(&tokens, allocator, .l_brace, src[i .. i + 1], i);
+                try add(&tokens, allocator, .left_brace, src[i .. i + 1], i);
                 i += 1;
             },
             '}' => {
-                try add(&tokens, allocator, .r_brace, src[i .. i + 1], i);
+                try add(&tokens, allocator, .right_brace, src[i .. i + 1], i);
                 i += 1;
             },
             ':' => {
@@ -163,7 +162,7 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) LexEr
                     i += 1;
                 }
                 if (i >= src.len) {
-                    if (diag) |d| d.set(.parse, start, "unterminated string literal", .{});
+                    if (diagnostic) |d| d.set(.parse, start, "unterminated string literal", .{});
                     return error.UnexpectedEof;
                 }
                 try add(&tokens, allocator, .string, src[content_start..i], start);
@@ -173,14 +172,14 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) LexEr
                 // Quoted identifier: any bytes up to the closing backtick.
                 const start = i;
                 const end = std.mem.indexOfScalarPos(u8, src, i + 1, '`') orelse {
-                    if (diag) |d| d.set(.parse, start, "unterminated quoted identifier", .{});
+                    if (diagnostic) |d| d.set(.parse, start, "unterminated quoted identifier", .{});
                     return error.UnexpectedEof;
                 };
                 if (end == i + 1) {
-                    if (diag) |d| d.set(.parse, start, "empty quoted identifier", .{});
+                    if (diagnostic) |d| d.set(.parse, start, "empty quoted identifier", .{});
                     return error.UnexpectedToken;
                 }
-                try tokens.append(allocator, .{ .kind = .ident, .text = src[i + 1 .. end], .pos = start, .quoted = true });
+                try tokens.append(allocator, .{ .kind = .identifier, .text = src[i + 1 .. end], .pos = start, .quoted = true });
                 i = end + 1;
             },
             '0'...'9' => {
@@ -196,17 +195,17 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) LexEr
                         continue;
                     }
                     if (src[i + 1] == '=') {
-                        try add(&tokens, allocator, .le, src[i .. i + 2], i);
+                        try add(&tokens, allocator, .less_or_equal, src[i .. i + 2], i);
                         i += 2;
                         continue;
                     }
                     if (src[i + 1] == '>') {
-                        try add(&tokens, allocator, .ne, src[i .. i + 2], i);
+                        try add(&tokens, allocator, .not_equal, src[i .. i + 2], i);
                         i += 2;
                         continue;
                     }
                 }
-                try add(&tokens, allocator, .lt, src[i .. i + 1], i);
+                try add(&tokens, allocator, .less_than, src[i .. i + 1], i);
                 i += 1;
             },
             '-' => {
@@ -219,31 +218,30 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diag: ?*Diagnostic) LexEr
                 }
             },
             '=' => {
-                try add(&tokens, allocator, .eq, src[i .. i + 1], i);
+                try add(&tokens, allocator, .equal, src[i .. i + 1], i);
                 i += 1;
             },
             '>' => {
                 if (i + 1 < src.len and src[i + 1] == '=') {
-                    try add(&tokens, allocator, .ge, src[i .. i + 2], i);
+                    try add(&tokens, allocator, .greater_or_equal, src[i .. i + 2], i);
                     i += 2;
                 } else {
-                    try add(&tokens, allocator, .gt, src[i .. i + 1], i);
+                    try add(&tokens, allocator, .greater_than, src[i .. i + 1], i);
                     i += 1;
                 }
             },
             else => {
-                if (isIdentStart(c)) {
+                if (isIdentifierStart(c)) {
                     const start = i;
-                    while (i < src.len and isIdentCont(src[i])) i += 1;
-                    try add(&tokens, allocator, .ident, src[start..i], start);
+                    while (i < src.len and isIdentifierContinuation(src[i])) i += 1;
+                    try add(&tokens, allocator, .identifier, src[start..i], start);
                 } else {
-                    if (diag) |d| d.set(.parse, i, "unexpected character 0x{x:0>2}", .{c});
+                    if (diagnostic) |d| d.set(.parse, i, "unexpected character 0x{x:0>2}", .{c});
                     return error.UnexpectedToken;
                 }
             },
         }
     }
-    try add(&tokens, allocator, .eof, src[src.len..], src.len);
+    try add(&tokens, allocator, .end_of_input, src[src.len..], src.len);
     return tokens;
 }
-

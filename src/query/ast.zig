@@ -12,7 +12,7 @@
 //! - `query` children are a list of clauses, in source order:
 //!   `match_clause`, `create_clause`, `set_clause`, `delete_clause`,
 //!   `return_clause`.
-//! - `match_clause` children are `[pattern0, ..., patternN, where_expr]`: one or
+//! - `match_clause` children are `[pattern0, ..., patternN, where_expression]`: one or
 //!   more comma-separated patterns followed by the `WHERE` (a missing `WHERE`
 //!   is `bool_literal(true)`).
 //! - `optional_match_clause` children are the same shape as `match_clause`.
@@ -34,12 +34,12 @@
 //! - `node_pattern` children are its `{name: value}` property entries.
 //! - `edge_pattern` children are its `{name: value}` property entries (usually
 //!   empty).
-//! - `property` children are `[value_expr]` (the name is in `.text`).
-//! - `property_access` children are `[object_expr]` (the property name is in
+//! - `property` children are `[value_expression]` (the name is in `.text`).
+//! - `property_access` children are `[object_expression]` (the property name is in
 //!   `.text`).
-//! - `set_item` children are `[property_access, value_expr]`.
+//! - `set_item` children are `[property_access, value_expression]`.
 //! - `delete_item` children are `[variable]`.
-//! - `agg` children are `[arg_expr]` (empty for `count(*)`); the function is in
+//! - `agg` children are `[argument_expression]` (empty for `count(*)`); the function is in
 //!   the `agg` payload.
 //! - `list_literal` children are the list elements (used by `IN [...]` and list
 //!   expressions).
@@ -60,13 +60,13 @@ const Allocator = std.mem.Allocator;
 pub const Index = u32;
 
 /// Comparison and boolean operators for `binary_op` nodes.
-pub const BinOp = enum {
-    eq,
-    ne,
-    lt,
-    gt,
-    le,
-    ge,
+pub const BinaryOperator = enum {
+    equal,
+    not_equal,
+    less_than,
+    greater_than,
+    less_or_equal,
+    greater_or_equal,
     and_,
     or_,
     starts_with,
@@ -75,12 +75,12 @@ pub const BinOp = enum {
     in_,
 };
 
-pub const UnOp = enum {
+pub const UnaryOperator = enum {
     not_,
 };
 
 /// Aggregation functions (`count`, `sum`, `min`, `max`, `collect`).
-pub const AggKind = enum {
+pub const AggregateKind = enum {
     count,
     sum,
     min,
@@ -102,15 +102,15 @@ pub const NodeKind = enum {
     property,
     variable,
     property_access,
-    int_literal,
+    integer_literal,
     string_literal,
-    bool_literal,
+    boolean_literal,
     list_literal,
-    size_fn,
-    case_expr,
-    binary_op,
-    unary_op,
-    agg,
+    size_function,
+    case_expression,
+    binary_operation,
+    unary_operation,
+    aggregate,
     projection,
     projection_item,
     match_clause,
@@ -120,7 +120,7 @@ pub const NodeKind = enum {
     set_clause,
     delete_clause,
     remove_clause,
-    label_ref,
+    label_reference,
     with_clause,
     unwind_clause,
     return_clause,
@@ -141,14 +141,14 @@ pub const Data = union(enum) {
     /// A single string: a literal value, an identifier (variable, property,
     /// label, edge type) or a RETURN alias.
     text: []const u8,
-    node_pattern: struct { var_name: []const u8, labels: []const []const u8 },
-    edge_pattern: struct { var_name: []const u8, etype: []const u8, direction: EdgeDirection },
-    bin_op: BinOp,
-    un_op: UnOp,
-    agg: AggKind,
+    node_pattern: struct { variable_name: []const u8, labels: []const []const u8 },
+    edge_pattern: struct { variable_name: []const u8, edge_type: []const u8, direction: EdgeDirection },
+    binary_operator: BinaryOperator,
+    unary_operator: UnaryOperator,
+    aggregate: AggregateKind,
     return_: struct { distinct: bool },
     with_: struct { distinct: bool },
-    unwind: struct { var_name: []const u8 },
+    unwind: struct { variable_name: []const u8 },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
 };
@@ -192,17 +192,17 @@ pub const Ast = struct {
         return self.arena.allocator().dupe([]const u8, s);
     }
 
-    /// Appends a node and returns its index. `kids` only needs to stay valid
+    /// Appends a node and returns its index. `children` only needs to stay valid
     /// for the duration of this call (the indices are copied).
-    pub fn addNode(self: *Ast, node_kind: NodeKind, payload: Data, kids: []const Index) Allocator.Error!Index {
+    pub fn addNode(self: *Ast, node_kind: NodeKind, payload: Data, children: []const Index) Allocator.Error!Index {
         const first_child: Index = @intCast(self.children.items.len);
-        try self.children.appendSlice(self.allocator, kids);
+        try self.children.appendSlice(self.allocator, children);
         const index: Index = @intCast(self.nodes.items.len);
         try self.nodes.append(self.allocator, .{
             .kind = node_kind,
             .data = payload,
             .first_child = first_child,
-            .child_count = @intCast(kids.len),
+            .child_count = @intCast(children.len),
         });
         return index;
     }
@@ -257,9 +257,9 @@ fn sameExpressionData(a: Data, b: Data) bool {
         .int => |x| x == b.int,
         .boolean => |x| x == b.boolean,
         .text => |x| std.mem.eql(u8, x, b.text),
-        .bin_op => |x| x == b.bin_op,
-        .un_op => |x| x == b.un_op,
-        .agg => |x| x == b.agg,
+        .binary_operator => |x| x == b.binary_operator,
+        .unary_operator => |x| x == b.unary_operator,
+        .aggregate => |x| x == b.aggregate,
         else => false,
     };
 }

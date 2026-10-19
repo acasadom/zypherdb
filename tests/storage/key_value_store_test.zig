@@ -12,8 +12,8 @@ test "KeyValueStore opens, writes and reads a key" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    const path = testPath(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buffer);
 
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
@@ -30,8 +30,8 @@ test "get of a missing key returns null" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    const path = testPath(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buffer);
 
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
@@ -45,8 +45,8 @@ test "exists distinguishes present from absent" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    const path = testPath(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buffer);
 
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
@@ -61,8 +61,8 @@ test "del deletes a key and is idempotent" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    const path = testPath(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buffer);
 
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
@@ -82,8 +82,8 @@ test "scanPrefix returns only the prefixed keys, in order" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    const path = testPath(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buffer);
 
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
@@ -96,13 +96,13 @@ test "scanPrefix returns only the prefixed keys, in order" {
     };
     for (pairs) |p| try store.put(p.k, p.v);
 
-    var it = try store.scanPrefix("n:");
-    defer it.deinit();
+    var iterator = try store.scanPrefix("n:");
+    defer iterator.deinit();
 
     var seen: std.ArrayList([]const u8) = .empty;
     defer seen.deinit(testing.allocator);
 
-    while (try it.next()) |entry| {
+    while (try iterator.next()) |entry| {
         try seen.append(testing.allocator, entry.key);
     }
 
@@ -116,8 +116,8 @@ test "countPrefix counts the keys of a prefix" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    const path = testPath(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buffer);
 
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
@@ -132,8 +132,8 @@ test "read transaction batches reads and sees a consistent snapshot" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    const path = testPath(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    const path = testPath(&tmp, &path_buffer);
 
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
@@ -155,10 +155,10 @@ test "read transaction batches reads and sees a consistent snapshot" {
     // A prefix scan during the read txn borrows it (does not abort it). The
     // iterator must be deinit'd before the read txn ends (cursor → txn).
     {
-        var it = try store.scanPrefix("a");
-        defer it.deinit();
-        try testing.expect((try it.next()) != null);
-        try testing.expect((try it.next()) == null);
+        var iterator = try store.scanPrefix("a");
+        defer iterator.deinit();
+        try testing.expect((try iterator.next()) != null);
+        try testing.expect((try iterator.next()) == null);
     }
 
     store.commitRead();

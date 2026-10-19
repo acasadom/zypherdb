@@ -20,8 +20,8 @@ test "aggregations: count, sum, min and max with grouping" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);
@@ -31,10 +31,10 @@ test "aggregations: count, sum, min and max with grouping" {
 
     // Count movies per actor (implicit GROUP BY p.name).
     try expectQuery(&ast, &g, "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN p.name, count(m)", &.{
-        &.{ .{ .str = "Keanu Reeves" }, .{ .int = 3 } },
-        &.{ .{ .str = "Carrie-Anne Moss" }, .{ .int = 1 } },
-        &.{ .{ .str = "Laurence Fishburne" }, .{ .int = 1 } },
-        &.{ .{ .str = "Tom Hanks" }, .{ .int = 1 } },
+        &.{ .{ .string = "Keanu Reeves" }, .{ .int = 3 } },
+        &.{ .{ .string = "Carrie-Anne Moss" }, .{ .int = 1 } },
+        &.{ .{ .string = "Laurence Fishburne" }, .{ .int = 1 } },
+        &.{ .{ .string = "Tom Hanks" }, .{ .int = 1 } },
     });
 
     // count(*) over all persons.
@@ -57,8 +57,8 @@ test "ungrouped aggregation over zero rows yields one row" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try loadSlice(&g);

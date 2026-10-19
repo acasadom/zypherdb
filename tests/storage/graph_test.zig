@@ -13,8 +13,8 @@ const support = @import("../support.zig");
 const testPath = support.testPath;
 const openStore = support.openStore;
 
-fn expectNext(it: *NodeIdIterator, expected: NodeId) !void {
-    const got = try it.next();
+fn expectNext(iterator: *NodeIdIterator, expected: NodeId) !void {
+    const got = try iterator.next();
     try testing.expect(got != null);
     try testing.expectEqual(expected, got.?);
 }
@@ -23,8 +23,8 @@ test "neighbours scans outgoing, incoming and type-filtered edges" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -46,12 +46,12 @@ test "neighbours scans outgoing, incoming and type-filtered edges" {
     try g.addEdge(lana, matrix, "DIRECTED");
 
     // Outgoing ACTED_IN of keanu, in ascending neighbour-id order.
-    var it = try g.neighbours(keanu, .out, "ACTED_IN");
-    defer it.deinit();
-    try expectNext(&it, matrix);
-    try expectNext(&it, reloaded);
-    try expectNext(&it, wick);
-    try testing.expect((try it.next()) == null);
+    var iterator = try g.neighbours(keanu, .out, "ACTED_IN");
+    defer iterator.deinit();
+    try expectNext(&iterator, matrix);
+    try expectNext(&iterator, reloaded);
+    try expectNext(&iterator, wick);
+    try testing.expect((try iterator.next()) == null);
 
     // Incoming ACTED_IN of matrix: only keanu.
     var it2 = try g.neighbours(matrix, .in, "ACTED_IN");
@@ -75,8 +75,8 @@ test "addNode and hasNode track node existence" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -90,29 +90,29 @@ test "allNodes yields labeled and unlabeled nodes, skipping property keys" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
     try g.addNode(3, "");
     try g.addNode(1, "Person");
-    try g.setProp(1, "name", .{ .str = "A" });
-    try g.setProp(3, "v", .{ .int = 7 });
+    try g.setProperty(1, "name", .{ .string = "A" });
+    try g.setProperty(3, "v", .{ .int = 7 });
 
-    var it = try g.allNodes();
-    defer it.deinit();
-    try expectNext(&it, 1);
-    try expectNext(&it, 3);
-    try testing.expect((try it.next()) == null);
+    var iterator = try g.allNodes();
+    defer iterator.deinit();
+    try expectNext(&iterator, 1);
+    try expectNext(&iterator, 3);
+    try testing.expect((try iterator.next()) == null);
 }
 
 test "labels, properties and value encoding" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -121,36 +121,36 @@ test "labels, properties and value encoding" {
     try g.addNode(100, "Movie");
 
     // label index
-    var it = try g.nodesWithLabel("Person");
-    defer it.deinit();
-    try expectNext(&it, 1);
-    try expectNext(&it, 2);
-    try testing.expect((try it.next()) == null);
+    var iterator = try g.nodesWithLabel("Person");
+    defer iterator.deinit();
+    try expectNext(&iterator, 1);
+    try expectNext(&iterator, 2);
+    try testing.expect((try iterator.next()) == null);
 
     try testing.expect(try g.hasLabel(100, "Movie"));
     try testing.expect(!try g.hasLabel(100, "Person"));
 
     // properties: string and int round-trip
-    try g.setProp(1, "name", .{ .str = "Keanu Reeves" });
-    try g.setProp(1, "born", .{ .int = 1964 });
+    try g.setProperty(1, "name", .{ .string = "Keanu Reeves" });
+    try g.setProperty(1, "born", .{ .int = 1964 });
 
-    const name = (try g.getProp(1, "name", testing.allocator)).?;
-    defer testing.allocator.free(name.str);
-    try testing.expectEqualStrings("Keanu Reeves", name.str);
+    const name = (try g.getProperty(1, "name", testing.allocator)).?;
+    defer testing.allocator.free(name.string);
+    try testing.expectEqualStrings("Keanu Reeves", name.string);
 
-    const born = (try g.getProp(1, "born", testing.allocator)).?;
+    const born = (try g.getProperty(1, "born", testing.allocator)).?;
     try testing.expectEqual(@as(i64, 1964), born.int);
 
     // absent property -> null
-    try testing.expect((try g.getProp(1, "nope", testing.allocator)) == null);
+    try testing.expect((try g.getProperty(1, "nope", testing.allocator)) == null);
 }
 
 test "allocNodeId and deleteNode detach edges" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -159,15 +159,15 @@ test "allocNodeId and deleteNode detach edges" {
     try testing.expect(a != b);
 
     try g.addNode(a, "Person");
-    try g.setProp(a, "name", .{ .str = "Neo" });
+    try g.setProperty(a, "name", .{ .string = "Neo" });
     try g.addNode(b, "Person");
     try g.addEdge(a, b, "KNOWS");
 
     try testing.expect(try g.hasLabel(a, "Person"));
-    var it = try g.neighbours(a, .out, "KNOWS");
-    defer it.deinit();
-    try expectNext(&it, b);
-    try testing.expect((try it.next()) == null);
+    var iterator = try g.neighbours(a, .out, "KNOWS");
+    defer iterator.deinit();
+    try expectNext(&iterator, b);
+    try testing.expect((try iterator.next()) == null);
 
     try g.deleteNodeDetach(a);
 
@@ -183,8 +183,8 @@ test "write transactions commit and abort atomically" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -195,7 +195,7 @@ test "write transactions commit and abort atomically" {
     const b = try g.allocNodeId();
     try testing.expect(a != b);
     try g.addNode(a, "Person");
-    try g.setProp(a, "name", .{ .str = "A" });
+    try g.setProperty(a, "name", .{ .string = "A" });
     try g.addEdge(a, b, "KNOWS");
     try g.commitWrite();
 
@@ -216,42 +216,42 @@ test "property index: lookups, updates and deletes" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
     try g.addNode(1, "Person");
-    try g.setProp(1, "name", .{ .str = "Keanu Reeves" });
+    try g.setProperty(1, "name", .{ .string = "Keanu Reeves" });
     try g.addNode(2, "Person");
-    try g.setProp(2, "name", .{ .str = "Carrie-Anne Moss" });
+    try g.setProperty(2, "name", .{ .string = "Carrie-Anne Moss" });
     try g.addNode(3, "Person");
-    try g.setProp(3, "name", .{ .str = "Keanu Reeves" });
+    try g.setProperty(3, "name", .{ .string = "Keanu Reeves" });
 
     // Two nodes share the name "Keanu Reeves".
-    var it = try g.nodesByProp("name", .{ .str = "Keanu Reeves" });
-    defer it.deinit();
-    try expectNext(&it, 1);
-    try expectNext(&it, 3);
-    try testing.expect((try it.next()) == null);
+    var iterator = try g.nodesByProperty("name", .{ .string = "Keanu Reeves" });
+    defer iterator.deinit();
+    try expectNext(&iterator, 1);
+    try expectNext(&iterator, 3);
+    try testing.expect((try iterator.next()) == null);
 
     // Integer index lookup.
-    try g.setProp(1, "born", .{ .int = 1964 });
-    var it2 = try g.nodesByProp("born", .{ .int = 1964 });
+    try g.setProperty(1, "born", .{ .int = 1964 });
+    var it2 = try g.nodesByProperty("born", .{ .int = 1964 });
     defer it2.deinit();
     try expectNext(&it2, 1);
     try testing.expect((try it2.next()) == null);
 
     // Updating a value moves the index entry.
-    try g.setProp(3, "name", .{ .str = "Laurence Fishburne" });
-    var it3 = try g.nodesByProp("name", .{ .str = "Keanu Reeves" });
+    try g.setProperty(3, "name", .{ .string = "Laurence Fishburne" });
+    var it3 = try g.nodesByProperty("name", .{ .string = "Keanu Reeves" });
     defer it3.deinit();
     try expectNext(&it3, 1);
     try testing.expect((try it3.next()) == null);
 
     // Deleting a node removes its index entries.
     try g.deleteNode(1);
-    var it4 = try g.nodesByProp("name", .{ .str = "Keanu Reeves" });
+    var it4 = try g.nodesByProperty("name", .{ .string = "Keanu Reeves" });
     defer it4.deinit();
     try testing.expect((try it4.next()) == null);
 }
@@ -260,32 +260,32 @@ test "edge properties round-trip and delete" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
     try g.addNode(1, "Person");
     try g.addNode(2, "Person");
     try g.addEdge(1, 2, "KNOWS");
-    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 5 });
+    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 5 });
 
-    const w = (try g.getEdgeProp(1, 2, "KNOWS", "weight", testing.allocator)).?;
+    const w = (try g.getEdgeProperty(1, 2, "KNOWS", "weight", testing.allocator)).?;
     try testing.expectEqual(@as(i64, 5), w.int);
-    try testing.expect((try g.getEdgeProp(1, 2, "KNOWS", "nope", testing.allocator)) == null);
+    try testing.expect((try g.getEdgeProperty(1, 2, "KNOWS", "nope", testing.allocator)) == null);
 
     // Detach-deleting a node removes its edge properties too.
     try g.deleteNodeDetach(1);
     try testing.expect(!try g.hasEdge(1, 2, "KNOWS"));
-    try testing.expect((try g.getEdgeProp(1, 2, "KNOWS", "weight", testing.allocator)) == null);
+    try testing.expect((try g.getEdgeProperty(1, 2, "KNOWS", "weight", testing.allocator)) == null);
 }
 
 test "edge-property index: seek, update and delete" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -293,40 +293,40 @@ test "edge-property index: seek, update and delete" {
     try g.addNode(2, "");
     try g.addNode(3, "");
     try g.addEdge(1, 2, "KNOWS");
-    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 5 });
+    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 5 });
     try g.addEdge(1, 3, "KNOWS");
-    try g.setEdgeProp(1, 3, "KNOWS", "weight", .{ .int = 9 });
+    try g.setEdgeProperty(1, 3, "KNOWS", "weight", .{ .int = 9 });
 
-    // Index lookup returns the matching edge (src, dst, etype).
-    var it = try g.edgesByProp("weight", .{ .int = 5 });
-    defer it.deinit();
-    const e = (try it.next()).?;
+    // Index lookup returns the matching edge (src, dst, edge_type).
+    var iterator = try g.edgesByProperty("weight", .{ .int = 5 });
+    defer iterator.deinit();
+    const e = (try iterator.next()).?;
     try testing.expectEqual(@as(NodeId, 1), e.src);
     try testing.expectEqual(@as(NodeId, 2), e.dst);
-    try testing.expectEqualStrings("KNOWS", e.etype);
-    try testing.expect((try it.next()) == null);
+    try testing.expectEqualStrings("KNOWS", e.edge_type);
+    try testing.expect((try iterator.next()) == null);
 
     // Updating a value moves the index entry.
-    try g.setEdgeProp(1, 2, "KNOWS", "weight", .{ .int = 9 });
-    var it2 = try g.edgesByProp("weight", .{ .int = 5 });
+    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 9 });
+    var it2 = try g.edgesByProperty("weight", .{ .int = 5 });
     defer it2.deinit();
     try testing.expect((try it2.next()) == null);
-    var it3 = try g.edgesByProp("weight", .{ .int = 9 });
+    var it3 = try g.edgesByProperty("weight", .{ .int = 9 });
     defer it3.deinit();
     _ = (try it3.next()).?;
     _ = (try it3.next()).?;
     try testing.expect((try it3.next()) == null);
 
     // Removing a property removes its index entry.
-    try g.removeEdgeProp(1, 2, "KNOWS", "weight");
-    var it4 = try g.edgesByProp("weight", .{ .int = 9 });
+    try g.removeEdgeProperty(1, 2, "KNOWS", "weight");
+    var it4 = try g.edgesByProperty("weight", .{ .int = 9 });
     defer it4.deinit();
     _ = (try it4.next()).?;
     try testing.expect((try it4.next()) == null);
 
     // Detach-delete removes remaining edge index entries.
     try g.deleteNodeDetach(1);
-    var it5 = try g.edgesByProp("weight", .{ .int = 9 });
+    var it5 = try g.edgesByProperty("weight", .{ .int = 9 });
     defer it5.deinit();
     try testing.expect((try it5.next()) == null);
 }
@@ -335,8 +335,8 @@ test "edge-type cardinality tracks add and delete" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [128]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 

@@ -7,7 +7,7 @@
 //!                                                (`eql(a, b)` implies equal hashes)
 //!
 //! `ElementContext(T)` and `SequenceContext(T)` adapt such a type to the
-//! std.HashMap context protocol (`hash(ctx, K) u64`, `eql(ctx, K, K) bool`),
+//! std.HashMap context protocol (`hash(context, K) u64`, `eql(context, K, K) bool`),
 //! which is the concept `removeDuplicates` and grouping require.
 
 const std = @import("std");

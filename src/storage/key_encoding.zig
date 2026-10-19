@@ -7,7 +7,7 @@
 //! Key layout (all integers big-endian, fixed width):
 //!
 //! - node marker:            `n | node_id`
-//! - node property:          `n | node_id | 0x00 | prop_name`
+//! - node property:          `n | node_id | 0x00 | property_name`
 //! - edge (per direction):   `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`
 //!
 //! `node_id` is a fixed-width u64, so lexicographic byte order equals numeric
@@ -31,25 +31,25 @@ pub const Direction = enum(u8) {
     in = 'i',
 };
 
-/// Decoded fields of an edge key. `etype` is a view into the key and is only
+/// Decoded fields of an edge key. `edge_type` is a view into the key and is only
 /// valid while the key itself is alive.
 pub const EdgeKey = struct {
     id: NodeId,
-    dir: Direction,
-    etype: []const u8,
+    direction: Direction,
+    edge_type: []const u8,
     neighbour: NodeId,
 };
 
 pub const node_marker: u8 = 'n';
 pub const edge_marker: u8 = 'e';
 pub const label_marker: u8 = 'l';
-pub const rev_label_marker: u8 = 'L';
+pub const reverse_label_marker: u8 = 'L';
 pub const index_marker: u8 = 'p';
-pub const edge_prop_marker: u8 = 'f';
+pub const edge_property_marker: u8 = 'f';
 pub const edge_index_marker: u8 = 'g';
 pub const edge_type_marker: u8 = 't';
-pub const sep: u8 = 0x00;
-pub const id_len: usize = @sizeOf(NodeId);
+pub const separator: u8 = 0x00;
+pub const node_id_length: usize = @sizeOf(NodeId);
 
 /// Key storing the next node id to allocate (8-byte big-endian counter).
 pub const counter_key: []const u8 = "!";
@@ -60,20 +60,20 @@ pub const counter_key: []const u8 = "!";
 
 pub const Value = @import("../value.zig").Value;
 
-pub const value_int: u8 = 0x01;
-pub const value_str: u8 = 0x02;
+pub const value_tag_int: u8 = 0x01;
+pub const value_tag_string: u8 = 0x02;
 
 /// Appends the storage encoding of `value`: `tag | payload`.
 pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) !void {
     switch (value) {
         .int => |v| {
-            try list.append(allocator, value_int);
-            var buf: [8]u8 = undefined;
-            std.mem.writeInt(i64, &buf, v, .big);
-            try list.appendSlice(allocator, &buf);
+            try list.append(allocator, value_tag_int);
+            var buffer: [8]u8 = undefined;
+            std.mem.writeInt(i64, &buffer, v, .big);
+            try list.appendSlice(allocator, &buffer);
         },
-        .str => |s| {
-            try list.append(allocator, value_str);
+        .string => |s| {
+            try list.append(allocator, value_tag_string);
             try list.appendSlice(allocator, s);
         },
         .boolean, .null, .list => unreachable, // not stored as properties
@@ -84,8 +84,8 @@ pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value)
 /// copy allocated with `allocator` (free it, or use an arena).
 pub fn decodeOwnedValue(raw: []const u8, allocator: Allocator) !Value {
     return switch (raw[0]) {
-        value_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
-        value_str => .{ .str = try allocator.dupe(u8, raw[1..]) },
+        value_tag_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
+        value_tag_string => .{ .string = try allocator.dupe(u8, raw[1..]) },
         else => unreachable,
     };
 }
@@ -93,8 +93,8 @@ pub fn decodeOwnedValue(raw: []const u8, allocator: Allocator) !Value {
 /// Decodes a stored value without copying; `str` is a view into `raw`.
 pub fn decodeValue(raw: []const u8) Value {
     return switch (raw[0]) {
-        value_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
-        value_str => .{ .str = raw[1..] },
+        value_tag_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
+        value_tag_string => .{ .string = raw[1..] },
         else => unreachable,
     };
 }
@@ -105,15 +105,15 @@ pub fn decodeValue(raw: []const u8) Value {
 pub fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) !void {
     switch (value) {
         .int => |v| {
-            try list.append(allocator, value_int);
-            var buf: [8]u8 = undefined;
-            std.mem.writeInt(i64, &buf, v, .big);
-            try list.appendSlice(allocator, &buf);
+            try list.append(allocator, value_tag_int);
+            var buffer: [8]u8 = undefined;
+            std.mem.writeInt(i64, &buffer, v, .big);
+            try list.appendSlice(allocator, &buffer);
         },
-        .str => |s| {
-            try list.append(allocator, value_str);
+        .string => |s| {
+            try list.append(allocator, value_tag_string);
             try list.appendSlice(allocator, s);
-            try list.append(allocator, sep);
+            try list.append(allocator, separator);
         },
         .boolean, .null, .list => unreachable, // not stored as properties
     }
@@ -124,13 +124,13 @@ pub fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: V
 // ---------------------------------------------------------------------------
 
 pub fn appendNodeId(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId) !void {
-    var buf: [id_len]u8 = undefined;
-    std.mem.writeInt(NodeId, &buf, id, .big);
-    try list.appendSlice(allocator, &buf);
+    var buffer: [node_id_length]u8 = undefined;
+    std.mem.writeInt(NodeId, &buffer, id, .big);
+    try list.appendSlice(allocator, &buffer);
 }
 
 pub fn readNodeId(bytes: []const u8) NodeId {
-    std.debug.assert(bytes.len == id_len);
+    std.debug.assert(bytes.len == node_id_length);
     return std.mem.readInt(NodeId, @ptrCast(bytes.ptr), .big);
 }
 
@@ -140,111 +140,111 @@ pub fn appendNodeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId)
     try appendNodeId(list, allocator, id);
 }
 
-/// Appends the key for a node property: `n | node_id | 0x00 | prop_name`.
-pub fn appendNodePropKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, prop: []const u8) !void {
+/// Appends the key for a node property: `n | node_id | 0x00 | property_name`.
+pub fn appendNodePropertyKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, property: []const u8) !void {
     try appendNodeKey(list, allocator, id);
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, prop);
+    try list.append(allocator, separator);
+    try list.appendSlice(allocator, property);
 }
 
 /// Appends the key for a label-index entry: `l | label | 0x00 | node_id`.
 pub fn appendLabelKey(list: *std.ArrayList(u8), allocator: Allocator, label: []const u8, id: NodeId) !void {
     try list.append(allocator, label_marker);
     try list.appendSlice(allocator, label);
-    try list.append(allocator, sep);
+    try list.append(allocator, separator);
     try appendNodeId(list, allocator, id);
 }
 
 /// Appends the key for a reverse label-index entry: `L | node_id | 0x00 | label`
 /// (so a node's labels can be enumerated on delete).
 pub fn appendReverseLabelKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, label: []const u8) !void {
-    try list.append(allocator, rev_label_marker);
+    try list.append(allocator, reverse_label_marker);
     try appendNodeId(list, allocator, id);
-    try list.append(allocator, sep);
+    try list.append(allocator, separator);
     try list.appendSlice(allocator, label);
 }
 
 /// Appends the key for a property-index entry:
-/// `p | prop | 0x00 | value | node_id`.
-pub fn appendIndexKey(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value, id: NodeId) !void {
-    try appendIndexPrefix(list, allocator, prop, value);
+/// `p | property | 0x00 | value | node_id`.
+pub fn appendIndexKey(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value, id: NodeId) !void {
+    try appendIndexPrefix(list, allocator, property, value);
     try appendNodeId(list, allocator, id);
 }
 
-/// Appends the lookup prefix for "prop == value": `p | prop | 0x00 | value`.
-pub fn appendIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value) !void {
+/// Appends the lookup prefix for "prop == value": `p | property | 0x00 | value`.
+pub fn appendIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value) !void {
     try list.append(allocator, index_marker);
-    try list.appendSlice(allocator, prop);
-    try list.append(allocator, sep);
+    try list.appendSlice(allocator, property);
+    try list.append(allocator, separator);
     try encodeIndexValue(list, allocator, value);
 }
 
 /// Appends the key for an edge property (canonical `src -> dst` orientation):
-/// `f | src | dst | 0x00 | edge_type | 0x00 | prop`.
-pub fn appendEdgePropKey(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, etype: []const u8, prop: []const u8) !void {
-    try appendEdgePropPrefix(list, allocator, src, dst, etype);
-    try list.appendSlice(allocator, prop);
+/// `f | src | dst | 0x00 | edge_type | 0x00 | property`.
+pub fn appendEdgePropertyKey(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, edge_type: []const u8, property: []const u8) !void {
+    try appendEdgePropertyPrefix(list, allocator, src, dst, edge_type);
+    try list.appendSlice(allocator, property);
 }
 
 /// Appends the prefix of all properties of an edge: `f | src | dst | 0x00 | edge_type | 0x00`.
-pub fn appendEdgePropPrefix(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, etype: []const u8) !void {
-    try list.append(allocator, edge_prop_marker);
+pub fn appendEdgePropertyPrefix(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, edge_type: []const u8) !void {
+    try list.append(allocator, edge_property_marker);
     try appendNodeId(list, allocator, src);
     try appendNodeId(list, allocator, dst);
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, etype);
-    try list.append(allocator, sep);
+    try list.append(allocator, separator);
+    try list.appendSlice(allocator, edge_type);
+    try list.append(allocator, separator);
 }
 
-/// Appends the shared prefix of all edge keys for `(id, dir, etype)`, up to
+/// Appends the shared prefix of all edge keys for `(id, direction, edge_type)`, up to
 /// and including the trailing `0x00` before the neighbour id.
-pub fn appendEdgePrefix(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, dir: Direction, etype: []const u8) !void {
+pub fn appendEdgePrefix(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, direction: Direction, edge_type: []const u8) !void {
     try list.append(allocator, edge_marker);
     try appendNodeId(list, allocator, id);
-    try list.append(allocator, @backingInt(dir));
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, etype);
-    try list.append(allocator, sep);
+    try list.append(allocator, @backingInt(direction));
+    try list.append(allocator, separator);
+    try list.appendSlice(allocator, edge_type);
+    try list.append(allocator, separator);
 }
 
 /// Appends the lookup prefix for "edge prop == value":
-/// `g | prop | 0x00 | value`.
-pub fn appendEdgeIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value) !void {
+/// `g | property | 0x00 | value`.
+pub fn appendEdgeIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value) !void {
     try list.append(allocator, edge_index_marker);
-    try list.appendSlice(allocator, prop);
-    try list.append(allocator, sep);
+    try list.appendSlice(allocator, property);
+    try list.append(allocator, separator);
     try encodeIndexValue(list, allocator, value);
 }
 
 /// Appends the edge-property index key:
-/// `g | prop | 0x00 | value | src | dst | 0x00 | edge_type`.
-pub fn appendEdgeIndexKey(list: *std.ArrayList(u8), allocator: Allocator, prop: []const u8, value: Value, src: NodeId, dst: NodeId, etype: []const u8) !void {
-    try appendEdgeIndexPrefix(list, allocator, prop, value);
+/// `g | property | 0x00 | value | src | dst | 0x00 | edge_type`.
+pub fn appendEdgeIndexKey(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value, src: NodeId, dst: NodeId, edge_type: []const u8) !void {
+    try appendEdgeIndexPrefix(list, allocator, property, value);
     try appendNodeId(list, allocator, src);
     try appendNodeId(list, allocator, dst);
-    try list.append(allocator, sep);
-    try list.appendSlice(allocator, etype);
+    try list.append(allocator, separator);
+    try list.appendSlice(allocator, edge_type);
 }
 
 /// Appends the key for one stored direction of an edge:
 /// `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`.
-pub fn appendEdgeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, dir: Direction, etype: []const u8, neighbour: NodeId) !void {
-    try appendEdgePrefix(list, allocator, id, dir, etype);
+pub fn appendEdgeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, direction: Direction, edge_type: []const u8, neighbour: NodeId) !void {
+    try appendEdgePrefix(list, allocator, id, direction, edge_type);
     try appendNodeId(list, allocator, neighbour);
 }
 
 /// Decodes an edge key produced by `appendEdgeKey`.
 pub fn decodeEdgeKey(key: []const u8) EdgeKey {
     std.debug.assert(key[0] == edge_marker);
-    const id = readNodeId(key[1 .. 1 + id_len]);
-    const dir: Direction = @fromBackingInt(@intCast(key[1 + id_len]));
-    const etype_start = 1 + id_len + 1 + 1; // after marker + id + dir + sep
-    std.debug.assert(key[etype_start - 1] == sep);
-    const etype_len = std.mem.indexOfScalar(u8, key[etype_start..], sep) orelse unreachable;
-    const etype = key[etype_start .. etype_start + etype_len];
-    const neighbour_start = etype_start + etype_len + 1;
-    const neighbour = readNodeId(key[neighbour_start .. neighbour_start + id_len]);
-    return .{ .id = id, .dir = dir, .etype = etype, .neighbour = neighbour };
+    const id = readNodeId(key[1 .. 1 + node_id_length]);
+    const direction: Direction = @fromBackingInt(@intCast(key[1 + node_id_length]));
+    const edge_type_start = 1 + node_id_length + 1 + 1; // after marker + id + dir + separator
+    std.debug.assert(key[edge_type_start - 1] == separator);
+    const edge_type_length = std.mem.indexOfScalar(u8, key[edge_type_start..], separator) orelse unreachable;
+    const edge_type = key[edge_type_start .. edge_type_start + edge_type_length];
+    const neighbour_start = edge_type_start + edge_type_length + 1;
+    const neighbour = readNodeId(key[neighbour_start .. neighbour_start + node_id_length]);
+    return .{ .id = id, .direction = direction, .edge_type = edge_type, .neighbour = neighbour };
 }
 
 // ---------------------------------------------------------------------------
@@ -261,7 +261,7 @@ test "edge key encodes and decodes round-trip" {
 
     const decoded = decodeEdgeKey(list.items);
     try testing.expectEqual(@as(NodeId, 0x1234_5678_9abc_def0), decoded.id);
-    try testing.expectEqual(Direction.out, decoded.dir);
-    try testing.expectEqualStrings("ACTED_IN", decoded.etype);
+    try testing.expectEqual(Direction.out, decoded.direction);
+    try testing.expectEqualStrings("ACTED_IN", decoded.edge_type);
     try testing.expectEqual(@as(NodeId, 42), decoded.neighbour);
 }

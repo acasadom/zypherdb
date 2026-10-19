@@ -20,8 +20,8 @@ test "write clauses: CREATE, SET and DELETE" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -43,14 +43,14 @@ test "write clauses: CREATE, SET and DELETE" {
     // CREATE two nodes + an edge in one statement.
     try expectQuery(&ast, &g, "CREATE (a:Person {name: 'X'})-[:KNOWS]->(b:Person {name: 'Y'})", &.{});
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'X'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
-        &.{.{ .str = "Y" }},
+        &.{.{ .string = "Y" }},
     });
 
     // MATCH + CREATE: bind an existing node, create a new one + edge.
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'X'}) CREATE (a)-[:KNOWS]->(b:Person {name: 'Z'})", &.{});
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'X'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
-        &.{.{ .str = "Y" }},
-        &.{.{ .str = "Z" }},
+        &.{.{ .string = "Y" }},
+        &.{.{ .string = "Z" }},
     });
 
     // DELETE a node (detach).
@@ -62,13 +62,13 @@ test "MERGE gets-or-creates nodes and edges" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
     try g.addNode(1, "Person");
-    try g.setProp(1, "name", .{ .str = "Keanu Reeves" });
-    try g.setProp(1, "born", .{ .int = 1964 });
+    try g.setProperty(1, "name", .{ .string = "Keanu Reeves" });
+    try g.setProperty(1, "born", .{ .int = 1964 });
 
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
@@ -77,7 +77,7 @@ test "MERGE gets-or-creates nodes and edges" {
     try expectQuery(&ast, &g, "MERGE (n:Person {name: 'Keanu Reeves'})", &.{});
     try expectQuery(&ast, &g, "MERGE (n:Person {name: 'Keanu Reeves'})", &.{});
     try expectQuery(&ast, &g, "MATCH (n:Person {name: 'Keanu Reeves'}) RETURN n.name", &.{
-        &.{.{ .str = "Keanu Reeves" }},
+        &.{.{ .string = "Keanu Reeves" }},
     });
 
     // MERGE a brand-new node -> created.
@@ -89,11 +89,11 @@ test "MERGE gets-or-creates nodes and edges" {
     // MERGE an edge (get-or-create), then again -> still one edge.
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'}) MERGE (a)-[:KNOWS]->(b:Person {name: 'Zorg'})", &.{});
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
-        &.{.{ .str = "Zorg" }},
+        &.{.{ .string = "Zorg" }},
     });
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'}) MERGE (a)-[:KNOWS]->(b:Person {name: 'Zorg'})", &.{});
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'Keanu Reeves'})-[:KNOWS]->(b:Person) RETURN b.name", &.{
-        &.{.{ .str = "Zorg" }},
+        &.{.{ .string = "Zorg" }},
     });
 }
 
@@ -101,8 +101,8 @@ test "relationship properties: CREATE, MATCH, SET and WHERE" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -119,7 +119,7 @@ test "relationship properties: CREATE, MATCH, SET and WHERE" {
 
     // WHERE on a relationship property.
     try expectQuery(&ast, &g, "MATCH (a:Person)-[r:KNOWS]->(b:Person) WHERE r.weight > 3 RETURN b.name", &.{
-        &.{.{ .str = "B" }},
+        &.{.{ .string = "B" }},
     });
 
     // SET a relationship property.
@@ -130,7 +130,7 @@ test "relationship properties: CREATE, MATCH, SET and WHERE" {
 
     // Inline relationship property filter.
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'})-[r:KNOWS {weight: 10}]->(b:Person) RETURN b.name", &.{
-        &.{.{ .str = "B" }},
+        &.{.{ .string = "B" }},
     });
 }
 
@@ -138,8 +138,8 @@ test "DELETE fails on connected nodes; DETACH DELETE removes edges" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -151,14 +151,14 @@ test "DELETE fails on connected nodes; DETACH DELETE removes edges" {
     // Plain DELETE fails because 'A' still has a relationship.
     try expectQueryError(&ast, &g, "MATCH (a:Person {name: 'A'}) DELETE a", error.NodeStillConnected);
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}) RETURN a.name", &.{
-        &.{.{ .str = "A" }},
+        &.{.{ .string = "A" }},
     });
 
     // DETACH DELETE removes 'A' and its relationship.
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}) DETACH DELETE a", &.{});
     try expectQuery(&ast, &g, "MATCH (a:Person {name: 'A'}) RETURN a.name", &.{});
     try expectQuery(&ast, &g, "MATCH (b:Person {name: 'B'}) RETURN b.name", &.{
-        &.{.{ .str = "B" }},
+        &.{.{ .string = "B" }},
     });
 }
 
@@ -166,8 +166,8 @@ test "multi-label, REMOVE, CASE and MERGE ON CREATE/MATCH" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -178,22 +178,22 @@ test "multi-label, REMOVE, CASE and MERGE ON CREATE/MATCH" {
     try expectQuery(&ast, &g, "CREATE (n:Person:Employee {name: 'A'})", &.{});
     try expectQuery(&ast, &g, "CREATE (m:Person {name: 'B'})", &.{});
     try expectQuery(&ast, &g, "MATCH (n:Person:Employee) RETURN n.name", &.{
-        &.{.{ .str = "A" }},
+        &.{.{ .string = "A" }},
     });
     try expectQuery(&ast, &g, "MATCH (n:Employee) RETURN n.name", &.{
-        &.{.{ .str = "A" }},
+        &.{.{ .string = "A" }},
     });
     try expectQuery(&ast, &g, "MATCH (n:Person) RETURN n.name", &.{
-        &.{.{ .str = "A" }},
-        &.{.{ .str = "B" }},
+        &.{.{ .string = "A" }},
+        &.{.{ .string = "B" }},
     });
 
     // REMOVE a label.
     try expectQuery(&ast, &g, "MATCH (n:Person:Employee) REMOVE n:Employee", &.{});
     try expectQuery(&ast, &g, "MATCH (n:Employee) RETURN n.name", &.{});
     try expectQuery(&ast, &g, "MATCH (n:Person) RETURN n.name", &.{
-        &.{.{ .str = "A" }},
-        &.{.{ .str = "B" }},
+        &.{.{ .string = "A" }},
+        &.{.{ .string = "B" }},
     });
 
     // REMOVE a property (and its index entry).
@@ -202,7 +202,7 @@ test "multi-label, REMOVE, CASE and MERGE ON CREATE/MATCH" {
 
     // CASE expression.
     try expectQuery(&ast, &g, "RETURN CASE WHEN 1 > 0 THEN 'yes' ELSE 'no' END", &.{
-        &.{.{ .str = "yes" }},
+        &.{.{ .string = "yes" }},
     });
 
     // MERGE ON CREATE / ON MATCH SET.
@@ -220,8 +220,8 @@ test "CREATE and MERGE write anonymous nodes" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    var path_buf: [256]u8 = undefined;
-    var store = try openStore(&tmp, &path_buf);
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
@@ -231,13 +231,13 @@ test "CREATE and MERGE write anonymous nodes" {
     // A node without a variable is still created.
     try expectQuery(&ast, &g, "CREATE (:Door {name: 'D1'})", &.{});
     try expectQuery(&ast, &g, "MATCH (d:Door) RETURN d.name", &.{
-        &.{.{ .str = "D1" }},
+        &.{.{ .string = "D1" }},
     });
 
     // Anonymous endpoints of a chain get their edges.
     try expectQuery(&ast, &g, "CREATE (:Zone {name: 'Z1'})-[:HAS]->(:Door {name: 'D2'})", &.{});
     try expectQuery(&ast, &g, "MATCH (z:Zone)-[:HAS]->(d:Door) RETURN z.name, d.name", &.{
-        &.{ .{ .str = "Z1" }, .{ .str = "D2" } },
+        &.{ .{ .string = "Z1" }, .{ .string = "D2" } },
     });
 
     // An anonymous MERGE matches the existing node instead of duplicating it.
