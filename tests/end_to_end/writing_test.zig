@@ -299,3 +299,47 @@ test "null property values: MATCH finds nothing, MERGE is refused" {
     try expectQueryError(&ast, &g, "MERGE ({num: null})", error.InvalidExpression);
     try expectQueryError(&ast, &g, "MATCH (a:Door) MERGE (a)-[:R {since: null}]->(b:Door)", error.InvalidExpression);
 }
+
+test "CREATE with several patterns shares their variables" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (z:Zone {name: 'Z'}), (d:Door {name: 'D'}), (z)-[:HAS]->(d), (:Door {name: 'E'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (d:Door) RETURN count(*)", &.{
+        &.{.{ .int = 2 }},
+    });
+    try expectQuery(&ast, &g, "MATCH (z:Zone)-[:HAS]->(d:Door) RETURN z.name, d.name", &.{
+        &.{ .{ .string = "Z" }, .{ .string = "D" } },
+    });
+}
+
+test "CREATE refuses to re-create a bound node" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQueryError(&ast, &g, "CREATE (n:Foo)-[:T1]->(), (n:Bar)-[:T2]->()", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CREATE (n), (n {name: 'x'})-[:T]->()", error.InvalidExpression);
+    try expectQuery(&ast, &g, "CREATE (n:Foo)", &.{});
+    try expectQueryError(&ast, &g, "MATCH (a:Foo) CREATE (a)", error.InvalidExpression);
+    // Reusing a bound node as an endpoint is fine.
+    try expectQuery(&ast, &g, "MATCH (a:Foo) CREATE (a)-[:T]->(:Bar)", &.{});
+    try expectQuery(&ast, &g, "MATCH (:Foo)-[:T]->(b:Bar) RETURN count(*)", &.{
+        &.{.{ .int = 1 }},
+    });
+}

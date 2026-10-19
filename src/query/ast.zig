@@ -16,7 +16,7 @@
 //!   more comma-separated patterns followed by the `WHERE` (a missing `WHERE`
 //!   is `bool_literal(true)`).
 //! - `optional_match_clause` children are the same shape as `match_clause`.
-//! - `create_clause` children are `[pattern]`.
+//! - `create_clause` children are its patterns, `[pattern, ...]`.
 //! - `set_clause` children are `set_item`s.
 //! - `delete_clause` children are `delete_item`s; `detach` is in the `delete`
 //!   payload.

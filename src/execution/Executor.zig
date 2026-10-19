@@ -289,7 +289,9 @@ pub fn afterOptional(self: *Executor, bindings: *Bindings) ExecutionError!void {
 pub fn finishBody(self: *Executor, bindings: *Bindings) ExecutionError!void {
     for (self.update_clauses.items) |clause| {
         switch (self.ast.kind(clause)) {
-            .create_clause => try writes.applyCreate(self, self.ast.nodeChildren(clause)[0], bindings),
+            .create_clause => for (self.ast.nodeChildren(clause)) |pattern| {
+                try writes.applyCreate(self, pattern, bindings);
+            },
             .merge_clause => try writes.applyMerge(self, clause, bindings),
             .set_clause => try writes.applySet(self, clause, bindings),
             .delete_clause => try writes.applyDelete(self, clause, bindings),

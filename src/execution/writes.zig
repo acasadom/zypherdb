@@ -20,6 +20,7 @@ pub fn applyCreate(self: *Executor, pattern: Index, bindings: *Bindings) Executi
         const node_pattern_index = chain[i * 2];
         const variable_name = self.ast.data(node_pattern_index).node_pattern.variable_name;
         if (boundNode(bindings, variable_name)) |bound| {
+            try checkReusedNode(self, node_pattern_index, chain.len == 1);
             id.* = bound;
             continue;
         }
@@ -61,6 +62,18 @@ pub fn applyMerge(self: *Executor, merge_clause: Index, bindings: *Bindings) Exe
         try applySet(self, on_create, bindings);
     } else {
         try applySet(self, on_match, bindings);
+    }
+}
+
+/// CREATE may reuse a bound node only as a relationship endpoint, as it is:
+/// adding labels or properties to it, or "creating" it alone, is an error
+/// (openCypher's VariableAlreadyBound).
+fn checkReusedNode(self: *Executor, node_pattern_index: Index, alone: bool) ExecutionError!void {
+    const node_pattern = self.ast.data(node_pattern_index).node_pattern;
+    const adds_something = node_pattern.labels.len > 0 or self.ast.nodeChildren(node_pattern_index).len > 0;
+    if (adds_something or alone) {
+        self.fail(.invalid_expression, "variable '{s}' is already bound; CREATE cannot create it again", .{node_pattern.variable_name});
+        return error.InvalidExpression;
     }
 }
 

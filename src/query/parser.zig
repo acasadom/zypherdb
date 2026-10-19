@@ -157,9 +157,7 @@ pub const Parser = struct {
         while (true) {
             if (self.atKeyword("CREATE")) {
                 _ = self.advance();
-                const pattern = try self.parsePattern();
-                const cc = try self.ast.addNode(.create_clause, .{ .none = {} }, &.{pattern});
-                try clauses.append(self.ast.allocator, cc);
+                try clauses.append(self.ast.allocator, try self.parseCreateClause());
             } else if (self.atKeyword("MERGE")) {
                 try clauses.append(self.ast.allocator, try self.parseMergeClause());
             } else if (self.atKeyword("SET")) {
@@ -332,6 +330,18 @@ pub const Parser = struct {
             } else break;
         }
         return self.ast.addNode(.remove_clause, .{ .none = {} }, items.items);
+    }
+
+    /// Parses the comma-separated patterns of `CREATE` (keyword consumed).
+    fn parseCreateClause(self: *Parser) ParseError!Index {
+        var patterns = std.ArrayList(Index).empty;
+        defer patterns.deinit(self.ast.allocator);
+        try patterns.append(self.ast.allocator, try self.parsePattern());
+        while (self.at(.comma)) {
+            _ = self.advance();
+            try patterns.append(self.ast.allocator, try self.parsePattern());
+        }
+        return self.ast.addNode(.create_clause, .{ .none = {} }, patterns.items);
     }
 
     /// Parses `MERGE pattern [ON CREATE SET ...] [ON MATCH SET ...]`.
