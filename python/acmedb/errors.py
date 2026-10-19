@@ -50,7 +50,7 @@ class NodeStillConnectedError(QueryError):
     """A DELETE targeted a node that still has relationships (use DETACH DELETE)."""
 
 
-# Error code -> exception class (see src/diag.zig ErrorCode).
+# Error code -> exception class (see src/diagnostics.zig ErrorCode).
 _CODE_TO_ERROR = {
     1: ParseError,
     2: UnknownVariableError,

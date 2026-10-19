@@ -330,6 +330,6 @@ test "every parse failure carries a message" {
         var diag = Diagnostic.init();
         try testing.expectError(error.UnexpectedToken, parse(&ast, src, &diag));
         try testing.expect(diag.message().len > 0);
-        try testing.expectEqual(acmedb.diag.ErrorCode.parse, diag.code);
+        try testing.expectEqual(acmedb.diagnostics.ErrorCode.parse, diag.code);
     }
 }

@@ -1,6 +1,6 @@
 //! Hand-written recursive-descent parser for the openCypher subset.
 //!
-//! Produces an arena AST (see `src/ast/ast.zig`). The subset covers:
+//! Produces an arena AST (see `src/query/ast.zig`). The subset covers:
 //!
 //! - `MATCH` with a chain of node/edge patterns (`(var:Label {k: v})`,
 //!   `-[var:TYPE]->`, `<-[var:TYPE]-`).
@@ -13,13 +13,13 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const Ast = @import("../ast/ast.zig").Ast;
-const Index = @import("../ast/ast.zig").Index;
-const NodeKind = @import("../ast/ast.zig").NodeKind;
-const BinOp = @import("../ast/ast.zig").BinOp;
-const EdgeDirection = @import("../ast/ast.zig").EdgeDirection;
-const AggKind = @import("../ast/ast.zig").AggKind;
-const Diagnostic = @import("../diag.zig").Diagnostic;
+const Ast = @import("ast.zig").Ast;
+const Index = @import("ast.zig").Index;
+const NodeKind = @import("ast.zig").NodeKind;
+const BinOp = @import("ast.zig").BinOp;
+const EdgeDirection = @import("ast.zig").EdgeDirection;
+const AggKind = @import("ast.zig").AggKind;
+const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 
 pub const ParseError = error{
     UnexpectedToken,

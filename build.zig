@@ -25,7 +25,7 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(lib);
 
-    // Shared library exposing the C ABI (src/capi.zig), loadable from Python.
+    // Shared library exposing the C ABI (src/c_api.zig), loadable from Python.
     const shared = b.addLibrary(.{
         .name = "acmedb",
         .root_module = acmedb,

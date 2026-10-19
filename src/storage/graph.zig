@@ -18,9 +18,9 @@
 
 const std = @import("std");
 
-const KvStore = @import("kv_store.zig").KvStore;
-const KvError = @import("kv_store.zig").KvError;
-const PrefixIterator = @import("kv_store.zig").PrefixIterator;
+const KvStore = @import("key_value_store.zig").KvStore;
+const KvError = @import("key_value_store.zig").KvError;
+const PrefixIterator = @import("key_value_store.zig").PrefixIterator;
 
 const Allocator = std.mem.Allocator;
 

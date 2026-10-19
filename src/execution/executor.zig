@@ -13,21 +13,21 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const Ast = @import("../ast/ast.zig").Ast;
-const Index = @import("../ast/ast.zig").Index;
-const NodeKind = @import("../ast/ast.zig").NodeKind;
-const BinOp = @import("../ast/ast.zig").BinOp;
-const UnOp = @import("../ast/ast.zig").UnOp;
-const AggKind = @import("../ast/ast.zig").AggKind;
+const Ast = @import("../query/ast.zig").Ast;
+const Index = @import("../query/ast.zig").Index;
+const NodeKind = @import("../query/ast.zig").NodeKind;
+const BinOp = @import("../query/ast.zig").BinOp;
+const UnOp = @import("../query/ast.zig").UnOp;
+const AggKind = @import("../query/ast.zig").AggKind;
 const Graph = @import("../storage/graph.zig").Graph;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 const eqlSequences = @import("../value.zig").eqlSequences;
 const Direction = @import("../storage/graph.zig").Direction;
 const NodeIdIterator = @import("../storage/graph.zig").NodeIdIterator;
-const KvError = @import("../storage/kv_store.zig").KvError;
-const Diagnostic = @import("../diag.zig").Diagnostic;
-const ErrorCode = @import("../diag.zig").ErrorCode;
+const KvError = @import("../storage/key_value_store.zig").KvError;
+const Diagnostic = @import("../diagnostics.zig").Diagnostic;
+const ErrorCode = @import("../diagnostics.zig").ErrorCode;
 
 pub const ExecError = KvError || error{
     UnknownVar,

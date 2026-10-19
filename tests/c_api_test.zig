@@ -4,7 +4,7 @@ const std = @import("std");
 const testing = std.testing;
 const acmedb = @import("acmedb");
 
-const c_api = acmedb.capi;
+const c_api = acmedb.c_api;
 const acmedb_open = c_api.acmedb_open;
 const acmedb_close = c_api.acmedb_close;
 const acmedb_last_error = c_api.acmedb_last_error;

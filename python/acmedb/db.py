@@ -16,7 +16,7 @@ _U64_MAX = 2**64 - 1
 # `acmedb_alloc_node_id` returns this on failure.
 _ALLOC_FAILED = _U64_MAX
 
-# Mutator return codes (src/capi.zig `RC_*`).
+# Mutator return codes (src/c_api.zig `RC_*`).
 _RC_OK = 0
 _RC_NO_NODE = 2
 

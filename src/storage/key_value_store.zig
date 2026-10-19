@@ -8,7 +8,7 @@
 
 const std = @import("std");
 
-const c = @import("lmdb.zig");
+const c = @import("lmdb_bindings.zig");
 
 pub const KvError = error{
     OpenFailed,

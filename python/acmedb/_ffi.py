@@ -14,7 +14,7 @@ from pathlib import Path
 
 _LIBNAME = "libacmedb.dylib" if platform.system() == "Darwin" else "libacmedb.so"
 
-# Result cell type tags (src/capi.zig).
+# Result cell type tags (src/c_api.zig).
 TYPE_INT = 0
 TYPE_STR = 1
 TYPE_BOOL = 2

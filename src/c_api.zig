@@ -10,15 +10,15 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const Ast = @import("ast/ast.zig").Ast;
+const Ast = @import("query/ast.zig").Ast;
 const Graph = @import("storage/graph.zig").Graph;
-const KvStore = @import("storage/kv_store.zig").KvStore;
+const KvStore = @import("storage/key_value_store.zig").KvStore;
 const Value = @import("value.zig").Value;
-const Row = @import("exec/exec.zig").Row;
-const Executor = @import("exec/exec.zig").Executor;
-const Diagnostic = @import("diag.zig").Diagnostic;
-const ErrorCode = @import("diag.zig").ErrorCode;
-const parser = @import("parser/parser.zig");
+const Row = @import("execution/executor.zig").Row;
+const Executor = @import("execution/executor.zig").Executor;
+const Diagnostic = @import("diagnostics.zig").Diagnostic;
+const ErrorCode = @import("diagnostics.zig").ErrorCode;
+const parser = @import("query/parser.zig");
 
 pub const Context = struct {
     store: KvStore,
@@ -68,7 +68,7 @@ pub export fn acmedb_last_error(ctx: *Context, out_len: *usize) [*]const u8 {
     return m.ptr;
 }
 
-/// Returns the last error code (see `ErrorCode` in `diag.zig`), 0 if none.
+/// Returns the last error code (see `ErrorCode` in `diagnostics.zig`), 0 if none.
 pub export fn acmedb_error_code(ctx: *Context) c_int {
     return @intCast(@intFromEnum(ctx.diag.code));
 }
