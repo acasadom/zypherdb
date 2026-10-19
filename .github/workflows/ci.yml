@@ -41,3 +41,10 @@ jobs:
         run: |
           python -m pip install -e "python[dev]"
           python -m pytest python/tests -q
+
+      - name: openCypher TCK (no regressions against the baseline)
+        run: python -I tests/tck/runner.py --check-baseline --report tck-report.md
+
+      - name: TCK report in the job summary
+        if: always()
+        run: cat tck-report.md >> "$GITHUB_STEP_SUMMARY" || true
