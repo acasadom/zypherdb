@@ -343,3 +343,44 @@ test "CREATE refuses to re-create a bound node" {
         &.{.{ .int = 1 }},
     });
 }
+
+test "reading a property of an entity the query deleted is an error" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Door {num: 1})-[:IN {num: 2}]->(:Zone)", &.{});
+    try expectQueryError(&ast, &g, "MATCH (d:Door) DETACH DELETE d RETURN d.num", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH ()-[r:IN]->() DELETE r RETURN r.num", error.InvalidExpression);
+}
+
+test "DELETE removes relationships and ignores null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (a:Door)-[:IN {since: 1}]->(z:Zone), (a)-[:NEAR]->(z)", &.{});
+    try expectQuery(&ast, &g, "MATCH ()-[r:IN]->() DELETE r", &.{});
+    try expectQuery(&ast, &g, "MATCH ()-[r]->() RETURN count(*)", &.{&.{.{ .int = 1 }}});
+    // The deleted relationship's property index entry is gone too.
+    try expectQuery(&ast, &g, "MATCH ()-[r {since: 1}]->() RETURN count(*)", &.{&.{.{ .int = 0 }}});
+    // The nodes are now deletable once their last relationship goes.
+    try expectQuery(&ast, &g, "MATCH ()-[r:NEAR]->() DELETE r", &.{});
+    try expectQuery(&ast, &g, "MATCH (n) DELETE n", &.{});
+    try expectQuery(&ast, &g, "MATCH (n) RETURN count(*)", &.{&.{.{ .int = 0 }}});
+    try expectQuery(&ast, &g, "OPTIONAL MATCH (n:Missing) DELETE n RETURN n", &.{&.{.{ .null = {} }}});
+}

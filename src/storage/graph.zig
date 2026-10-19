@@ -202,68 +202,68 @@ pub const Graph = struct {
     }
 
     fn deleteEdgesInDirection(self: *Graph, id: NodeId, direction: Direction) StorageError!void {
+        // Collect first, so the scan cursor is not open across the deletes.
+        var edges = std.ArrayList(struct { src: NodeId, dst: NodeId, edge_type: []u8 }).empty;
+        defer {
+            for (edges.items) |edge| self.allocator.free(edge.edge_type);
+            edges.deinit(self.allocator);
+        }
+        var iterator = try self.edgesOf(id, direction);
+        defer iterator.deinit();
+        while (try iterator.next()) |key| {
+            const outgoing = key.direction == .out;
+            try edges.append(self.allocator, .{
+                .src = if (outgoing) id else key.neighbour,
+                .dst = if (outgoing) key.neighbour else id,
+                .edge_type = try self.allocator.dupe(u8, key.edge_type),
+            });
+        }
+        for (edges.items) |edge| try self.deleteEdge(edge.src, edge.dst, edge.edge_type);
+    }
+
+    /// Deletes the edge `src -> dst` of type `edge_type`: both directions, its
+    /// properties and their index entries, and its type count. Idempotent.
+    /// O(log N · (1 + properties)).
+    pub fn deleteEdge(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!void {
+        if (!try self.hasEdge(src, dst, edge_type)) return;
+
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try key_encoding.appendEdgeKey(&key, self.allocator, src, .out, edge_type, dst);
+        try self.store.del(key.items);
+        key.clearRetainingCapacity();
+        try key_encoding.appendEdgeKey(&key, self.allocator, dst, .in, edge_type, src);
+        try self.store.del(key.items);
+
+        // Collect the properties first, so the cursor is not open across deletes.
+        var properties = std.ArrayList(struct { name: []u8, value: []u8 }).empty;
+        defer {
+            for (properties.items) |p| {
+                self.allocator.free(p.name);
+                self.allocator.free(p.value);
+            }
+            properties.deinit(self.allocator);
+        }
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try prefix.append(self.allocator, key_encoding.edge_marker);
-        try key_encoding.appendNodeId(&prefix, self.allocator, id);
-        try prefix.append(self.allocator, @backingInt(direction));
-
-        var keys = std.ArrayList([]u8).empty;
-        defer {
-            for (keys.items) |k| self.allocator.free(k);
-            keys.deinit(self.allocator);
+        try key_encoding.appendEdgePropertyPrefix(&prefix, self.allocator, src, dst, edge_type);
+        var scan = try self.store.scanPrefix(prefix.items);
+        while (try scan.next()) |entry| {
+            try properties.append(self.allocator, .{
+                .name = try self.allocator.dupe(u8, entry.key[prefix.items.len..]),
+                .value = try self.allocator.dupe(u8, entry.value),
+            });
         }
-        var iterator = try self.store.scanPrefix(prefix.items);
-        defer iterator.deinit();
-        while (try iterator.next()) |entry| {
-            try keys.append(self.allocator, try self.allocator.dupe(u8, entry.key));
+        scan.deinit();
+
+        for (properties.items) |p| {
+            try self.deleteEdgeIndexEntry(p.name, key_encoding.decodeValue(p.value), src, dst, edge_type);
+            key.clearRetainingCapacity();
+            try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, p.name);
+            try self.store.del(key.items);
         }
 
-        for (keys.items) |k| {
-            const ek = key_encoding.decodeEdgeKey(k);
-            try self.store.del(k);
-
-            const rev_dir: Direction = if (ek.direction == .out) .in else .out;
-            var rev = std.ArrayList(u8).empty;
-            defer rev.deinit(self.allocator);
-            try key_encoding.appendEdgeKey(&rev, self.allocator, ek.neighbour, rev_dir, ek.edge_type, ek.id);
-            try self.store.del(rev.items);
-
-            // Delete the edge's properties and their index entries (canonical
-            // src -> dst). Collect first so the cursor isn't open across deletes.
-            const src = if (ek.direction == .out) ek.id else ek.neighbour;
-            const dst = if (ek.direction == .out) ek.neighbour else ek.id;
-            var epp = std.ArrayList(u8).empty;
-            defer epp.deinit(self.allocator);
-            try key_encoding.appendEdgePropertyPrefix(&epp, self.allocator, src, dst, ek.edge_type);
-
-            var properties = std.ArrayList(struct { name: []u8, value: []u8 }).empty;
-            defer {
-                for (properties.items) |p| {
-                    self.allocator.free(p.name);
-                    self.allocator.free(p.value);
-                }
-                properties.deinit(self.allocator);
-            }
-            var epit = try self.store.scanPrefix(epp.items);
-            while (try epit.next()) |entry| {
-                try properties.append(self.allocator, .{
-                    .name = try self.allocator.dupe(u8, entry.key[epp.items.len..]),
-                    .value = try self.allocator.dupe(u8, entry.value),
-                });
-            }
-            epit.deinit();
-
-            for (properties.items) |p| {
-                try self.deleteEdgeIndexEntry(p.name, key_encoding.decodeValue(p.value), src, dst, ek.edge_type);
-                var pk = std.ArrayList(u8).empty;
-                defer pk.deinit(self.allocator);
-                try key_encoding.appendEdgePropertyKey(&pk, self.allocator, src, dst, ek.edge_type, p.name);
-                try self.store.del(pk.items);
-            }
-
-            try self.bumpEdgeType(ek.edge_type, false);
-        }
+        try self.bumpEdgeType(edge_type, false);
     }
 
     /// Deletes every key under `prefix` (collected first so the scan cursor is

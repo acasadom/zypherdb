@@ -36,7 +36,7 @@ function takes the returned `Context*`. Error codes (from `diagnostics.zig`):
 | `0` | no error |
 | `1` | parse error |
 | `2` | unknown variable |
-| `3` | missing property |
+| `3` | reserved (a missing property reads as `null`) |
 | `4` | type mismatch |
 | `5` | invalid expression (e.g. `WITH` without an alias) |
 | `6` | node still connected (`DELETE` without `DETACH`) |

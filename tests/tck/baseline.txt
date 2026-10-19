@@ -1,6 +1,7 @@
 clauses/call/Call1.feature: [13] Standalone call to unknown procedure should fail
 clauses/call/Call1.feature: [14] In-query call to unknown procedure should fail
 clauses/create/Create1.feature: [10] Create a single node with two properties and return them
+clauses/create/Create1.feature: [11] Create a single node with null properties should not return those properties
 clauses/create/Create1.feature: [12] CREATE does not lose precision on large integers
 clauses/create/Create1.feature: [15] Fail when adding a new label predicate on a node that is already bound 1
 clauses/create/Create1.feature: [16] Fail when adding new label predicate on a node that is already bound 2
@@ -47,14 +48,25 @@ clauses/create/Create6.feature: [2] Skipping all results after creating nodes af
 clauses/delete/Delete1.feature: [1] Delete nodes
 clauses/delete/Delete1.feature: [2] Detach delete node
 clauses/delete/Delete1.feature: [3] Detach deleting connected nodes and relationships
+clauses/delete/Delete1.feature: [4] Delete on null node
+clauses/delete/Delete1.feature: [5] Ignore null when deleting node
+clauses/delete/Delete1.feature: [6] Detach delete on null node
 clauses/delete/Delete1.feature: [7] Failing when deleting connected nodes
 clauses/delete/Delete1.feature: [8] Failing when deleting a label
+clauses/delete/Delete2.feature: [2] Delete optionally matched relationship
+clauses/delete/Delete2.feature: [4] Ignore null when deleting relationship
 clauses/delete/Delete2.feature: [5] Failing when deleting a relationship type
 clauses/delete/Delete4.feature: [3] Create and delete in same query
 clauses/delete/Delete5.feature: [9] Failing when deleting an integer expression
+clauses/delete/Delete6.feature: [10] Skipping and limiting to a few results after deleting relationships affects the result set but not the side effects
+clauses/delete/Delete6.feature: [11] Skipping zero result and limiting to all results after deleting relationships does not affect the result set nor the side effects
+clauses/delete/Delete6.feature: [13] Aggregating in `RETURN` after deleting relationships affects the result set but not the side effects
 clauses/delete/Delete6.feature: [1] Limiting to zero results after deleting nodes affects the result set but not the side effects
 clauses/delete/Delete6.feature: [2] Skipping all results after deleting nodes affects the result set but not the side effects
 clauses/delete/Delete6.feature: [6] Aggregating in `RETURN` after deleting nodes affects the result set but not the side effects
+clauses/delete/Delete6.feature: [8] Limiting to zero results after deleting relationships affects the result set but not the side effects
+clauses/delete/Delete6.feature: [9] Skipping all results after deleting relationships affects the result set but not the side effects
+clauses/match-where/MatchWhere1.feature: [10] Filter node with disjunctive property predicate on single variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [14] Fail when filtering path with property predicate
 clauses/match-where/MatchWhere1.feature: [3] Filter node with property predicate on a single variable with multiple bindings
 clauses/match-where/MatchWhere1.feature: [4] Filter start node of relationship with property predicate on multi variables with multiple bindings
@@ -358,6 +370,7 @@ clauses/merge/Merge1.feature: [7] Merge should work when finding multiple elemen
 clauses/merge/Merge1.feature: [8] Merge should handle argument properly
 clauses/merge/Merge2.feature: [2] ON CREATE on created nodes
 clauses/merge/Merge2.feature: [3] Merge node with label add property on create
+clauses/merge/Merge2.feature: [4] Merge node with label add property on update when it exists
 clauses/merge/Merge2.feature: [5] Merge should be able to use properties of bound node in ON CREATE
 clauses/merge/Merge2.feature: [6] Fail when using undefined variable in ON CREATE
 clauses/merge/Merge3.feature: [3] Merge node and set property on match
@@ -393,6 +406,7 @@ clauses/return-orderby/ReturnOrderBy1.feature: [9] ORDER BY should order lists i
 clauses/return-orderby/ReturnOrderBy2.feature: [10] Returned columns do not change from using ORDER BY
 clauses/return-orderby/ReturnOrderBy2.feature: [3] Sort on aggregated function
 clauses/return-orderby/ReturnOrderBy2.feature: [4] Support sort and distinct
+clauses/return-orderby/ReturnOrderBy2.feature: [5] Support ordering by a property after being distinct-ified
 clauses/return-orderby/ReturnOrderBy2.feature: [6] Count star should count everything in scope
 clauses/return-orderby/ReturnOrderBy2.feature: [7] Ordering with aggregation
 clauses/return-orderby/ReturnOrderBy2.feature: [9] Using aliased DISTINCT expression in ORDER BY
@@ -427,12 +441,15 @@ clauses/return/Return2.feature: [16] Fail when returning labels of deleted nodes
 clauses/return/Return2.feature: [17] Fail when returning properties of deleted relationships
 clauses/return/Return2.feature: [18] Fail on projecting a non-existent function
 clauses/return/Return2.feature: [2] Returning a node property value
+clauses/return/Return2.feature: [3] Missing node property should become null
 clauses/return/Return2.feature: [4] Returning a relationship property value
+clauses/return/Return2.feature: [5] Missing relationship property should become null
 clauses/return/Return3.feature: [3] Projecting nodes and relationships
 clauses/return/Return4.feature: [1] Honour the column name for RETURN items
 clauses/return/Return4.feature: [2] Support column renaming
 clauses/return/Return4.feature: [3] Aliasing expressions
 clauses/return/Return4.feature: [4] Keeping used expression 1
+clauses/return/Return5.feature: [2] DISTINCT on nullable values
 clauses/return/Return6.feature: [10] Multiple aggregates on same variable
 clauses/return/Return6.feature: [12] Counting matches per group
 clauses/return/Return6.feature: [14] Aggregates in aggregates
@@ -527,6 +544,8 @@ clauses/with-orderBy/WithOrderBy4.feature: [19] Fail if not projected variables 
 clauses/with-orderBy/WithOrderBy4.feature: [20] Fail if more complex expressions, even if projected, are used inside an order by item which contains an aggregation expression
 clauses/with-skip-limit/WithSkipLimit1.feature: [1] Handle dependencies across WITH with SKIP
 clauses/with-skip-limit/WithSkipLimit1.feature: [2] Ordering and skipping on aggregate
+clauses/with-skip-limit/WithSkipLimit2.feature: [1] ORDER BY and LIMIT can be used
+clauses/with-skip-limit/WithSkipLimit2.feature: [2] Handle dependencies across WITH with LIMIT
 clauses/with-skip-limit/WithSkipLimit2.feature: [4] Ordering and limiting on aggregate
 clauses/with-skip-limit/WithSkipLimit3.feature: [1] Get rows in the middle
 clauses/with-where/WithWhere1.feature: [1] Filter node with property predicate on a single variable with multiple bindings
@@ -535,6 +554,7 @@ clauses/with-where/WithWhere3.feature: [3] Join between node properties of adjac
 clauses/with-where/WithWhere6.feature: [1] Filter a single aggregate
 clauses/with/With1.feature: [3] Forwarding a relationship variable
 clauses/with/With1.feature: [6] Forwarding a node variable possibly null
+clauses/with/With2.feature: [1] Forwarding a property to express a join
 clauses/with/With3.feature: [1] Forwarding multiple node and relationship variables
 clauses/with/With4.feature: [1] Aliasing relationship variable
 clauses/with/With4.feature: [2] Aliasing expression to new variable name
@@ -546,11 +566,13 @@ clauses/with/With6.feature: [2] Implicit grouping with single relationship varia
 clauses/with/With6.feature: [3] Implicit grouping with multiple node and relationship variables as grouping key and single aggregation
 clauses/with/With6.feature: [8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 clauses/with/With6.feature: [9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
+expressions/aggregation/Aggregation1.feature: [1] Count only non-null values
 expressions/aggregation/Aggregation1.feature: [2] Counting loop relationships
 expressions/aggregation/Aggregation2.feature: [10] `min()` over list values
 expressions/aggregation/Aggregation2.feature: [7] `max()` over strings
 expressions/aggregation/Aggregation2.feature: [8] `min()` over strings
 expressions/aggregation/Aggregation2.feature: [9] `max()` over list values
+expressions/aggregation/Aggregation3.feature: [1] Sum only non-null values
 expressions/boolean/Boolean1.feature: [1] Conjunction of two truth values
 expressions/boolean/Boolean1.feature: [2] Conjunction of three truth values
 expressions/boolean/Boolean1.feature: [3] Conjunction of many truth values
@@ -647,7 +669,11 @@ expressions/comparison/Comparison1.feature: [9] Equality between strings and num
 expressions/existentialSubqueries/ExistentialSubquery2.feature: [3] Full existential subquery with update clause should fail
 expressions/graph/Graph3.feature: [8] `labels()` failing on a path
 expressions/graph/Graph4.feature: [7] Failing when using `type()` on a node
+expressions/graph/Graph6.feature: [1] Statically access a property of a non-null node
+expressions/graph/Graph6.feature: [2] Statically access a property of a optional non-null node
 expressions/graph/Graph6.feature: [3] Statically access a property of a null node
+expressions/graph/Graph6.feature: [5] Statically access a property of a non-null relationship
+expressions/graph/Graph6.feature: [6] Statically access a property of a optional non-null relationship
 expressions/graph/Graph6.feature: [7] Statically access a property of a null relationship
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #1
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #3
@@ -831,6 +857,29 @@ expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mis
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #3
+expressions/string/String10.feature: [1] Finding exact matches with non-proper substring
+expressions/string/String10.feature: [2] Finding substring of string
+expressions/string/String10.feature: [3] Finding the empty substring
+expressions/string/String10.feature: [4] Finding strings containing whitespace
+expressions/string/String10.feature: [6] No string contains null
+expressions/string/String10.feature: [7] No string does not contain null
+expressions/string/String10.feature: [9] NOT with CONTAINS
+expressions/string/String11.feature: [1] Combining prefix and suffix search
+expressions/string/String11.feature: [2] Combining prefix, suffix, and substring search
+expressions/string/String8.feature: [1] Finding exact matches with non-proper prefix
+expressions/string/String8.feature: [2] Finding beginning of string
+expressions/string/String8.feature: [3] Finding the empty prefix
+expressions/string/String8.feature: [4] Finding strings starting with whitespace
+expressions/string/String8.feature: [6] No string starts with null
+expressions/string/String8.feature: [7] No string does not start with null
+expressions/string/String8.feature: [9] NOT with STARTS WITH
+expressions/string/String9.feature: [1] Finding exact matches with non-proper suffix
+expressions/string/String9.feature: [2] Finding end of string
+expressions/string/String9.feature: [3] Finding the empty suffix
+expressions/string/String9.feature: [4] Finding strings ending with whitespace
+expressions/string/String9.feature: [6] No string ends with null
+expressions/string/String9.feature: [7] No string does not end with null
+expressions/string/String9.feature: [9] NOT with ENDS WITH
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [10] Mixing directed and undirected pattern parts with self-relationship, count
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [11] Mixing directed and undirected pattern parts with self-relationship, undirected count
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [1] Undirected match in self-relationship graph, count

@@ -94,19 +94,17 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
                 self.fail(.unknown_variable, "unknown variable '{s}'", .{name});
                 return error.UnknownVariable;
             }) {
+                // A property the entity does not have reads as null, unless the
+                // entity itself was deleted (openCypher's EntityNotFound).
                 .node => |id| {
-                    const v = (try self.graph.getProperty(id, property, self.allocator)) orelse {
-                        self.fail(.missing_property, "node has no property '{s}'", .{property});
-                        return error.MissingProperty;
-                    };
-                    break :blk v;
+                    if (try self.graph.getProperty(id, property, self.allocator)) |value| break :blk value;
+                    if (!try self.graph.hasNode(id)) return deletedEntity(self, "node", property);
+                    break :blk .{ .null = {} };
                 },
                 .relationship => |r| {
-                    const v = (try self.graph.getEdgeProperty(r.src, r.dst, r.edge_type, property, self.allocator)) orelse {
-                        self.fail(.missing_property, "relationship has no property '{s}'", .{property});
-                        return error.MissingProperty;
-                    };
-                    break :blk v;
+                    if (try self.graph.getEdgeProperty(r.src, r.dst, r.edge_type, property, self.allocator)) |value| break :blk value;
+                    if (!try self.graph.hasEdge(r.src, r.dst, r.edge_type)) return deletedEntity(self, "relationship", property);
+                    break :blk .{ .null = {} };
                 },
                 // A property access on null yields null.
                 .null => break :blk .{ .null = {} },
@@ -218,4 +216,9 @@ pub fn asOptionalBool(value: Value) ExecutionError!?bool {
         .null => null,
         else => error.TypeMismatch,
     };
+}
+
+fn deletedEntity(self: *Executor, kind: []const u8, property: []const u8) ExecutionError {
+    self.fail(.invalid_expression, "cannot read property '{s}' of a deleted {s}", .{ property, kind });
+    return error.InvalidExpression;
 }

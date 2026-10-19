@@ -48,7 +48,7 @@ with Database(tempfile.mkdtemp()) as db:
 
   Each mutator on its own is a separate transaction (slow, durable); a `write()` block does one
   commit for the whole batch (~2000x faster for bulk loads). Don't run `query()` inside the block.
-- Errors raise typed exceptions — `ParseError`, `UnknownVariableError`, `MissingPropertyError`,
+- Errors raise typed exceptions — `ParseError`, `UnknownVariableError`,
   `TypeMismatchError`, `InvalidExpressionError`, `NodeStillConnectedError`, `StorageError` — all
   subclasses of `AcmedbError`.
 

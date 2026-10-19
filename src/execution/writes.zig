@@ -212,7 +212,18 @@ pub fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) E
     for (self.ast.nodeChildren(delete_clause)) |item| {
         const object = self.ast.nodeChildren(item)[0];
         const name = self.ast.data(object).text;
-        const id = bindings.getNode(name) orelse return error.UnknownVariable;
+        const id = switch (bindings.get(name) orelse return error.UnknownVariable) {
+            .node => |id| id,
+            .relationship => |r| {
+                try self.graph.deleteEdge(r.src, r.dst, r.edge_type);
+                continue;
+            },
+            .null => continue, // e.g. from an OPTIONAL MATCH that found nothing
+            else => {
+                self.fail(.type_mismatch, "DELETE needs a node or a relationship, '{s}' is neither", .{name});
+                return error.TypeMismatch;
+            },
+        };
         if (detach) {
             try self.graph.deleteNodeDetach(id);
         } else {

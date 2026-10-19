@@ -34,10 +34,6 @@ class UnknownVariableError(QueryError):
     """The query referenced a variable that is not bound."""
 
 
-class MissingPropertyError(QueryError):
-    """The query read a property a node or relationship does not have."""
-
-
 class TypeMismatchError(QueryError):
     """An operator or function got a value of the wrong type."""
 
@@ -54,7 +50,6 @@ class NodeStillConnectedError(QueryError):
 _CODE_TO_ERROR = {
     1: ParseError,
     2: UnknownVariableError,
-    3: MissingPropertyError,
     4: TypeMismatchError,
     5: InvalidExpressionError,
     6: NodeStillConnectedError,

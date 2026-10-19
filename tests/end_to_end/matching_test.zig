@@ -281,3 +281,25 @@ test "variables keep their kind and their binding across clauses" {
     // A bound relationship only matches itself, not every edge of its shape.
     try expectQuery(&ast, &g, "MATCH ()-[r {w: 1}]->() WITH r MATCH (a)-[r]->(b) RETURN r.w", &.{&.{.{ .int = 1 }}});
 }
+
+test "a missing property reads as null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Door {name: 'D1', floor: 2})-[:IN]->(:Zone), (:Door {name: 'D2'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (d:Door) RETURN d.name, d.floor", &.{
+        &.{ .{ .string = "D1" }, .{ .int = 2 } },
+        &.{ .{ .string = "D2" }, .{ .null = {} } },
+    });
+    // In WHERE a null comparison filters the row out.
+    try expectQuery(&ast, &g, "MATCH (d:Door) WHERE d.floor > 1 RETURN d.name", &.{&.{.{ .string = "D1" }}});
+    try expectQuery(&ast, &g, "MATCH ()-[r:IN]->() RETURN r.since", &.{&.{.{ .null = {} }}});
+}
