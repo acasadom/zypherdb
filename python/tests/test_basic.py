@@ -12,6 +12,7 @@ from acmedb import (
     Database,
     NodeNotFoundError,
     Node,
+    ParameterMissingError,
     ParseError,
     Relationship,
     TypeMismatchError,
@@ -177,3 +178,17 @@ def test_returns_whole_nodes_and_relationships(db):
     # A node the query deleted keeps its id but has no data left to show.
     (gone,), = db.query("MATCH (n {name: 'Bo'}) DETACH DELETE n RETURN n")
     assert gone == Node(1, (), {})
+
+
+def test_query_parameters(db):
+    db.query("CREATE (:Card {id: 123, holder: 'Ana'}), (:Card {id: 456, holder: 'Bo'})")
+    assert db.query("MATCH (c:Card {id: $card}) RETURN c.holder", card=123) == [["Ana"]]
+    assert db.query("MATCH (c:Card) WHERE c.id IN $ids RETURN c.holder", {"ids": (456,)}) == [["Bo"]]
+    # A Cypher parameter may be called `text` or `parameters`: no clash.
+    assert db.query("RETURN $text, $parameters", text="t", parameters=1) == [["t", 1]]
+    with pytest.raises(ParameterMissingError):
+        db.query("RETURN $absent")
+    with pytest.raises(TypeError):
+        db.query("RETURN $x", x=1.5)
+    with pytest.raises(OverflowError):
+        db.query("RETURN $x", x=[2**64])

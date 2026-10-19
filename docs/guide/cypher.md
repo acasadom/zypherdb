@@ -51,7 +51,8 @@ access is `n.prop` (node) or `r.prop` (relationship).
 | `=`, `<>`, `<`, `>`, `<=`, `>=` | comparison |
 | `AND`, `OR`, `NOT` | boolean logic (three-valued with null) |
 | `STARTS WITH`, `ENDS WITH`, `CONTAINS` | string predicates |
-| `IN [...]` | list membership |
+| `IN` | list membership, with any list expression on the right (`x IN $allowed`); null-aware |
+| `$name` | a query parameter, passed with the query (see the Python and C ABI guides) |
 | `CASE WHEN cond THEN v … [ELSE v] END` | conditional expression (no `ELSE` → `null`) |
 | `size(x)` | length of a list, or of a string |
 

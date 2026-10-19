@@ -70,7 +70,7 @@ pub fn parseComparison(self: *Parser) ParseError!Index {
     }
     if (self.atKeyword("IN")) {
         _ = self.advance();
-        const list = try parseListLiteral(self);
+        const list = try parsePrimary(self); // any expression yielding a list
         return self.ast.addNode(.binary_operation, .{ .binary_operator = .in_ }, &.{ lhs, list });
     }
 
@@ -123,6 +123,10 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
             _ = self.advance();
             const s = try self.internString(t.text);
             return self.ast.addNode(.string_literal, .{ .text = s }, &.{});
+        },
+        .parameter => {
+            _ = self.advance();
+            return self.ast.addNode(.parameter, .{ .text = try self.ast.intern(t.text) }, &.{});
         },
         .identifier => if (t.quoted) {
             _ = self.advance();

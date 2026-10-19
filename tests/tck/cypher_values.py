@@ -57,6 +57,22 @@ def from_python(value):
     raise TypeError(f"unexpected result value {value!r}")
 
 
+def to_python(value):
+    """The Python value of a canonical literal (for query parameters)."""
+    tag = value[0]
+    if tag == "null":
+        return None
+    if tag in ("bool", "int", "string"):
+        return value[1]
+    if tag == "float":
+        return float("nan") if value[1] == "NaN" else value[1]
+    if tag == "list":
+        return [to_python(v) for v in value[1]]
+    if tag == "map":
+        return {k: to_python(v) for k, v in value[1]}
+    raise ValueError(f"a {tag} cannot be a parameter")
+
+
 def ignoring_list_order(value):
     """The same value with every list's elements in a canonical order."""
     tag = value[0]

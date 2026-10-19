@@ -46,6 +46,10 @@ class NodeStillConnectedError(QueryError):
     """A DELETE targeted a node that still has relationships (use DETACH DELETE)."""
 
 
+class ParameterMissingError(QueryError):
+    """The query uses a `$name` parameter that was not given."""
+
+
 # Error code -> exception class (see src/diagnostics.zig ErrorCode).
 _CODE_TO_ERROR = {
     1: ParseError,
@@ -53,6 +57,7 @@ _CODE_TO_ERROR = {
     4: TypeMismatchError,
     5: InvalidExpressionError,
     6: NodeStillConnectedError,
+    8: ParameterMissingError,
 }
 
 

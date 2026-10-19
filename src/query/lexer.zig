@@ -17,6 +17,7 @@ pub const LexError = error{
 
 pub const TokenKind = enum {
     identifier,
+    parameter, // `$name`: the text is the name
     string,
     integer,
     left_paren,
@@ -54,6 +55,7 @@ pub const Token = struct {
 pub fn describeTokenKind(kind: TokenKind) []const u8 {
     return switch (kind) {
         .identifier => "an identifier",
+        .parameter => "a parameter",
         .string => "a string",
         .integer => "an integer",
         .left_paren => "'('",
@@ -81,7 +83,7 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
 
 pub fn describeToken(t: Token) []const u8 {
     return switch (t.kind) {
-        .identifier, .string, .integer => t.text,
+        .identifier, .parameter, .string, .integer => t.text,
         else => describeTokenKind(t.kind),
     };
 }
@@ -167,6 +169,18 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 }
                 try add(&tokens, allocator, .string, src[content_start..i], start);
                 i += 1; // closing quote
+            },
+            '$' => {
+                // Parameter: `$name` or `$0` (the name is an identifier or digits).
+                const start = i;
+                i += 1;
+                const name_start = i;
+                while (i < src.len and isIdentifierContinuation(src[i])) i += 1;
+                if (i == name_start) {
+                    if (diagnostic) |d| d.set(.parse, start, "expected a parameter name after '$'", .{});
+                    return error.UnexpectedToken;
+                }
+                try add(&tokens, allocator, .parameter, src[name_start..i], start);
             },
             '`' => {
                 // Quoted identifier: any bytes up to the closing backtick.

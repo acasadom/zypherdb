@@ -107,6 +107,7 @@ pub const NodeKind = enum {
     string_literal,
     boolean_literal,
     null_literal,
+    parameter, // `$name`; data.text is the name
     list_literal,
     size_function,
     case_expression,

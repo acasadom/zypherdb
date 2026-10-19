@@ -5,7 +5,9 @@
 //! - a relationship variable appears once per MATCH (openCypher's
 //!   VariableAlreadyBound);
 //! - a name is a node, a relationship or a value, never two of them
-//!   (VariableTypeConflict), e.g. `(r)-[r]-()`, or `WITH 1 AS r MATCH ()-[r]-()`.
+//!   (VariableTypeConflict), e.g. `(r)-[r]-()`, or `WITH 1 AS r MATCH ()-[r]-()`;
+//! - the right side of `IN` is not a literal of another type, e.g. `1 IN true`
+//!   (InvalidArgumentType).
 //!
 //! The checks do not depend on the data, so they fail on an empty graph too.
 
@@ -93,7 +95,20 @@ const Checker = struct {
         self.scope = next;
     }
 
+    /// Checks every expression of the query for literal argument types.
+    fn checkExpressions(self: *Checker, index: Index) SemanticError!void {
+        if (self.ast.kind(index) == .binary_operation and self.ast.data(index).binary_operator == .in_) {
+            const list = self.ast.nodeChildren(index)[1];
+            switch (self.ast.kind(list)) {
+                .integer_literal, .string_literal, .boolean_literal => return self.fail("the right side of IN must be a list", .{}),
+                else => {},
+            }
+        }
+        for (self.ast.nodeChildren(index)) |child| try self.checkExpressions(child);
+    }
+
     fn checkQuery(self: *Checker, query: Index) SemanticError!void {
+        try self.checkExpressions(query);
         for (self.ast.nodeChildren(query)) |clause| {
             const children = self.ast.nodeChildren(clause);
             switch (self.ast.kind(clause)) {

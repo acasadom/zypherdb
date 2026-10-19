@@ -29,7 +29,9 @@ with Database(tempfile.mkdtemp()) as db:
 ## The `Database` object
 
 - `Database(path)` opens (or creates) the database; use it as a context manager, or call `close()`.
-- `query(text) -> list[list]` runs one query; cells become `int`, `str`, `bool`, `None` (null), a
+- `query(text, parameters=None, /, **named) -> list[list]` runs one query, with its `$name`
+  parameters from a dict and/or keyword arguments (`db.query("... {id: $card} ...", card=123)`;
+  values: `int`, `str`, `bool`, `None`, lists); cells become `int`, `str`, `bool`, `None` (null), a
   `list`, or a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
   properties)`.
 - `export_graph() -> dict` returns the whole graph, read straight from storage.

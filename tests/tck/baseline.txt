@@ -74,8 +74,11 @@ clauses/match-where/MatchWhere1.feature: [14] Fail when filtering path with prop
 clauses/match-where/MatchWhere1.feature: [3] Filter node with property predicate on a single variable with multiple bindings
 clauses/match-where/MatchWhere1.feature: [4] Filter start node of relationship with property predicate on multi variables with multiple bindings
 clauses/match-where/MatchWhere1.feature: [5] Filter end node of relationship with property predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere1.feature: [6] Filter node with a parameter in a property predicate on multi variables with one binding
 clauses/match-where/MatchWhere1.feature: [8] Filter relationship with property predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere1.feature: [9] Filter relationship with a parameter in a property predicate on multi variables with one binding
 clauses/match-where/MatchWhere2.feature: [1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere2.feature: [2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 clauses/match-where/MatchWhere3.feature: [1] Join between node identities
 clauses/match-where/MatchWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/match-where/MatchWhere3.feature: [3] Join between node properties of adjacent nodes
@@ -431,6 +434,7 @@ clauses/return-orderby/ReturnOrderBy6.feature: [5] Fail if more complex expressi
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [10] Fail when using non-constants in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [11] Fail when using negative value in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [1] Start the result from the second row
+clauses/return-skip-limit/ReturnSkipLimit1.feature: [2] Start the result from the second row by param
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [4] Accept skip zero
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [5] SKIP with an expression that depends on variables should fail
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [7] Negative SKIP should fail
@@ -448,6 +452,7 @@ clauses/return-skip-limit/ReturnSkipLimit2.feature: [7] Limit to more rows than 
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [8] Limit to more rows than actual results 2
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [9] Fail when using non-constants in LIMIT
 clauses/return-skip-limit/ReturnSkipLimit3.feature: [1] Get rows in the middle
+clauses/return-skip-limit/ReturnSkipLimit3.feature: [2] Get rows in the middle by param
 clauses/return/Return2.feature: [11] RETURN does not lose precision on large integers
 clauses/return/Return2.feature: [12] Projecting a list of nodes and relationships
 clauses/return/Return2.feature: [15] Fail when returning properties of deleted nodes
@@ -562,8 +567,10 @@ clauses/with-skip-limit/WithSkipLimit2.feature: [1] ORDER BY and LIMIT can be us
 clauses/with-skip-limit/WithSkipLimit2.feature: [2] Handle dependencies across WITH with LIMIT
 clauses/with-skip-limit/WithSkipLimit2.feature: [4] Ordering and limiting on aggregate
 clauses/with-skip-limit/WithSkipLimit3.feature: [1] Get rows in the middle
+clauses/with-skip-limit/WithSkipLimit3.feature: [2] Get rows in the middle by param
 clauses/with-where/WithWhere1.feature: [1] Filter node with property predicate on a single variable with multiple bindings
 clauses/with-where/WithWhere2.feature: [1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
+clauses/with-where/WithWhere2.feature: [2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 clauses/with-where/WithWhere3.feature: [1] Join between node identities
 clauses/with-where/WithWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/with-where/WithWhere3.feature: [3] Join between node properties of adjacent nodes
@@ -742,8 +749,11 @@ expressions/list/List5.feature: [16] IN should return true when LHS and RHS cont
 expressions/list/List5.feature: [17] IN should return true when LHS and RHS contain a nested list
 expressions/list/List5.feature: [18] IN should return false when LHS contains a nested list and type mismatch on RHS - singleton version
 expressions/list/List5.feature: [19] IN should return false when LHS contains a nested list and type mismatch on RHS
+expressions/list/List5.feature: [20] IN should return null if LHS and RHS are null
+expressions/list/List5.feature: [22] IN should return null when LHS and RHS both ultimately contain null, even if LHS and RHS are of different types (nested list and flat list)
 expressions/list/List5.feature: [23] IN with different length lists should return false despite nulls
 expressions/list/List5.feature: [24] IN should return true if match despite nulls
+expressions/list/List5.feature: [25] IN should return null if comparison with null is required
 expressions/list/List5.feature: [26] IN should return true if correct list found despite other lists having nulls
 expressions/list/List5.feature: [27] IN should return true if correct list found despite null being another element within containing list
 expressions/list/List5.feature: [28] IN should return false if no match can be found, despite nulls
@@ -755,6 +765,7 @@ expressions/list/List5.feature: [36] IN should return false for the empty list i
 expressions/list/List5.feature: [37] IN should work with an empty list in the presence of other list elements: matching
 expressions/list/List5.feature: [38] IN should work with an empty list in the presence of other list elements: not matching
 expressions/list/List5.feature: [39] IN should work with an empty list when comparing nested lists
+expressions/list/List5.feature: [40] IN should return null if comparison with null is required for empty list
 expressions/list/List5.feature: [41] IN should return true when LHS and RHS contain nested list with multiple empty lists
 expressions/list/List5.feature: [42] Failing when using IN on a non-list literal #1
 expressions/list/List5.feature: [42] Failing when using IN on a non-list literal #2
@@ -837,6 +848,13 @@ expressions/mathematical/Mathematical3.feature: [1] Fail for invalid Unicode hyp
 expressions/null/Null3.feature: [1] The inverse of a null is a null
 expressions/null/Null3.feature: [2] It is unknown - i.e. null - if a null is equal to a null
 expressions/null/Null3.feature: [3] It is unknown - i.e. null - if a null is not equal to a null
+expressions/null/Null3.feature: [4] Using null in IN #1
+expressions/null/Null3.feature: [4] Using null in IN #2
+expressions/null/Null3.feature: [4] Using null in IN #3
+expressions/null/Null3.feature: [4] Using null in IN #4
+expressions/null/Null3.feature: [4] Using null in IN #5
+expressions/null/Null3.feature: [4] Using null in IN #6
+expressions/null/Null3.feature: [4] Using null in IN #7
 expressions/path/Path3.feature: [2] Failing when using `length()` on a node
 expressions/path/Path3.feature: [3] Failing when using `length()` on a relationship
 expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variables in pattern #10

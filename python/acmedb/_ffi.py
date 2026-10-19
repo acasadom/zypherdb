@@ -78,6 +78,8 @@ lib.acmedb_set_property_string.restype = ctypes.c_int
 # --- Queries -----------------------------------------------------------------
 lib.acmedb_query.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_query.restype = ctypes.c_void_p
+lib.acmedb_query_with_parameters.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+lib.acmedb_query_with_parameters.restype = ctypes.c_void_p
 lib.acmedb_result_free.argtypes = [ctypes.c_void_p]
 lib.acmedb_result_row_count.argtypes = [ctypes.c_void_p]
 lib.acmedb_result_row_count.restype = ctypes.c_size_t

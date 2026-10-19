@@ -164,11 +164,24 @@ pub export fn acmedb_set_property_string(context: *Context, id: u64, name_ptr: [
 }
 
 pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len: usize) ?*Result {
-    const query = query_ptr[0..query_len];
+    return runQuery(context, query_ptr[0..query_len], null);
+}
 
+/// Like `acmedb_query`, with the values of the query's `$name` parameters as
+/// a JSON object (`{"card": 123, "zones": ["A", "B"]}`). Parameter values may
+/// be integers, strings, booleans, null and (nested) lists.
+pub export fn acmedb_query_with_parameters(context: *Context, query_ptr: [*]const u8, query_len: usize, parameters_ptr: [*]const u8, parameters_len: usize) ?*Result {
+    return runQuery(context, query_ptr[0..query_len], parameters_ptr[0..parameters_len]);
+}
+
+fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) ?*Result {
     context.diagnostic.clear();
     var scratch = std.heap.ArenaAllocator.init(context.allocator);
     defer scratch.deinit();
+    const parameters = if (parameters_json) |json|
+        parseParameters(scratch.allocator(), json, &context.diagnostic) catch return null
+    else
+        Executor.Parameters.empty;
     var ast = Ast.init(scratch.allocator());
     const q = parser.parse(&ast, query, &context.diagnostic) catch |err| {
         if (context.diagnostic.message().len == 0) context.diagnostic.set(.parse, 0, "parse failed: {s}", .{@errorName(err)});
@@ -176,6 +189,7 @@ pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len:
     };
     var executor = Executor.init(&ast, &context.graph, scratch.allocator());
     executor.diagnostic = &context.diagnostic;
+    executor.parameters = parameters;
     const rows = executor.run(q) catch |err| {
         // A bare runtime error that didn't set a message gets a generic one.
         if (context.diagnostic.message().len == 0) noteError(&context.diagnostic, err);
@@ -195,6 +209,48 @@ pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len:
         return null;
     };
     return result;
+}
+
+/// Reads a JSON object of parameters into Values (allocated in `arena`).
+fn parseParameters(arena: Allocator, json: []const u8, diagnostic: *Diagnostic) error{InvalidParameters}!Executor.Parameters {
+    const parsed = std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{}) catch {
+        diagnostic.set(.type_mismatch, 0, "parameters are not valid JSON", .{});
+        return error.InvalidParameters;
+    };
+    if (parsed != .object) {
+        diagnostic.set(.type_mismatch, 0, "parameters must be a JSON object", .{});
+        return error.InvalidParameters;
+    }
+    var parameters = Executor.Parameters.empty;
+    var entries = parsed.object.iterator();
+    while (entries.next()) |entry| {
+        const value = parameterValue(arena, entry.value_ptr.*) catch |err| {
+            diagnostic.set(.type_mismatch, 0, "parameter '{s}': {s}", .{ entry.key_ptr.*, switch (err) {
+                error.UnsupportedNumber => "numbers must be 64-bit integers (floating point is not supported yet)",
+                error.UnsupportedMap => "map values are not supported yet",
+                error.OutOfMemory => "out of memory",
+            } });
+            return error.InvalidParameters;
+        };
+        parameters.put(arena, entry.key_ptr.*, value) catch return error.InvalidParameters;
+    }
+    return parameters;
+}
+
+fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumber, UnsupportedMap, OutOfMemory }!Value {
+    return switch (json) {
+        .null => .{ .null = {} },
+        .bool => |b| .{ .boolean = b },
+        .integer => |n| .{ .int = n },
+        .float, .number_string => error.UnsupportedNumber,
+        .string => |text| .{ .string = text },
+        .array => |items| blk: {
+            const values = try arena.alloc(Value, items.items.len);
+            for (values, items.items) |*value, item| value.* = try parameterValue(arena, item);
+            break :blk .{ .list = values };
+        },
+        .object => error.UnsupportedMap,
+    };
 }
 
 /// Serializes the whole result to a JSON array of arrays (`[[…], […]]`), so a
@@ -521,6 +577,7 @@ fn noteError(diagnostic: *Diagnostic, err: anyerror) void {
     const code: ErrorCode = switch (err) {
         error.UnknownVariable => .unknown_variable,
         error.TypeMismatch, error.UnsupportedPropertyType => .type_mismatch,
+        error.ParameterMissing => .parameter_missing,
         error.InvalidExpression => .invalid_expression,
         error.NodeStillConnected => .node_still_connected,
         else => .storage,
@@ -558,4 +615,5 @@ comptime {
     _ = acmedb_result_list_item_bool;
     _ = acmedb_result_list_item_string;
     _ = acmedb_export_json;
+    _ = acmedb_query_with_parameters;
 }

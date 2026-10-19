@@ -144,14 +144,14 @@ def _check_side_effects(step: Step, outcome: dict):
         raise Failed(f"side effects: expected {expected}, got {outcome['side_effects']}")
 
 
-def _execute(db, query: str, measure: bool) -> dict:
+def _execute(db, query: str, parameters: dict, measure: bool) -> dict:
     from acmedb import AcmedbError
 
     before = _graph_state(db) if measure else None
     outcome = {"rows": None, "error": None, "error_class": None, "side_effects": None}
     try:
-        outcome["rows"] = db.query(query)
-    except AcmedbError as error:
+        outcome["rows"] = db.query(query, parameters)
+    except (AcmedbError, TypeError, OverflowError) as error:  # Python-side refusals count too
         outcome["error"] = str(error)
         outcome["error_class"] = type(error).__name__
     if measure:
@@ -176,6 +176,7 @@ def run_scenario(scenario: Scenario) -> dict:
     negative = any(s.keyword == "Then" and "should be raised" in s.text for s in scenario.steps)
     with tempfile.TemporaryDirectory(prefix="acmedb-tck-") as path, Database(path) as db:
         outcome = None
+        parameters = {}
         try:
             for step in scenario.steps:
                 text = step.text
@@ -190,15 +191,16 @@ def run_scenario(scenario: Scenario) -> dict:
                         _setup(db, step.docstring)
                         continue
                     if text.startswith("parameters are"):
-                        raise Unsupported("query parameters")
+                        parameters = {name: cypher_values.to_python(cypher_values.parse(value)) for name, value in step.table}
+                        continue
                     if text.startswith("there exists a procedure"):
                         raise Unsupported("procedures")
                     raise Unsupported(f"given: {text}")
                 if step.keyword == "When":
                     if text.startswith("executing query"):
-                        outcome = _execute(db, step.docstring, measure=True)
+                        outcome = _execute(db, step.docstring, parameters, measure=True)
                     elif text.startswith("executing control query"):
-                        outcome = _execute(db, step.docstring, measure=False)
+                        outcome = _execute(db, step.docstring, parameters, measure=False)
                     else:
                         raise Unsupported(f"when: {text}")
                     continue

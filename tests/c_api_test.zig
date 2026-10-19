@@ -248,3 +248,29 @@ test "C ABI: whole nodes and relationships in the JSON result" {
         json[0..length],
     );
 }
+
+test "C ABI: query parameters as a JSON object" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(context);
+
+    const query = "RETURN $n, $s, $b, $nothing, $list";
+    const parameters = "{\"n\": 7, \"s\": \"x\", \"b\": true, \"nothing\": null, \"list\": [1, [2]]}";
+    const result = c_api.acmedb_query_with_parameters(context, query.ptr, query.len, parameters.ptr, parameters.len).?;
+    defer acmedb_result_free(result);
+    var length: usize = 0;
+    const json = acmedb_result_to_json(result, &length);
+    try testing.expectEqualStrings("[[7,\"x\",true,null,[1,[2]]]]", json[0..length]);
+
+    // Unsupported parameter values fail with a message instead of guessing.
+    const float = "{\"n\": 1.5}";
+    try testing.expect(c_api.acmedb_query_with_parameters(context, query.ptr, query.len, float.ptr, float.len) == null);
+    try testing.expectEqual(@as(c_int, 4), acmedb_error_code(context));
+    const missing = "RETURN $absent";
+    try testing.expect(acmedb_query(context, missing.ptr, missing.len) == null);
+    try testing.expectEqual(@as(c_int, 8), acmedb_error_code(context));
+}

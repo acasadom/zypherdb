@@ -97,7 +97,8 @@ pub fn tryAddSeek(self: *Executor, access_expression: Index, value_expression: I
     const object = self.ast.nodeChildren(access_expression)[0];
     if (self.ast.kind(object) != .variable) return false;
     switch (self.ast.kind(value_expression)) {
-        .integer_literal, .string_literal, .boolean_literal => {},
+        // Constant for the whole query, so usable as an index lookup.
+        .integer_literal, .string_literal, .boolean_literal, .parameter => {},
         else => return false,
     }
     const variable_name = self.ast.data(object).text;

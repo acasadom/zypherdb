@@ -70,6 +70,9 @@ the bulk-ingestion path — individual mutators each commit on their own and are
 
 ```c
 Result* acmedb_query(Context*, const char* query, size_t query_len);   // NULL on failure
+// with `$name` parameters as a JSON object, e.g. {"card": 123, "zones": ["A"]}
+Result* acmedb_query_with_parameters(Context*, const char* query, size_t query_len,
+                                     const char* parameters_json, size_t parameters_len);
 void    acmedb_result_free(Result*);
 size_t  acmedb_result_row_count(const Result*);
 size_t  acmedb_result_column_count(const Result*);

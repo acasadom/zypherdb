@@ -335,3 +335,64 @@ test "backtracking: several patterns, cycles and per-row writes" {
     try expectQuery(&ast, &g, "MATCH (m:M) CREATE (m)-[:HAS]->(t:Tag)", &.{});
     try expectQuery(&ast, &g, "MATCH (t:Tag) RETURN count(*)", &.{&.{.{ .int = 2 }}});
 }
+
+test "query parameters" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadMoviesGraph(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // In an inline property map (an index lookup), WHERE, IN and LIMIT.
+    try support.expectQueryWithParameters(&ast, &g, "MATCH (p:Person {name: $name}) RETURN p.born", &.{.{ "name", .{ .string = "Keanu Reeves" } }}, &.{
+        &.{.{ .int = 1964 }},
+    });
+    try support.expectQueryWithParameters(&ast, &g, "MATCH (m:Movie) WHERE m.released > $year AND m.title IN $titles RETURN m.title LIMIT $n", &.{
+        .{ "year", .{ .int = 2000 } },
+        .{ "titles", .{ .list = &.{ .{ .string = "John Wick" }, .{ .string = "Forrest Gump" } } } },
+        .{ "n", .{ .int = 5 } },
+    }, &.{
+        &.{.{ .string = "John Wick" }},
+    });
+    try expectQueryError(&ast, &g, "RETURN $missing", error.ParameterMissing);
+}
+
+test "IN uses three-valued logic and accepts any list expression" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "RETURN 1 IN [1, 2], 3 IN [1, 2], 3 IN [1, null], null IN [1], null IN [], 1 IN null", &.{
+        &.{ .{ .boolean = true }, .{ .boolean = false }, .{ .null = {} }, .{ .null = {} }, .{ .boolean = false }, .{ .null = {} } },
+    });
+    try expectQuery(&ast, &g, "WITH [1, 2] AS allowed RETURN 2 IN allowed", &.{&.{.{ .boolean = true }}});
+}
+
+test "IN with a literal that is not a list is a compile-time error" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQueryError(&ast, &g, "RETURN 1 IN true", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (n) WHERE n.x IN 'abc' RETURN n", error.InvalidExpression);
+}

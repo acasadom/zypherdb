@@ -96,6 +96,16 @@ pub fn expectQuery(ast: *Ast, g: *Graph, src: []const u8, expected: []const []co
     try expectRows(try executor.run(query), expected);
 }
 
+/// Like `expectQuery`, with values for the query's `$name` parameters.
+pub fn expectQueryWithParameters(ast: *Ast, g: *Graph, src: []const u8, parameters: []const struct { []const u8, Value }, expected: []const []const Value) !void {
+    const query = try parser.parse(ast, src, null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var executor = Executor.init(ast, g, arena.allocator());
+    for (parameters) |parameter| try executor.parameters.put(arena.allocator(), parameter[0], parameter[1]);
+    try expectRows(try executor.run(query), expected);
+}
+
 /// Parses `src`, runs it, and asserts the projected rows in order.
 pub fn expectOrdered(ast: *Ast, g: *Graph, src: []const u8, expected: []const []const Value) !void {
     const query = try parser.parse(ast, src, null);

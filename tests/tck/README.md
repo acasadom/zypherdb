@@ -42,4 +42,4 @@ python -I tests/tck/runner.py --update-baseline                  # record newly 
 
 - acmedb returns rows without column names, so columns are compared by position.
 - acmedb identifies a relationship by (source, target, type): it has no parallel relationships yet.
-- Scenarios that need query parameters or procedures are reported as `unsupported`.
+- Scenarios that need procedures are reported as `unsupported`.

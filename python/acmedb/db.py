@@ -21,6 +21,27 @@ _RETURN_OK = 0
 _RETURN_NODE_NOT_FOUND = 2
 
 
+def _check_parameter(name: str, value):
+    """Rejects values the engine cannot take, before they cross into C."""
+    if value is None or isinstance(value, (bool, str)):
+        return
+    if isinstance(value, int):
+        if not _I64_MIN <= value <= _I64_MAX:
+            raise OverflowError(f"parameter {name!r}: {value} does not fit in 64 bits")
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _check_parameter(name, item)
+        return
+    raise TypeError(f"parameter {name!r}: {type(value).__name__} values are not supported")
+
+
+def _encode_parameters(values: dict) -> bytes:
+    for name, value in values.items():
+        _check_parameter(name, value)
+    return json.dumps(values).encode()
+
+
 def _check_node_id(id: int) -> int:
     if isinstance(id, bool) or not isinstance(id, int):
         raise TypeError(f"node ids must be int, not {type(id).__name__}")
@@ -78,8 +99,17 @@ class Database:
 
     # --- Querying ------------------------------------------------------------
 
-    def query(self, text: str) -> list[list]:
+    def query(self, text: str, parameters: dict | None = None, /, **named) -> list[list]:
         """Run one openCypher query and return the rows as Python values.
+
+        Query parameters (`$name` in the query) come as a dict, as keyword
+        arguments, or both::
+
+            db.query("MATCH (c:Card {id: $card}) RETURN c", card=123)
+            db.query("MATCH (z:Zone) WHERE z.name IN $zones RETURN z", {"zones": ["A", "B"]})
+
+        Parameter values may be `int` (64-bit), `str`, `bool`, `None` and
+        lists or tuples of those.
 
         Cells become `int`, `str`, `bool`, `None` (null), a `list`, or a whole
         :class:`Node` / :class:`Relationship`; rows are lists of cells. Raises a
@@ -89,11 +119,18 @@ class Database:
         result costs one FFI call plus a `json.loads`, not one call per cell.
         """
         encoded = text.encode()
+        values = {**(parameters or {}), **named}
+        encoded_parameters = _encode_parameters(values) if values else None
         with self._lock:
             ctx = self._handle()
             if self._in_write:
                 raise AcmedbError("query() cannot run inside a write() block")
-            result = _ffi.lib.acmedb_query(ctx, encoded, len(encoded))
+            if encoded_parameters is None:
+                result = _ffi.lib.acmedb_query(ctx, encoded, len(encoded))
+            else:
+                result = _ffi.lib.acmedb_query_with_parameters(
+                    ctx, encoded, len(encoded), encoded_parameters, len(encoded_parameters)
+                )
             if not result:
                 _raise_query_error(ctx)
             try:

@@ -29,15 +29,24 @@ pub fn evaluateBool(self: *Executor, expr: Index, bindings: *Bindings) Execution
     };
 }
 
-/// True if `needle` equals any element of the `list_literal` node. A null
-/// needle matches nothing (`null IN [...]` is null, treated as false here).
-pub fn inList(self: *Executor, needle: Value, list_node: Index, bindings: *Bindings) ExecutionError!bool {
-    if (Value.isNull(needle)) return false;
-    for (self.ast.nodeChildren(list_node)) |item| {
-        const v = try evaluate(self, item, bindings);
-        if (Value.eql(needle, v)) return true;
+/// `needle IN list` with three-valued logic: null when the list is null,
+/// true when an element equals the needle, else null if the needle or some
+/// element is null (the answer is unknown), else false.
+fn inList(needle: Value, list: Value) ExecutionError!Value {
+    const items = switch (list) {
+        .list => |items| items,
+        .null => return .{ .null = {} },
+        else => return error.TypeMismatch,
+    };
+    var unknown = Value.isNull(needle) and items.len > 0;
+    for (items) |item| {
+        if (Value.isNull(item)) {
+            unknown = true;
+        } else if (!Value.isNull(needle) and Value.eql(needle, item)) {
+            return .{ .boolean = true };
+        }
     }
-    return false;
+    return if (unknown) .{ .null = {} } else .{ .boolean = false };
 }
 
 pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
@@ -46,6 +55,13 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         .string_literal => .{ .string = self.ast.data(expr).text },
         .boolean_literal => .{ .boolean = self.ast.data(expr).boolean },
         .null_literal => .{ .null = {} },
+        .parameter => blk: {
+            const name = self.ast.data(expr).text;
+            break :blk self.parameters.get(name) orelse {
+                self.fail(.parameter_missing, "missing parameter '${s}'", .{name});
+                return error.ParameterMissing;
+            };
+        },
         .list_literal => blk: {
             var items = std.ArrayList(Value).empty;
             for (self.ast.nodeChildren(expr)) |item| {
@@ -114,11 +130,6 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         .binary_operation => blk: {
             const operator = self.ast.data(expr).binary_operator;
             const children = self.ast.nodeChildren(expr);
-            if (operator == .in_) {
-                // RHS is a list literal, not a scalar value.
-                const l = try evaluate(self, children[0], bindings);
-                break :blk .{ .boolean = try inList(self, l, children[1], bindings) };
-            }
             const l = try evaluate(self, children[0], bindings);
             const r = try evaluate(self, children[1], bindings);
             break :blk try applyBinaryOperator(operator, l, r);
@@ -178,7 +189,7 @@ pub fn applyBinaryOperator(operator: BinaryOperator, left: Value, right: Value) 
             if (left_bool == null or right_bool == null) break :blk .{ .null = {} };
             break :blk .{ .boolean = false };
         },
-        .in_ => unreachable, // handled in `evaluate` (RHS is a list literal)
+        .in_ => inList(left, right),
     };
 }
 

@@ -15,6 +15,7 @@ pub const ErrorCode = enum(u32) {
     invalid_expression = 5,
     node_still_connected = 6,
     storage = 7,
+    parameter_missing = 8,
 };
 
 pub const Diagnostic = struct {

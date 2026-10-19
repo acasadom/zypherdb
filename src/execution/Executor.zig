@@ -40,6 +40,7 @@ const writes = @import("writes.zig");
 const Executor = @This();
 
 pub const ExecutionError = StorageError || error{
+    ParameterMissing,
     UnsupportedPropertyType,
     UnknownVariable,
     InvalidExpression,
@@ -48,6 +49,9 @@ pub const ExecutionError = StorageError || error{
 
 /// A projected row: one `Value` per RETURN item.
 pub const Row = std.ArrayList(Value);
+
+/// Query parameters (`$name`), by name.
+pub const Parameters = std.StringHashMapUnmanaged(Value);
 
 ast: *Ast,
 graph: *Graph,
@@ -100,6 +104,9 @@ groups: ValueGrouping,
 
 diagnostic: ?*Diagnostic,
 
+/// The values of the query's `$name` parameters (none by default).
+parameters: Parameters,
+
 pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
     return .{
         .ast = ast,
@@ -131,6 +138,7 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .aggregate_kinds = .empty,
         .groups = .{},
         .diagnostic = null,
+        .parameters = .empty,
     };
 }
 
