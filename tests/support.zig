@@ -13,7 +13,7 @@ const Row = acmedb.Row;
 const Value = acmedb.Value;
 const Executor = acmedb.Executor;
 const parser = acmedb.parser;
-const valueEq = acmedb.valueEq;
+const eqlSequences = acmedb.eqlSequences;
 
 /// The path of a test's temporary directory, relative to the build root.
 pub fn testPath(tmp: *testing.TmpDir, buf: []u8) []const u8 {
@@ -66,14 +66,6 @@ pub fn loadMoviesGraph(g: *Graph) !void {
     for (edges) |e| try g.addEdge(e.a, e.b, e.t);
 }
 
-fn rowsEqual(row: []const Value, expected: []const Value) bool {
-    if (row.len != expected.len) return false;
-    for (row, expected) |a, b| {
-        if (!valueEq(a, b)) return false;
-    }
-    return true;
-}
-
 /// Asserts that `rows` equals `expected` as an unordered set of rows.
 fn expectRows(rows: []const Row, expected: []const []const Value) !void {
     try testing.expectEqual(expected.len, rows.len);
@@ -85,7 +77,7 @@ fn expectRows(rows: []const Row, expected: []const []const Value) !void {
         var found = false;
         for (rows, 0..) |row, i| {
             if (used[i]) continue;
-            if (rowsEqual(row.items, expected_row)) {
+            if (eqlSequences(row.items, expected_row)) {
                 used[i] = true;
                 found = true;
                 break;
@@ -113,7 +105,7 @@ pub fn expectOrdered(ast: *Ast, g: *Graph, src: []const u8, expected: []const []
     const rows = try executor.run(query);
     try testing.expectEqual(expected.len, rows.len);
     for (expected, rows) |expected_row, row| {
-        try testing.expect(rowsEqual(row.items, expected_row));
+        try testing.expect(eqlSequences(row.items, expected_row));
     }
 }
 

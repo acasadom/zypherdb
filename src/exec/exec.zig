@@ -21,7 +21,8 @@ const UnOp = @import("../ast/ast.zig").UnOp;
 const AggKind = @import("../ast/ast.zig").AggKind;
 const Graph = @import("../storage/graph.zig").Graph;
 const NodeId = @import("../storage/graph.zig").NodeId;
-const Value = @import("../storage/graph.zig").Value;
+const Value = @import("../value.zig").Value;
+const eqlSequences = @import("../value.zig").eqlSequences;
 const Direction = @import("../storage/graph.zig").Direction;
 const NodeIdIterator = @import("../storage/graph.zig").NodeIdIterator;
 const KvError = @import("../storage/kv_store.zig").KvError;
@@ -1118,7 +1119,7 @@ pub const Executor = struct {
 
     fn findOrCreateGroup(self: *Executor, keys: []const Value) ExecError!*Group {
         for (self.groups.items) |*g| {
-            if (rowsEq(g.keys.items, keys)) return g;
+            if (eqlSequences(g.keys.items, keys)) return g;
         }
         var group = Group{ .keys = .empty, .aggs = .empty };
         for (keys) |k| try group.keys.append(self.allocator, k);
@@ -1135,21 +1136,21 @@ pub const Executor = struct {
     fn updateAgg(self: *Executor, state: *AggState, arg: Value) ExecError!void {
         switch (state.kind) {
             .count => {
-                if (!isNull(arg)) state.count += 1;
+                if (!Value.isNull(arg)) state.count += 1;
             },
             .sum => {
-                if (!isNull(arg)) state.sum += try asInt(arg);
+                if (!Value.isNull(arg)) state.sum += try asInt(arg);
             },
             .min => {
-                if (isNull(arg)) return;
+                if (Value.isNull(arg)) return;
                 if (state.min) |m| {
-                    if (compareValue(arg, m) == .lt) state.min = arg;
+                    if (Value.order(arg, m) == .lt) state.min = arg;
                 } else state.min = arg;
             },
             .max => {
-                if (isNull(arg)) return;
+                if (Value.isNull(arg)) return;
                 if (state.max) |m| {
-                    if (compareValue(arg, m) == .gt) state.max = arg;
+                    if (Value.order(arg, m) == .gt) state.max = arg;
                 } else state.max = arg;
             },
             .collect => {
@@ -1255,7 +1256,7 @@ pub const Executor = struct {
         while (i < self.rows.items.len) : (i += 1) {
             var j: usize = i + 1;
             while (j < self.rows.items.len) {
-                if (rowsEq(self.rows.items[i].items, self.rows.items[j].items)) {
+                if (eqlSequences(self.rows.items[i].items, self.rows.items[j].items)) {
                     _ = self.rows.swapRemove(j);
                     _ = self.row_keys.swapRemove(j);
                 } else {
@@ -1383,7 +1384,7 @@ pub const Executor = struct {
             const prop_name = self.ast.data(prop_idx).text;
             const value = try self.eval(self.ast.nodeChildren(prop_idx)[0], bindings);
             const actual = (try self.graph.getProp(id, prop_name, self.allocator)) orelse return false;
-            if (!valueEq(actual, value)) return false;
+            if (!Value.eql(actual, value)) return false;
         }
         return true;
     }
@@ -1471,7 +1472,7 @@ pub const Executor = struct {
         for (self.nodes.items[node_idx].seeks.items) |seek| {
             const expected = try self.eval(seek.value, bindings);
             const actual = (try self.graph.getProp(id, seek.prop, self.allocator)) orelse return false;
-            if (!valueEq(actual, expected)) return false;
+            if (!Value.eql(actual, expected)) return false;
         }
         return true;
     }
@@ -1480,7 +1481,7 @@ pub const Executor = struct {
         for (edge.seeks.items) |seek| {
             const expected = try self.eval(seek.value, bindings);
             const actual = (try self.graph.getEdgeProp(src, dst, edge.etype, seek.prop, self.allocator)) orelse return false;
-            if (!valueEq(actual, expected)) return false;
+            if (!Value.eql(actual, expected)) return false;
         }
         return true;
     }
@@ -1496,10 +1497,10 @@ pub const Executor = struct {
     /// True if `needle` equals any element of the `list_literal` node. A null
     /// needle matches nothing (`null IN [...]` is null, treated as false here).
     fn inList(self: *Executor, needle: Value, list_node: Index, bindings: *Bindings) ExecError!bool {
-        if (isNull(needle)) return false;
+        if (Value.isNull(needle)) return false;
         for (self.ast.nodeChildren(list_node)) |item| {
             const v = try self.eval(item, bindings);
-            if (valueEq(needle, v)) return true;
+            if (Value.eql(needle, v)) return true;
         }
         return false;
     }
@@ -1576,7 +1577,7 @@ pub const Executor = struct {
                     },
                     .value => |v| {
                         // A property access on null yields null.
-                        if (isNull(v)) break :blk .{ .null = {} };
+                        if (Value.isNull(v)) break :blk .{ .null = {} };
                         return error.TypeMismatch;
                     },
                 }
@@ -1622,47 +1623,6 @@ fn edgeSrcDst(fwd_dir: Direction, from: usize, to: usize, from_id: NodeId, to_id
     };
 }
 
-pub fn valueEq(l: Value, r: Value) bool {
-    return switch (l) {
-        .null => switch (r) {
-            .null => true,
-            else => false,
-        },
-        .int => |lv| switch (r) {
-            .int => |rv| lv == rv,
-            else => false,
-        },
-        .str => |lv| switch (r) {
-            .str => |rv| std.mem.eql(u8, lv, rv),
-            else => false,
-        },
-        .boolean => |bv| switch (r) {
-            .boolean => |rv| bv == rv,
-            else => false,
-        },
-        .list => |lv| switch (r) {
-            .list => |rv| listEq(lv, rv),
-            else => false,
-        },
-    };
-}
-
-fn listEq(a: []const Value, b: []const Value) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |av, bv| {
-        if (!valueEq(av, bv)) return false;
-    }
-    return true;
-}
-
-fn rowsEq(a: []const Value, b: []const Value) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |av, bv| {
-        if (!valueEq(av, bv)) return false;
-    }
-    return true;
-}
-
 fn hasProjKey(items: []const ProjItem) bool {
     for (items) |item| if (item == .key) return true;
     return false;
@@ -1683,42 +1643,6 @@ fn aggResult(kind: AggKind, state: AggState) Value {
     };
 }
 
-/// Position of a value's type in the openCypher global sort order (ascending):
-/// list < string < boolean < number < null.
-fn typeRank(v: Value) u8 {
-    return switch (v) {
-        .list => 0,
-        .str => 1,
-        .boolean => 2,
-        .int => 3,
-        .null => 4,
-    };
-}
-
-/// A total order over `Value` (the openCypher orderability used by ORDER BY,
-/// min and max): values of different types order by `typeRank`; lists compare
-/// lexicographically, strings by byte (= Unicode code point, for UTF-8), and
-/// `false < true`. Consistent with `valueEq`: `.eq` exactly when equal.
-fn compareValue(a: Value, b: Value) std.math.Order {
-    const rank_order = std.math.order(typeRank(a), typeRank(b));
-    if (rank_order != .eq) return rank_order;
-    return switch (a) {
-        .null => .eq,
-        .int => |x| std.math.order(x, b.int),
-        .str => |x| std.mem.order(u8, x, b.str),
-        .boolean => |x| std.math.order(@intFromBool(x), @intFromBool(b.boolean)),
-        .list => |x| compareLists(x, b.list),
-    };
-}
-
-fn compareLists(a: []const Value, b: []const Value) std.math.Order {
-    for (a[0..@min(a.len, b.len)], b[0..@min(a.len, b.len)]) |x, y| {
-        const element_order = compareValue(x, y);
-        if (element_order != .eq) return element_order;
-    }
-    return std.math.order(a.len, b.len);
-}
-
 const SortCtx = struct {
     keys: []const []const Value,
     asc: []const bool,
@@ -1728,7 +1652,7 @@ fn lessThanIdx(ctx: SortCtx, a: usize, b: usize) bool {
     const ka = ctx.keys[a];
     const kb = ctx.keys[b];
     for (ka, kb, ctx.asc) |va, vb, asc| {
-        const ord = compareValue(va, vb);
+        const ord = Value.order(va, vb);
         if (ord == .lt) return asc;
         if (ord == .gt) return !asc;
     }
@@ -1744,7 +1668,7 @@ fn withLessThanIdx(ctx: WithSortCtx, a: usize, b: usize) bool {
     const ka = ctx.keys[a].items;
     const kb = ctx.keys[b].items;
     for (ka, kb, ctx.asc) |va, vb, asc| {
-        const ord = compareValue(va, vb);
+        const ord = Value.order(va, vb);
         if (ord == .lt) return asc;
         if (ord == .gt) return !asc;
     }
@@ -1762,7 +1686,7 @@ fn bindingEq(a: Binding, b: Binding) bool {
             else => false,
         },
         .value => |x| switch (b) {
-            .value => |y| valueEq(x, y),
+            .value => |y| Value.eql(x, y),
             else => false,
         },
     };
@@ -1789,10 +1713,10 @@ fn applyBinOp(op: BinOp, l: Value, r: Value) ExecError!Value {
     return switch (op) {
         .eq, .ne, .lt, .gt, .le, .ge, .starts_with, .ends_with, .contains => blk: {
             // Three-valued logic: any null operand yields null.
-            if (isNull(l) or isNull(r)) break :blk .{ .null = {} };
+            if (Value.isNull(l) or Value.isNull(r)) break :blk .{ .null = {} };
             break :blk switch (op) {
-                .eq => .{ .boolean = valueEq(l, r) },
-                .ne => .{ .boolean = !valueEq(l, r) },
+                .eq => .{ .boolean = Value.eql(l, r) },
+                .ne => .{ .boolean = !Value.eql(l, r) },
                 .lt, .gt, .le, .ge => blk2: {
                     const li = try asInt(l);
                     const ri = try asInt(r);
@@ -1837,7 +1761,7 @@ fn applyBinOp(op: BinOp, l: Value, r: Value) ExecError!Value {
 
 fn applyUnOp(op: UnOp, v: Value) ExecError!Value {
     return switch (op) {
-        .not_ => if (isNull(v)) .{ .null = {} } else .{ .boolean = !try asBool(v) },
+        .not_ => if (Value.isNull(v)) .{ .null = {} } else .{ .boolean = !try asBool(v) },
     };
 }
 
@@ -1871,78 +1795,3 @@ fn asBoolOpt(v: Value) ExecError!?bool {
     };
 }
 
-fn isNull(v: Value) bool {
-    return switch (v) {
-        .null => true,
-        else => false,
-    };
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-const testing = std.testing;
-
-/// Random values for the order-law tests: every type, with lists nested up
-/// to `depth` and small domains so that equal values actually occur.
-fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
-    const strings = [_][]const u8{ "", "a", "ab", "b", "é", "Z" };
-    const kinds: u8 = if (depth == 0) 4 else 5;
-    return switch (random.uintLessThan(u8, kinds)) {
-        0 => .{ .null = {} },
-        1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },
-        2 => .{ .str = strings[random.uintLessThan(usize, strings.len)] },
-        3 => .{ .boolean = random.boolean() },
-        else => blk: {
-            const items = try arena.alloc(Value, random.uintLessThan(usize, 3));
-            for (items) |*item| item.* = try randomValue(random, arena, depth - 1);
-            break :blk .{ .list = items };
-        },
-    };
-}
-
-test "compareValue is a total order consistent with valueEq" {
-    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    var prng = std.Random.DefaultPrng.init(0xacde);
-    const random = prng.random();
-
-    var values: [60]Value = undefined;
-    for (&values) |*v| v.* = try randomValue(random, arena, 2);
-
-    for (values) |a| {
-        // Reflexive.
-        try testing.expectEqual(std.math.Order.eq, compareValue(a, a));
-        for (values) |b| {
-            const ab = compareValue(a, b);
-            // Antisymmetric, and `.eq` exactly when the values are equal.
-            try testing.expectEqual(ab.invert(), compareValue(b, a));
-            try testing.expectEqual(ab == .eq, valueEq(a, b));
-            for (values) |c| {
-                // Transitive.
-                if (ab != .gt and compareValue(b, c) != .gt) {
-                    try testing.expect(compareValue(a, c) != .gt);
-                }
-            }
-        }
-    }
-}
-
-test "compareValue follows the openCypher global sort order" {
-    const list: Value = .{ .list = &.{} };
-    const str: Value = .{ .str = "a" };
-    const boolean: Value = .{ .boolean = true };
-    const int: Value = .{ .int = 1 };
-    const null_value: Value = .{ .null = {} };
-    const ascending = [_]Value{ list, str, boolean, int, null_value };
-    for (ascending[0 .. ascending.len - 1], ascending[1..]) |lower, higher| {
-        try testing.expectEqual(std.math.Order.lt, compareValue(lower, higher));
-    }
-    // Lists: lexicographic, a proper prefix first.
-    const one: Value = .{ .int = 1 };
-    const two: Value = .{ .int = 2 };
-    try testing.expectEqual(std.math.Order.lt, compareValue(.{ .list = &.{one} }, .{ .list = &.{ one, two } }));
-    try testing.expectEqual(std.math.Order.gt, compareValue(.{ .list = &.{two} }, .{ .list = &.{ one, two } }));
-}

@@ -60,16 +60,7 @@ const counter_key: []const u8 = "!";
 // Value encoding (property values)
 // ---------------------------------------------------------------------------
 
-/// A typed property/expression value. `boolean`, `null` and `list` are produced
-/// during evaluation but are never stored as properties (properties are `int`
-/// or `str`).
-pub const Value = union(enum) {
-    int: i64,
-    str: []const u8,
-    boolean: bool,
-    null: void,
-    list: []const Value,
-};
+pub const Value = @import("../value.zig").Value;
 
 const value_int: u8 = 0x01;
 const value_str: u8 = 0x02;

@@ -17,7 +17,12 @@ pub const Direction = graph.Direction;
 pub const EdgeKey = graph.EdgeKey;
 pub const NeighbourIterator = graph.NeighbourIterator;
 pub const NodeIdIterator = graph.NodeIdIterator;
-pub const Value = graph.Value;
+
+pub const value = @import("value.zig");
+
+pub const Value = value.Value;
+pub const eqlSequences = value.eqlSequences;
+pub const orderSequences = value.orderSequences;
 
 pub const ast = @import("ast/ast.zig");
 
@@ -42,7 +47,6 @@ pub const exec = @import("exec/exec.zig");
 pub const Executor = exec.Executor;
 pub const ExecError = exec.ExecError;
 pub const Row = exec.Row;
-pub const valueEq = exec.valueEq;
 
 pub const diag = @import("diag.zig");
 
