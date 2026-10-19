@@ -72,7 +72,7 @@ pub const value_tag_never_stored: u8 = 0xff;
 pub fn isStorable(value: Value) bool {
     return switch (value) {
         .int, .string, .boolean => true,
-        .null, .list => false,
+        .null, .list, .node, .relationship => false,
     };
 }
 
@@ -90,7 +90,7 @@ pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value)
             try list.appendSlice(allocator, s);
         },
         .boolean => |b| try list.appendSlice(allocator, &.{ value_tag_boolean, @intFromBool(b) }),
-        .null, .list => unreachable, // callers check `isStorable` first
+        .null, .list, .node, .relationship => unreachable, // callers check `isStorable` first
     }
 }
 
@@ -131,7 +131,7 @@ pub fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: V
         },
         .boolean => |b| try list.appendSlice(allocator, &.{ value_tag_boolean, @intFromBool(b) }),
         // Never stored, so never indexed: the lookup prefix matches no entry.
-        .null, .list => try list.append(allocator, value_tag_never_stored),
+        .null, .list, .node, .relationship => try list.append(allocator, value_tag_never_stored),
     }
 }
 

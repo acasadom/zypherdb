@@ -12,7 +12,9 @@ Result cells are tagged by type:
 | `TYPE_STRING` | `1` | UTF-8 string |
 | `TYPE_BOOLEAN` | `2` | boolean |
 | `TYPE_NULL` | `3` | null |
-| `TYPE_LIST` | `4` | list (flat lists only) |
+| `TYPE_LIST` | `4` | list (the per-item readers cover flat lists; JSON covers any) |
+| `TYPE_NODE` | `5` | a whole node — read it through the JSON result |
+| `TYPE_RELATIONSHIP` | `6` | a whole relationship — read it through the JSON result |
 
 ## Lifecycle
 
@@ -94,6 +96,17 @@ error that never set a specific message gets a generic `"query failed: <ErrorNam
 call — the recommended way to read a large result. The returned pointer lives until
 `acmedb_result_free`. The per-cell and per-list-item readers above stay available for languages
 without a JSON parser.
+
+Nodes and relationships appear in the JSON as tagged objects, with their state when the query
+finished (a node the query deleted keeps its id but has no labels or properties):
+
+```json
+{"~node": {"id": 0, "labels": ["Person"], "properties": {"name": "Ana"}}}
+{"~relationship": {"source": 0, "target": 1, "type": "KNOWS", "properties": {"since": 2020}}}
+```
+
+`acmedb_export_json` returns the whole graph (`{"nodes": [...], "relationships": [...]}`) read
+straight from storage; the buffer belongs to the context until the next export or close.
 
 ## From Python (ctypes)
 

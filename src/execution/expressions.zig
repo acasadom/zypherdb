@@ -80,13 +80,10 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         },
         .variable => blk: {
             const name = self.ast.data(expr).text;
-            switch (bindings.get(name) orelse {
+            break :blk bindings.get(name) orelse {
                 self.fail(.unknown_variable, "unknown variable '{s}'", .{name});
                 return error.UnknownVariable;
-            }) {
-                .value => |v| break :blk v,
-                .node, .edge => return error.TypeMismatch,
-            }
+            };
         },
         .property_access => blk: {
             const object = self.ast.nodeChildren(expr)[0];
@@ -104,18 +101,16 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
                     };
                     break :blk v;
                 },
-                .edge => |e| {
-                    const v = (try self.graph.getEdgeProperty(e.src, e.dst, e.edge_type, property, self.allocator)) orelse {
+                .relationship => |r| {
+                    const v = (try self.graph.getEdgeProperty(r.src, r.dst, r.edge_type, property, self.allocator)) orelse {
                         self.fail(.missing_property, "relationship has no property '{s}'", .{property});
                         return error.MissingProperty;
                     };
                     break :blk v;
                 },
-                .value => |v| {
-                    // A property access on null yields null.
-                    if (Value.isNull(v)) break :blk .{ .null = {} };
-                    return error.TypeMismatch;
-                },
+                // A property access on null yields null.
+                .null => break :blk .{ .null = {} },
+                else => return error.TypeMismatch,
             }
         },
         .binary_operation => blk: {

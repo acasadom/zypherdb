@@ -7,14 +7,44 @@
 
 const std = @import("std");
 
-/// A property or expression value. Only `int` and `str` are storable as
-/// properties; `boolean`, `null` and `list` exist during evaluation.
+/// A reference to a stored relationship: its endpoints and type identify it
+/// (acmedb keeps one relationship per source, target and type). A regular type.
+pub const Relationship = struct {
+    src: u64,
+    dst: u64,
+    edge_type: []const u8,
+
+    pub fn eql(a: Relationship, b: Relationship) bool {
+        return a.src == b.src and a.dst == b.dst and std.mem.eql(u8, a.edge_type, b.edge_type);
+    }
+
+    pub fn order(a: Relationship, b: Relationship) std.math.Order {
+        const by_src = std.math.order(a.src, b.src);
+        if (by_src != .eq) return by_src;
+        const by_dst = std.math.order(a.dst, b.dst);
+        if (by_dst != .eq) return by_dst;
+        return std.mem.order(u8, a.edge_type, b.edge_type);
+    }
+
+    pub fn hash(self: Relationship, hasher: *std.hash.Wyhash) void {
+        hasher.update(std.mem.asBytes(&self.src));
+        hasher.update(std.mem.asBytes(&self.dst));
+        hasher.update(self.edge_type);
+    }
+};
+
+/// A property or expression value. `int`, `string` and `boolean` are storable
+/// as properties; `null` and `list` exist during evaluation, and `node` and
+/// `relationship` are references to stored entities (what a variable of a
+/// pattern is bound to).
 pub const Value = union(enum) {
     int: i64,
     string: []const u8,
     boolean: bool,
     null: void,
     list: []const Value,
+    node: u64,
+    relationship: Relationship,
 
     pub fn isNull(self: Value) bool {
         return self == .null;
@@ -26,8 +56,9 @@ pub const Value = union(enum) {
         return order(a, b) == .eq;
     }
 
-    /// The openCypher global sort order, ascending:
-    /// list < string < boolean < number < null. Within a type, lists compare
+    /// The openCypher global sort order, ascending: node < relationship <
+    /// list < string < boolean < number < null. Within a type, nodes compare
+    /// by id, relationships by (source, target, type), lists
     /// lexicographically, strings by byte (= Unicode code point, for UTF-8),
     /// and `false < true`.
     pub fn order(a: Value, b: Value) std.math.Order {
@@ -39,6 +70,22 @@ pub const Value = union(enum) {
             .string => |x| std.mem.order(u8, x, b.string),
             .boolean => |x| std.math.order(@intFromBool(x), @intFromBool(b.boolean)),
             .list => |x| orderSequences(x, b.list),
+            .node => |x| std.math.order(x, b.node),
+            .relationship => |x| x.order(b.relationship),
+        };
+    }
+
+    /// A deep copy whose strings and lists are allocated with `allocator`.
+    pub fn clone(self: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!Value {
+        return switch (self) {
+            .int, .boolean, .null, .node => self,
+            .string => |s| .{ .string = try allocator.dupe(u8, s) },
+            .relationship => |r| .{ .relationship = .{ .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) } },
+            .list => |items| blk: {
+                const copies = try allocator.alloc(Value, items.len);
+                for (copies, items) |*copy, item| copy.* = try item.clone(allocator);
+                break :blk .{ .list = copies };
+            },
         };
     }
 
@@ -57,17 +104,21 @@ pub const Value = union(enum) {
                 hasher.update(std.mem.asBytes(&items.len));
                 for (items) |item| item.hash(hasher);
             },
+            .node => |id| hasher.update(std.mem.asBytes(&id)),
+            .relationship => |relationship| relationship.hash(hasher),
         }
     }
 
     /// Position of the value's type in the global sort order.
     fn typeRank(self: Value) u8 {
         return switch (self) {
-            .list => 0,
-            .string => 1,
-            .boolean => 2,
-            .int => 3,
-            .null => 4,
+            .node => 0,
+            .relationship => 1,
+            .list => 2,
+            .string => 3,
+            .boolean => 4,
+            .int => 5,
+            .null => 6,
         };
     }
 };
@@ -97,8 +148,10 @@ const testing = std.testing;
 /// `depth` and small domains so that equal values actually occur.
 fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
     const strings = [_][]const u8{ "", "a", "ab", "b", "é", "Z" };
-    const kinds: u8 = if (depth == 0) 4 else 5;
+    const kinds: u8 = if (depth == 0) 6 else 7;
     return switch (random.uintLessThan(u8, kinds)) {
+        4 => .{ .node = random.uintLessThan(u64, 3) },
+        5 => .{ .relationship = .{ .src = random.uintLessThan(u64, 2), .dst = random.uintLessThan(u64, 2), .edge_type = strings[random.uintLessThan(usize, 3)] } },
         0 => .{ .null = {} },
         1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },
         2 => .{ .string = strings[random.uintLessThan(usize, strings.len)] },
@@ -160,6 +213,8 @@ test "hash agrees with eql" {
 
 test "order follows the openCypher global sort order" {
     const ascending = [_]Value{
+        .{ .node = 9 },
+        .{ .relationship = .{ .src = 0, .dst = 0, .edge_type = "R" } },
         .{ .list = &.{} },
         .{ .string = "a" },
         .{ .boolean = true },

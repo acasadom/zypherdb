@@ -132,3 +132,32 @@ test "ORDER BY sees RETURN aliases, projected expressions and aggregates" {
     // A variable that is not projected cannot order aggregated rows.
     try expectQueryError(&ast, &g, "MATCH (p:Person) RETURN count(*) ORDER BY p.born", error.UnknownVariable);
 }
+
+test "nodes and relationships are values: returned, distinct, ordered, collected" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadMoviesGraph(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Keanu (1) acted in three movies: DISTINCT keeps the actor once.
+    try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m) RETURN DISTINCT p", &.{
+        &.{.{ .node = 1 }},
+    });
+    try expectOrdered(&ast, &g, "MATCH (m:Movie) RETURN m ORDER BY m DESC LIMIT 2", &.{
+        &.{.{ .node = 103 }},
+        &.{.{ .node = 102 }},
+    });
+    try expectQuery(&ast, &g, "MATCH (d:Person)-[r:DIRECTED]->(m:Movie {title: 'The Matrix'}) RETURN r", &.{
+        &.{.{ .relationship = .{ .src = 4, .dst = 100, .edge_type = "DIRECTED" } }},
+    });
+    try expectQuery(&ast, &g, "MATCH (p:Person)-[:DIRECTED]->(m) RETURN p, collect(m)", &.{
+        &.{ .{ .node = 4 }, .{ .list = &.{ .{ .node = 100 }, .{ .node = 101 } } } },
+    });
+}

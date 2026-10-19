@@ -23,7 +23,6 @@ const ExecutionError = Executor.ExecutionError;
 const Row = Executor.Row;
 
 const aggregateResult = @import("aggregation.zig").aggregateResult;
-const Binding = @import("bindings.zig").Binding;
 const Bindings = @import("bindings.zig").Bindings;
 
 /// An item paired with its ORDER BY key. The key is evaluated alongside the
@@ -63,9 +62,6 @@ const ReturnRowContext = struct {
         return eqlSequences(a.item.items, b.item.items);
     }
 };
-
-/// WITH groups: keyed by the bindings of the non-aggregate projection items.
-const BindingGrouping = aggregation.Grouping([]const Binding, SequenceContext(Binding));
 
 /// Appends a copy of `bindings` to `with_rows` (the input of WITH).
 pub fn collect(self: *Executor, bindings: *Bindings) ExecutionError!void {
@@ -107,9 +103,9 @@ pub fn applyWith(self: *Executor, with_clause: Index) ExecutionError!void {
         if (item == .aggregate) try kinds.append(self.allocator, item.aggregate.kind);
     }
 
-    var groups: BindingGrouping = .{};
+    var groups: aggregation.ValueGrouping = .{};
     for (self.with_rows.items) |*bindings| {
-        var keys = std.ArrayList(Binding).empty;
+        var keys = std.ArrayList(Value).empty;
         var args = std.ArrayList(Value).empty;
         for (items) |item| {
             switch (item) {
@@ -120,8 +116,8 @@ pub fn applyWith(self: *Executor, with_clause: Index) ExecutionError!void {
                     };
                     try keys.append(self.allocator, b);
                 },
-                .key => |k| try keys.append(self.allocator, .{ .value = try expressions.evaluate(self, k.expr, bindings) }),
-                .aggregate => |a| try args.append(self.allocator, try aggregation.evaluateAggregateArgument(self, a.kind, a.arg, bindings)),
+                .key => |k| try keys.append(self.allocator, try expressions.evaluate(self, k.expr, bindings)),
+                .aggregate => |a| try args.append(self.allocator, try aggregation.evaluateAggregateArgument(self, a.arg, bindings)),
             }
         }
         const states = try groups.statesFor(self.allocator, keys.items, kinds.items);
@@ -149,7 +145,7 @@ pub fn applyWith(self: *Executor, with_clause: Index) ExecutionError!void {
                     key_index += 1;
                 },
                 .aggregate => |a| {
-                    try b.put(self.allocator, a.name, .{ .value = aggregateResult(a.kind, states[aggregate_index]) });
+                    try b.put(self.allocator, a.name, aggregateResult(a.kind, states[aggregate_index]));
                     aggregate_index += 1;
                 },
             }
@@ -237,7 +233,7 @@ pub fn returnSortKey(self: *Executor, info: ReturnClauseParts, row: []const Valu
     if (bindings) |b| try scope.entries.appendSlice(self.allocator, b.entries.items);
     for (projected, row) |item, value| {
         const alias = self.ast.data(item).text;
-        if (alias.len > 0) try scope.put(self.allocator, alias, .{ .value = value });
+        if (alias.len > 0) try scope.put(self.allocator, alias, value);
     }
 
     const order_items = self.ast.nodeChildren(order_by);

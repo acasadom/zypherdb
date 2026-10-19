@@ -23,7 +23,7 @@ pub fn accumulate(self: *Executor, bindings: *Bindings) ExecutionError!void {
     for (self.projection_items.items) |item| {
         switch (item) {
             .key => |expr| try keys.append(self.allocator, try expressions.evaluate(self, expr, bindings)),
-            .aggregate => |a| try args.append(self.allocator, try evaluateAggregateArgument(self, a.kind, a.arg, bindings)),
+            .aggregate => |a| try args.append(self.allocator, try evaluateAggregateArgument(self, a.arg, bindings)),
         }
     }
     const states = try self.groups.statesFor(self.allocator, keys.items, self.aggregate_kinds.items);
@@ -31,25 +31,11 @@ pub fn accumulate(self: *Executor, bindings: *Bindings) ExecutionError!void {
 }
 
 /// Evaluates an aggregation argument. `count(*)` (no argument) returns a
-/// non-null sentinel so it always counts; `count(x)` returns the real value
-/// (a null skips it); other aggregates return the evaluated value.
-pub fn evaluateAggregateArgument(self: *Executor, kind: AggregateKind, arg: ?Index, bindings: *Bindings) ExecutionError!Value {
+/// non-null sentinel so it always counts; otherwise the argument's value (a
+/// null is skipped by the aggregate).
+pub fn evaluateAggregateArgument(self: *Executor, arg: ?Index, bindings: *Bindings) ExecutionError!Value {
     if (arg == null) return .{ .int = 0 }; // count(*) always counts
-    if (kind == .count) return evaluateCountArgument(self, arg.?, bindings);
     return expressions.evaluate(self, arg.?, bindings);
-}
-
-/// Evaluates `count(x)`: a bound node/edge variable is non-null; a scalar or
-/// property access may be null.
-pub fn evaluateCountArgument(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
-    if (self.ast.kind(expr) == .variable) {
-        const name = self.ast.data(expr).text;
-        switch (bindings.get(name) orelse return error.UnknownVariable) {
-            .node, .edge => return .{ .int = 0 }, // bound -> non-null sentinel
-            .value => |v| return v, // may be null
-        }
-    }
-    return expressions.evaluate(self, expr, bindings);
 }
 
 pub fn updateAggregate(self: *Executor, state: *AggregateState, arg: Value) ExecutionError!void {

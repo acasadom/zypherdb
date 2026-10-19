@@ -10,7 +10,7 @@ const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
-const EdgeRef = @import("bindings.zig").EdgeRef;
+const Relationship = @import("../value.zig").Relationship;
 
 pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) ExecutionError!void {
     const chain = self.ast.nodeChildren(pattern);
@@ -46,7 +46,7 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
                 .forward_direction = forward_direction,
                 .undirected = edge_pattern.direction == .undirected,
                 .variable_name = edge_pattern.variable_name,
-                .bound = if (edge_pattern.variable_name.len > 0) bindings.getEdge(edge_pattern.variable_name) else null,
+                .bound = if (edge_pattern.variable_name.len > 0) bindings.getRelationship(edge_pattern.variable_name) else null,
                 .seeks = .empty,
             };
             for (self.ast.nodeChildren(edge_pattern_index)) |property_node| {
@@ -198,7 +198,7 @@ pub const PatternEdge = struct {
     forward_direction: Direction, // direction when traversing node_i -> node_{i+1}
     undirected: bool, // `-[...]-`: either direction (forward_direction unused)
     variable_name: []const u8,
-    bound: ?EdgeRef, // the edge its variable is already bound to, if any
+    bound: ?Relationship, // the edge its variable is already bound to, if any
     seeks: std.ArrayList(Seek), // inline property equality filters
 };
 

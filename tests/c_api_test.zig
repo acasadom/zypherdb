@@ -222,3 +222,29 @@ test "C ABI: export the whole graph as JSON" {
         json[0..length],
     );
 }
+
+test "C ABI: whole nodes and relationships in the JSON result" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(context);
+
+    const create = "CREATE (:A {k: 1})-[:R {w: 2}]->(:B)";
+    acmedb_result_free(acmedb_query(context, create.ptr, create.len).?);
+    const query = "MATCH (a:A)-[r]->(b) RETURN a, r";
+    const result = acmedb_query(context, query.ptr, query.len).?;
+    defer acmedb_result_free(result);
+
+    try testing.expectEqual(c_api.TYPE_NODE, acmedb_result_type(result, 0, 0));
+    try testing.expectEqual(c_api.TYPE_RELATIONSHIP, acmedb_result_type(result, 0, 1));
+    var length: usize = 0;
+    const json = acmedb_result_to_json(result, &length);
+    try testing.expectEqualStrings(
+        "[[{\"~node\":{\"id\":0,\"labels\":[\"A\"],\"properties\":{\"k\":1}}}," ++
+            "{\"~relationship\":{\"source\":0,\"target\":1,\"type\":\"R\",\"properties\":{\"w\":2}}}]]",
+        json[0..length],
+    );
+}

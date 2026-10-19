@@ -17,6 +17,8 @@ clauses/create/Create1.feature: [7] Create a single node with a property
 clauses/create/Create1.feature: [8] Create a single node with a property and return it
 clauses/create/Create1.feature: [9] Create a single node with two properties
 clauses/create/Create2.feature: [10] Create a single self loop on an existing node
+clauses/create/Create2.feature: [11] Create a single relationship and an end node on an existing starting node
+clauses/create/Create2.feature: [12] Create a single relationship and a starting node on an existing end node
 clauses/create/Create2.feature: [13] Create a single relationship with a property
 clauses/create/Create2.feature: [15] Create a single relationship with two properties
 clauses/create/Create2.feature: [18] Fail when creating a relationship without a type
@@ -27,12 +29,21 @@ clauses/create/Create2.feature: [21] Fail when creating a relationship with more
 clauses/create/Create2.feature: [22] Fail when creating a variable-length relationship
 clauses/create/Create2.feature: [2] Create two nodes and a single relationship in separate patterns
 clauses/create/Create2.feature: [3] Create two nodes and a single relationship in separate clauses
+clauses/create/Create2.feature: [4] Create two nodes and a single relationship in the reverse direction
 clauses/create/Create2.feature: [5] Create a single relationship between two existing nodes
+clauses/create/Create2.feature: [6] Create a single relationship between two existing nodes in the reverse direction
 clauses/create/Create2.feature: [7] Create a single node and a single self loop in a single pattern
 clauses/create/Create2.feature: [8] Create a single node and a single self loop in separate patterns
 clauses/create/Create2.feature: [9] Create a single node and a single self loop in separate clauses
 clauses/create/Create3.feature: [13] Merge followed by multiple creates
 clauses/create/Create3.feature: [4] MATCH-CREATE: Newly-created nodes not visible to preceding MATCH
+clauses/create/Create3.feature: [6] WITH-CREATE: Only a single node is created when an alias is applied to a variable name
+clauses/create/Create5.feature: [1] Create a pattern with multiple hops
+clauses/create/Create5.feature: [2] Create a pattern with multiple hops in the reverse direction
+clauses/create/Create5.feature: [3] Create a pattern with multiple hops in varying directions
+clauses/create/Create5.feature: [4] Create a pattern with multiple hops with multiple types and varying directions
+clauses/create/Create6.feature: [1] Limiting to zero results after creating nodes affects the result set but not the side effects
+clauses/create/Create6.feature: [2] Skipping all results after creating nodes affects the result set but not the side effects
 clauses/delete/Delete1.feature: [1] Delete nodes
 clauses/delete/Delete1.feature: [2] Detach delete node
 clauses/delete/Delete1.feature: [3] Detach deleting connected nodes and relationships
@@ -45,7 +56,16 @@ clauses/delete/Delete6.feature: [1] Limiting to zero results after deleting node
 clauses/delete/Delete6.feature: [2] Skipping all results after deleting nodes affects the result set but not the side effects
 clauses/delete/Delete6.feature: [6] Aggregating in `RETURN` after deleting nodes affects the result set but not the side effects
 clauses/match-where/MatchWhere1.feature: [14] Fail when filtering path with property predicate
+clauses/match-where/MatchWhere1.feature: [3] Filter node with property predicate on a single variable with multiple bindings
+clauses/match-where/MatchWhere1.feature: [4] Filter start node of relationship with property predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere1.feature: [5] Filter end node of relationship with property predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere1.feature: [8] Filter relationship with property predicate on multi variables with multiple bindings
+clauses/match-where/MatchWhere3.feature: [1] Join between node identities
+clauses/match-where/MatchWhere3.feature: [3] Join between node properties of adjacent nodes
+clauses/match-where/MatchWhere6.feature: [3] Filter node with property predicate on multi variables with multiple bindings after OPTIONAL MATCH
 clauses/match-where/MatchWhere6.feature: [4] Do not fail when predicates on optionally matched and missed nodes are invalid
+clauses/match-where/MatchWhere6.feature: [6] Join nodes on non-equality of properties – OPTIONAL MATCH and WHERE
+clauses/match-where/MatchWhere6.feature: [7] Join nodes on non-equality of properties – OPTIONAL MATCH on two relationships and WHERE
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #1
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #10
 clauses/match/Match1.feature: [10] Fail when a path has the same variable in the same pattern #11
@@ -75,6 +95,9 @@ clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a
 clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #7
 clauses/match/Match1.feature: [11] Fail when matching a node variable bound to a value #8
 clauses/match/Match1.feature: [1] Match non-existent nodes returns empty
+clauses/match/Match1.feature: [2] Matching all nodes
+clauses/match/Match1.feature: [3] Matching nodes using multiple labels
+clauses/match/Match1.feature: [4] Simple node inline property predicate
 clauses/match/Match1.feature: [6] Fail when using parameter as node predicate in MATCH
 clauses/match/Match1.feature: [7] Fail when a relationship has the same variable in a preceding MATCH #1
 clauses/match/Match1.feature: [7] Fail when a relationship has the same variable in a preceding MATCH #10
@@ -181,6 +204,8 @@ clauses/match/Match2.feature: [13] Fail when matching a relationship variable bo
 clauses/match/Match2.feature: [13] Fail when matching a relationship variable bound to a value #7
 clauses/match/Match2.feature: [13] Fail when matching a relationship variable bound to a value #8
 clauses/match/Match2.feature: [1] Match non-existent relationships returns empty
+clauses/match/Match2.feature: [2] Matching a relationship pattern using a label predicate on both sides
+clauses/match/Match2.feature: [5] Match relationship with inline property value
 clauses/match/Match2.feature: [7] Matching twice with conflicting relationship types on same relationship
 clauses/match/Match2.feature: [8] Fail when using parameter as relationship predicate in MATCH
 clauses/match/Match2.feature: [9] Fail when a node has the same variable in a preceding MATCH #1
@@ -210,10 +235,26 @@ clauses/match/Match2.feature: [9] Fail when a node has the same variable in a pr
 clauses/match/Match2.feature: [9] Fail when a node has the same variable in a preceding MATCH #8
 clauses/match/Match2.feature: [9] Fail when a node has the same variable in a preceding MATCH #9
 clauses/match/Match3.feature: [10] Matching using self-referencing pattern returns no result
+clauses/match/Match3.feature: [11] Undirected match in self-relationship graph
+clauses/match/Match3.feature: [12] Undirected match of self-relationship in self-relationship graph
+clauses/match/Match3.feature: [13] Directed match on self-relationship graph
+clauses/match/Match3.feature: [14] Directed match of self-relationship on self-relationship graph
+clauses/match/Match3.feature: [15] Mixing directed and undirected pattern parts with self-relationship, simple
+clauses/match/Match3.feature: [16] Mixing directed and undirected pattern parts with self-relationship, undirected
+clauses/match/Match3.feature: [1] Get neighbours
+clauses/match/Match3.feature: [24] Matching twice with duplicate relationship types on same relationship
 clauses/match/Match3.feature: [25] Matching twice with an additional node label
+clauses/match/Match3.feature: [26] Matching twice with a duplicate predicate
 clauses/match/Match3.feature: [27] Matching from null nodes should return no results owing to finding no matches
 clauses/match/Match3.feature: [29] Fail when re-using a relationship in the same pattern
+clauses/match/Match3.feature: [2] Directed match of a simple relationship
 clauses/match/Match3.feature: [30] Fail when using a list or nodes as a node
+clauses/match/Match3.feature: [3] Undirected match on simple relationship graph
+clauses/match/Match3.feature: [4] Get two related nodes
+clauses/match/Match3.feature: [5] Return two subgraphs with bound undirected relationship
+clauses/match/Match3.feature: [6] Matching a relationship pattern using a label predicate
+clauses/match/Match3.feature: [7] Matching nodes with many labels
+clauses/match/Match3.feature: [9] Get related to related to
 clauses/match/Match4.feature: [10] Fail on negative bound
 clauses/match/Match4.feature: [9] Fail when asterisk operator is missing
 clauses/match/Match5.feature: Background
@@ -294,9 +335,17 @@ clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #6
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #7
 clauses/match/Match6.feature: [25] Fail when matching a path variable bound to a value #8
+clauses/match/Match7.feature: [11] Return two subgraphs with bound undirected relationship and optional relationship
 clauses/match/Match7.feature: [1] Simple OPTIONAL MATCH on empty graph
+clauses/match/Match7.feature: [23] OPTIONAL MATCH with labels on the optional end node
+clauses/match/Match7.feature: [24] Optionally matching self-loops
 clauses/match/Match7.feature: [28] Handling optional matches with inline label predicate
+clauses/match/Match7.feature: [2] OPTIONAL MATCH with previously bound nodes
+clauses/match/Match7.feature: [3] OPTIONAL MATCH and bound nodes
+clauses/match/Match7.feature: [7] MATCH with OPTIONAL MATCH in longer pattern
 clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matches
+clauses/match/Match7.feature: [9] Longer pattern with bound nodes
+clauses/match/Match8.feature: [1] Pattern independent of bound variables results in cross product
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
 clauses/merge/Merge1.feature: [16] Fail when using parameter as node predicate in MERGE
 clauses/merge/Merge1.feature: [17] Fail on merging node with null property
@@ -324,9 +373,15 @@ clauses/merge/Merge5.feature: [4] Using bound variables from other updating clau
 clauses/merge/Merge5.feature: [9] Creating relationship using merged nodes
 clauses/merge/Merge9.feature: [3] Mixing MERGE with CREATE
 clauses/remove/Remove2.feature: [1] Remove a single label from a node with a single label
+clauses/remove/Remove3.feature: [15] Limiting to zero results after removing a property from relationships affects the result set but not the side effects
+clauses/remove/Remove3.feature: [16] Skipping all results after removing a property from relationships affects the result set but not the side effects
 clauses/remove/Remove3.feature: [17] Skipping and limiting to a few results after removing a property from relationships affects the result set but not the side effects
 clauses/remove/Remove3.feature: [18] Skipping zero result and limiting to all results after removing a property from relationships does not affect the result set nor the side effects
+clauses/remove/Remove3.feature: [1] Limiting to zero results after removing a property from nodes affects the result set but not the side effects
 clauses/remove/Remove3.feature: [20] Aggregating in `RETURN` after removing a property from relationships affects the result set but not the side effects
+clauses/remove/Remove3.feature: [2] Skipping all results after removing a property from nodes affects the result set but not the side effects
+clauses/remove/Remove3.feature: [8] Limiting to zero results after removing a label from nodes affects the result set but not the side effects
+clauses/remove/Remove3.feature: [9] Skipping all results after removing a label from nodes affects the result set but not the side effects
 clauses/return-orderby/ReturnOrderBy1.feature: [10] ORDER BY DESC should order lists in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [1] ORDER BY should order booleans in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [2] ORDER BY DESC should order booleans in the expected order
@@ -335,7 +390,10 @@ clauses/return-orderby/ReturnOrderBy1.feature: [4] ORDER BY DESC should order st
 clauses/return-orderby/ReturnOrderBy1.feature: [5] ORDER BY should order ints in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [6] ORDER BY DESC should order ints in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [9] ORDER BY should order lists in the expected order
+clauses/return-orderby/ReturnOrderBy2.feature: [10] Returned columns do not change from using ORDER BY
 clauses/return-orderby/ReturnOrderBy2.feature: [3] Sort on aggregated function
+clauses/return-orderby/ReturnOrderBy2.feature: [4] Support sort and distinct
+clauses/return-orderby/ReturnOrderBy2.feature: [6] Count star should count everything in scope
 clauses/return-orderby/ReturnOrderBy2.feature: [7] Ordering with aggregation
 clauses/return-orderby/ReturnOrderBy2.feature: [9] Using aliased DISTINCT expression in ORDER BY
 clauses/return-orderby/ReturnOrderBy3.feature: [1] Sort on aggregate function and normal property
@@ -344,6 +402,7 @@ clauses/return-orderby/ReturnOrderBy6.feature: [4] Fail if not returned variable
 clauses/return-orderby/ReturnOrderBy6.feature: [5] Fail if more complex expressions, even if returned, are used inside an order by item which contains an aggregation expression
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [10] Fail when using non-constants in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [11] Fail when using negative value in SKIP
+clauses/return-skip-limit/ReturnSkipLimit1.feature: [1] Start the result from the second row
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [4] Accept skip zero
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [5] SKIP with an expression that depends on variables should fail
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [7] Negative SKIP should fail
@@ -353,21 +412,29 @@ clauses/return-skip-limit/ReturnSkipLimit2.feature: [13] Fail when using negativ
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [16] Fail when using floating point in LIMIT 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [17] Fail when using floating point in LIMIT 2
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [1] Limit to two hits
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [2] Limit to two hits with explicit order
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [3] LIMIT 0 should return an empty result
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [4] Handle ORDER BY with LIMIT 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [5] ORDER BY with LIMIT 0 should not generate errors
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [7] Limit to more rows than actual results 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [8] Limit to more rows than actual results 2
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [9] Fail when using non-constants in LIMIT
+clauses/return-skip-limit/ReturnSkipLimit3.feature: [1] Get rows in the middle
 clauses/return/Return2.feature: [11] RETURN does not lose precision on large integers
+clauses/return/Return2.feature: [12] Projecting a list of nodes and relationships
 clauses/return/Return2.feature: [15] Fail when returning properties of deleted nodes
 clauses/return/Return2.feature: [16] Fail when returning labels of deleted nodes
 clauses/return/Return2.feature: [17] Fail when returning properties of deleted relationships
 clauses/return/Return2.feature: [18] Fail on projecting a non-existent function
 clauses/return/Return2.feature: [2] Returning a node property value
 clauses/return/Return2.feature: [4] Returning a relationship property value
+clauses/return/Return3.feature: [3] Projecting nodes and relationships
 clauses/return/Return4.feature: [1] Honour the column name for RETURN items
+clauses/return/Return4.feature: [2] Support column renaming
 clauses/return/Return4.feature: [3] Aliasing expressions
 clauses/return/Return4.feature: [4] Keeping used expression 1
+clauses/return/Return6.feature: [10] Multiple aggregates on same variable
+clauses/return/Return6.feature: [12] Counting matches per group
 clauses/return/Return6.feature: [14] Aggregates in aggregates
 clauses/return/Return6.feature: [15] Using `rand()` in aggregations
 clauses/return/Return6.feature: [1] Return count aggregation over nodes
@@ -376,8 +443,17 @@ clauses/return/Return6.feature: [21] Fail if more complex expressions, even if r
 clauses/return/Return6.feature: [7] Aggregate on property
 clauses/return/Return7.feature: [2] Fail when using RETURN * without variables in scope
 clauses/return/Return8.feature: [1] Return aggregation after With filtering
+clauses/set/Set1.feature: [11] Set multiple node properties
+clauses/set/Set1.feature: [1] Set a property
+clauses/set/Set2.feature: [1] Setting a node property to null removes the existing property
+clauses/set/Set2.feature: [2] Setting a node property to null removes the existing property, but not before SET
+clauses/set/Set2.feature: [3] Setting a relationship property to null removes the existing property
+clauses/set/Set6.feature: [15] Limiting to zero results after setting a property on relationships affects the result set but not the side effects
+clauses/set/Set6.feature: [16] Skipping all results after setting a property on relationships affects the result set but not the side effects
 clauses/set/Set6.feature: [17] Skipping and limiting to a few results after setting a property on relationships affects the result set but not the side effects
 clauses/set/Set6.feature: [18] Skipping zero result and limiting to all results after setting a property on relationships does not affect the result set nor the side effects
+clauses/set/Set6.feature: [1] Limiting to zero results after setting a property on nodes affects the result set but not the side effects
+clauses/set/Set6.feature: [2] Skipping all results after setting a property on nodes affects the result set but not the side effects
 clauses/union/Union1.feature: [5] Failing when UNION has different columns
 clauses/union/Union2.feature: [5] Failing when UNION ALL has different columns
 clauses/union/Union3.feature: [1] Failing when mixing UNION and UNION ALL
@@ -406,11 +482,14 @@ clauses/with-orderBy/WithOrderBy1.feature: [4] Sort integers in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [7] Sort strings in ascending order
 clauses/with-orderBy/WithOrderBy1.feature: [8] Sort strings in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [9] Sort lists in ascending order
+clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #12
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #14
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #4
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #7
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #9
+clauses/with-orderBy/WithOrderBy2.feature: [2] Sort by a boolean expression in descending order #1
 clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #1
 clauses/with-orderBy/WithOrderBy3.feature: [7] The order direction cannot be overwritten #6
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #1
@@ -443,12 +522,28 @@ clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of 
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #7
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #8
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #9
+clauses/with-orderBy/WithOrderBy4.feature: [15] Sort by an aliased aggregate projection does allow subsequent matching
 clauses/with-orderBy/WithOrderBy4.feature: [19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
 clauses/with-orderBy/WithOrderBy4.feature: [20] Fail if more complex expressions, even if projected, are used inside an order by item which contains an aggregation expression
+clauses/with-skip-limit/WithSkipLimit1.feature: [1] Handle dependencies across WITH with SKIP
+clauses/with-skip-limit/WithSkipLimit1.feature: [2] Ordering and skipping on aggregate
+clauses/with-skip-limit/WithSkipLimit2.feature: [4] Ordering and limiting on aggregate
+clauses/with-skip-limit/WithSkipLimit3.feature: [1] Get rows in the middle
+clauses/with-where/WithWhere1.feature: [1] Filter node with property predicate on a single variable with multiple bindings
+clauses/with-where/WithWhere3.feature: [1] Join between node identities
+clauses/with-where/WithWhere3.feature: [3] Join between node properties of adjacent nodes
+clauses/with-where/WithWhere6.feature: [1] Filter a single aggregate
+clauses/with/With1.feature: [3] Forwarding a relationship variable
+clauses/with/With1.feature: [6] Forwarding a node variable possibly null
+clauses/with/With3.feature: [1] Forwarding multiple node and relationship variables
+clauses/with/With4.feature: [1] Aliasing relationship variable
+clauses/with/With4.feature: [2] Aliasing expression to new variable name
 clauses/with/With4.feature: [3] Aliasing expression to existing variable name
 clauses/with/With4.feature: [5] Fail when not aliasing expressions in WITH
 clauses/with/With5.feature: [1] DISTINCT on an expression
 clauses/with/With6.feature: [1] Implicit grouping with single expression as grouping key and single aggregation
+clauses/with/With6.feature: [2] Implicit grouping with single relationship variable as grouping key and single aggregation
+clauses/with/With6.feature: [3] Implicit grouping with multiple node and relationship variables as grouping key and single aggregation
 clauses/with/With6.feature: [8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 clauses/with/With6.feature: [9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
 expressions/aggregation/Aggregation1.feature: [2] Counting loop relationships
@@ -507,6 +602,7 @@ expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at le
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #9
 expressions/boolean/Boolean4.feature: [1] Logical negation of truth values
 expressions/boolean/Boolean4.feature: [2] Double logical negation of truth values
+expressions/boolean/Boolean4.feature: [3] NOT and false
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #18
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #19
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #20
@@ -541,6 +637,8 @@ expressions/comparison/Comparison1.feature: [12] Handling inlined equality of la
 expressions/comparison/Comparison1.feature: [13] Handling explicit equality of large integer, non-equal values
 expressions/comparison/Comparison1.feature: [15] It is unknown - i.e. null - if a null is equal to a null
 expressions/comparison/Comparison1.feature: [16] It is unknown - i.e. null - if a null is not equal to a null
+expressions/comparison/Comparison1.feature: [4] Comparing nodes to nodes
+expressions/comparison/Comparison1.feature: [5] Comparing relationships to relationships
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #1
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #3
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #4
@@ -664,6 +762,10 @@ expressions/literals/Literals6.feature: [4] Return a single-quoted string with e
 expressions/literals/Literals6.feature: [6] Return a single-quoted string with 100 characters
 expressions/literals/Literals6.feature: [7] Return a single-quoted string with 1000 characters
 expressions/literals/Literals6.feature: [8] Return a single-quoted string with 10000 characters
+expressions/literals/Literals7.feature: [10] Return seven-deep nested empty lists
+expressions/literals/Literals7.feature: [11] Return 20-deep nested empty lists
+expressions/literals/Literals7.feature: [12] Return 40-deep nested empty lists
+expressions/literals/Literals7.feature: [17] Return a list containing real and fake nested lists
 expressions/literals/Literals7.feature: [19] Fail on a list containing only a comma
 expressions/literals/Literals7.feature: [1] Return an empty list
 expressions/literals/Literals7.feature: [20] Fail on a nested list with non-matching brackets
@@ -672,6 +774,7 @@ expressions/literals/Literals7.feature: [2] Return a list containing a boolean
 expressions/literals/Literals7.feature: [3] Return a list containing a null
 expressions/literals/Literals7.feature: [4] Return a list containing a integer
 expressions/literals/Literals7.feature: [8] Return a list containing a string
+expressions/literals/Literals7.feature: [9] Return a list containing an empty lists
 expressions/literals/Literals8.feature: [19] Fail on a map containing key starting with a number
 expressions/literals/Literals8.feature: [20] Fail on a map containing key with symbol
 expressions/literals/Literals8.feature: [21] Fail on a map containing key with dot

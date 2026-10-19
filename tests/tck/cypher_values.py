@@ -46,6 +46,14 @@ def from_python(value):
         return ("list", tuple(from_python(v) for v in value))
     if isinstance(value, dict):
         return canonical_map({k: from_python(v) for k, v in value.items()})
+    from acmedb import Node, Relationship
+
+    if isinstance(value, Node):
+        properties = {k: from_python(v) for k, v in value.properties.items()}
+        return ("node", tuple(sorted(value.labels)), canonical_map(properties))
+    if isinstance(value, Relationship):
+        properties = {k: from_python(v) for k, v in value.properties.items()}
+        return ("relationship", value.type, canonical_map(properties))
     raise TypeError(f"unexpected result value {value!r}")
 
 

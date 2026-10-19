@@ -24,8 +24,9 @@ const ValueGrouping = @import("aggregation.zig").ValueGrouping;
 const AggregateKind = @import("../query/ast.zig").AggregateKind;
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
 const semantics = @import("../query/semantics.zig");
+const EntitySnapshot = @import("entities.zig").EntitySnapshot;
 const Bindings = @import("bindings.zig").Bindings;
-const EdgeRef = @import("bindings.zig").EdgeRef;
+const Relationship = @import("../value.zig").Relationship;
 const PlanStep = @import("planner.zig").PlanStep;
 const PatternEdge = @import("planner.zig").PatternEdge;
 const PatternNode = @import("planner.zig").PatternNode;
@@ -79,9 +80,13 @@ main_variables: std.ArrayList([]const u8),
 in_optional: bool,
 optional_matched: bool,
 
+/// Labels and properties of the nodes and relationships in the result rows,
+/// read before the query's transaction ends (see `entities.zig`).
+entities: EntitySnapshot,
+
 // Relationship uniqueness: the edges bound by the MATCH being run, from
 // `edge_scope_start` (an OPTIONAL MATCH opens its own scope).
-used_edges: std.ArrayList(EdgeRef),
+used_edges: std.ArrayList(Relationship),
 edge_scope_start: usize,
 
 // UNWIND context.
@@ -118,6 +123,7 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .main_variables = .empty,
         .in_optional = false,
         .optional_matched = false,
+        .entities = .{},
         .used_edges = .empty,
         .edge_scope_start = 0,
         .unwind = null,
@@ -155,9 +161,11 @@ pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
         try self.runFrom(matches.before_with, &bindings, .match_found);
     }
 
-    if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
-
     if (self.return_clause) |return_clause| try projection.postProcess(self, return_clause);
+    // Read the entities the rows refer to while the transaction still holds.
+    for (self.rows.items) |row| try self.entities.capture(self.graph, self.allocator, row.item.items);
+
+    if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
 
     const result = try self.allocator.alloc(Row, self.rows.items.len);
     for (result, self.rows.items) |*row, sortable| row.* = sortable.item;
@@ -181,6 +189,7 @@ fn reset(self: *Executor) void {
     self.in_optional = false;
     self.optional_matched = false;
     self.unwind = null;
+    self.entities = .{};
     self.used_edges = .empty;
     self.edge_scope_start = 0;
     self.with_clause = null;

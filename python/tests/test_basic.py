@@ -11,7 +11,9 @@ from acmedb import (
     ClosedError,
     Database,
     NodeNotFoundError,
+    Node,
     ParseError,
+    Relationship,
     TypeMismatchError,
     UnknownVariableError,
 )
@@ -163,3 +165,15 @@ def test_export_graph(db):
             {"source": 0, "target": 1, "type": "KNOWS", "properties": {"since": 2020}},
         ],
     }
+
+
+def test_returns_whole_nodes_and_relationships(db):
+    db.query("CREATE (:Person:Admin {name: 'Ana'})-[:KNOWS {since: 2020}]->(:Person {name: 'Bo'})")
+    rows = db.query("MATCH (a {name: 'Ana'})-[r]->(b) RETURN a, r, [b]")
+    (a, r, [b]), = rows
+    assert a == Node(0, ("Admin", "Person"), {"name": "Ana"})
+    assert r == Relationship(0, 1, "KNOWS", {"since": 2020})
+    assert b == Node(1, ("Person",), {"name": "Bo"})
+    # A node the query deleted keeps its id but has no data left to show.
+    (gone,), = db.query("MATCH (n {name: 'Bo'}) DETACH DELETE n RETURN n")
+    assert gone == Node(1, (), {})

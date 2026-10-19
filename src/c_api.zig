@@ -12,6 +12,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("query/ast.zig").Ast;
 const Graph = @import("storage/graph.zig").Graph;
+const EntitySnapshot = @import("execution/entities.zig").EntitySnapshot;
+const NodeData = @import("execution/entities.zig").NodeData;
+const SnapshotProperty = @import("execution/entities.zig").Property;
 const PropertyIterator = @import("storage/graph.zig").PropertyIterator;
 const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
 const StorageError = @import("storage/key_value_store.zig").StorageError;
@@ -45,6 +48,9 @@ pub const TYPE_STRING: c_int = 1;
 pub const TYPE_BOOLEAN: c_int = 2;
 pub const TYPE_NULL: c_int = 3;
 pub const TYPE_LIST: c_int = 4;
+/// A node or relationship cell: read it through `acmedb_result_to_json`.
+pub const TYPE_NODE: c_int = 5;
+pub const TYPE_RELATIONSHIP: c_int = 6;
 
 pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     const path = path_ptr[0..path_len];
@@ -183,7 +189,7 @@ pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len:
         context.allocator.destroy(result);
         return null;
     };
-    result.json = rowsToJson(&result.arena, result.rows) catch {
+    result.json = rowsToJson(&result.arena, result.rows, &executor.entities) catch {
         result.arena.deinit();
         context.allocator.destroy(result);
         return null;
@@ -287,7 +293,7 @@ fn appendPropertiesJson(properties: *PropertyIterator, buffer: *std.ArrayList(u8
         first = false;
         try appendJsonString(buffer, allocator, property.name);
         try buffer.append(allocator, ':');
-        try appendJsonValue(buffer, allocator, property.value);
+        try appendJsonValue(buffer, allocator, property.value, null);
     }
     try buffer.append(allocator, '}');
 }
@@ -312,13 +318,13 @@ fn appendJsonString(buffer: *std.ArrayList(u8), result_allocator: Allocator, s: 
     try buffer.append(result_allocator, '"');
 }
 
-fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: Value) Allocator.Error!void {
+/// Appends `v` as JSON. Nodes and relationships become objects tagged
+/// `"~node"` / `"~relationship"` carrying their labels/type and properties
+/// from `entities` (a reference not in the snapshot shows no labels and no
+/// properties).
+fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: Value, entities: ?*const EntitySnapshot) Allocator.Error!void {
     switch (v) {
-        .int => |n| {
-            var tmp: [32]u8 = undefined;
-            const s = std.fmt.bufPrint(&tmp, "{d}", .{n}) catch unreachable;
-            try buffer.appendSlice(result_allocator, s);
-        },
+        .int => |n| try buffer.print(result_allocator, "{d}", .{n}),
         .string => |s| try appendJsonString(buffer, result_allocator, s),
         .boolean => |b| try buffer.appendSlice(result_allocator, if (b) "true" else "false"),
         .null => try buffer.appendSlice(result_allocator, "null"),
@@ -326,14 +332,46 @@ fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: V
             try buffer.append(result_allocator, '[');
             for (items, 0..) |e, i| {
                 if (i > 0) try buffer.append(result_allocator, ',');
-                try appendJsonValue(buffer, result_allocator, e);
+                try appendJsonValue(buffer, result_allocator, e, entities);
             }
             try buffer.append(result_allocator, ']');
+        },
+        .node => |id| {
+            const data: ?NodeData = if (entities) |snapshot| snapshot.nodes.get(id) else null;
+            try buffer.print(result_allocator, "{{\"~node\":{{\"id\":{d},\"labels\":[", .{id});
+            if (data) |node| {
+                for (node.labels, 0..) |label, i| {
+                    if (i > 0) try buffer.append(result_allocator, ',');
+                    try appendJsonString(buffer, result_allocator, label);
+                }
+            }
+            try buffer.appendSlice(result_allocator, "],\"properties\":");
+            try appendSnapshotProperties(buffer, result_allocator, if (data) |node| node.properties else &.{});
+            try buffer.appendSlice(result_allocator, "}}");
+        },
+        .relationship => |r| {
+            const properties: []const SnapshotProperty = if (entities) |snapshot| snapshot.relationships.getContext(r, .{}) orelse &.{} else &.{};
+            try buffer.print(result_allocator, "{{\"~relationship\":{{\"source\":{d},\"target\":{d},\"type\":", .{ r.src, r.dst });
+            try appendJsonString(buffer, result_allocator, r.edge_type);
+            try buffer.appendSlice(result_allocator, ",\"properties\":");
+            try appendSnapshotProperties(buffer, result_allocator, properties);
+            try buffer.appendSlice(result_allocator, "}}");
         },
     }
 }
 
-fn rowsToJson(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Error![]u8 {
+fn appendSnapshotProperties(buffer: *std.ArrayList(u8), result_allocator: Allocator, properties: []const SnapshotProperty) Allocator.Error!void {
+    try buffer.append(result_allocator, '{');
+    for (properties, 0..) |property, i| {
+        if (i > 0) try buffer.append(result_allocator, ',');
+        try appendJsonString(buffer, result_allocator, property.name);
+        try buffer.append(result_allocator, ':');
+        try appendJsonValue(buffer, result_allocator, property.value, null);
+    }
+    try buffer.append(result_allocator, '}');
+}
+
+fn rowsToJson(arena: *std.heap.ArenaAllocator, rows: []const Row, entities: *const EntitySnapshot) Allocator.Error![]u8 {
     const result_allocator = arena.allocator();
     var buffer = std.ArrayList(u8).empty;
     try buffer.append(result_allocator, '[');
@@ -342,7 +380,7 @@ fn rowsToJson(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Erro
         try buffer.append(result_allocator, '[');
         for (r.items, 0..) |v, j| {
             if (j > 0) try buffer.append(result_allocator, ',');
-            try appendJsonValue(&buffer, result_allocator, v);
+            try appendJsonValue(&buffer, result_allocator, v, entities);
         }
         try buffer.append(result_allocator, ']');
     }
@@ -350,44 +388,14 @@ fn rowsToJson(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Erro
     return buffer.items; // arena-owned
 }
 
+/// Deep-copies the rows into the result's arena (they outlive the query).
 fn copyRows(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Error![]Row {
-    var out = std.ArrayList(Row).empty;
-    for (rows) |r| {
-        var row = std.ArrayList(Value).empty;
-        for (r.items) |v| {
-            switch (v) {
-                .int => |n| try row.append(arena.allocator(), .{ .int = n }),
-                .boolean => |b| try row.append(arena.allocator(), .{ .boolean = b }),
-                .null => try row.append(arena.allocator(), .{ .null = {} }),
-                .list => |items| {
-                    var list = std.ArrayList(Value).empty;
-                    for (items) |e| {
-                        switch (e) {
-                            .int => |n| try list.append(arena.allocator(), .{ .int = n }),
-                            .boolean => |b| try list.append(arena.allocator(), .{ .boolean = b }),
-                            .null => try list.append(arena.allocator(), .{ .null = {} }),
-                            .string => |s| {
-                                const copy = try arena.allocator().dupe(u8, s);
-                                try list.append(arena.allocator(), .{ .string = copy });
-                            },
-                            .list => |inner| {
-                                // Lists of lists are not surfaced through the C ABI.
-                                _ = inner;
-                                return error.OutOfMemory;
-                            },
-                        }
-                    }
-                    try row.append(arena.allocator(), .{ .list = list.items });
-                },
-                .string => |s| {
-                    const copy = try arena.allocator().dupe(u8, s);
-                    try row.append(arena.allocator(), .{ .string = copy });
-                },
-            }
-        }
-        try out.append(arena.allocator(), row);
+    const copies = try arena.allocator().alloc(Row, rows.len);
+    for (copies, rows) |*copy, row| {
+        copy.* = .empty;
+        for (row.items) |value| try copy.append(arena.allocator(), try value.clone(arena.allocator()));
     }
-    return out.items;
+    return copies;
 }
 
 pub export fn acmedb_result_free(result: *Result) void {
@@ -414,6 +422,8 @@ pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) 
         .boolean => TYPE_BOOLEAN,
         .null => TYPE_NULL,
         .list => TYPE_LIST,
+        .node => TYPE_NODE,
+        .relationship => TYPE_RELATIONSHIP,
     };
 }
 
@@ -475,6 +485,8 @@ pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, co
         .boolean => TYPE_BOOLEAN,
         .null => TYPE_NULL,
         .list => TYPE_LIST,
+        .node => TYPE_NODE,
+        .relationship => TYPE_RELATIONSHIP,
     };
 }
 

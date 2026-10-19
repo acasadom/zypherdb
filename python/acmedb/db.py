@@ -7,7 +7,7 @@ import ctypes
 import json
 import threading
 
-from . import _ffi
+from . import _ffi, entities
 from .errors import AcmedbError, ClosedError, NodeNotFoundError, StorageError, error_from_code
 
 # Value ranges the C ABI accepts; ctypes would silently truncate anything wider.
@@ -81,8 +81,9 @@ class Database:
     def query(self, text: str) -> list[list]:
         """Run one openCypher query and return the rows as Python values.
 
-        Cells become `int`, `str`, `bool`, `None` (null) or a `list`; rows are
-        lists of cells. Raises a typed :class:`QueryError` subclass on failure.
+        Cells become `int`, `str`, `bool`, `None` (null), a `list`, or a whole
+        :class:`Node` / :class:`Relationship`; rows are lists of cells. Raises a
+        typed :class:`QueryError` subclass on failure.
 
         The whole result is read in one call (serialized to JSON), so a large
         result costs one FFI call plus a `json.loads`, not one call per cell.
@@ -98,7 +99,7 @@ class Database:
             try:
                 n = ctypes.c_size_t()
                 p = _ffi.lib.acmedb_result_to_json(result, ctypes.byref(n))
-                return json.loads(ctypes.string_at(p, n.value))
+                return json.loads(ctypes.string_at(p, n.value), object_hook=entities.decode)
             finally:
                 _ffi.lib.acmedb_result_free(result)
 

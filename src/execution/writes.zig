@@ -46,8 +46,8 @@ pub fn applyMerge(self: *Executor, merge_clause: Index, bindings: *Bindings) Exe
             id.* = bound;
             continue;
         }
-            try rejectNullProperties(self, node_pattern_index, bindings);
-    if (try findMatchingNode(self, node_pattern_index, bindings)) |found| {
+        try rejectNullProperties(self, node_pattern_index, bindings);
+        if (try findMatchingNode(self, node_pattern_index, bindings)) |found| {
             id.* = found;
         } else {
             id.* = try createNode(self, node_pattern_index, bindings);
@@ -178,8 +178,8 @@ pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) Executi
         const value = try expressions.evaluate(self, value_expression, bindings);
         switch (bindings.get(name) orelse return error.UnknownVariable) {
             .node => |id| try setNodeProperty(self, id, property, value),
-            .edge => |e| try setEdgeProperty(self, e.src, e.dst, e.edge_type, property, value),
-            .value => return error.TypeMismatch,
+            .relationship => |r| try setEdgeProperty(self, r.src, r.dst, r.edge_type, property, value),
+            else => return error.TypeMismatch,
         }
     }
 }
@@ -192,8 +192,8 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
                 const name = self.ast.data(self.ast.nodeChildren(item)[0]).text;
                 switch (bindings.get(name) orelse return error.UnknownVariable) {
                     .node => |id| try self.graph.removeProperty(id, property),
-                    .edge => |e| try self.graph.removeEdgeProperty(e.src, e.dst, e.edge_type, property),
-                    .value => return error.TypeMismatch,
+                    .relationship => |r| try self.graph.removeEdgeProperty(r.src, r.dst, r.edge_type, property),
+                    else => return error.TypeMismatch,
                 }
             },
             .label_reference => {

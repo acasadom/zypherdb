@@ -11,6 +11,7 @@ Usage::
 """
 
 from .db import Database
+from .entities import Node, Relationship
 from .errors import (
     AcmedbError,
     ClosedError,
@@ -27,6 +28,8 @@ from .errors import (
 
 __all__ = [
     "Database",
+    "Node",
+    "Relationship",
     "AcmedbError",
     "QueryError",
     "ParseError",

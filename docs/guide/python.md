@@ -29,8 +29,10 @@ with Database(tempfile.mkdtemp()) as db:
 ## The `Database` object
 
 - `Database(path)` opens (or creates) the database; use it as a context manager, or call `close()`.
-- `query(text) -> list[list]` runs one query; cells become `int`, `str`, `bool`, `None` (null) or a
-  `list`.
+- `query(text) -> list[list]` runs one query; cells become `int`, `str`, `bool`, `None` (null), a
+  `list`, or a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
+  properties)`.
+- `export_graph() -> dict` returns the whole graph, read straight from storage.
 - `allocate_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_property(id, name, value)`
   write data. `set_property` accepts `int` or `str` values.
 - `write()` is a context manager that batches mutators into **one** write transaction (one fsync):

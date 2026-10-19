@@ -17,7 +17,7 @@ const expressions = @import("expressions.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
-const EdgeRef = @import("bindings.zig").EdgeRef;
+const Relationship = @import("../value.zig").Relationship;
 const PatternEdge = @import("planner.zig").PatternEdge;
 
 /// Candidate nodes for a pattern: the first label's index, or every node
@@ -90,7 +90,7 @@ fn scanEdgeIndex(self: *Executor, edge_index: usize, next_step: usize, pattern_i
     defer iterator.deinit();
     while (try iterator.next()) |found| {
         if (edge.edge_type.len > 0 and !std.mem.eql(u8, found.edge_type, edge.edge_type)) continue;
-        const ref = EdgeRef{ .src = found.src, .dst = found.dst, .edge_type = try self.allocator.dupe(u8, found.edge_type) };
+        const ref = Relationship{ .src = found.src, .dst = found.dst, .edge_type = try self.allocator.dupe(u8, found.edge_type) };
         // The left pattern node is the source when the pattern points right;
         // an undirected pattern takes both orientations (a self-loop once).
         const forward = edge.undirected or edge.forward_direction == .out;
@@ -100,7 +100,7 @@ fn scanEdgeIndex(self: *Executor, edge_index: usize, next_step: usize, pattern_i
     }
 }
 
-fn bindEdgeEndpoints(self: *Executor, edge_index: usize, ref: EdgeRef, left_id: NodeId, right_id: NodeId, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
+fn bindEdgeEndpoints(self: *Executor, edge_index: usize, ref: Relationship, left_id: NodeId, right_id: NodeId, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
     const edge = self.edges.items[edge_index];
     try bindings.put(self.allocator, self.nodes.items[edge_index].variable_name, .{ .node = left_id });
     try bindings.put(self.allocator, self.nodes.items[edge_index + 1].variable_name, .{ .node = right_id });
@@ -131,14 +131,14 @@ fn expandEdge(self: *Executor, from: usize, to: usize, next_step: usize, pattern
             try bindings.put(self.allocator, to_node.variable_name, .{ .node = found.neighbour });
         }
         if (!try nodeSeeksMatch(self, to, found.neighbour, bindings)) continue;
-        const ref = EdgeRef{ .src = found.ref.src, .dst = found.ref.dst, .edge_type = try self.ownedEdgeType(edge, found.ref.edge_type) };
+        const ref = Relationship{ .src = found.ref.src, .dst = found.ref.dst, .edge_type = try self.ownedEdgeType(edge, found.ref.edge_type) };
         try followEdge(self, edge, ref, next_step, pattern_index, bindings);
     }
 }
 
 /// Binds the matched edge (if the pattern names it), checks its predicates and
 /// that the MATCH has not used it already, then continues with the next step.
-fn followEdge(self: *Executor, edge: PatternEdge, ref: EdgeRef, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
+fn followEdge(self: *Executor, edge: PatternEdge, ref: Relationship, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
     // A variable bound by an earlier clause only matches that same edge.
     if (edge.bound) |bound| {
         if (!bound.eql(ref)) return;
@@ -147,7 +147,7 @@ fn followEdge(self: *Executor, edge: PatternEdge, ref: EdgeRef, next_step: usize
     for (self.used_edges.items[self.edge_scope_start..]) |used| {
         if (used.eql(ref)) return;
     }
-    if (edge.variable_name.len > 0) try bindings.put(self.allocator, edge.variable_name, .{ .edge = ref });
+    if (edge.variable_name.len > 0) try bindings.put(self.allocator, edge.variable_name, .{ .relationship = ref });
     if (!try edgeSeeksMatch(self, edge, ref, bindings)) return;
     try self.used_edges.append(self.allocator, ref);
     defer _ = self.used_edges.pop();
@@ -167,7 +167,7 @@ const MatchingEdges = struct {
     next_direction: usize = 0,
     current: ?EdgeKeyIterator = null,
 
-    const Match = struct { neighbour: NodeId, ref: EdgeRef };
+    const Match = struct { neighbour: NodeId, ref: Relationship };
 
     fn init(graph: *Graph, from_id: NodeId, edge: PatternEdge, traversal: Direction) MatchingEdges {
         return .{
@@ -220,7 +220,7 @@ pub fn runUnwind(self: *Executor, bindings: *Bindings) ExecutionError!void {
     switch (v) {
         .list => |items| {
             for (items) |item| {
-                try bindings.put(self.allocator, variable_name, .{ .value = item });
+                try bindings.put(self.allocator, variable_name, item);
                 try self.afterOptional(bindings);
             }
         },
@@ -319,7 +319,7 @@ pub fn isMainVariable(self: *Executor, name: []const u8) bool {
 pub fn bindOptionalNulls(self: *Executor, bindings: *Bindings) ExecutionError!void {
     for (self.optional_variables.items) |name| {
         if (isMainVariable(self, name)) continue;
-        try bindings.put(self.allocator, name, .{ .value = .null });
+        try bindings.put(self.allocator, name, .null);
     }
 }
 
@@ -332,7 +332,7 @@ pub fn nodeSeeksMatch(self: *Executor, node_index: usize, id: NodeId, bindings: 
     return true;
 }
 
-pub fn edgeSeeksMatch(self: *Executor, edge: PatternEdge, ref: EdgeRef, bindings: *Bindings) ExecutionError!bool {
+pub fn edgeSeeksMatch(self: *Executor, edge: PatternEdge, ref: Relationship, bindings: *Bindings) ExecutionError!bool {
     for (edge.seeks.items) |seek| {
         const expected = try expressions.evaluate(self, seek.value, bindings);
         const actual = (try self.graph.getEdgeProperty(ref.src, ref.dst, ref.edge_type, seek.property, self.allocator)) orelse return false;
