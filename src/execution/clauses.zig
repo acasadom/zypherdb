@@ -1,0 +1,108 @@
+//! The reading and writing clauses of the pipeline (WITH and RETURN are in
+//! projection.zig). Each takes the rows the previous clause produced and
+//! returns the rows for the next one.
+
+const std = @import("std");
+const Index = @import("../query/ast.zig").Index;
+const NodeKind = @import("../query/ast.zig").NodeKind;
+
+const Executor = @import("Executor.zig");
+const ExecutionError = Executor.ExecutionError;
+const Bindings = @import("bindings.zig").Bindings;
+const expressions = @import("expressions.zig");
+const pattern_matching = @import("pattern_matching.zig");
+const writes = @import("writes.zig");
+
+/// True for the clauses that write to the graph.
+pub fn isWrite(kind: NodeKind) bool {
+    return switch (kind) {
+        .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause => true,
+        else => false,
+    };
+}
+
+/// A copy of a row whose entries the next clause may extend independently.
+pub fn copyRow(self: *Executor, row: Bindings) ExecutionError!Bindings {
+    var copy = Bindings{ .entries = .empty };
+    try copy.entries.appendSlice(self.allocator, row.entries.items);
+    return copy;
+}
+
+/// MATCH: every input row, extended with each match of the patterns that
+/// passes the WHERE. OPTIONAL MATCH keeps an input row that has no such
+/// match, with the clause's new variables bound to null (an outer join).
+pub fn runMatch(self: *Executor, clause: Index, input: []Bindings, optional: bool) ExecutionError![]Bindings {
+    const children = self.ast.nodeChildren(clause);
+    // children = [pattern0, ..., patternN, where_expression]
+    self.patterns = children[0 .. children.len - 1];
+    self.where_expression = children[children.len - 1];
+
+    var output = std.ArrayList(Bindings).empty;
+    self.matches = &output;
+    for (input) |row| {
+        const matched_before = output.items.len;
+        var bindings = try copyRow(self, row);
+        try pattern_matching.matchPatterns(self, 0, &bindings);
+        if (optional and output.items.len == matched_before) {
+            var unmatched = try copyRow(self, row);
+            try bindNewVariablesToNull(self, self.patterns, &unmatched);
+            try output.append(self.allocator, unmatched);
+        }
+    }
+    return output.items;
+}
+
+/// Binds every variable of `patterns` that `row` does not bind yet to null.
+fn bindNewVariablesToNull(self: *Executor, patterns: []const Index, row: *Bindings) ExecutionError!void {
+    for (patterns) |pattern| {
+        for (self.ast.nodeChildren(pattern)) |element| {
+            const name = switch (self.ast.kind(element)) {
+                .node_pattern => self.ast.data(element).node_pattern.variable_name,
+                .edge_pattern => self.ast.data(element).edge_pattern.variable_name,
+                else => continue,
+            };
+            if (name.len > 0 and row.get(name) == null) try row.put(self.allocator, name, .null);
+        }
+    }
+}
+
+/// UNWIND list AS x: one row per element of the list, for every input row.
+/// A null list gives no row; any other non-list value gives one row with it.
+pub fn runUnwind(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const list_expression = self.ast.nodeChildren(clause)[0];
+    const variable_name = self.ast.data(clause).unwind.variable_name;
+    var output = std.ArrayList(Bindings).empty;
+    for (input) |*row| {
+        const value = try expressions.evaluate(self, list_expression, row);
+        const items: []const @TypeOf(value) = switch (value) {
+            .list => |items| items,
+            .null => &.{},
+            else => &.{value},
+        };
+        for (items) |item| {
+            var extended = try copyRow(self, row.*);
+            try extended.put(self.allocator, variable_name, item);
+            try output.append(self.allocator, extended);
+        }
+    }
+    return output.items;
+}
+
+/// CREATE, MERGE, SET, DELETE, REMOVE: applied to each row in turn (so a row
+/// sees the writes made for the rows before it); the rows go on, with any
+/// variables the clause bound.
+pub fn runWrite(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    for (input) |*row| {
+        switch (self.ast.kind(clause)) {
+            .create_clause => for (self.ast.nodeChildren(clause)) |pattern| {
+                try writes.applyCreate(self, pattern, row);
+            },
+            .merge_clause => try writes.applyMerge(self, clause, row),
+            .set_clause => try writes.applySet(self, clause, row),
+            .delete_clause => try writes.applyDelete(self, clause, row),
+            .remove_clause => try writes.applyRemove(self, clause, row),
+            else => unreachable,
+        }
+    }
+    return input;
+}

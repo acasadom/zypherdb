@@ -75,13 +75,6 @@ const RowContext = struct {
     }
 };
 
-/// Appends a copy of `bindings` to `with_rows` (the input of WITH).
-pub fn collect(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    var copy = Bindings{ .entries = .empty };
-    try copy.entries.appendSlice(self.allocator, bindings.entries.items);
-    try self.with_rows.append(self.allocator, copy);
-}
-
 pub fn withClauseParts(self: *Executor, with_clause: Index) WithClauseParts {
     const children = self.ast.nodeChildren(with_clause);
     var info = WithClauseParts{
@@ -106,7 +99,7 @@ pub fn withClauseParts(self: *Executor, with_clause: Index) WithClauseParts {
 /// Projects the collected bindings through the WITH clause (grouping +
 /// aggregation), then applies WHERE / DISTINCT / ORDER BY / SKIP / LIMIT,
 /// rebinding the result into fresh variable bindings for the next clauses.
-pub fn applyWith(self: *Executor, with_clause: Index) ExecutionError!void {
+pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) ExecutionError![]Bindings {
     const info = withClauseParts(self, with_clause);
     const items = try withItems(self, info.projection);
     const projected = try self.projectedExpressions(info.projection);
@@ -119,9 +112,9 @@ pub fn applyWith(self: *Executor, with_clause: Index) ExecutionError!void {
     var rows = std.ArrayList(Sortable(Bindings)).empty;
     if (aggregating.items.len == 0) {
         // No aggregates: project each row (no grouping, so no deduplication).
-        for (self.with_rows.items) |*input| {
+        for (input) |*input_row| {
             var row = Bindings{ .entries = .empty };
-            for (items) |item| try row.put(self.allocator, item.name, try expressions.evaluate(self, item.expr, input));
+            for (items) |item| try row.put(self.allocator, item.name, try expressions.evaluate(self, item.expr, input_row));
             if (!try expressions.evaluateBool(self, info.where_expression, &row)) continue;
             const sort_key = if (info.order_by) |order_by| try orderByKey(self, order_by, &row) else &.{};
             try rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
@@ -133,7 +126,7 @@ pub fn applyWith(self: *Executor, with_clause: Index) ExecutionError!void {
         const aggregation_plan = try aggregation.plan(self, keys.items, aggregating.items, names);
 
         var groups: aggregation.ValueGrouping = .{};
-        for (self.with_rows.items) |*input| try aggregation.accumulateRow(self, &groups, aggregation_plan, input);
+        for (input) |*input_row| try aggregation.accumulateRow(self, &groups, aggregation_plan, input_row);
         try aggregation.ensureGroupWithoutKeys(self, &groups, aggregation_plan);
         for (groups.keys.items, groups.states.items) |key_values, states| {
             var row = Bindings{ .entries = .empty };
@@ -161,8 +154,9 @@ pub fn applyWith(self: *Executor, with_clause: Index) ExecutionError!void {
     if (info.order_by) |order_by| sortByKey(Bindings, rows.items, try orderByDirections(self, order_by));
     try paginate(self, Sortable(Bindings), &rows, info.skip, info.limit);
 
-    self.with_rows = .empty;
-    for (rows.items) |row| try self.with_rows.append(self.allocator, row.item);
+    const output = try self.allocator.alloc(Bindings, rows.items.len);
+    for (output, rows.items) |*row, sortable| row.* = sortable.item;
+    return output;
 }
 
 /// The WITH projection items: each binds `name` (its alias, or the variable it
@@ -288,9 +282,26 @@ pub fn returnClauseParts(self: *Executor, return_clause: Index) ReturnClausePart
     return info;
 }
 
-/// RETURN post-processing: aggregation, then DISTINCT, ORDER BY, SKIP, LIMIT.
-pub fn postProcess(self: *Executor, return_clause: Index) ExecutionError!void {
+/// RETURN: projects every row (or folds it into its group when the
+/// projection aggregates), then aggregates, applies DISTINCT, ORDER BY, SKIP
+/// and LIMIT. The rows go to `self.rows`.
+pub fn applyReturn(self: *Executor, return_clause: Index, input: []Bindings) ExecutionError!void {
     const info = returnClauseParts(self, return_clause);
+    try planReturn(self, info);
+    for (input) |*row| {
+        if (self.has_aggregates) {
+            try aggregation.accumulate(self, row);
+            continue;
+        }
+        var values = std.ArrayList(Value).empty;
+        for (self.ast.nodeChildren(info.projection)) |item| {
+            try values.append(self.allocator, try expressions.evaluate(self, self.ast.nodeChildren(item)[0], row));
+        }
+        // The ORDER BY key is evaluated now, while the row's variables are
+        // still bound: it may use variables that are not projected.
+        const sort_key = try returnSortKey(self, info, values.items, row);
+        try self.rows.append(self.allocator, .{ .item = values, .sort_key = sort_key });
+    }
 
     if (self.has_aggregates) try aggregation.aggregate(self, info);
     if (info.distinct) {
@@ -298,6 +309,40 @@ pub fn postProcess(self: *Executor, return_clause: Index) ExecutionError!void {
     }
     if (info.order_by) |order_by| sortByKey(Row, self.rows.items, try orderByDirections(self, order_by));
     try paginate(self, Sortable(Row), &self.rows, info.skip, info.limit);
+}
+
+/// Splits the RETURN projection into grouping keys and aggregating
+/// expressions, and plans the aggregation (with any ORDER BY aggregates).
+fn planReturn(self: *Executor, parts: ReturnClauseParts) ExecutionError!void {
+    var keys = std.ArrayList(Index).empty;
+    var aggregating = std.ArrayList(Index).empty;
+    for (self.ast.nodeChildren(parts.projection)) |item| {
+        const expression = self.ast.nodeChildren(item)[0];
+        if (aggregation.containsAggregate(self, expression)) {
+            try self.projection_items.append(self.allocator, .{ .aggregating = expression });
+            try aggregating.append(self.allocator, expression);
+        } else {
+            try self.projection_items.append(self.allocator, .{ .key = expression });
+            try keys.append(self.allocator, expression);
+        }
+    }
+    self.has_aggregates = aggregating.items.len > 0;
+    const projected = try self.projectedExpressions(parts.projection);
+    const ordering = try aggregation.orderByAggregating(self, parts.order_by, projected, self.has_aggregates);
+    if (self.has_aggregates) {
+        try aggregating.appendSlice(self.allocator, ordering);
+        self.return_aggregation = try aggregation.plan(self, keys.items, aggregating.items, try projectionNames(self, parts.projection));
+    }
+}
+
+/// The alias of each aliased projection item.
+fn projectionNames(self: *Executor, projection_node: Index) ExecutionError![]const []const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    for (self.ast.nodeChildren(projection_node)) |item| {
+        const alias = self.ast.data(item).text;
+        if (alias.len > 0) try names.append(self.allocator, alias);
+    }
+    return names.items;
 }
 
 /// One WITH projection item: `name` is the variable it binds in the new scope

@@ -118,26 +118,28 @@ the remaining `WHERE` is checked once the pattern has matched (`matchFound`).
 
 ## The clause pipeline
 
-`run` sequences the clauses; `matchFound` is the join point after a pattern matches:
+`Executor.run` runs a query as a pipeline: each clause turns the rows (variable bindings) it
+receives into the rows the next clause receives, starting from one empty row. The clauses are in
+`clauses.zig` (reading and writing) and `projection.zig` (WITH, RETURN):
 
 ```text
-matchFound(bindings):
-  if WHERE fails → return
-  if in OPTIONAL MATCH → record a match, afterOptional()
-  if OPTIONAL MATCH pending → runOptional()      # outer join: match, else bind nulls
-  if UNWIND pending → runUnwind()                 # one row per list element
-  afterOptional() → collect() [WITH] or finishBody() [writes + RETURN]
+rows = [ {} ]
+for clause in query:
+  MATCH          → every row extended with each match of the patterns that passes WHERE
+  OPTIONAL MATCH → the same, keeping an unmatched row with the clause's new variables = null
+  UNWIND l AS x  → one row per element of l (null: none)
+  WITH           → project / group / filter / DISTINCT / ORDER BY / SKIP / LIMIT
+  CREATE, MERGE, SET, DELETE, REMOVE → applied to each row in turn; the rows go on
+  RETURN         → project (or group), DISTINCT, ORDER BY, SKIP, LIMIT → the result
 ```
 
-- **`OPTIONAL MATCH`** (`runOptional`) saves the plan, runs the pattern, and if nothing matched,
-  binds its variables to `null` and continues — one row, not zero.
-- **`UNWIND`** (`runUnwind`) evaluates a list and recurses once per element; a null list yields no
-  rows.
-- **`WITH`** (`applyWith`) materializes the rows into bindings, re-projects/aggregates them
-  (implicit grouping — see below), applies `WHERE`/`DISTINCT`/`ORDER BY`/`SKIP`/`LIMIT`, and re-binds
-  the result for the clauses that follow.
-- **writes** (`finishBody`) run after matching, in one write transaction: `CREATE`/`MERGE`/
-  `SET`/`DELETE`/`REMOVE`, then `RETURN` projects.
+- Each clause sees the effects of every clause before it (a MATCH after `CREATE … WITH` finds what
+  was created); within a write clause, a row sees the writes made for the rows before it.
+- Pattern matching (`pattern_matching.zig`) reports each complete match to `Executor.matchFound`,
+  which applies the WHERE and keeps a copy of the row. Relationship uniqueness holds within one
+  MATCH; OPTIONAL MATCH is a clause of its own.
+- The rows are materialized between clauses, in the query's arena: simple and correct, at the
+  cost of memory proportional to the largest intermediate result.
 
 ## Aggregation and grouping
 

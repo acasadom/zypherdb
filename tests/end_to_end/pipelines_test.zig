@@ -155,3 +155,60 @@ test "lists: collect, size, list literals and UNWIND" {
         &.{.{ .int = 2 }},
     });
 }
+
+test "any sequence of clauses" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Writes, then WITH, then reading again in the same query.
+    try expectQuery(&ast, &g,
+        \\CREATE (w:Worker {name: 'Ana'}), (e:Group {name: 'Engineering'}), (s:Group {name: 'Staff'}),
+        \\       (w)-[:MEMBER_OF]->(e), (w)-[:MEMBER_OF]->(s),
+        \\       (e)-[:MAY_ENTER]->(:Zone {name: 'Lab', opens: 9, closes: 18}),
+        \\       (s)-[:MAY_ENTER]->(:Zone {name: 'Hall', opens: 7, closes: 22})
+        \\WITH w
+        \\MATCH (w)-[:MEMBER_OF]->(g)
+        \\RETURN count(g)
+    , &.{&.{.{ .int = 2 }}});
+
+    // Several WITH steps, MATCH after MATCH, UNWIND after WITH.
+    try expectQuery(&ast, &g,
+        \\MATCH (w:Worker {name: 'Ana'})-[:MEMBER_OF]->(g)
+        \\WITH w, collect(g.name) AS groups
+        \\UNWIND groups AS group_name
+        \\MATCH (g:Group {name: group_name})-[:MAY_ENTER]->(z)
+        \\WITH z WHERE z.opens <= 8
+        \\RETURN z.name
+    , &.{&.{.{ .string = "Hall" }}});
+
+    // OPTIONAL MATCH after OPTIONAL MATCH, each an outer join of its own.
+    try expectQuery(&ast, &g,
+        \\MATCH (g:Group)
+        \\OPTIONAL MATCH (g)-[:MAY_ENTER]->(z {opens: 9})
+        \\OPTIONAL MATCH (g)<-[:MEMBER_OF]-(w)
+        \\RETURN g.name, z.name, w.name
+    , &.{
+        &.{ .{ .string = "Engineering" }, .{ .string = "Lab" }, .{ .string = "Ana" } },
+        &.{ .{ .string = "Staff" }, .{ .null = {} }, .{ .string = "Ana" } },
+    });
+}
+
+test "clause order rules" {
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    const parse = acmedb.parser.parse;
+
+    // Reading after an update needs a WITH; RETURN comes last; a query cannot
+    // end with a reading clause.
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "CREATE (a) MATCH (b) RETURN b", null));
+    _ = try parse(&ast, "CREATE (a) WITH a MATCH (b) RETURN b", null);
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "RETURN 1 MATCH (n)", null));
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (n)", null));
+    try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (n) WITH n", null));
+}

@@ -1,14 +1,15 @@
-//! Volcano-style executor for the openCypher subset, now with write clauses.
+//! The query executor: runs a parsed query as a pipeline of clauses.
 //!
-//! A query is a list of clauses (`match`, `create`, `set`, `delete`, `return`).
-//! The `MATCH` clause is planned as before (anchor selection, predicate
-//! pushdown) and produces variable bindings; then each `CREATE`/`SET`/`DELETE`
-//! clause is applied to every binding, and finally `RETURN` projects (if
-//! present). A query with no `MATCH` is applied to a single empty binding, so a
-//! standalone `CREATE ...` works.
+//! A query is a sequence of clauses. Each one turns the list of rows (the
+//! variable bindings) it receives into the list the next clause receives,
+//! starting from one empty row: MATCH and OPTIONAL MATCH extend each row with
+//! every match (OPTIONAL keeps an unmatched row, with nulls), UNWIND with each
+//! list element, WITH projects / groups / filters, the write clauses apply to
+//! every row in turn, and RETURN projects the final result. Each clause sees
+//! the effects of the clauses before it (see `clauses.zig`, `projection.zig`).
 //!
-//! Bindings map variable names to node ids dynamically, since `CREATE`
-//! introduces new variables at runtime.
+//! The whole query runs in one transaction: a write transaction if any clause
+//! writes, else one consistent read snapshot.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -17,27 +18,24 @@ const Index = @import("../query/ast.zig").Index;
 const Graph = @import("../storage/graph.zig").Graph;
 const StorageError = @import("../storage/key_value_store.zig").StorageError;
 const Value = @import("../value.zig").Value;
+const Relationship = @import("../value.zig").Relationship;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const ErrorCode = @import("../diagnostics.zig").ErrorCode;
+const semantics = @import("../query/semantics.zig");
 
 const ValueGrouping = @import("aggregation.zig").ValueGrouping;
 const AggregationPlan = @import("aggregation.zig").AggregationPlan;
-const no_aggregation = AggregationPlan{ .keys = &.{}, .aggregates = &.{}, .kinds = &.{} };
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
-const semantics = @import("../query/semantics.zig");
-const functions = @import("functions.zig");
 const EntitySnapshot = @import("entities.zig").EntitySnapshot;
 const Bindings = @import("bindings.zig").Bindings;
-const Relationship = @import("../value.zig").Relationship;
 const PlanStep = @import("planner.zig").PlanStep;
 const PatternEdge = @import("planner.zig").PatternEdge;
 const PatternNode = @import("planner.zig").PatternNode;
 
-const pattern_matching = @import("pattern_matching.zig");
+const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
-const aggregation = @import("aggregation.zig");
+const functions = @import("functions.zig");
 const projection = @import("projection.zig");
-const writes = @import("writes.zig");
 
 const Executor = @This();
 
@@ -57,60 +55,38 @@ pub const Row = std.ArrayList(Value);
 /// Query parameters (`$name`), by name.
 pub const Parameters = std.StringHashMapUnmanaged(Value);
 
+pub const no_aggregation = AggregationPlan{ .keys = &.{}, .aggregates = &.{}, .kinds = &.{} };
+
 ast: *Ast,
 graph: *Graph,
 allocator: Allocator,
+diagnostic: ?*Diagnostic,
+/// The values of the query's `$name` parameters (none by default).
+parameters: Parameters,
+
 /// RETURN rows, each with its ORDER BY key.
 rows: std.ArrayList(projection.Sortable(Row)),
-
-// Match context.
-patterns: []const Index, // the MATCH clause's patterns (one or more)
-nodes: std.ArrayList(PatternNode),
-edges: std.ArrayList(PatternEdge),
-steps: std.ArrayList(PlanStep),
-where_expression: Index,
-has_match: bool,
-
-// Write context.
-update_clauses: std.ArrayList(Index),
-return_clause: ?Index,
-
-// WITH pipeline context.
-with_clause: ?Index,
-with_rows: std.ArrayList(Bindings),
-collecting: bool,
-
-// OPTIONAL MATCH context.
-optional_match: ?Index,
-optional_variables: std.ArrayList([]const u8),
-main_variables: std.ArrayList([]const u8),
-in_optional: bool,
-optional_matched: bool,
-
 /// Labels and properties of the nodes and relationships in the result rows,
 /// read before the query's transaction ends (see `entities.zig`).
 entities: EntitySnapshot,
 
-// Relationship uniqueness: the edges bound by the MATCH being run, from
-// `edge_scope_start` (an OPTIONAL MATCH opens its own scope).
+// The MATCH (or OPTIONAL MATCH) being run: its patterns, WHERE, the plan of
+// the pattern being matched, and where complete matches go.
+patterns: []const Index,
+where_expression: Index,
+nodes: std.ArrayList(PatternNode),
+edges: std.ArrayList(PatternEdge),
+steps: std.ArrayList(PlanStep),
+matches: ?*std.ArrayList(Bindings),
+/// Relationship uniqueness: the edges bound on the current search branch of
+/// the MATCH being run.
 used_edges: std.ArrayList(Relationship),
-edge_scope_start: usize,
 
-// UNWIND context.
-unwind: ?Index,
-
-// Aggregation.
+// RETURN aggregation.
 has_aggregates: bool,
 projection_items: std.ArrayList(ProjectionItem),
-/// How the RETURN aggregates (when `has_aggregates`).
 return_aggregation: AggregationPlan,
 groups: ValueGrouping,
-
-diagnostic: ?*Diagnostic,
-
-/// The values of the query's `$name` parameters (none by default).
-parameters: Parameters,
-
 /// While evaluating an aggregating expression for one group: the values that
 /// replace its aggregate calls and grouping-key sub-expressions.
 expression_overrides: ?*const std.AutoHashMapUnmanaged(Index, Value),
@@ -120,33 +96,21 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .ast = ast,
         .graph = graph,
         .allocator = allocator,
+        .diagnostic = null,
+        .parameters = .empty,
         .rows = .empty,
+        .entities = .{},
         .patterns = &.{},
+        .where_expression = 0,
         .nodes = .empty,
         .edges = .empty,
         .steps = .empty,
-        .where_expression = 0,
-        .has_match = false,
-        .update_clauses = .empty,
-        .return_clause = null,
-        .with_clause = null,
-        .with_rows = .empty,
-        .collecting = false,
-        .optional_match = null,
-        .optional_variables = .empty,
-        .main_variables = .empty,
-        .in_optional = false,
-        .optional_matched = false,
-        .entities = .{},
+        .matches = null,
         .used_edges = .empty,
-        .edge_scope_start = 0,
-        .unwind = null,
         .has_aggregates = false,
         .projection_items = .empty,
         .return_aggregation = no_aggregation,
         .groups = .{},
-        .diagnostic = null,
-        .parameters = .empty,
         .expression_overrides = null,
     };
 }
@@ -162,23 +126,29 @@ pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
     try semantics.check(self.ast, query, self.allocator, self.diagnostic);
     try functions.checkCalls(self.ast, query, self.diagnostic);
     self.reset();
-    const matches = try self.classifyClauses(query);
-    try self.collectProjectionItems();
 
-    // One transaction per query: a write transaction if anything writes, else
-    // one read transaction, instead of one LMDB transaction per read.
-    const has_writes = self.update_clauses.items.len > 0;
+    const query_clauses = self.ast.nodeChildren(query);
+    const has_writes = for (query_clauses) |clause| {
+        if (clauses.isWrite(self.ast.kind(clause))) break true;
+    } else false;
     if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
     errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
 
-    if (self.with_clause) |with_clause| {
-        try self.runWithPipeline(with_clause, matches);
-    } else {
-        var bindings = Bindings{ .entries = .empty };
-        try self.runFrom(matches.before_with, &bindings, .match_found);
+    var rows: []Bindings = try self.allocator.alloc(Bindings, 1);
+    rows[0] = .{ .entries = .empty };
+    for (query_clauses) |clause| {
+        rows = switch (self.ast.kind(clause)) {
+            .match_clause => try clauses.runMatch(self, clause, rows, false),
+            .optional_match_clause => try clauses.runMatch(self, clause, rows, true),
+            .unwind_clause => try clauses.runUnwind(self, clause, rows),
+            .with_clause => try projection.applyWith(self, clause, rows),
+            .return_clause => {
+                try projection.applyReturn(self, clause, rows);
+                break;
+            },
+            else => try clauses.runWrite(self, clause, rows),
+        };
     }
-
-    if (self.return_clause) |return_clause| try projection.postProcess(self, return_clause);
     // Read the entities the rows refer to while the transaction still holds.
     for (self.rows.items) |row| try self.entities.capture(self.graph, self.allocator, row.item.items);
 
@@ -189,127 +159,23 @@ pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
     return result;
 }
 
-/// The MATCH clauses before and after the WITH clause (if any).
-const MatchClauses = struct { before_with: ?Index, after_with: ?Index };
-
 fn reset(self: *Executor) void {
-    self.rows.clearRetainingCapacity();
-    self.groups = .{};
-    self.return_aggregation = no_aggregation;
-    self.expression_overrides = null;
-    self.has_aggregates = false;
-    self.projection_items = .empty;
-    self.with_rows = .empty;
-    self.collecting = false;
-    self.optional_match = null;
-    self.optional_variables = .empty;
-    self.main_variables = .empty;
-    self.in_optional = false;
-    self.optional_matched = false;
-    self.unwind = null;
+    self.rows = .empty;
     self.entities = .{};
     self.used_edges = .empty;
-    self.edge_scope_start = 0;
-    self.with_clause = null;
-    self.update_clauses = .empty;
-    self.return_clause = null;
+    self.has_aggregates = false;
+    self.projection_items = .empty;
+    self.return_aggregation = no_aggregation;
+    self.groups = .{};
+    self.expression_overrides = null;
 }
 
-/// Sorts the query's clauses into the executor's slots and returns its MATCH
-/// clauses; also records which variables MATCH and OPTIONAL MATCH introduce.
-fn classifyClauses(self: *Executor, query: Index) ExecutionError!MatchClauses {
-    var matches = MatchClauses{ .before_with = null, .after_with = null };
-    for (self.ast.nodeChildren(query)) |clause| {
-        switch (self.ast.kind(clause)) {
-            .match_clause => {
-                if (self.with_clause == null) matches.before_with = clause else matches.after_with = clause;
-            },
-            .optional_match_clause => self.optional_match = clause,
-            .unwind_clause => self.unwind = clause,
-            .with_clause => self.with_clause = clause,
-            .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause => try self.update_clauses.append(self.allocator, clause),
-            .return_clause => self.return_clause = clause,
-            else => {},
-        }
-    }
-    if (self.optional_match) |optional_match| try pattern_matching.collectOptionalVariables(self, optional_match);
-    if (matches.before_with) |match_clause| try pattern_matching.collectClauseVariables(self, match_clause, &self.main_variables);
-    return matches;
-}
-
-/// Splits the RETURN projection into grouping keys and aggregates.
 /// The expression of each projection item.
 pub fn projectedExpressions(self: *Executor, projection_node: Index) ExecutionError![]const Index {
     const items = self.ast.nodeChildren(projection_node);
     const expressions_list = try self.allocator.alloc(Index, items.len);
     for (expressions_list, items) |*expr, item| expr.* = self.ast.nodeChildren(item)[0];
     return expressions_list;
-}
-
-/// The alias of each aliased projection item.
-fn projectionNames(self: *Executor, projection_node: Index) ExecutionError![]const []const u8 {
-    var names = std.ArrayList([]const u8).empty;
-    for (self.ast.nodeChildren(projection_node)) |item| {
-        const alias = self.ast.data(item).text;
-        if (alias.len > 0) try names.append(self.allocator, alias);
-    }
-    return names.items;
-}
-
-fn collectProjectionItems(self: *Executor) ExecutionError!void {
-    const return_clause = self.return_clause orelse return;
-    const parts = projection.returnClauseParts(self, return_clause);
-    var keys = std.ArrayList(Index).empty;
-    var aggregating = std.ArrayList(Index).empty;
-    for (self.ast.nodeChildren(parts.projection)) |item| {
-        const expression = self.ast.nodeChildren(item)[0];
-        if (aggregation.containsAggregate(self, expression)) {
-            try self.projection_items.append(self.allocator, .{ .aggregating = expression });
-            try aggregating.append(self.allocator, expression);
-        } else {
-            try self.projection_items.append(self.allocator, .{ .key = expression });
-            try keys.append(self.allocator, expression);
-        }
-    }
-    self.has_aggregates = aggregating.items.len > 0;
-    const projected = try projectedExpressions(self, parts.projection);
-    const ordering = try aggregation.orderByAggregating(self, parts.order_by, projected, self.has_aggregates);
-    if (self.has_aggregates) {
-        try aggregating.appendSlice(self.allocator, ordering);
-        self.return_aggregation = try aggregation.plan(self, keys.items, aggregating.items, try projectionNames(self, parts.projection));
-    }
-}
-
-/// A query with WITH runs in three phases: collect the bindings of the
-/// clauses before WITH, project them through WITH, then run the clauses after
-/// WITH once per projected row.
-fn runWithPipeline(self: *Executor, with_clause: Index, matches: MatchClauses) ExecutionError!void {
-    self.collecting = true;
-    var start = Bindings{ .entries = .empty };
-    try self.runFrom(matches.before_with, &start, .match_found);
-    self.collecting = false;
-
-    try projection.applyWith(self, with_clause);
-
-    for (self.with_rows.items) |row| {
-        var bindings = Bindings{ .entries = .empty };
-        try bindings.entries.appendSlice(self.allocator, row.entries.items);
-        try self.runFrom(matches.after_with, &bindings, .finish_body);
-    }
-}
-
-/// Without a MATCH clause, where execution continues from.
-const Continuation = enum { match_found, finish_body };
-
-/// Runs `match_clause` from `bindings`, or (with no MATCH) continues straight
-/// at `without_match`.
-fn runFrom(self: *Executor, match_clause: ?Index, bindings: *Bindings, without_match: Continuation) ExecutionError!void {
-    if (match_clause) |clause| return self.runMatch(clause, bindings);
-    self.has_match = false;
-    switch (without_match) {
-        .match_found => try self.matchFound(bindings),
-        .finish_body => try self.finishBody(bindings),
-    }
 }
 
 /// The edge type to bind for a matched edge: the pattern's own (owned by the
@@ -320,73 +186,10 @@ pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) Exe
     return self.allocator.dupe(u8, stored);
 }
 
-/// Runs one MATCH clause (its patterns + WHERE) from `bindings`, recursing
-/// through `matchPatterns`/`runStep` down to `matchFound`.
-pub fn runMatch(self: *Executor, match_clause: Index, bindings: *Bindings) ExecutionError!void {
-    const match_children = self.ast.nodeChildren(match_clause);
-    self.has_match = true;
-    // children = [pattern0, ..., patternN, where_expression]
-    self.patterns = match_children[0 .. match_children.len - 1];
-    self.where_expression = match_children[match_children.len - 1];
-    try pattern_matching.matchPatterns(self, 0, bindings);
-}
-
-/// Leaf of a match: apply the MATCH `WHERE`, then either outer-join through
-/// OPTIONAL MATCH, collect the bindings (WITH pipeline), or apply updates +
-/// RETURN.
+/// Called by pattern matching for every complete match of the MATCH being
+/// run: keeps it, as a row of its own, if it passes the MATCH's WHERE.
 pub fn matchFound(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    if (self.has_match and !try expressions.evaluateBool(self, self.where_expression, bindings)) return;
-    if (self.in_optional) {
-        self.optional_matched = true;
-        return self.afterOptional(bindings);
-    }
-    if (self.optional_match != null) {
-        return pattern_matching.runOptional(self, bindings);
-    }
-    if (self.unwind != null) {
-        return pattern_matching.runUnwind(self, bindings);
-    }
-    return self.afterOptional(bindings);
-}
-
-/// Continuation after (optional) matching: collect or finish.
-pub fn afterOptional(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    if (self.collecting) {
-        return projection.collect(self, bindings);
-    }
-    try self.finishBody(bindings);
-}
-
-pub fn finishBody(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    for (self.update_clauses.items) |clause| {
-        switch (self.ast.kind(clause)) {
-            .create_clause => for (self.ast.nodeChildren(clause)) |pattern| {
-                try writes.applyCreate(self, pattern, bindings);
-            },
-            .merge_clause => try writes.applyMerge(self, clause, bindings),
-            .set_clause => try writes.applySet(self, clause, bindings),
-            .delete_clause => try writes.applyDelete(self, clause, bindings),
-            .remove_clause => try writes.applyRemove(self, clause, bindings),
-            else => {},
-        }
-    }
-
-    if (self.return_clause) |return_clause| {
-        const parts = projection.returnClauseParts(self, return_clause);
-
-        if (self.has_aggregates) {
-            try aggregation.accumulate(self, bindings);
-            return;
-        }
-
-        var out = std.ArrayList(Value).empty;
-        for (self.ast.nodeChildren(parts.projection)) |item| {
-            const v = try expressions.evaluate(self, self.ast.nodeChildren(item)[0], bindings);
-            try out.append(self.allocator, v);
-        }
-        // The ORDER BY key is evaluated now, while the row's variables are
-        // still bound: it may use variables that are not projected.
-        const sort_key = try projection.returnSortKey(self, parts, out.items, bindings);
-        try self.rows.append(self.allocator, .{ .item = out, .sort_key = sort_key });
-    }
+    if (!try expressions.evaluateBool(self, self.where_expression, bindings)) return;
+    const output = self.matches orelse return;
+    try output.append(self.allocator, try clauses.copyRow(self, bindings.*));
 }

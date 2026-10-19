@@ -130,69 +130,85 @@ pub const Parser = struct {
 
     // --- Grammar -----------------------------------------------------------
 
+    /// A query is a sequence of clauses, as in openCypher: reading clauses
+    /// (MATCH, OPTIONAL MATCH, UNWIND), WITH, updating clauses (CREATE, MERGE,
+    /// SET, DELETE, REMOVE) and a final RETURN. After an update, reading again
+    /// needs a WITH in between; the query ends with RETURN or an update.
     fn parseQuery(self: *Parser) ParseError!Index {
         var clauses = std.ArrayList(Index).empty;
         defer clauses.deinit(self.ast.allocator);
 
-        if (self.atKeyword("MATCH")) {
-            try clauses.append(self.ast.allocator, try self.parseMatchClause());
-        }
-
-        if (self.atKeyword("OPTIONAL")) {
-            try clauses.append(self.ast.allocator, try self.parseOptionalMatchClause());
-        }
-
-        if (self.atKeyword("UNWIND")) {
-            try clauses.append(self.ast.allocator, try self.parseUnwindClause());
-        }
-
-        if (self.atKeyword("WITH")) {
-            try clauses.append(self.ast.allocator, try self.parseWithClause());
-            // An optional second MATCH after WITH continues the traversal.
-            if (self.atKeyword("MATCH")) {
-                try clauses.append(self.ast.allocator, try self.parseMatchClause());
+        var after_update = false;
+        var last_reads = false; // the last clause reads (it cannot end the query)
+        while (self.peek().kind != .end_of_input) {
+            if (self.atKeyword("MATCH") or self.atKeyword("OPTIONAL") or self.atKeyword("UNWIND")) {
+                if (after_update) {
+                    self.fail("a WITH is needed between an updating clause and {s}", .{describeToken(self.peek())});
+                    return error.UnexpectedToken;
+                }
+                const clause = if (self.atKeyword("MATCH"))
+                    try self.parseMatchClause()
+                else if (self.atKeyword("OPTIONAL"))
+                    try self.parseOptionalMatchClause()
+                else
+                    try self.parseUnwindClause();
+                try clauses.append(self.ast.allocator, clause);
+                last_reads = true;
+            } else if (self.atKeyword("WITH")) {
+                try clauses.append(self.ast.allocator, try self.parseWithClause());
+                after_update = false;
+                last_reads = true;
+            } else if (self.atKeyword("RETURN")) {
+                _ = self.advance();
+                try clauses.append(self.ast.allocator, try self.parseReturnClause());
+                if (self.peek().kind != .end_of_input) {
+                    self.fail("RETURN must be the last clause, found {s} after it", .{describeToken(self.peek())});
+                    return error.UnexpectedToken;
+                }
+                last_reads = false;
+            } else if (try self.parseUpdatingClause()) |clause| {
+                try clauses.append(self.ast.allocator, clause);
+                after_update = true;
+                last_reads = false;
+            } else {
+                self.fail("unexpected {s} (unsupported syntax or missing clause)", .{describeToken(self.peek())});
+                return error.UnexpectedToken;
             }
-        }
-
-        while (true) {
-            if (self.atKeyword("CREATE")) {
-                _ = self.advance();
-                try clauses.append(self.ast.allocator, try self.parseCreateClause());
-            } else if (self.atKeyword("MERGE")) {
-                try clauses.append(self.ast.allocator, try self.parseMergeClause());
-            } else if (self.atKeyword("SET")) {
-                _ = self.advance();
-                const sc = try self.parseSetClause();
-                try clauses.append(self.ast.allocator, sc);
-            } else if (self.atKeyword("DELETE")) {
-                _ = self.advance();
-                const dc = try self.parseDeleteClause(false);
-                try clauses.append(self.ast.allocator, dc);
-            } else if (self.atKeyword("DETACH")) {
-                _ = self.advance();
-                try self.expectKeyword("DELETE");
-                const dc = try self.parseDeleteClause(true);
-                try clauses.append(self.ast.allocator, dc);
-            } else if (self.atKeyword("REMOVE")) {
-                try clauses.append(self.ast.allocator, try self.parseRemoveClause());
-            } else break;
-        }
-
-        if (self.atKeyword("RETURN")) {
-            _ = self.advance();
-            const rc = try self.parseReturnClause();
-            try clauses.append(self.ast.allocator, rc);
-        }
-
-        if (self.peek().kind != .end_of_input) {
-            self.fail("unexpected {s} (unsupported syntax or missing clause)", .{describeToken(self.peek())});
-            return error.UnexpectedToken;
         }
         if (clauses.items.len == 0) {
             self.fail("expected a clause (MATCH, CREATE, RETURN, ...)", .{});
             return error.UnexpectedToken;
         }
+        if (last_reads) {
+            self.fail("a query must end with RETURN or an updating clause", .{});
+            return error.UnexpectedToken;
+        }
         return self.ast.addNode(.query, .{ .none = {} }, clauses.items);
+    }
+
+    /// CREATE, MERGE, SET, DELETE, DETACH DELETE or REMOVE; null if the next
+    /// token starts none of them.
+    fn parseUpdatingClause(self: *Parser) ParseError!?Index {
+        if (self.atKeyword("CREATE")) {
+            _ = self.advance();
+            return try self.parseCreateClause();
+        }
+        if (self.atKeyword("MERGE")) return try self.parseMergeClause();
+        if (self.atKeyword("SET")) {
+            _ = self.advance();
+            return try self.parseSetClause();
+        }
+        if (self.atKeyword("DELETE")) {
+            _ = self.advance();
+            return try self.parseDeleteClause(false);
+        }
+        if (self.atKeyword("DETACH")) {
+            _ = self.advance();
+            try self.expectKeyword("DELETE");
+            return try self.parseDeleteClause(true);
+        }
+        if (self.atKeyword("REMOVE")) return try self.parseRemoveClause();
+        return null;
     }
 
     fn parseMatchClause(self: *Parser) ParseError!Index {

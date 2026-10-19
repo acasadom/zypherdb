@@ -25,8 +25,9 @@ MATCH …  [OPTIONAL MATCH …]  [UNWIND …]  [WITH …]  [MATCH …]  [writes 
 | `REMOVE` | remove a property (`n.prop`) or a label (`n:Label`) |
 | `RETURN` | project the result (`DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`) |
 
-At most one `MATCH` before and one after `WITH` is supported, and at most one each of `OPTIONAL
-MATCH`, `UNWIND` and `WITH`.
+Clauses chain in any number and order, as in openCypher: each sees the rows and effects of the
+ones before it. After an updating clause, reading again (`MATCH`, `UNWIND`) needs a `WITH` in
+between; `RETURN`, if present, comes last; a query ends with `RETURN` or an updating clause.
 
 ## Patterns
 
@@ -102,7 +103,4 @@ and relationships (`RETURN n`). Nulls come from `OPTIONAL MATCH`, missing proper
 
 ## Notes on the subset
 
-- `avg` (needs floats) and a `WHERE` *outside* an `OPTIONAL MATCH` (post-join filter) are not yet
-  supported — filter with a `WITH … WHERE` step.
-- `UNWIND` after `WITH` (unwinding a `collect`ed list) is deferred; project the list and `size`
-  it, or `WITH collect(…) AS l` and iterate client-side.
+- `avg` (needs floats) is not yet supported.

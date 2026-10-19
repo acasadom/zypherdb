@@ -1,8 +1,7 @@
 //! Pattern matching: runs the planned steps (scan, expand, edge-index scan)
-//! over the graph, plus OPTIONAL MATCH (outer join) and UNWIND.
+//! over the graph, reporting each complete match to `Executor.matchFound`.
 
 const std = @import("std");
-const Index = @import("../query/ast.zig").Index;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Direction = @import("../storage/graph.zig").Direction;
 const NodeIdIterator = @import("../storage/graph.zig").NodeIdIterator;
@@ -159,7 +158,7 @@ fn followEdge(self: *Executor, edge: PatternEdge, ref: Relationship, next_step: 
         if (!bound.eql(ref)) return;
     }
     // Relationship uniqueness: one MATCH never binds the same edge twice.
-    for (self.used_edges.items[self.edge_scope_start..]) |used| {
+    for (self.used_edges.items) |used| {
         if (used.eql(ref)) return;
     }
     const saved = bindings.mark();
@@ -226,117 +225,6 @@ const MatchingEdges = struct {
         }
     }
 };
-
-/// UNWIND: for each element of the evaluated list, bind the variable and
-/// continue (collect or finish). A null list yields no rows.
-pub fn runUnwind(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    const unwind = self.unwind.?;
-    const expr = self.ast.nodeChildren(unwind)[0];
-    const variable_name = self.ast.data(unwind).unwind.variable_name;
-    const v = try expressions.evaluate(self, expr, bindings);
-    switch (v) {
-        .list => |items| {
-            for (items) |item| {
-                const saved = bindings.mark();
-                defer bindings.restore(saved);
-                try bindings.put(self.allocator, variable_name, item);
-                try self.afterOptional(bindings);
-            }
-        },
-        .null => {},
-        else => return error.TypeMismatch,
-    }
-}
-
-/// Outer-joins the OPTIONAL MATCH pattern onto `bindings`: emits one row per
-/// match, or (if none match) one row with the optional variables bound to
-/// null.
-pub fn runOptional(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    const optional_match = self.optional_match.?;
-    const optional_match_children = self.ast.nodeChildren(optional_match);
-
-    // Save the in-flight match context; the optional match reuses the same
-    // slots (`patterns`/`nodes`/`edges`/`steps`/`where_expression`/`has_match`).
-    const saved_patterns = self.patterns;
-    const saved_where = self.where_expression;
-    const saved_has_match = self.has_match;
-    const saved_nodes = self.nodes;
-    const saved_edges = self.edges;
-    const saved_steps = self.steps;
-    const saved_in_optional = self.in_optional;
-    const saved_edge_scope_start = self.edge_scope_start;
-    // The OPTIONAL MATCH is its own clause: its edges may repeat the MATCH's.
-    self.edge_scope_start = self.used_edges.items.len;
-
-    self.in_optional = true;
-    self.optional_matched = false;
-    self.patterns = optional_match_children[0 .. optional_match_children.len - 1];
-    self.where_expression = optional_match_children[optional_match_children.len - 1];
-    self.has_match = true;
-
-    try matchPatterns(self, 0, bindings);
-
-    if (!self.optional_matched) {
-        const saved = bindings.mark();
-        defer bindings.restore(saved);
-        try bindOptionalNulls(self, bindings);
-        try self.afterOptional(bindings);
-    }
-
-    // Restore the outer match context.
-    self.patterns = saved_patterns;
-    self.where_expression = saved_where;
-    self.has_match = saved_has_match;
-    self.nodes = saved_nodes;
-    self.edges = saved_edges;
-    self.steps = saved_steps;
-    self.in_optional = saved_in_optional;
-    self.edge_scope_start = saved_edge_scope_start;
-}
-
-/// Collects the variable names introduced by the OPTIONAL MATCH patterns.
-pub fn collectOptionalVariables(self: *Executor, optional_match: Index) ExecutionError!void {
-    self.optional_variables = .empty;
-    try collectClauseVariables(self, optional_match, &self.optional_variables);
-}
-
-/// Appends every node/edge variable name of a MATCH/OPTIONAL MATCH clause's
-/// patterns to `out`.
-pub fn collectClauseVariables(self: *Executor, clause: Index, out: *std.ArrayList([]const u8)) ExecutionError!void {
-    const children = self.ast.nodeChildren(clause);
-    for (children[0 .. children.len - 1]) |pattern| {
-        const chain = self.ast.nodeChildren(pattern);
-        for (chain) |element| {
-            switch (self.ast.kind(element)) {
-                .node_pattern => {
-                    const v = self.ast.data(element).node_pattern.variable_name;
-                    if (v.len > 0) try out.append(self.allocator, v);
-                },
-                .edge_pattern => {
-                    const v = self.ast.data(element).edge_pattern.variable_name;
-                    if (v.len > 0) try out.append(self.allocator, v);
-                },
-                else => {},
-            }
-        }
-    }
-}
-
-pub fn isMainVariable(self: *Executor, name: []const u8) bool {
-    for (self.main_variables.items) |v| {
-        if (std.mem.eql(u8, v, name)) return true;
-    }
-    return false;
-}
-
-/// Binds every optional-only variable to null (unmatched outer row, or a
-/// match whose WHERE filtered it out). Shared variables stay bound.
-pub fn bindOptionalNulls(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    for (self.optional_variables.items) |name| {
-        if (isMainVariable(self, name)) continue;
-        try bindings.put(self.allocator, name, .null);
-    }
-}
 
 pub fn nodeSeeksMatch(self: *Executor, node_index: usize, id: NodeId, bindings: *Bindings) ExecutionError!bool {
     for (self.nodes.items[node_index].seeks.items) |seek| {

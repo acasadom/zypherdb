@@ -85,12 +85,14 @@ flowchart TB
 | `src/query/parser.zig` | The `Parser` and the clause/pattern grammar. |
 | `src/query/expression_parser.zig` | The expression grammar, by precedence. |
 | `src/query/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, `addNode`/`nodeChildren`/`intern`, `sameExpression`. |
-| `src/execution/Executor.zig` | The executor's state and `run()`: classify clauses, open one transaction, run the match (or the WITH pipeline), post-process RETURN. |
+| `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, then the clauses as a pipeline of rows. |
+| `src/execution/clauses.zig` | The pipeline's MATCH / OPTIONAL MATCH, UNWIND and write clauses: rows in, rows out. |
 | `src/execution/planner.zig` | Pattern planning: the chain of `PatternNode`s/`PatternEdge`s, predicate pushdown, anchor choice, `PlanStep`s. |
-| `src/execution/pattern_matching.zig` | Runs the steps (`scanNodes`, `scanEdgeIndex`, `expandEdge`), OPTIONAL MATCH and UNWIND. |
+| `src/execution/pattern_matching.zig` | Runs the steps (`scanNodes`, `scanEdgeIndex`, `expandEdge`) of one pattern. |
 | `src/execution/expressions.zig` | Expression evaluation and operators, with three-valued null logic. |
 | `src/execution/aggregation.zig` | Aggregate states and the generic `Grouping(Key, KeyContext)`. |
-| `src/execution/projection.zig` | WITH, and RETURN's DISTINCT / ORDER BY / SKIP / LIMIT (`Sortable(T)`, `sortByKey`). |
+| `src/execution/projection.zig` | WITH and RETURN: projection, DISTINCT, ORDER BY, SKIP, LIMIT (`Sortable(T)`, `sortByKey`). |
+| `src/execution/functions.zig` | The built-in functions, as one table. |
 | `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE. |
 | `src/execution/bindings.zig` | `Binding`/`Bindings`: what each query variable is bound to (regular types). |
 | `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. |
