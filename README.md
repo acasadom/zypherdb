@@ -128,6 +128,8 @@ See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 
 ## Status
 
-The openCypher functional surface and the performance work are complete, covered by a test suite
-that runs the whole pipeline end to end (`zig build test`). See `STATUS.md` (kept out of git) for
-the working notes and the roadmap.
+acmedb is measured against the [openCypher TCK](tests/tck/README.md), the reference scenarios of
+the language: **175 of 3202 scenarios that expect a result pass (5.5%)** — see
+[tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area and what is missing. The
+supported subset above works and is covered by `zig build test`; the TCK shows how far that subset
+is from openCypher. See `STATUS.md` (kept out of git) for the working notes and the roadmap.

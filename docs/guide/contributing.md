@@ -26,6 +26,16 @@ make test-py      # Python bindings (pip install -e "python[dev]" once)
 
 A bug fix comes with a regression test that fails without the fix.
 
+### The openCypher TCK
+
+`make tck` runs the [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck)
+(vendored in `tests/tck/`, see its README) and fails if a scenario in `tests/tck/baseline.txt` no
+longer passes; CI does the same. Language work is measured there: pick a reason from
+`tests/tck/REPORT.md`, implement it, run `make tck`, then record the newly passing scenarios with
+`python -I tests/tck/runner.py --update-baseline --report tests/tck/REPORT.md` in the same commit.
+A scenario that leaves the baseline needs an explanation in the commit message (for example, an
+expected error that used to match only by accident).
+
 ## Principles
 
 The style follows Alexander Stepanov's generic programming, within Zig's conventions.
