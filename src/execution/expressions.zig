@@ -6,6 +6,8 @@ const Index = @import("../query/ast.zig").Index;
 const BinaryOperator = @import("../query/ast.zig").BinaryOperator;
 const UnaryOperator = @import("../query/ast.zig").UnaryOperator;
 const Value = @import("../value.zig").Value;
+const MapEntry = @import("../value.zig").MapEntry;
+const mapOf = @import("../value.zig").mapOf;
 
 const Executor = @import("Executor.zig");
 const functions = @import("functions.zig");
@@ -103,30 +105,24 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             };
         },
         .property_access => blk: {
-            const object = self.ast.nodeChildren(expr)[0];
-            if (self.ast.kind(object) != .variable) return error.InvalidExpression;
-            const name = self.ast.data(object).text;
-            const property = self.ast.data(expr).text;
-            switch (bindings.get(name) orelse {
-                self.fail(.unknown_variable, "unknown variable '{s}'", .{name});
-                return error.UnknownVariable;
-            }) {
-                // A property the entity does not have reads as null, unless the
-                // entity itself was deleted (openCypher's EntityNotFound).
-                .node => |id| {
-                    if (try self.graph.getProperty(id, property, self.allocator)) |value| break :blk value;
-                    if (!try self.graph.hasNode(id)) return deletedEntity(self, "node", property);
-                    break :blk .{ .null = {} };
-                },
-                .relationship => |r| {
-                    if (try self.graph.getEdgeProperty(r.src, r.dst, r.edge_type, property, self.allocator)) |value| break :blk value;
-                    if (!try self.graph.hasEdge(r.src, r.dst, r.edge_type)) return deletedEntity(self, "relationship", property);
-                    break :blk .{ .null = {} };
-                },
-                // A property access on null yields null.
-                .null => break :blk .{ .null = {} },
-                else => return error.TypeMismatch,
+            const object = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
+            break :blk try propertyOf(self, object, self.ast.data(expr).text);
+        },
+        .map_literal => blk: {
+            const property_nodes = self.ast.nodeChildren(expr);
+            const entries = try self.allocator.alloc(MapEntry, property_nodes.len);
+            for (entries, property_nodes) |*entry, property_node| {
+                entry.* = .{ .key = self.ast.data(property_node).text, .value = try evaluate(self, self.ast.nodeChildren(property_node)[0], bindings) };
             }
+            break :blk mapOf(entries);
+        },
+        .subscript => blk: {
+            const children = self.ast.nodeChildren(expr);
+            break :blk try subscript(self, try evaluate(self, children[0], bindings), try evaluate(self, children[1], bindings));
+        },
+        .slice => blk: {
+            const children = self.ast.nodeChildren(expr);
+            break :blk try slice(self, try evaluate(self, children[0], bindings), try evaluate(self, children[1], bindings), try evaluate(self, children[2], bindings));
         },
         .binary_operation => blk: {
             const operator = self.ast.data(expr).binary_operator;
@@ -142,6 +138,78 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         },
         else => error.InvalidExpression,
     };
+}
+
+/// `object.key`: a node's or relationship's property, or a map's entry; null
+/// when missing (or when `object` is null). Reading a property of an entity
+/// the query deleted is an error (openCypher's EntityNotFound).
+pub fn propertyOf(self: *Executor, object: Value, key: []const u8) ExecutionError!Value {
+    switch (object) {
+        .null => return .{ .null = {} },
+        .map => |entries| return Value.mapGet(entries, key),
+        .node => |id| {
+            if (try self.graph.getProperty(id, key, self.allocator)) |value| return value;
+            if (!try self.graph.hasNode(id)) return deletedEntity(self, "node", key);
+            return .{ .null = {} };
+        },
+        .relationship => |r| {
+            if (try self.graph.getEdgeProperty(r.src, r.dst, r.edge_type, key, self.allocator)) |value| return value;
+            if (!try self.graph.hasEdge(r.src, r.dst, r.edge_type)) return deletedEntity(self, "relationship", key);
+            return .{ .null = {} };
+        },
+        else => return typeMismatch(self, "only nodes, relationships and maps have properties"),
+    }
+}
+
+/// `value[index]`: a list element (a negative index counts from the end; out
+/// of range is null), or a map entry / entity property by a string key.
+fn subscript(self: *Executor, value: Value, index: Value) ExecutionError!Value {
+    if (value.isNull() or index.isNull()) return .{ .null = {} };
+    switch (value) {
+        .list => |items| {
+            if (index != .int) return typeMismatch(self, "a list index must be an integer");
+            const position = listPosition(index.int, items.len) orelse return .{ .null = {} };
+            return items[position];
+        },
+        .map, .node, .relationship => {
+            if (index != .string) return typeMismatch(self, "a map or entity key must be a string");
+            return propertyOf(self, value, index.string);
+        },
+        else => return typeMismatch(self, "only lists, maps and entities can be indexed"),
+    }
+}
+
+/// `list[from..to]`: the elements from `from` (inclusive) to `to`
+/// (exclusive); negative bounds count from the end, a null bound is open,
+/// and bounds are clamped to the list.
+fn slice(self: *Executor, value: Value, from: Value, to: Value) ExecutionError!Value {
+    if (value.isNull()) return .{ .null = {} };
+    if (value != .list) return typeMismatch(self, "only lists can be sliced");
+    const items = value.list;
+    const length: i64 = @intCast(items.len);
+    const start = try sliceBound(self, from, 0, length);
+    const end = try sliceBound(self, to, length, length);
+    if (start >= end) return .{ .list = &.{} };
+    return .{ .list = items[@intCast(start)..@intCast(end)] };
+}
+
+fn sliceBound(self: *Executor, bound: Value, open: i64, length: i64) ExecutionError!i64 {
+    const raw = switch (bound) {
+        .null => return open,
+        .int => |n| n,
+        else => return typeMismatch(self, "slice bounds must be integers"),
+    };
+    const resolved = if (raw < 0) length + raw else raw;
+    return std.math.clamp(resolved, 0, length);
+}
+
+/// The position of `index` in a list of `length`, counting from the end when
+/// negative; null when out of range.
+fn listPosition(index: i64, length: usize) ?usize {
+    const signed_length: i64 = @intCast(length);
+    const resolved = if (index < 0) signed_length + index else index;
+    if (resolved < 0 or resolved >= signed_length) return null;
+    return @intCast(resolved);
 }
 
 pub fn applyBinaryOperator(self: *Executor, operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {

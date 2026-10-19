@@ -201,3 +201,10 @@ def test_arithmetic(db):
         db.query("RETURN 1 / 0")
     with pytest.raises(ArithmeticQueryError):
         db.query("RETURN 9223372036854775807 + 1")
+
+
+def test_maps(db):
+    assert db.query("RETURN {b: 1, a: [true]}") == [[{"a": [True], "b": 1}]]
+    assert db.query("RETURN $m.zone, $m['floors'][0]", m={"zone": "Z1", "floors": [3]}) == [["Z1", 3]]
+    with pytest.raises(TypeError):
+        db.query("RETURN $m", m={1: "x"})

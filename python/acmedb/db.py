@@ -33,6 +33,12 @@ def _check_parameter(name: str, value):
         for item in value:
             _check_parameter(name, item)
         return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"parameter {name!r}: map keys must be str, not {type(key).__name__}")
+            _check_parameter(name, item)
+        return
     raise TypeError(f"parameter {name!r}: {type(value).__name__} values are not supported")
 
 
@@ -108,8 +114,9 @@ class Database:
             db.query("MATCH (c:Card {id: $card}) RETURN c", card=123)
             db.query("MATCH (z:Zone) WHERE z.name IN $zones RETURN z", {"zones": ["A", "B"]})
 
-        Parameter values may be `int` (64-bit), `str`, `bool`, `None` and
-        lists or tuples of those.
+        Parameter values may be `int` (64-bit), `str`, `bool`, `None`, and
+        lists, tuples and dicts (with `str` keys) of those. Maps in results
+        come back as dicts.
 
         Cells become `int`, `str`, `bool`, `None` (null), a `list`, or a whole
         :class:`Node` / :class:`Relationship`; rows are lists of cells. Raises a

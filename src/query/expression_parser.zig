@@ -188,7 +188,54 @@ pub fn parseListLiteral(self: *Parser) ParseError!Index {
     return self.ast.addNode(.list_literal, .{ .none = {} }, items.items);
 }
 
+/// An atom followed by any number of postfix operators: `.key` (property or
+/// map entry), `[index]` (list element, map entry by key) and `[from..to]`
+/// (list slice; either end may be left out).
 pub fn parsePrimary(self: *Parser) ParseError!Index {
+    var expr = try parseAtom(self);
+    while (true) {
+        if (self.at(.dot)) {
+            _ = self.advance();
+            const key = try self.internIdentifier();
+            expr = try self.ast.addNode(.property_access, .{ .text = key }, &.{expr});
+        } else if (self.at(.left_bracket)) {
+            _ = self.advance();
+            const from = if (self.at(.range_dots)) try nullNode(self) else try parseExpression(self);
+            if (self.at(.range_dots)) {
+                _ = self.advance();
+                const to = if (self.at(.right_bracket)) try nullNode(self) else try parseExpression(self);
+                try self.expect(.right_bracket);
+                expr = try self.ast.addNode(.slice, .{ .none = {} }, &.{ expr, from, to });
+            } else {
+                try self.expect(.right_bracket);
+                expr = try self.ast.addNode(.subscript, .{ .none = {} }, &.{ expr, from });
+            }
+        } else return expr;
+    }
+}
+
+fn nullNode(self: *Parser) ParseError!Index {
+    return self.ast.addNode(.null_literal, .{ .none = {} }, &.{});
+}
+
+/// A map literal `{key: value, ...}` (the empty map is allowed).
+fn parseMapLiteral(self: *Parser) ParseError!Index {
+    try self.expect(.left_brace);
+    var entries = std.ArrayList(Index).empty;
+    defer entries.deinit(self.ast.allocator);
+    while (!self.at(.right_brace)) {
+        const key = try self.internIdentifier();
+        try self.expect(.colon);
+        const value = try parseExpression(self);
+        try entries.append(self.ast.allocator, try self.ast.addNode(.property, .{ .text = key }, &.{value}));
+        if (!self.at(.comma)) break;
+        _ = self.advance();
+    }
+    try self.expect(.right_brace);
+    return self.ast.addNode(.map_literal, .{ .none = {} }, entries.items);
+}
+
+fn parseAtom(self: *Parser) ParseError!Index {
     if (self.atKeyword("CASE")) return parseCaseExpression(self);
     const t = self.peek();
     switch (t.kind) {
@@ -219,6 +266,7 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
             return parseVariableRef(self, t.text);
         },
         .left_bracket => return parseListLiteral(self),
+        .left_brace => return parseMapLiteral(self),
         .left_paren => {
             _ = self.advance();
             const e = try parseExpression(self);
@@ -249,16 +297,10 @@ fn parseFunctionCall(self: *Parser, name: []const u8) ParseError!Index {
     return self.ast.addNode(.function_call, .{ .text = try self.ast.intern(name) }, arguments.items);
 }
 
-/// A variable, optionally followed by `.property` (the name is already consumed).
+/// A variable (the name is already consumed; postfixes are read by
+/// `parsePrimary`).
 pub fn parseVariableRef(self: *Parser, text: []const u8) ParseError!Index {
-    const name = try self.ast.intern(text);
-    const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
-    if (self.at(.dot)) {
-        _ = self.advance();
-        const property = try self.internIdentifier();
-        return self.ast.addNode(.property_access, .{ .text = property }, &.{var_node});
-    }
-    return var_node;
+    return self.ast.addNode(.variable, .{ .text = try self.ast.intern(text) }, &.{});
 }
 
 pub fn parseCaseExpression(self: *Parser) ParseError!Index {

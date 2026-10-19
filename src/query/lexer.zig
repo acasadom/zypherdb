@@ -29,6 +29,7 @@ pub const TokenKind = enum {
     colon,
     comma,
     dot,
+    range_dots, // `..` in a list slice
     minus,
     star,
     plus,
@@ -70,6 +71,7 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
         .colon => "':'",
         .comma => "','",
         .dot => "'.'",
+        .range_dots => "'..'",
         .minus => "'-'",
         .star => "'*'",
         .plus => "'+'",
@@ -174,8 +176,13 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 i += 1;
             },
             '.' => {
-                try add(&tokens, allocator, .dot, src[i .. i + 1], i);
-                i += 1;
+                if (i + 1 < src.len and src[i + 1] == '.') {
+                    try add(&tokens, allocator, .range_dots, src[i .. i + 2], i);
+                    i += 2;
+                } else {
+                    try add(&tokens, allocator, .dot, src[i .. i + 1], i);
+                    i += 1;
+                }
             },
             '*' => {
                 try add(&tokens, allocator, .star, src[i .. i + 1], i);

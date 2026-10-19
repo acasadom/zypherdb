@@ -6,8 +6,8 @@
 //!   VariableAlreadyBound);
 //! - a name is a node, a relationship or a value, never two of them
 //!   (VariableTypeConflict), e.g. `(r)-[r]-()`, or `WITH 1 AS r MATCH ()-[r]-()`;
-//! - the right side of `IN` is not a literal of another type, e.g. `1 IN true`
-//!   (InvalidArgumentType).
+//! - a literal operand has a type its operator or function accepts: `1 IN true`,
+//!   `123 AND true`, `NOT {}`, `properties(1)` fail (InvalidArgumentType).
 //!
 //! The checks do not depend on the data, so they fail on an empty graph too.
 
@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 
 const Ast = @import("ast.zig").Ast;
 const Index = @import("ast.zig").Index;
+const NodeKind = @import("ast.zig").NodeKind;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 
 pub const SemanticError = Allocator.Error || error{InvalidExpression};
@@ -99,18 +100,38 @@ const Checker = struct {
     /// literal argument types (`1 IN true`) and entity functions given a
     /// variable of the wrong kind (`type(n)` with `n` a node).
     fn checkExpressions(self: *Checker, index: Index) SemanticError!void {
+        const children = self.ast.nodeChildren(index);
         switch (self.ast.kind(index)) {
-            .binary_operation => if (self.ast.data(index).binary_operator == .in_) {
-                const list = self.ast.nodeChildren(index)[1];
-                switch (self.ast.kind(list)) {
-                    .integer_literal, .string_literal, .boolean_literal => return self.fail("the right side of IN must be a list", .{}),
-                    else => {},
+            .binary_operation => switch (self.ast.data(index).binary_operator) {
+                .in_ => if (isLiteralOf(self.ast, children[1], &.{ .integer_literal, .string_literal, .boolean_literal, .map_literal })) {
+                    return self.fail("the right side of IN must be a list", .{});
+                },
+                .and_, .or_ => for (children) |operand| {
+                    if (isLiteralOf(self.ast, operand, &non_boolean_literals)) return self.fail("AND and OR need boolean operands", .{});
+                },
+                else => {},
+            },
+            .unary_operation => if (self.ast.data(index).unary_operator == .not_ and isLiteralOf(self.ast, children[0], &non_boolean_literals)) {
+                return self.fail("NOT needs a boolean operand", .{});
+            },
+            .function_call => {
+                try self.checkEntityArgument(index);
+                if (std.ascii.eqlIgnoreCase(self.ast.data(index).text, "properties") and children.len == 1 and
+                    isLiteralOf(self.ast, children[0], &.{ .integer_literal, .string_literal, .boolean_literal, .list_literal }))
+                {
+                    return self.fail("properties() takes a map, a node or a relationship", .{});
                 }
             },
-            .function_call => try self.checkEntityArgument(index),
             else => {},
         }
         for (self.ast.nodeChildren(index)) |child| try self.checkExpressions(child);
+    }
+
+    /// Literals that can never be booleans (null can: it is unknown).
+    const non_boolean_literals = [_]NodeKind{ .integer_literal, .string_literal, .list_literal, .map_literal };
+
+    fn isLiteralOf(ast: *const Ast, index: Index, kinds: []const NodeKind) bool {
+        return std.mem.indexOfScalar(NodeKind, kinds, ast.kind(index)) != null;
     }
 
     /// The kind of entity each entity function takes.

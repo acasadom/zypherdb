@@ -43,9 +43,13 @@ MATCH`, `UNWIND` and `WITH`.
 
 ## Expressions
 
-Literals: integers, strings (`'…'`), booleans (`true`/`false`), `null`, and lists (`[1, 2, 3]`).
-Property access is `n.prop` (node) or `r.prop` (relationship); a property the entity does not have
-reads as `null`.
+Literals: integers (decimal, `0x…` hex, `0o…` octal), strings (`'…'`), booleans (`true`/`false`),
+`null`, lists (`[1, 2, 3]`) and maps (`{zone: 'Z1', floors: [1, 2]}`).
+
+Any value takes the postfix operators `.key` (a node's or relationship's property, a map's entry),
+`[index]` (a list element — negative indexes count from the end, out of range is `null` — or a map
+entry by a string key) and `[from..to]` (a list slice; either end may be left out). A missing
+property or entry reads as `null`.
 
 | Operator | Meaning |
 | --- | --- |
@@ -68,7 +72,7 @@ points (`size('é')` is 1); `toUpper`/`toLower` change ASCII letters only.
 | --- | --- |
 | Lists, strings | `size`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])` |
 | Null handling | `coalesce(x, …)` — the first non-null argument |
-| Graph | `id(node)`, `labels(node)`, `type(relationship)`, `keys(entity)`, `startNode(r)`, `endNode(r)` |
+| Graph and maps | `id(node)`, `labels(node)`, `type(relationship)`, `keys(entity or map)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Conversions | `toString`, `toInteger` (null for a string that is not an integer), `toBoolean` |
 | Strings | `toLower`, `toUpper`, `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)` |
 | Numbers | `abs`, `sign` |
@@ -90,11 +94,11 @@ the projection's names with aggregates the projection computes (`ORDER BY age + 
 
 ## Types
 
-The runtime values are `int` (64-bit), `str`, `boolean`, `null`, `list`, and whole nodes and
-relationships (`RETURN n`). Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
+The runtime values are `int` (64-bit), `str`, `boolean`, `null`, `list`, `map`, and whole nodes
+and relationships (`RETURN n`). Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
 `ELSE`; they propagate: a comparison or string predicate with a null operand is null, a null
 `WHERE` filters the row out, and aggregations skip nulls. Properties stored in the graph are
-`int`, `str` or `boolean`; setting a property to `null` removes it.
+`int`, `str` or `boolean` (not lists or maps); setting a property to `null` removes it.
 
 ## Notes on the subset
 

@@ -19,6 +19,8 @@ const PropertyIterator = @import("storage/graph.zig").PropertyIterator;
 const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
 const StorageError = @import("storage/key_value_store.zig").StorageError;
 const Value = @import("value.zig").Value;
+const MapEntry = @import("value.zig").MapEntry;
+const mapOf = @import("value.zig").mapOf;
 const Executor = @import("execution/Executor.zig");
 const Row = Executor.Row;
 const Diagnostic = @import("diagnostics.zig").Diagnostic;
@@ -51,6 +53,8 @@ pub const TYPE_LIST: c_int = 4;
 /// A node or relationship cell: read it through `acmedb_result_to_json`.
 pub const TYPE_NODE: c_int = 5;
 pub const TYPE_RELATIONSHIP: c_int = 6;
+/// A map cell: read it through `acmedb_result_to_json`.
+pub const TYPE_MAP: c_int = 7;
 
 pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     const path = path_ptr[0..path_len];
@@ -169,7 +173,7 @@ pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len:
 
 /// Like `acmedb_query`, with the values of the query's `$name` parameters as
 /// a JSON object (`{"card": 123, "zones": ["A", "B"]}`). Parameter values may
-/// be integers, strings, booleans, null and (nested) lists.
+/// be integers, strings, booleans, null, lists and maps (JSON objects).
 pub export fn acmedb_query_with_parameters(context: *Context, query_ptr: [*]const u8, query_len: usize, parameters_ptr: [*]const u8, parameters_len: usize) ?*Result {
     return runQuery(context, query_ptr[0..query_len], parameters_ptr[0..parameters_len]);
 }
@@ -227,7 +231,6 @@ fn parseParameters(arena: Allocator, json: []const u8, diagnostic: *Diagnostic) 
         const value = parameterValue(arena, entry.value_ptr.*) catch |err| {
             diagnostic.set(.type_mismatch, 0, "parameter '{s}': {s}", .{ entry.key_ptr.*, switch (err) {
                 error.UnsupportedNumber => "numbers must be 64-bit integers (floating point is not supported yet)",
-                error.UnsupportedMap => "map values are not supported yet",
                 error.OutOfMemory => "out of memory",
             } });
             return error.InvalidParameters;
@@ -237,7 +240,7 @@ fn parseParameters(arena: Allocator, json: []const u8, diagnostic: *Diagnostic) 
     return parameters;
 }
 
-fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumber, UnsupportedMap, OutOfMemory }!Value {
+fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumber, OutOfMemory }!Value {
     return switch (json) {
         .null => .{ .null = {} },
         .bool => |b| .{ .boolean = b },
@@ -249,7 +252,15 @@ fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumb
             for (values, items.items) |*value, item| value.* = try parameterValue(arena, item);
             break :blk .{ .list = values };
         },
-        .object => error.UnsupportedMap,
+        .object => |object| blk: {
+            const entries = try arena.alloc(MapEntry, object.count());
+            var iterator = object.iterator();
+            var i: usize = 0;
+            while (iterator.next()) |entry| : (i += 1) {
+                entries[i] = .{ .key = entry.key_ptr.*, .value = try parameterValue(arena, entry.value_ptr.*) };
+            }
+            break :blk mapOf(entries);
+        },
     };
 }
 
@@ -405,6 +416,16 @@ fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: V
             try appendSnapshotProperties(buffer, result_allocator, if (data) |node| node.properties else &.{});
             try buffer.appendSlice(result_allocator, "}}");
         },
+        .map => |entries| {
+            try buffer.append(result_allocator, '{');
+            for (entries, 0..) |entry, i| {
+                if (i > 0) try buffer.append(result_allocator, ',');
+                try appendJsonString(buffer, result_allocator, entry.key);
+                try buffer.append(result_allocator, ':');
+                try appendJsonValue(buffer, result_allocator, entry.value, entities);
+            }
+            try buffer.append(result_allocator, '}');
+        },
         .relationship => |r| {
             const properties: []const SnapshotProperty = if (entities) |snapshot| snapshot.relationships.getContext(r, .{}) orelse &.{} else &.{};
             try buffer.print(result_allocator, "{{\"~relationship\":{{\"source\":{d},\"target\":{d},\"type\":", .{ r.src, r.dst });
@@ -480,6 +501,7 @@ pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) 
         .list => TYPE_LIST,
         .node => TYPE_NODE,
         .relationship => TYPE_RELATIONSHIP,
+        .map => TYPE_MAP,
     };
 }
 
@@ -543,6 +565,7 @@ pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, co
         .list => TYPE_LIST,
         .node => TYPE_NODE,
         .relationship => TYPE_RELATIONSHIP,
+        .map => TYPE_MAP,
     };
 }
 

@@ -173,8 +173,7 @@ pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) Executi
         const access = item_children[0];
         const value_expression = item_children[1];
         const property = self.ast.data(access).text;
-        const object = self.ast.nodeChildren(access)[0];
-        const name = self.ast.data(object).text;
+        const name = try targetVariable(self, self.ast.nodeChildren(access)[0]);
         const value = try expressions.evaluate(self, value_expression, bindings);
         switch (bindings.get(name) orelse return error.UnknownVariable) {
             .node => |id| try setNodeProperty(self, id, property, value),
@@ -189,7 +188,7 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
         switch (self.ast.kind(item)) {
             .property_access => {
                 const property = self.ast.data(item).text;
-                const name = self.ast.data(self.ast.nodeChildren(item)[0]).text;
+                const name = try targetVariable(self, self.ast.nodeChildren(item)[0]);
                 switch (bindings.get(name) orelse return error.UnknownVariable) {
                     .node => |id| try self.graph.removeProperty(id, property),
                     .relationship => |r| try self.graph.removeEdgeProperty(r.src, r.dst, r.edge_type, property),
@@ -198,7 +197,7 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
             },
             .label_reference => {
                 const label = self.ast.data(item).text;
-                const name = self.ast.data(self.ast.nodeChildren(item)[0]).text;
+                const name = try targetVariable(self, self.ast.nodeChildren(item)[0]);
                 const id = bindings.getNode(name) orelse return error.UnknownVariable;
                 try self.graph.removeLabel(id, label);
             },
@@ -249,7 +248,7 @@ fn setEdgeProperty(self: *Executor, src: NodeId, dst: NodeId, edge_type: []const
 
 fn reportPropertyError(self: *Executor, name: []const u8, err: GraphError) ExecutionError {
     if (err == error.UnsupportedPropertyType) {
-        self.fail(.type_mismatch, "property '{s}': lists cannot be stored as property values yet", .{name});
+        self.fail(.type_mismatch, "property '{s}': only integers, strings and booleans can be stored (not lists or maps)", .{name});
     }
     return err;
 }
@@ -264,4 +263,13 @@ fn rejectNullProperties(self: *Executor, pattern_index: Index, bindings: *Bindin
             return error.InvalidExpression;
         }
     }
+}
+
+/// The variable a SET or REMOVE item writes to (`n` in `n.x = 1`).
+fn targetVariable(self: *Executor, object: Index) ExecutionError![]const u8 {
+    if (self.ast.kind(object) != .variable) {
+        self.fail(.invalid_expression, "SET and REMOVE write to a variable's property", .{});
+        return error.InvalidExpression;
+    }
+    return self.ast.data(object).text;
 }

@@ -33,6 +33,9 @@ pub const Relationship = struct {
     }
 };
 
+/// One entry of a map value.
+pub const MapEntry = struct { key: []const u8, value: Value };
+
 /// A property or expression value. `int`, `string` and `boolean` are storable
 /// as properties; `null` and `list` exist during evaluation, and `node` and
 /// `relationship` are references to stored entities (what a variable of a
@@ -45,6 +48,9 @@ pub const Value = union(enum) {
     list: []const Value,
     node: u64,
     relationship: Relationship,
+    /// Entries sorted by key, keys unique (build with `mapOf`), so maps that
+    /// hold the same entries are equal whatever order they were written in.
+    map: []const MapEntry,
 
     pub fn isNull(self: Value) bool {
         return self == .null;
@@ -56,11 +62,11 @@ pub const Value = union(enum) {
         return order(a, b) == .eq;
     }
 
-    /// The openCypher global sort order, ascending: node < relationship <
-    /// list < string < boolean < number < null. Within a type, nodes compare
-    /// by id, relationships by (source, target, type), lists
-    /// lexicographically, strings by byte (= Unicode code point, for UTF-8),
-    /// and `false < true`.
+    /// The openCypher global sort order, ascending: map < node <
+    /// relationship < list < string < boolean < number < null. Within a type,
+    /// maps compare entry by entry (key, then value), nodes by id,
+    /// relationships by (source, target, type), lists lexicographically,
+    /// strings by byte (= Unicode code point, for UTF-8), and `false < true`.
     pub fn order(a: Value, b: Value) std.math.Order {
         const rank_order = std.math.order(typeRank(a), typeRank(b));
         if (rank_order != .eq) return rank_order;
@@ -72,7 +78,16 @@ pub const Value = union(enum) {
             .list => |x| orderSequences(x, b.list),
             .node => |x| std.math.order(x, b.node),
             .relationship => |x| x.order(b.relationship),
+            .map => |x| orderMaps(x, b.map),
         };
+    }
+
+    /// The value of `key` in a map, or null.
+    pub fn mapGet(entries: []const MapEntry, key: []const u8) Value {
+        for (entries) |entry| {
+            if (std.mem.eql(u8, entry.key, key)) return entry.value;
+        }
+        return .{ .null = {} };
     }
 
     /// A deep copy whose strings and lists are allocated with `allocator`.
@@ -85,6 +100,11 @@ pub const Value = union(enum) {
                 const copies = try allocator.alloc(Value, items.len);
                 for (copies, items) |*copy, item| copy.* = try item.clone(allocator);
                 break :blk .{ .list = copies };
+            },
+            .map => |entries| blk: {
+                const copies = try allocator.alloc(MapEntry, entries.len);
+                for (copies, entries) |*copy, entry| copy.* = .{ .key = try allocator.dupe(u8, entry.key), .value = try entry.value.clone(allocator) };
+                break :blk .{ .map = copies };
             },
         };
     }
@@ -106,22 +126,60 @@ pub const Value = union(enum) {
             },
             .node => |id| hasher.update(std.mem.asBytes(&id)),
             .relationship => |relationship| relationship.hash(hasher),
+            .map => |entries| {
+                hasher.update(std.mem.asBytes(&entries.len));
+                for (entries) |entry| {
+                    hasher.update(std.mem.asBytes(&entry.key.len));
+                    hasher.update(entry.key);
+                    entry.value.hash(hasher);
+                }
+            },
         }
     }
 
     /// Position of the value's type in the global sort order.
     fn typeRank(self: Value) u8 {
         return switch (self) {
-            .node => 0,
-            .relationship => 1,
-            .list => 2,
-            .string => 3,
-            .boolean => 4,
-            .int => 5,
-            .null => 6,
+            .map => 0,
+            .node => 1,
+            .relationship => 2,
+            .list => 3,
+            .string => 4,
+            .boolean => 5,
+            .int => 6,
+            .null => 7,
         };
     }
 };
+
+/// A map value from `entries` in any order: sorted by key; when a key repeats,
+/// the last entry wins (as in a Cypher map literal). Sorts `entries` in place.
+pub fn mapOf(entries: []MapEntry) Value {
+    std.sort.block(MapEntry, entries, {}, struct {
+        fn lessThan(_: void, a: MapEntry, b: MapEntry) bool {
+            return std.mem.order(u8, a.key, b.key) == .lt;
+        }
+    }.lessThan);
+    // Stable sort: of equal keys, the last written comes last; keep it.
+    var kept: usize = 0;
+    for (entries, 0..) |entry, i| {
+        if (i + 1 < entries.len and std.mem.eql(u8, entries[i + 1].key, entry.key)) continue;
+        entries[kept] = entry;
+        kept += 1;
+    }
+    return .{ .map = entries[0..kept] };
+}
+
+fn orderMaps(a: []const MapEntry, b: []const MapEntry) std.math.Order {
+    const common = @min(a.len, b.len);
+    for (a[0..common], b[0..common]) |x, y| {
+        const by_key = std.mem.order(u8, x.key, y.key);
+        if (by_key != .eq) return by_key;
+        const by_value = Value.order(x.value, y.value);
+        if (by_value != .eq) return by_value;
+    }
+    return std.math.order(a.len, b.len);
+}
 
 /// Element-wise equality of two value sequences (rows, lists, grouping keys).
 pub fn eqlSequences(a: []const Value, b: []const Value) bool {
@@ -148,7 +206,7 @@ const testing = std.testing;
 /// `depth` and small domains so that equal values actually occur.
 fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
     const strings = [_][]const u8{ "", "a", "ab", "b", "é", "Z" };
-    const kinds: u8 = if (depth == 0) 6 else 7;
+    const kinds: u8 = if (depth == 0) 6 else 8;
     return switch (random.uintLessThan(u8, kinds)) {
         4 => .{ .node = random.uintLessThan(u64, 3) },
         5 => .{ .relationship = .{ .src = random.uintLessThan(u64, 2), .dst = random.uintLessThan(u64, 2), .edge_type = strings[random.uintLessThan(usize, 3)] } },
@@ -156,6 +214,11 @@ fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
         1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },
         2 => .{ .string = strings[random.uintLessThan(usize, strings.len)] },
         3 => .{ .boolean = random.boolean() },
+        7 => blk: {
+            const entries = try arena.alloc(MapEntry, random.uintLessThan(usize, 3));
+            for (entries) |*entry| entry.* = .{ .key = strings[random.uintLessThan(usize, 3)], .value = try randomValue(random, arena, depth - 1) };
+            break :blk mapOf(entries);
+        },
         else => blk: {
             const items = try arena.alloc(Value, random.uintLessThan(usize, 3));
             for (items) |*item| item.* = try randomValue(random, arena, depth - 1);
@@ -213,6 +276,7 @@ test "hash agrees with eql" {
 
 test "order follows the openCypher global sort order" {
     const ascending = [_]Value{
+        .{ .map = &.{} },
         .{ .node = 9 },
         .{ .relationship = .{ .src = 0, .dst = 0, .edge_type = "R" } },
         .{ .list = &.{} },

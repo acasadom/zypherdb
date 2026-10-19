@@ -15,6 +15,7 @@ Result cells are tagged by type:
 | `TYPE_LIST` | `4` | list (the per-item readers cover flat lists; JSON covers any) |
 | `TYPE_NODE` | `5` | a whole node — read it through the JSON result |
 | `TYPE_RELATIONSHIP` | `6` | a whole relationship — read it through the JSON result |
+| `TYPE_MAP` | `7` | a map — a JSON object in the JSON result |
 
 ## Lifecycle
 
@@ -72,7 +73,7 @@ the bulk-ingestion path — individual mutators each commit on their own and are
 
 ```c
 Result* acmedb_query(Context*, const char* query, size_t query_len);   // NULL on failure
-// with `$name` parameters as a JSON object, e.g. {"card": 123, "zones": ["A"]}
+// with `$name` parameters as a JSON object, e.g. {"card": 123, "zones": ["A"], "m": {"k": 1}}
 Result* acmedb_query_with_parameters(Context*, const char* query, size_t query_len,
                                      const char* parameters_json, size_t parameters_len);
 void    acmedb_result_free(Result*);

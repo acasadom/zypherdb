@@ -16,6 +16,7 @@ const Ast = @import("../query/ast.zig").Ast;
 const Index = @import("../query/ast.zig").Index;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const Value = @import("../value.zig").Value;
+const MapEntry = @import("../value.zig").MapEntry;
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -49,6 +50,7 @@ const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsci
     .{ "labels", fixed(1, labels) },
     .{ "type", fixed(1, relationshipType) },
     .{ "keys", fixed(1, keys) },
+    .{ "properties", fixed(1, properties) },
     .{ "startNode", fixed(1, startNode) },
     .{ "endNode", fixed(1, endNode) },
     // Conversions.
@@ -221,19 +223,43 @@ fn relationshipType(self: *Executor, arguments: []const Value) ExecutionError!Va
     };
 }
 
-/// The property names of a node or relationship, in name order.
+/// The keys of a map, or the property names of a node or relationship, in
+/// name order.
 fn keys(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    if (arguments[0] == .map) {
+        const names = try self.allocator.alloc(Value, arguments[0].map.len);
+        for (names, arguments[0].map) |*name, entry| name.* = .{ .string = entry.key };
+        return .{ .list = names };
+    }
     if (arguments[0] != .null) try requireExisting(self, arguments[0], "keys");
     var iterator = switch (arguments[0]) {
         .null => return .{ .null = {} },
         .node => |node| try self.graph.propertiesOf(node),
         .relationship => |r| try self.graph.edgePropertiesOf(r.src, r.dst, r.edge_type),
-        else => return typeError(self, "keys", "a node or a relationship"),
+        else => return typeError(self, "keys", "a map, a node or a relationship"),
     };
     defer iterator.deinit();
     var names = std.ArrayList(Value).empty;
     while (try iterator.next()) |property| try names.append(self.allocator, .{ .string = try self.allocator.dupe(u8, property.name) });
     return .{ .list = names.items };
+}
+
+/// The properties of a node or relationship as a map (a map is returned
+/// as it is).
+fn properties(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    if (arguments[0] == .map or arguments[0] == .null) return arguments[0];
+    try requireExisting(self, arguments[0], "properties");
+    var iterator = switch (arguments[0]) {
+        .node => |node| try self.graph.propertiesOf(node),
+        .relationship => |r| try self.graph.edgePropertiesOf(r.src, r.dst, r.edge_type),
+        else => return typeError(self, "properties", "a map, a node or a relationship"),
+    };
+    defer iterator.deinit();
+    var entries = std.ArrayList(MapEntry).empty;
+    while (try iterator.next()) |property| {
+        try entries.append(self.allocator, .{ .key = try self.allocator.dupe(u8, property.name), .value = try property.value.clone(self.allocator) });
+    }
+    return .{ .map = entries.items }; // stored in name order: already sorted
 }
 
 fn startNode(self: *Executor, arguments: []const Value) ExecutionError!Value {

@@ -117,6 +117,9 @@ pub const NodeKind = enum {
     null_literal,
     parameter, // `$name`; data.text is the name
     list_literal,
+    map_literal, // `{key: value, ...}`; children are `property` nodes
+    subscript, // `value[index]`: children [value, index]
+    slice, // `list[from..to]`: children [list, from, to] (null_literal for an open end)
     function_call, // `name(args...)`; data.text is the name as written, children the arguments
     case_expression,
     binary_operation,
