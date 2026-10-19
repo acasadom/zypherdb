@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import json
+import math
 import threading
 
 from . import _ffi, entities
@@ -28,6 +29,11 @@ def _check_parameter(name: str, value):
     if isinstance(value, int):
         if not _I64_MIN <= value <= _I64_MAX:
             raise OverflowError(f"parameter {name!r}: {value} does not fit in 64 bits")
+        return
+    if isinstance(value, float):
+        # JSON, which carries the parameters, has no NaN or infinity.
+        if not math.isfinite(value):
+            raise ValueError(f"parameter {name!r}: {value} is not a finite float")
         return
     if isinstance(value, (list, tuple)):
         for item in value:
@@ -220,18 +226,20 @@ class Database:
             self._check(_ffi.lib.acmedb_add_edge(self._handle(), src, dst, enc, len(enc)), src, dst)
 
     def set_property(self, id: int, name: str, value) -> None:
-        """Set an `int` (64-bit signed) or `str` property on an existing node."""
+        """Set an `int` (64-bit signed), `float` or `str` property on an existing node."""
         _check_node_id(id)
         name_enc = name.encode()
         # bool is an int subclass, but booleans are not a storable type yet.
-        if isinstance(value, bool) or not isinstance(value, (int, str)):
-            raise TypeError(f"property values must be int or str, not {type(value).__name__}")
+        if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+            raise TypeError(f"property values must be int, float or str, not {type(value).__name__}")
         if isinstance(value, int) and not _I64_MIN <= value <= _I64_MAX:
             raise OverflowError(f"int property {value} does not fit in 64 bits")
         with self._lock:
             ctx = self._handle()
             if isinstance(value, int):
                 rc = _ffi.lib.acmedb_set_property_int64(ctx, id, name_enc, len(name_enc), value)
+            elif isinstance(value, float):
+                rc = _ffi.lib.acmedb_set_property_float64(ctx, id, name_enc, len(name_enc), value)
             else:
                 enc = value.encode()
                 rc = _ffi.lib.acmedb_set_property_string(ctx, id, name_enc, len(name_enc), enc, len(enc))

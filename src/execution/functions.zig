@@ -17,6 +17,7 @@ const Index = @import("../query/ast.zig").Index;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
+const formatFloat = @import("../value.zig").formatFloat;
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -59,6 +60,7 @@ const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsci
     // Conversions.
     .{ "toString", fixed(1, toString) },
     .{ "toInteger", fixed(1, toInteger) },
+    .{ "toFloat", fixed(1, toFloat) },
     .{ "toBoolean", fixed(1, toBoolean) },
     // Strings.
     .{ "toLower", fixed(1, toLower) },
@@ -72,6 +74,27 @@ const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsci
     // Numbers.
     .{ "abs", fixed(1, abs) },
     .{ "sign", fixed(1, sign) },
+    .{ "ceil", fixed(1, floatFunction("ceil", std.math.ceil)) },
+    .{ "floor", fixed(1, floatFunction("floor", std.math.floor)) },
+    .{ "round", fixed(1, floatFunction("round", roundHalfUp)) },
+    .{ "sqrt", fixed(1, floatFunction("sqrt", std.math.sqrt)) },
+    .{ "exp", fixed(1, floatFunction("exp", std.math.exp)) },
+    .{ "log", fixed(1, floatFunction("log", naturalLog)) },
+    .{ "log10", fixed(1, floatFunction("log10", std.math.log10)) },
+    .{ "sin", fixed(1, floatFunction("sin", std.math.sin)) },
+    .{ "cos", fixed(1, floatFunction("cos", std.math.cos)) },
+    .{ "tan", fixed(1, floatFunction("tan", std.math.tan)) },
+    .{ "cot", fixed(1, floatFunction("cot", cotangent)) },
+    .{ "asin", fixed(1, floatFunction("asin", std.math.asin)) },
+    .{ "acos", fixed(1, floatFunction("acos", std.math.acos)) },
+    .{ "atan", fixed(1, floatFunction("atan", std.math.atan)) },
+    .{ "atan2", fixed(2, atan2) },
+    .{ "degrees", fixed(1, floatFunction("degrees", std.math.radiansToDegrees)) },
+    .{ "radians", fixed(1, floatFunction("radians", std.math.degreesToRadians)) },
+    .{ "haversin", fixed(1, floatFunction("haversin", haversine)) },
+    .{ "pi", fixed(0, constant(std.math.pi)) },
+    .{ "e", fixed(0, constant(std.math.e)) },
+    .{ "rand", fixed(0, random) },
 });
 
 /// Checks every function call under `index`: the function exists and gets
@@ -338,18 +361,53 @@ fn toString(self: *Executor, arguments: []const Value) ExecutionError!Value {
         .null => .{ .null = {} },
         .string => arguments[0],
         .int => |n| .{ .string = try std.fmt.allocPrint(self.allocator, "{d}", .{n}) },
+        .float => |x| .{ .string = try formatFloat(self.allocator, x) },
         .boolean => |b| .{ .string = if (b) "true" else "false" },
-        else => typeError(self, "toString", "an integer, a string or a boolean"),
+        else => typeError(self, "toString", "a number, a string or a boolean"),
     };
 }
 
-/// An integer, or a string holding one (null if it does not).
+/// An integer; a float truncated toward zero; or a string holding a number
+/// (null if it does not, or if the number does not fit in 64 bits).
 fn toInteger(self: *Executor, arguments: []const Value) ExecutionError!Value {
     return switch (arguments[0]) {
         .null => .{ .null = {} },
         .int => arguments[0],
-        .string => |s| if (std.fmt.parseInt(i64, std.mem.trim(u8, s, " \t\r\n"), 10)) |n| .{ .int = n } else |_| .{ .null = {} },
-        else => typeError(self, "toInteger", "an integer or a string"),
+        .float => |x| truncateToInteger(x),
+        .string => |s| blk: {
+            const text = std.mem.trim(u8, s, " \t\r\n");
+            if (std.fmt.parseInt(i64, text, 10)) |n| break :blk .{ .int = n } else |_| {}
+            break :blk if (parseNumber(text)) |x| truncateToInteger(x) else .{ .null = {} };
+        },
+        else => typeError(self, "toInteger", "a number or a string"),
+    };
+}
+
+fn truncateToInteger(x: f64) Value {
+    const whole = @trunc(x);
+    if (std.math.isNan(whole) or whole < -9.223372036854775808e18 or whole >= 9.223372036854775808e18) return .{ .null = {} };
+    return .{ .int = @intFromFloat(whole) };
+}
+
+/// A decimal number as written in a query (`1.5`, `-2`, `1e3`), or null:
+/// `std.fmt.parseFloat` also reads `inf`, `nan` and hexadecimal, which are
+/// not numbers here.
+fn parseNumber(text: []const u8) ?f64 {
+    for (text) |c| {
+        if (!std.ascii.isDigit(c) and std.mem.indexOfScalar(u8, ".eE+-", c) == null) return null;
+    }
+    return std.fmt.parseFloat(f64, text) catch null;
+}
+
+/// A float; an integer converted; or a string holding a number (null if it
+/// does not).
+fn toFloat(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    return switch (arguments[0]) {
+        .null => .{ .null = {} },
+        .float => arguments[0],
+        .int => |n| .{ .float = @floatFromInt(n) },
+        .string => |s| if (parseNumber(std.mem.trim(u8, s, " \t\r\n"))) |x| .{ .float = x } else .{ .null = {} },
+        else => typeError(self, "toFloat", "a number or a string"),
     };
 }
 
@@ -482,14 +540,74 @@ fn abs(self: *Executor, arguments: []const Value) ExecutionError!Value {
             self.fail(.type_mismatch, "abs() overflows a 64-bit integer", .{});
             break :blk error.TypeMismatch;
         } else .{ .int = if (n < 0) -n else n },
-        else => typeError(self, "abs", "an integer"),
+        .float => |x| .{ .float = @abs(x) },
+        else => typeError(self, "abs", "a number"),
     };
 }
 
+/// -1, 0 or 1, as an integer (0 for NaN).
 fn sign(self: *Executor, arguments: []const Value) ExecutionError!Value {
     return switch (arguments[0]) {
         .null => .{ .null = {} },
         .int => |n| .{ .int = std.math.sign(n) },
-        else => typeError(self, "sign", "an integer"),
+        .float => |x| .{ .int = if (x > 0) 1 else if (x < 0) -1 else 0 },
+        else => typeError(self, "sign", "a number"),
     };
+}
+
+/// A function of one number that returns a float, from `operation` on f64:
+/// integer arguments are converted first.
+fn floatFunction(comptime name: []const u8, comptime operation: anytype) fn (*Executor, []const Value) ExecutionError!Value {
+    return struct {
+        fn apply(self: *Executor, arguments: []const Value) ExecutionError!Value {
+            return switch (arguments[0]) {
+                .null => .{ .null = {} },
+                .int, .float => .{ .float = @as(f64, operation(expressions.asFloat(arguments[0]))) },
+                else => typeError(self, name, "a number"),
+            };
+        }
+    }.apply;
+}
+
+fn constant(comptime x: f64) fn (*Executor, []const Value) ExecutionError!Value {
+    return struct {
+        fn apply(_: *Executor, _: []const Value) ExecutionError!Value {
+            return .{ .float = x };
+        }
+    }.apply;
+}
+
+/// Halves round up (toward positive infinity): round(2.5) is 3.0, round(-2.5) is -2.0.
+fn roundHalfUp(x: f64) f64 {
+    if (std.math.isNan(x) or std.math.isInf(x)) return x;
+    return @floor(x + 0.5);
+}
+
+fn naturalLog(x: f64) f64 {
+    return @log(x);
+}
+
+fn cotangent(x: f64) f64 {
+    return 1.0 / std.math.tan(x);
+}
+
+fn haversine(x: f64) f64 {
+    return (1.0 - std.math.cos(x)) / 2.0;
+}
+
+fn atan2(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    for (arguments) |argument| switch (argument) {
+        .null => return .{ .null = {} },
+        .int, .float => {},
+        else => return typeError(self, "atan2", "numbers"),
+    };
+    return .{ .float = std.math.atan2(expressions.asFloat(arguments[0]), expressions.asFloat(arguments[1])) };
+}
+
+/// A random float in [0, 1).
+fn random(_: *Executor, _: []const Value) ExecutionError!Value {
+    var bytes: [8]u8 = undefined;
+    std.Io.Threaded.global_single_threaded.io().random(&bytes);
+    const bits = std.mem.readInt(u64, &bytes, .little) >> 11;
+    return .{ .float = @as(f64, @floatFromInt(bits)) / @as(f64, @floatFromInt(@as(u64, 1) << 53)) };
 }

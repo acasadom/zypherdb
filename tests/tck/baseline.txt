@@ -105,6 +105,9 @@ clauses/match-where/MatchWhere3.feature: [1] Join between node identities
 clauses/match-where/MatchWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/match-where/MatchWhere3.feature: [3] Join between node properties of adjacent nodes
 clauses/match-where/MatchWhere4.feature: [1] Join nodes on inequality
+clauses/match-where/MatchWhere5.feature: [1] Filter out on null
+clauses/match-where/MatchWhere5.feature: [3] Filter out on null if the AND'd predicate evaluates to true
+clauses/match-where/MatchWhere5.feature: [4] Do not filter out on null if the OR'd predicate evaluates to true
 clauses/match-where/MatchWhere6.feature: [3] Filter node with property predicate on multi variables with multiple bindings after OPTIONAL MATCH
 clauses/match-where/MatchWhere6.feature: [4] Do not fail when predicates on optionally matched and missed nodes are invalid
 clauses/match-where/MatchWhere6.feature: [5] Matching and optionally matching with unbound nodes and equality predicate in reverse direction
@@ -549,12 +552,16 @@ clauses/remove/Remove3.feature: [7] Aggregating in `WITH` after removing a prope
 clauses/remove/Remove3.feature: [8] Limiting to zero results after removing a label from nodes affects the result set but not the side effects
 clauses/remove/Remove3.feature: [9] Skipping all results after removing a label from nodes affects the result set but not the side effects
 clauses/return-orderby/ReturnOrderBy1.feature: [10] ORDER BY DESC should order lists in the expected order
+clauses/return-orderby/ReturnOrderBy1.feature: [11] ORDER BY should order distinct types in the expected order
+clauses/return-orderby/ReturnOrderBy1.feature: [12] ORDER BY DESC should order distinct types in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [1] ORDER BY should order booleans in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [2] ORDER BY DESC should order booleans in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [3] ORDER BY should order strings in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [4] ORDER BY DESC should order strings in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [5] ORDER BY should order ints in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [6] ORDER BY DESC should order ints in the expected order
+clauses/return-orderby/ReturnOrderBy1.feature: [7] ORDER BY should order floats in the expected order
+clauses/return-orderby/ReturnOrderBy1.feature: [8] ORDER BY DESC should order floats in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [9] ORDER BY should order lists in the expected order
 clauses/return-orderby/ReturnOrderBy2.feature: [10] Returned columns do not change from using ORDER BY
 clauses/return-orderby/ReturnOrderBy2.feature: [11] Aggregates ordered by arithmetics
@@ -572,6 +579,7 @@ clauses/return-orderby/ReturnOrderBy3.feature: [1] Sort on aggregate function an
 clauses/return-orderby/ReturnOrderBy4.feature: [1] ORDER BY of a column introduced in RETURN should return salient results in ascending order
 clauses/return-orderby/ReturnOrderBy4.feature: [2] Handle projections with ORDER BY
 clauses/return-orderby/ReturnOrderBy5.feature: [1] Renaming columns before ORDER BY should return results in ascending order
+clauses/return-orderby/ReturnOrderBy6.feature: [1] Handle constants and parameters inside an order by item which contains an aggregation expression
 clauses/return-orderby/ReturnOrderBy6.feature: [2] Handle returned aliases inside an order by item which contains an aggregation expression
 clauses/return-orderby/ReturnOrderBy6.feature: [3] Handle returned property accesses inside an order by item which contains an aggregation expression
 clauses/return-orderby/ReturnOrderBy6.feature: [4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
@@ -580,15 +588,19 @@ clauses/return-skip-limit/ReturnSkipLimit1.feature: [10] Fail when using non-con
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [11] Fail when using negative value in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [1] Start the result from the second row
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [2] Start the result from the second row by param
+clauses/return-skip-limit/ReturnSkipLimit1.feature: [3] SKIP with an expression that does not depend on variables
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [4] Accept skip zero
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [5] SKIP with an expression that depends on variables should fail
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [6] Negative parameter for SKIP should fail
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [7] Negative SKIP should fail
+clauses/return-skip-limit/ReturnSkipLimit1.feature: [8] Floating point parameter for SKIP should fail
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [9] Floating point SKIP should fail
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [10] Negative parameter for LIMIT should fail
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [11] Negative parameter for LIMIT with ORDER BY should fail
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [12] Fail when using negative value in LIMIT 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [13] Fail when using negative value in LIMIT 2
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [14] Floating point parameter for LIMIT should fail
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [15] Floating point parameter for LIMIT with ORDER BY should fail
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [16] Fail when using floating point in LIMIT 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [17] Fail when using floating point in LIMIT 2
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [1] Limit to two hits
@@ -596,6 +608,7 @@ clauses/return-skip-limit/ReturnSkipLimit2.feature: [2] Limit to two hits with e
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [3] LIMIT 0 should return an empty result
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [4] Handle ORDER BY with LIMIT 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [5] ORDER BY with LIMIT 0 should not generate errors
+clauses/return-skip-limit/ReturnSkipLimit2.feature: [6] LIMIT with an expression that does not depend on variables
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [7] Limit to more rows than actual results 1
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [8] Limit to more rows than actual results 2
 clauses/return-skip-limit/ReturnSkipLimit2.feature: [9] Fail when using non-constants in LIMIT
@@ -611,6 +624,7 @@ clauses/return/Return2.feature: [15] Fail when returning properties of deleted n
 clauses/return/Return2.feature: [16] Fail when returning labels of deleted nodes
 clauses/return/Return2.feature: [17] Fail when returning properties of deleted relationships
 clauses/return/Return2.feature: [18] Fail on projecting a non-existent function
+clauses/return/Return2.feature: [1] Arithmetic expressions should propagate null values
 clauses/return/Return2.feature: [2] Returning a node property value
 clauses/return/Return2.feature: [3] Missing node property should become null
 clauses/return/Return2.feature: [4] Returning a relationship property value
@@ -623,6 +637,7 @@ clauses/return/Return4.feature: [2] Support column renaming
 clauses/return/Return4.feature: [3] Aliasing expressions
 clauses/return/Return4.feature: [4] Keeping used expression 1
 clauses/return/Return4.feature: [5] Keeping used expression 2
+clauses/return/Return4.feature: [7] Keeping used expression 4
 clauses/return/Return4.feature: [8] Support column renaming for aggregations
 clauses/return/Return4.feature: [9] Handle subexpression in aggregation also occurring as standalone expression with nested aggregation in a literal map
 clauses/return/Return5.feature: [2] DISTINCT on nullable values
@@ -632,6 +647,7 @@ clauses/return/Return6.feature: [12] Counting matches per group
 clauses/return/Return6.feature: [13] Returning the minimum length of paths
 clauses/return/Return6.feature: [14] Aggregates in aggregates
 clauses/return/Return6.feature: [15] Using `rand()` in aggregations
+clauses/return/Return6.feature: [17] Handle constants and parameters inside an expression which contains an aggregation expression
 clauses/return/Return6.feature: [18] Handle returned variables inside an expression which contains an aggregation expression
 clauses/return/Return6.feature: [19] Handle returned property accesses inside an expression which contains an aggregation expression
 clauses/return/Return6.feature: [1] Return count aggregation over nodes
@@ -642,6 +658,7 @@ clauses/return/Return6.feature: [4] Support multiple divisions in aggregate func
 clauses/return/Return6.feature: [5] Aggregates inside normal functions
 clauses/return/Return6.feature: [6] Handle aggregates inside non-aggregate expressions
 clauses/return/Return6.feature: [7] Aggregate on property
+clauses/return/Return6.feature: [8] Handle aggregation on functions
 clauses/return/Return6.feature: [9] Aggregates with arithmetics
 clauses/return/Return7.feature: [2] Fail when using RETURN * without variables in scope
 clauses/return/Return8.feature: [1] Return aggregation after With filtering
@@ -708,12 +725,17 @@ clauses/unwind/Unwind1.feature: [8] Unwinding the empty list
 clauses/unwind/Unwind1.feature: [9] Unwinding null
 clauses/with-orderBy/WithOrderBy1.feature: [10] Sort lists in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [1] Sort booleans in ascending order
+clauses/with-orderBy/WithOrderBy1.feature: [21] Sort distinct types in ascending order
+clauses/with-orderBy/WithOrderBy1.feature: [22] Sort distinct types in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [23] Sort by a boolean variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [23] Sort by a boolean variable projected from a node property in ascending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [24] Sort by a boolean variable projected from a node property in descending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [25] Sort by an integer variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [25] Sort by an integer variable projected from a node property in ascending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [26] Sort by an integer variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [27] Sort by a float variable projected from a node property in ascending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [27] Sort by a float variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [28] Sort by a float variable projected from a node property in descending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [29] Sort by a string variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [29] Sort by a string variable projected from a node property in ascending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [2] Sort booleans in descending order
@@ -723,7 +745,11 @@ clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only 
 clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only partially orderable on a non-distinct binding table #2
 clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct #1
 clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct #2
+clauses/with-orderBy/WithOrderBy1.feature: [45] Sort order should be consistent with comparisons where comparisons are defined #Example: <exampleName> #1
 clauses/with-orderBy/WithOrderBy1.feature: [45] Sort order should be consistent with comparisons where comparisons are defined #Example: <exampleName> #2
+clauses/with-orderBy/WithOrderBy1.feature: [45] Sort order should be consistent with comparisons where comparisons are defined #Example: <exampleName> #3
+clauses/with-orderBy/WithOrderBy1.feature: [45] Sort order should be consistent with comparisons where comparisons are defined #Example: <exampleName> #4
+clauses/with-orderBy/WithOrderBy1.feature: [45] Sort order should be consistent with comparisons where comparisons are defined #Example: <exampleName> #5
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #1
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #10
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #2
@@ -735,6 +761,8 @@ clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined 
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #8
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #9
 clauses/with-orderBy/WithOrderBy1.feature: [4] Sort integers in descending order
+clauses/with-orderBy/WithOrderBy1.feature: [5] Sort floats in ascending order
+clauses/with-orderBy/WithOrderBy1.feature: [6] Sort floats in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [7] Sort strings in ascending order
 clauses/with-orderBy/WithOrderBy1.feature: [8] Sort strings in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [9] Sort lists in ascending order
@@ -771,6 +799,9 @@ clauses/with-orderBy/WithOrderBy2.feature: [2] Sort by a boolean expression in d
 clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [4] Sort by an integer expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [5] Sort by a float expression in ascending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [5] Sort by a float expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [6] Sort by a float expression in descending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [7] Sort by a string expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [7] Sort by a string expression in ascending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [8] Sort by a string expression in descending order #1
@@ -857,6 +888,7 @@ clauses/with-orderBy/WithOrderBy4.feature: [12] Sort by an aliased aggregate pro
 clauses/with-orderBy/WithOrderBy4.feature: [13] Fail on sorting by a non-projected aggregation on a variable
 clauses/with-orderBy/WithOrderBy4.feature: [14] Fail on sorting by a non-projected aggregation on an expression
 clauses/with-orderBy/WithOrderBy4.feature: [15] Sort by an aliased aggregate projection does allow subsequent matching
+clauses/with-orderBy/WithOrderBy4.feature: [16] Handle constants and parameters inside an order by item which contains an aggregation expression
 clauses/with-orderBy/WithOrderBy4.feature: [17] Handle projected variables inside an order by item which contains an aggregation expression
 clauses/with-orderBy/WithOrderBy4.feature: [18]  Handle projected property accesses inside an order by item which contains an aggregation expression
 clauses/with-orderBy/WithOrderBy4.feature: [19] Fail if not projected variables are used inside an order by item which contains an aggregation expression
@@ -883,6 +915,9 @@ clauses/with-where/WithWhere3.feature: [1] Join between node identities
 clauses/with-where/WithWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/with-where/WithWhere3.feature: [3] Join between node properties of adjacent nodes
 clauses/with-where/WithWhere4.feature: [1] Join nodes on inequality
+clauses/with-where/WithWhere5.feature: [1] Filter out on null
+clauses/with-where/WithWhere5.feature: [3] Filter out on null if the AND'd predicate evaluates to true
+clauses/with-where/WithWhere5.feature: [4] Do not filter out on null if the OR'd predicate evaluates to true
 clauses/with-where/WithWhere6.feature: [1] Filter a single aggregate
 clauses/with/With1.feature: [3] Forwarding a relationship variable
 clauses/with/With1.feature: [4] Forwarding a path variable
@@ -907,13 +942,25 @@ clauses/with/With7.feature: [2] Multiple WITHs using a predicate and aggregation
 expressions/aggregation/Aggregation1.feature: [1] Count only non-null values
 expressions/aggregation/Aggregation1.feature: [2] Counting loop relationships
 expressions/aggregation/Aggregation2.feature: [10] `min()` over list values
+expressions/aggregation/Aggregation2.feature: [11] `max()` over mixed values
+expressions/aggregation/Aggregation2.feature: [12] `min()` over mixed values
 expressions/aggregation/Aggregation2.feature: [1] `max()` over integers
 expressions/aggregation/Aggregation2.feature: [2] `min()` over integers
+expressions/aggregation/Aggregation2.feature: [3] `max()` over floats
+expressions/aggregation/Aggregation2.feature: [4] `min()` over floats
+expressions/aggregation/Aggregation2.feature: [5] `max()` over mixed numeric values
+expressions/aggregation/Aggregation2.feature: [6] `min()` over mixed numeric values
 expressions/aggregation/Aggregation2.feature: [7] `max()` over strings
 expressions/aggregation/Aggregation2.feature: [8] `min()` over strings
 expressions/aggregation/Aggregation2.feature: [9] `max()` over list values
 expressions/aggregation/Aggregation3.feature: [1] Sum only non-null values
 expressions/aggregation/Aggregation3.feature: [2] No overflow during summation
+expressions/aggregation/Aggregation6.feature: [3] `percentileCont()` failing on bad arguments #1
+expressions/aggregation/Aggregation6.feature: [3] `percentileCont()` failing on bad arguments #2
+expressions/aggregation/Aggregation6.feature: [3] `percentileCont()` failing on bad arguments #3
+expressions/aggregation/Aggregation6.feature: [4] `percentileDisc()` failing on bad arguments #1
+expressions/aggregation/Aggregation6.feature: [4] `percentileDisc()` failing on bad arguments #2
+expressions/aggregation/Aggregation6.feature: [4] `percentileDisc()` failing on bad arguments #3
 expressions/aggregation/Aggregation6.feature: [5] `percentileDisc()` failing in more involved query
 expressions/boolean/Boolean1.feature: [1] Conjunction of two truth values
 expressions/boolean/Boolean1.feature: [2] Conjunction of three truth values
@@ -1057,24 +1104,56 @@ expressions/comparison/Comparison1.feature: [13] Handling explicit equality of l
 expressions/comparison/Comparison1.feature: [14] Direction of traversed relationship is not significant for path equality, simple
 expressions/comparison/Comparison1.feature: [15] It is unknown - i.e. null - if a null is equal to a null
 expressions/comparison/Comparison1.feature: [16] It is unknown - i.e. null - if a null is not equal to a null
+expressions/comparison/Comparison1.feature: [1] Number-typed integer comparison
+expressions/comparison/Comparison1.feature: [2] Number-typed float comparison
 expressions/comparison/Comparison1.feature: [3] Any-typed string comparison
 expressions/comparison/Comparison1.feature: [4] Comparing nodes to nodes
 expressions/comparison/Comparison1.feature: [5] Comparing relationships to relationships
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #1
+expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #2
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #3
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #4
+expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #5
 expressions/comparison/Comparison1.feature: [6] Comparing lists to lists #6
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #1
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #10
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #11
+expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #12
+expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #13
+expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #14
+expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #15
+expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #16
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #2
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #3
+expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #4
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #5
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #6
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #7
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #8
 expressions/comparison/Comparison1.feature: [7] Comparing maps to maps #9
+expressions/comparison/Comparison1.feature: [8] Equality and inequality of NaN #1
+expressions/comparison/Comparison1.feature: [8] Equality and inequality of NaN #2
+expressions/comparison/Comparison1.feature: [8] Equality and inequality of NaN #3
+expressions/comparison/Comparison1.feature: [8] Equality and inequality of NaN #4
+expressions/comparison/Comparison1.feature: [9] Equality between strings and numbers #1
+expressions/comparison/Comparison1.feature: [9] Equality between strings and numbers #2
+expressions/comparison/Comparison1.feature: [9] Equality between strings and numbers #3
 expressions/comparison/Comparison1.feature: [9] Equality between strings and numbers #4
+expressions/comparison/Comparison2.feature: [1] Comparing strings and integers using > in an AND'd predicate
+expressions/comparison/Comparison2.feature: [2] Comparing strings and integers using > in a OR'd predicate
+expressions/comparison/Comparison2.feature: [4] Comparing lists #1
+expressions/comparison/Comparison2.feature: [4] Comparing lists #2
+expressions/comparison/Comparison2.feature: [4] Comparing lists #3
+expressions/comparison/Comparison2.feature: [4] Comparing lists #4
+expressions/comparison/Comparison2.feature: [4] Comparing lists #5
+expressions/comparison/Comparison2.feature: [5] Comparing NaN #1
+expressions/comparison/Comparison2.feature: [5] Comparing NaN #2
+expressions/comparison/Comparison2.feature: [5] Comparing NaN #3
+expressions/comparison/Comparison2.feature: [5] Comparing NaN #4
+expressions/comparison/Comparison2.feature: [6] Comparability between numbers and strings #1
+expressions/comparison/Comparison2.feature: [6] Comparability between numbers and strings #2
+expressions/comparison/Comparison2.feature: [6] Comparability between numbers and strings #3
+expressions/comparison/Comparison2.feature: [6] Comparability between numbers and strings #4
 expressions/conditional/Conditional1.feature: [1] Run coalesce
 expressions/existentialSubqueries/ExistentialSubquery2.feature: [3] Full existential subquery with update clause should fail
 expressions/graph/Graph3.feature: [1] Creating node without label
@@ -1092,6 +1171,7 @@ expressions/graph/Graph4.feature: [3] `type()` on null relationship
 expressions/graph/Graph4.feature: [4] `type()` on mixed null and non-null relationships
 expressions/graph/Graph4.feature: [5] `type()` handling Any type
 expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #1
+expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #2
 expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #3
 expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #4
 expressions/graph/Graph4.feature: [6] `type()` failing on invalid arguments #5
@@ -1105,6 +1185,7 @@ expressions/graph/Graph6.feature: [6] Statically access a property of a optional
 expressions/graph/Graph6.feature: [7] Statically access a property of a null relationship
 expressions/graph/Graph6.feature: [8] Statically access a property of a relationship resulting from an expression
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #1
+expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #2
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #3
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #4
 expressions/graph/Graph6.feature: [9] Fail when performing property access on a non-graph element #5
@@ -1134,15 +1215,19 @@ expressions/list/List1.feature: [4] Use list lookup based on parameters when the
 expressions/list/List1.feature: [5] Use list lookup based on parameters when there is rhs type information
 expressions/list/List1.feature: [6] Fail when indexing a non-list #Example: <exampleName> #1
 expressions/list/List1.feature: [6] Fail when indexing a non-list #Example: <exampleName> #2
+expressions/list/List1.feature: [6] Fail when indexing a non-list #Example: <exampleName> #3
 expressions/list/List1.feature: [6] Fail when indexing a non-list #Example: <exampleName> #4
 expressions/list/List1.feature: [7] Fail when indexing a non-list given by a parameter #Example: <exampleName> #1
 expressions/list/List1.feature: [7] Fail when indexing a non-list given by a parameter #Example: <exampleName> #2
+expressions/list/List1.feature: [7] Fail when indexing a non-list given by a parameter #Example: <exampleName> #3
 expressions/list/List1.feature: [7] Fail when indexing a non-list given by a parameter #Example: <exampleName> #4
 expressions/list/List1.feature: [8] Fail when indexing with a non-integer #Example: <exampleName> #1
+expressions/list/List1.feature: [8] Fail when indexing with a non-integer #Example: <exampleName> #2
 expressions/list/List1.feature: [8] Fail when indexing with a non-integer #Example: <exampleName> #3
 expressions/list/List1.feature: [8] Fail when indexing with a non-integer #Example: <exampleName> #4
 expressions/list/List1.feature: [8] Fail when indexing with a non-integer #Example: <exampleName> #5
 expressions/list/List1.feature: [9] Fail when indexing with a non-integer given by a parameter #Example: <exampleName> #1
+expressions/list/List1.feature: [9] Fail when indexing with a non-integer given by a parameter #Example: <exampleName> #2
 expressions/list/List1.feature: [9] Fail when indexing with a non-integer given by a parameter #Example: <exampleName> #3
 expressions/list/List1.feature: [9] Fail when indexing with a non-integer given by a parameter #Example: <exampleName> #4
 expressions/list/List1.feature: [9] Fail when indexing with a non-integer given by a parameter #Example: <exampleName> #5
@@ -1233,8 +1318,10 @@ expressions/list/List2.feature: [8] List slice with exceeding range
 expressions/list/List3.feature: [1] Equality between list and literal should return false
 expressions/list/List3.feature: [2] Equality of lists of different length should return false despite nulls
 expressions/list/List3.feature: [3] Equality between different lists with null should return false
+expressions/list/List3.feature: [4] Equality between almost equal lists with null should return null
 expressions/list/List3.feature: [5] Equality of nested lists of different length should return false despite nulls
 expressions/list/List3.feature: [6] Equality between different nested lists with null should return false
+expressions/list/List3.feature: [7] Equality between almost equal nested lists with null should return null
 expressions/list/List4.feature: [1] Concatenating lists of same type
 expressions/list/List4.feature: [2] Concatenating a list with a scalar of same type
 expressions/list/List5.feature: [10] IN should return true when types of LHS and RHS match - list
@@ -1249,6 +1336,7 @@ expressions/list/List5.feature: [18] IN should return false when LHS contains a 
 expressions/list/List5.feature: [19] IN should return false when LHS contains a nested list and type mismatch on RHS
 expressions/list/List5.feature: [1] IN should work with nested list subscripting
 expressions/list/List5.feature: [20] IN should return null if LHS and RHS are null
+expressions/list/List5.feature: [21] IN should return null if LHS and RHS are null - list version
 expressions/list/List5.feature: [22] IN should return null when LHS and RHS both ultimately contain null, even if LHS and RHS are of different types (nested list and flat list)
 expressions/list/List5.feature: [23] IN with different length lists should return false despite nulls
 expressions/list/List5.feature: [24] IN should return true if match despite nulls
@@ -1256,10 +1344,13 @@ expressions/list/List5.feature: [25] IN should return null if comparison with nu
 expressions/list/List5.feature: [26] IN should return true if correct list found despite other lists having nulls
 expressions/list/List5.feature: [27] IN should return true if correct list found despite null being another element within containing list
 expressions/list/List5.feature: [28] IN should return false if no match can be found, despite nulls
+expressions/list/List5.feature: [29] IN should return null if comparison with null is required, list version
 expressions/list/List5.feature: [2] IN should work with nested literal list subscripting
 expressions/list/List5.feature: [30] IN should return false if different length lists compared, even if the extra element is null
+expressions/list/List5.feature: [31] IN should return null when comparing two so-called identical lists where one element is null
 expressions/list/List5.feature: [32] IN should return true with previous null match, list version
 expressions/list/List5.feature: [33] IN should return false if different length lists with nested elements compared, even if the extra element is null
+expressions/list/List5.feature: [34] IN should return null if comparison with null is required, list version 2
 expressions/list/List5.feature: [35] IN should work with an empty list
 expressions/list/List5.feature: [36] IN should return false for the empty list if the LHS and RHS types differ
 expressions/list/List5.feature: [37] IN should work with an empty list in the presence of other list elements: matching
@@ -1335,7 +1426,26 @@ expressions/literals/Literals4.feature: [6] Return a short negative octal intege
 expressions/literals/Literals4.feature: [7] Return a long negative octal integer
 expressions/literals/Literals4.feature: [8] Return the smallest octal integer
 expressions/literals/Literals4.feature: [9] Fail on a too large octal integer
+expressions/literals/Literals5.feature: [10] Return a negative zero float without integer digits
+expressions/literals/Literals5.feature: [11] Return a very long negative float
+expressions/literals/Literals5.feature: [12] Return a very long negative float without integer digits
+expressions/literals/Literals5.feature: [13] Return a positive float with positive lower case exponent
+expressions/literals/Literals5.feature: [14] Return a positive float with positive upper case exponent
+expressions/literals/Literals5.feature: [16] Return a positive float with negative lower case exponent
+expressions/literals/Literals5.feature: [19] Return a negative float in with positive lower case exponent
+expressions/literals/Literals5.feature: [1] Return a short positive float
+expressions/literals/Literals5.feature: [20] Return a negative float in with positive upper case exponent
+expressions/literals/Literals5.feature: [21] Return a negative float with positive lower case exponent without integer digits
+expressions/literals/Literals5.feature: [22] Return a negative float with negative lower case exponent
+expressions/literals/Literals5.feature: [23] Return a negative float with negative lower case exponent without integer digits
+expressions/literals/Literals5.feature: [24] Return a negative float with negative upper case exponent without integer digits
+expressions/literals/Literals5.feature: [25] Return a positive float with one integer digit and maximum positive exponent
+expressions/literals/Literals5.feature: [26] Return a positive float with nine integer digit and maximum positive exponent
 expressions/literals/Literals5.feature: [27] Fail when float value is too large
+expressions/literals/Literals5.feature: [3] Return a long positive float
+expressions/literals/Literals5.feature: [5] Return a very long positive float
+expressions/literals/Literals5.feature: [7] Return a positive zero float
+expressions/literals/Literals5.feature: [9] Return a negative zero float
 expressions/literals/Literals6.feature: [1] Return a single-quoted empty string
 expressions/literals/Literals6.feature: [2] Return a single-quoted string with one character
 expressions/literals/Literals6.feature: [3] Return a single-quoted string with uft-8 characters
@@ -1348,7 +1458,9 @@ expressions/literals/Literals7.feature: [11] Return 20-deep nested empty lists
 expressions/literals/Literals7.feature: [12] Return 40-deep nested empty lists
 expressions/literals/Literals7.feature: [13] Return a list containing an empty map
 expressions/literals/Literals7.feature: [14] Return a list containing multiple integer
+expressions/literals/Literals7.feature: [16] Return a list containing multiple mixed values
 expressions/literals/Literals7.feature: [17] Return a list containing real and fake nested lists
+expressions/literals/Literals7.feature: [18] Return a complex list containing multiple mixed and nested values
 expressions/literals/Literals7.feature: [19] Fail on a list containing only a comma
 expressions/literals/Literals7.feature: [1] Return an empty list
 expressions/literals/Literals7.feature: [20] Fail on a nested list with non-matching brackets
@@ -1358,15 +1470,18 @@ expressions/literals/Literals7.feature: [3] Return a list containing a null
 expressions/literals/Literals7.feature: [4] Return a list containing a integer
 expressions/literals/Literals7.feature: [5] Return a list containing a hexadecimal integer
 expressions/literals/Literals7.feature: [6] Return a list containing a octal integer
+expressions/literals/Literals7.feature: [7] Return a list containing a float
 expressions/literals/Literals7.feature: [8] Return a list containing a string
 expressions/literals/Literals7.feature: [9] Return a list containing an empty lists
 expressions/literals/Literals8.feature: [10] Return a map containing a octal integer
+expressions/literals/Literals8.feature: [11] Return a map containing a float
 expressions/literals/Literals8.feature: [12] Return a map containing a string
 expressions/literals/Literals8.feature: [13] Return a map containing an empty map
 expressions/literals/Literals8.feature: [14] Return seven-deep nested maps
 expressions/literals/Literals8.feature: [15] Return 20-deep nested maps
 expressions/literals/Literals8.feature: [16] Return 40-deep nested maps
 expressions/literals/Literals8.feature: [17] Return a map containing real and fake nested maps
+expressions/literals/Literals8.feature: [18] Return a complex map containing multiple mixed and nested values
 expressions/literals/Literals8.feature: [19] Fail on a map containing key starting with a number
 expressions/literals/Literals8.feature: [1] Return an empty map
 expressions/literals/Literals8.feature: [20] Fail on a map containing key with symbol
@@ -1399,6 +1514,7 @@ expressions/map/Map1.feature: [5] Statically access a field with a delimited ide
 expressions/map/Map1.feature: [5] Statically access a field with a delimited identifier #5
 expressions/map/Map1.feature: [5] Statically access a field with a delimited identifier #6
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #1
+expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #2
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #3
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #4
 expressions/map/Map1.feature: [6] Fail when performing property access on a non-map #5
@@ -1415,6 +1531,7 @@ expressions/map/Map2.feature: [5] Dynamically access a field is case-sensitive #
 expressions/map/Map2.feature: [5] Dynamically access a field is case-sensitive #6
 expressions/map/Map2.feature: [5] Dynamically access a field is case-sensitive #7
 expressions/map/Map2.feature: [6] Fail at runtime when attempting to index with an Int into a Map
+expressions/map/Map2.feature: [7] Fail at runtime when trying to index into a map with a non-string
 expressions/map/Map2.feature: [8] Fail at runtime when trying to index something which is not a map
 expressions/map/Map3.feature: [1] Using `keys()` on a literal map
 expressions/map/Map3.feature: [2] Using `keys()` on a parameter map
@@ -1428,6 +1545,7 @@ expressions/map/Map3.feature: [4] Using `keys()` on map with null values #6
 expressions/map/Map3.feature: [4] Using `keys()` on map with null values #7
 expressions/map/Map3.feature: [5] Using `keys()` and `IN` to check field existence
 expressions/mathematical/Mathematical11.feature: [1] Absolute function
+expressions/mathematical/Mathematical13.feature: [1] `sqrt()` returning float values
 expressions/mathematical/Mathematical2.feature: [1] Allow addition
 expressions/mathematical/Mathematical3.feature: [1] Fail for invalid Unicode hyphen in subtraction
 expressions/mathematical/Mathematical8.feature: [1] Arithmetic precedence test
@@ -1506,6 +1624,7 @@ expressions/precedence/Precedence1.feature: [24] Null predicates take precedence
 expressions/precedence/Precedence1.feature: [3] Conjunction disjunction takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [4] Negation takes precedence over conjunction
 expressions/precedence/Precedence1.feature: [5] Negation takes precedence over inclusive disjunction
+expressions/precedence/Precedence1.feature: [6] Comparison operator takes precedence over boolean negation
 expressions/precedence/Precedence1.feature: [7] Comparison operator takes precedence over binary boolean operator
 expressions/precedence/Precedence1.feature: [9] Null predicate takes precedence over negation
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #1
@@ -1526,6 +1645,12 @@ expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operation
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #7
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #8
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #9
+expressions/precedence/Precedence2.feature: [2] Exponentiation takes precedence over numeric multiplicative operations #1
+expressions/precedence/Precedence2.feature: [2] Exponentiation takes precedence over numeric multiplicative operations #2
+expressions/precedence/Precedence2.feature: [2] Exponentiation takes precedence over numeric multiplicative operations #3
+expressions/precedence/Precedence2.feature: [3] Exponentiation takes precedence over numeric additive operations #1
+expressions/precedence/Precedence2.feature: [3] Exponentiation takes precedence over numeric additive operations #2
+expressions/precedence/Precedence2.feature: [4] Numeric unary negative takes precedence over exponentiation
 expressions/precedence/Precedence2.feature: [5] Numeric unary negative takes precedence over numeric additive operations #1
 expressions/precedence/Precedence2.feature: [5] Numeric unary negative takes precedence over numeric additive operations #2
 expressions/precedence/Precedence3.feature: [1] List element access takes precedence over list appending
@@ -1539,6 +1664,7 @@ expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence 
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #3
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #4
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #5
+expressions/precedence/Precedence4.feature: [4] String predicate takes precedence over binary boolean operator
 expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #1
 expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #2
 expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #3
@@ -1571,6 +1697,8 @@ expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NUL
 expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #7
 expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #8
 expressions/quantifier/Quantifier1.feature: [12] None quantifier with IS NOT NULL predicate #9
+expressions/quantifier/Quantifier1.feature: [13] None quantifier is true if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier1.feature: [14] None quantifier is false if the predicate is statically true and the list is not empty
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier1.feature: [15] Fail none quantifier on type mismatch between list elements and predicate #3
@@ -1601,6 +1729,18 @@ expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal 
 expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #7
 expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #8
 expressions/quantifier/Quantifier1.feature: [3] None quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #1
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #10
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #11
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #12
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #2
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #3
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #4
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #5
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #6
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #7
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #8
+expressions/quantifier/Quantifier1.feature: [4] None quantifier on list literal containing floats #9
 expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #1
 expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #2
 expressions/quantifier/Quantifier1.feature: [5] None quantifier on list literal containing strings #3
@@ -1630,6 +1770,53 @@ expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal 
 expressions/quantifier/Quantifier1.feature: [7] None quantifier on list literal containing maps #9
 expressions/quantifier/Quantifier1.feature: [8] None quantifier on list containing nodes
 expressions/quantifier/Quantifier1.feature: [9] None quantifier on list containing relationships
+expressions/quantifier/Quantifier10.feature: [1] Single quantifier is always false if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier10.feature: [2] Single quantifier is always false if the predicate is statically true and the list has more than one element
+expressions/quantifier/Quantifier10.feature: [3] Single quantifier is always true if the predicate is statically true and the list has exactly one non-null element
+expressions/quantifier/Quantifier10.feature: [4] Single quantifier is always equal whether the size of the list filtered with same the predicate is one #1
+expressions/quantifier/Quantifier10.feature: [4] Single quantifier is always equal whether the size of the list filtered with same the predicate is one #2
+expressions/quantifier/Quantifier10.feature: [4] Single quantifier is always equal whether the size of the list filtered with same the predicate is one #3
+expressions/quantifier/Quantifier10.feature: [4] Single quantifier is always equal whether the size of the list filtered with same the predicate is one #4
+expressions/quantifier/Quantifier10.feature: [4] Single quantifier is always equal whether the size of the list filtered with same the predicate is one #5
+expressions/quantifier/Quantifier11.feature: [1] Any quantifier is always false if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier11.feature: [2] Any quantifier is always true if the predicate is statically true and the list is not empty
+expressions/quantifier/Quantifier11.feature: [3] Any quantifier is always true if the single or the all quantifier is true #1
+expressions/quantifier/Quantifier11.feature: [3] Any quantifier is always true if the single or the all quantifier is true #2
+expressions/quantifier/Quantifier11.feature: [3] Any quantifier is always true if the single or the all quantifier is true #3
+expressions/quantifier/Quantifier11.feature: [3] Any quantifier is always true if the single or the all quantifier is true #4
+expressions/quantifier/Quantifier11.feature: [3] Any quantifier is always true if the single or the all quantifier is true #5
+expressions/quantifier/Quantifier11.feature: [4] Any quantifier is always equal the boolean negative of the none quantifier #1
+expressions/quantifier/Quantifier11.feature: [4] Any quantifier is always equal the boolean negative of the none quantifier #2
+expressions/quantifier/Quantifier11.feature: [4] Any quantifier is always equal the boolean negative of the none quantifier #3
+expressions/quantifier/Quantifier11.feature: [4] Any quantifier is always equal the boolean negative of the none quantifier #4
+expressions/quantifier/Quantifier11.feature: [4] Any quantifier is always equal the boolean negative of the none quantifier #5
+expressions/quantifier/Quantifier11.feature: [5] Any quantifier is always equal the boolean negative of the all quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier11.feature: [5] Any quantifier is always equal the boolean negative of the all quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier11.feature: [5] Any quantifier is always equal the boolean negative of the all quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier11.feature: [5] Any quantifier is always equal the boolean negative of the all quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier11.feature: [5] Any quantifier is always equal the boolean negative of the all quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier11.feature: [6] Any quantifier is always equal whether the size of the list filtered with same the predicate is grater zero #1
+expressions/quantifier/Quantifier11.feature: [6] Any quantifier is always equal whether the size of the list filtered with same the predicate is grater zero #2
+expressions/quantifier/Quantifier11.feature: [6] Any quantifier is always equal whether the size of the list filtered with same the predicate is grater zero #3
+expressions/quantifier/Quantifier11.feature: [6] Any quantifier is always equal whether the size of the list filtered with same the predicate is grater zero #4
+expressions/quantifier/Quantifier11.feature: [6] Any quantifier is always equal whether the size of the list filtered with same the predicate is grater zero #5
+expressions/quantifier/Quantifier12.feature: [1] All quantifier is always false if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier12.feature: [2] All quantifier is always true if the predicate is statically true and the list is not empty
+expressions/quantifier/Quantifier12.feature: [3] All quantifier is always equal the none quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier12.feature: [3] All quantifier is always equal the none quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier12.feature: [3] All quantifier is always equal the none quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier12.feature: [3] All quantifier is always equal the none quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier12.feature: [3] All quantifier is always equal the none quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier12.feature: [4] All quantifier is always equal the boolean negative of the any quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier12.feature: [4] All quantifier is always equal the boolean negative of the any quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier12.feature: [4] All quantifier is always equal the boolean negative of the any quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier12.feature: [4] All quantifier is always equal the boolean negative of the any quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier12.feature: [4] All quantifier is always equal the boolean negative of the any quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier12.feature: [5] All quantifier is always equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #1
+expressions/quantifier/Quantifier12.feature: [5] All quantifier is always equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #2
+expressions/quantifier/Quantifier12.feature: [5] All quantifier is always equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #3
+expressions/quantifier/Quantifier12.feature: [5] All quantifier is always equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #4
+expressions/quantifier/Quantifier12.feature: [5] All quantifier is always equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #5
 expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #1
 expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #2
 expressions/quantifier/Quantifier2.feature: [10] Single quantifier on lists containing nulls #3
@@ -1662,6 +1849,8 @@ expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT N
 expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #7
 expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #8
 expressions/quantifier/Quantifier2.feature: [12] Single quantifier with IS NOT NULL predicate #9
+expressions/quantifier/Quantifier2.feature: [13] Single quantifier is false if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier2.feature: [14] Single quantifier is false if the predicate is statically true and the list has more than one element
 expressions/quantifier/Quantifier2.feature: [15] Single quantifier is true if the predicate is statically true and the list has exactly one non-null element
 expressions/quantifier/Quantifier2.feature: [16] Fail single quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier2.feature: [16] Fail single quantifier on type mismatch between list elements and predicate #2
@@ -1693,6 +1882,18 @@ expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list litera
 expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #7
 expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #8
 expressions/quantifier/Quantifier2.feature: [3] Single quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #1
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #10
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #11
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #12
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #2
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #3
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #4
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #5
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #6
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #7
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #8
+expressions/quantifier/Quantifier2.feature: [4] Single quantifier on list literal containing floats #9
 expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #1
 expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #2
 expressions/quantifier/Quantifier2.feature: [5] Single quantifier on list literal containing strings #3
@@ -1754,6 +1955,8 @@ expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL
 expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #7
 expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #8
 expressions/quantifier/Quantifier3.feature: [12] Any quantifier with IS NOT NULL predicate #9
+expressions/quantifier/Quantifier3.feature: [13] Any quantifier is false if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier3.feature: [14] Any quantifier is true if the predicate is statically true and the list is not empty
 expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier3.feature: [15] Fail any quantifier on type mismatch between list elements and predicate #3
@@ -1784,6 +1987,18 @@ expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal c
 expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #7
 expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #8
 expressions/quantifier/Quantifier3.feature: [3] Any quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #1
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #10
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #11
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #12
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #2
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #3
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #4
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #5
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #6
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #7
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #8
+expressions/quantifier/Quantifier3.feature: [4] Any quantifier on list literal containing floats #9
 expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #1
 expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #2
 expressions/quantifier/Quantifier3.feature: [5] Any quantifier on list literal containing strings #3
@@ -1845,6 +2060,8 @@ expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL
 expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #7
 expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #8
 expressions/quantifier/Quantifier4.feature: [12] All quantifier with IS NOT NULL predicate #9
+expressions/quantifier/Quantifier4.feature: [13] All quantifier is false if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier4.feature: [14] All quantifier is true if the predicate is statically true and the list is not empty
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #1
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #2
 expressions/quantifier/Quantifier4.feature: [15] Fail all quantifier on type mismatch between list elements and predicate #3
@@ -1875,6 +2092,18 @@ expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal c
 expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #7
 expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #8
 expressions/quantifier/Quantifier4.feature: [3] All quantifier on list literal containing integers #9
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #1
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #10
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #11
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #12
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #2
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #3
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #4
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #5
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #6
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #7
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #8
+expressions/quantifier/Quantifier4.feature: [4] All quantifier on list literal containing floats #9
 expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #1
 expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #2
 expressions/quantifier/Quantifier4.feature: [5] All quantifier on list literal containing strings #3
@@ -1972,6 +2201,11 @@ expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself a
 expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #6
 expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #7
 expressions/quantifier/Quantifier7.feature: [2] Any quantifier can nest itself and other quantifiers on the same list #8
+expressions/quantifier/Quantifier7.feature: [3] Any quantifier is true if the single or the all quantifier is true #1
+expressions/quantifier/Quantifier7.feature: [3] Any quantifier is true if the single or the all quantifier is true #2
+expressions/quantifier/Quantifier7.feature: [3] Any quantifier is true if the single or the all quantifier is true #3
+expressions/quantifier/Quantifier7.feature: [3] Any quantifier is true if the single or the all quantifier is true #4
+expressions/quantifier/Quantifier7.feature: [3] Any quantifier is true if the single or the all quantifier is true #5
 expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #1
 expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #2
 expressions/quantifier/Quantifier7.feature: [4] Any quantifier is equal the boolean negative of the none quantifier #3
@@ -2018,6 +2252,23 @@ expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether 
 expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #3
 expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #4
 expressions/quantifier/Quantifier8.feature: [5] All quantifier is equal whether the size of the list filtered with same the predicate is equal the size of the unfiltered list #5
+expressions/quantifier/Quantifier9.feature: [1] None quantifier is always true if the predicate is statically false and the list is not empty
+expressions/quantifier/Quantifier9.feature: [2] None quantifier is always false if the predicate is statically true and the list is not empty
+expressions/quantifier/Quantifier9.feature: [3] None quantifier is always equal the boolean negative of the any quantifier #1
+expressions/quantifier/Quantifier9.feature: [3] None quantifier is always equal the boolean negative of the any quantifier #2
+expressions/quantifier/Quantifier9.feature: [3] None quantifier is always equal the boolean negative of the any quantifier #3
+expressions/quantifier/Quantifier9.feature: [3] None quantifier is always equal the boolean negative of the any quantifier #4
+expressions/quantifier/Quantifier9.feature: [3] None quantifier is always equal the boolean negative of the any quantifier #5
+expressions/quantifier/Quantifier9.feature: [4] None quantifier is always equal the all quantifier on the boolean negative of the predicate #1
+expressions/quantifier/Quantifier9.feature: [4] None quantifier is always equal the all quantifier on the boolean negative of the predicate #2
+expressions/quantifier/Quantifier9.feature: [4] None quantifier is always equal the all quantifier on the boolean negative of the predicate #3
+expressions/quantifier/Quantifier9.feature: [4] None quantifier is always equal the all quantifier on the boolean negative of the predicate #4
+expressions/quantifier/Quantifier9.feature: [4] None quantifier is always equal the all quantifier on the boolean negative of the predicate #5
+expressions/quantifier/Quantifier9.feature: [5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero #1
+expressions/quantifier/Quantifier9.feature: [5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero #2
+expressions/quantifier/Quantifier9.feature: [5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero #3
+expressions/quantifier/Quantifier9.feature: [5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero #4
+expressions/quantifier/Quantifier9.feature: [5] None quantifier is always equal whether the size of the list filtered with same the predicate is zero #5
 expressions/string/String1.feature: [1] `substring()` with default second argument
 expressions/string/String10.feature: [1] Finding exact matches with non-proper substring
 expressions/string/String10.feature: [2] Finding substring of string
@@ -2025,6 +2276,7 @@ expressions/string/String10.feature: [3] Finding the empty substring
 expressions/string/String10.feature: [4] Finding strings containing whitespace
 expressions/string/String10.feature: [6] No string contains null
 expressions/string/String10.feature: [7] No string does not contain null
+expressions/string/String10.feature: [8] Handling non-string operands for CONTAINS
 expressions/string/String10.feature: [9] NOT with CONTAINS
 expressions/string/String11.feature: [1] Combining prefix and suffix search
 expressions/string/String11.feature: [2] Combining prefix, suffix, and substring search
@@ -2036,6 +2288,7 @@ expressions/string/String8.feature: [3] Finding the empty prefix
 expressions/string/String8.feature: [4] Finding strings starting with whitespace
 expressions/string/String8.feature: [6] No string starts with null
 expressions/string/String8.feature: [7] No string does not start with null
+expressions/string/String8.feature: [8] Handling non-string operands for STARTS WITH
 expressions/string/String8.feature: [9] NOT with STARTS WITH
 expressions/string/String9.feature: [1] Finding exact matches with non-proper suffix
 expressions/string/String9.feature: [2] Finding end of string
@@ -2043,6 +2296,7 @@ expressions/string/String9.feature: [3] Finding the empty suffix
 expressions/string/String9.feature: [4] Finding strings ending with whitespace
 expressions/string/String9.feature: [6] No string ends with null
 expressions/string/String9.feature: [7] No string does not end with null
+expressions/string/String9.feature: [8] Handling non-string operands for ENDS WITH
 expressions/string/String9.feature: [9] NOT with ENDS WITH
 expressions/typeConversion/TypeConversion1.feature: [1] `toBoolean()` on booleans
 expressions/typeConversion/TypeConversion1.feature: [2] `toBoolean()` on valid literal string
@@ -2050,16 +2304,31 @@ expressions/typeConversion/TypeConversion1.feature: [3] `toBoolean()` on variabl
 expressions/typeConversion/TypeConversion1.feature: [4] `toBoolean()` on invalid strings
 expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #1
 expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #2
+expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #3
 expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #4
 expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #5
 expressions/typeConversion/TypeConversion1.feature: [5] Fail `toBoolean()` on invalid types #Example: <exampleName> #6
+expressions/typeConversion/TypeConversion2.feature: [1] `toInteger()` on float
 expressions/typeConversion/TypeConversion2.feature: [2] `toInteger()` returning null on non-numerical string
+expressions/typeConversion/TypeConversion2.feature: [3] `toInteger()` handling mixed number types
+expressions/typeConversion/TypeConversion2.feature: [4] `toInteger()` handling Any type
+expressions/typeConversion/TypeConversion2.feature: [5] `toInteger()` on a list of strings
 expressions/typeConversion/TypeConversion2.feature: [6] `toInteger()` on a complex-typed expression
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #1
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #2
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #3
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #4
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #5
+expressions/typeConversion/TypeConversion3.feature: [1] `toFloat()` on mixed number types
+expressions/typeConversion/TypeConversion3.feature: [2] `toFloat()` returning null on non-numerical string
+expressions/typeConversion/TypeConversion3.feature: [3] `toFloat()` handling Any type
+expressions/typeConversion/TypeConversion3.feature: [4] `toFloat()` on a list of strings
+expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #1
+expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #2
+expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #3
+expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #4
+expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #5
+expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #6
 expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #1
 expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #2
 expressions/typeConversion/TypeConversion4.feature: [10] Fail `toString()` on invalid types #Example: <exampleName> #3
@@ -2069,6 +2338,7 @@ expressions/typeConversion/TypeConversion4.feature: [1] `toString()` handling in
 expressions/typeConversion/TypeConversion4.feature: [2] `toString()` handling boolean literal
 expressions/typeConversion/TypeConversion4.feature: [3] `toString()` handling inlined boolean
 expressions/typeConversion/TypeConversion4.feature: [4] `toString()` handling boolean properties
+expressions/typeConversion/TypeConversion4.feature: [5] `toString()` should work on Any type
 expressions/typeConversion/TypeConversion4.feature: [6] `toString()` on a list of integers
 expressions/typeConversion/TypeConversion4.feature: [8] `toString()` should accept potentially correct types 1
 expressions/typeConversion/TypeConversion4.feature: [9] `toString()` should accept potentially correct types 2

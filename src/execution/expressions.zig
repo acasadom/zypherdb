@@ -8,6 +8,8 @@ const UnaryOperator = @import("../query/ast.zig").UnaryOperator;
 const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
 const mapOf = @import("../value.zig").mapOf;
+const formatFloat = @import("../value.zig").formatFloat;
+const comparison = @import("comparison.zig");
 
 const Executor = @import("Executor.zig");
 const functions = @import("functions.zig");
@@ -51,8 +53,10 @@ fn inList(needle: Value, list: Value) ExecutionError!Value {
     for (items) |item| {
         if (Value.isNull(item)) {
             unknown = true;
-        } else if (!Value.isNull(needle) and Value.eql(needle, item)) {
-            return .{ .boolean = true };
+        } else if (comparison.equals(needle, item)) |same| {
+            if (same) return .{ .boolean = true };
+        } else {
+            unknown = true;
         }
     }
     return if (unknown) .{ .null = {} } else .{ .boolean = false };
@@ -64,6 +68,7 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
     }
     return switch (self.ast.kind(expr)) {
         .integer_literal => .{ .int = self.ast.data(expr).int },
+        .float_literal => .{ .float = self.ast.data(expr).float },
         .string_literal => .{ .string = self.ast.data(expr).text },
         .boolean_literal => .{ .boolean = self.ast.data(expr).boolean },
         .null_literal => .{ .null = {} },
@@ -278,28 +283,21 @@ fn listPosition(index: i64, length: usize) ?usize {
 
 pub fn applyBinaryOperator(self: *Executor, operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {
     return switch (operator) {
-        .add, .subtract, .multiply, .divide, .modulo => arithmetic(self, operator, left, right),
+        .add, .subtract, .multiply, .divide, .modulo, .power => arithmetic(self, operator, left, right),
         .equal, .not_equal, .less_than, .greater_than, .less_or_equal, .greater_or_equal, .starts_with, .ends_with, .contains => blk: {
             // Three-valued logic: any null operand yields null.
             if (Value.isNull(left) or Value.isNull(right)) break :blk .{ .null = {} };
             break :blk switch (operator) {
-                .equal => .{ .boolean = Value.eql(left, right) },
-                .not_equal => .{ .boolean = !Value.eql(left, right) },
-                .less_than, .greater_than, .less_or_equal, .greater_or_equal => comparison: {
-                    const left_int = try asInt(left);
-                    const right_int = try asInt(right);
-                    break :comparison .{ .boolean = switch (operator) {
-                        .less_than => left_int < right_int,
-                        .greater_than => left_int > right_int,
-                        .less_or_equal => left_int <= right_int,
-                        .greater_or_equal => left_int >= right_int,
-                        else => unreachable,
-                    } };
-                },
-                .starts_with, .ends_with, .contains => comparison: {
-                    const left_string = try asString(left);
-                    const right_string = try asString(right);
-                    break :comparison .{ .boolean = switch (operator) {
+                .equal => if (comparison.equals(left, right)) |same| .{ .boolean = same } else .{ .null = {} },
+                .not_equal => if (comparison.equals(left, right)) |same| .{ .boolean = !same } else .{ .null = {} },
+                .less_than => comparison.compare(left, right).holds(isLess),
+                .greater_than => comparison.compare(left, right).holds(isGreater),
+                .less_or_equal => comparison.compare(left, right).holds(isLessOrEqual),
+                .greater_or_equal => comparison.compare(left, right).holds(isGreaterOrEqual),
+                .starts_with, .ends_with, .contains => string_test: {
+                    const left_string = asString(left) catch break :string_test .{ .null = {} };
+                    const right_string = asString(right) catch break :string_test .{ .null = {} };
+                    break :string_test .{ .boolean = switch (operator) {
                         .starts_with => std.mem.startsWith(u8, left_string, right_string),
                         .ends_with => std.mem.endsWith(u8, left_string, right_string),
                         .contains => std.mem.indexOf(u8, left_string, right_string) != null,
@@ -327,6 +325,19 @@ pub fn applyBinaryOperator(self: *Executor, operator: BinaryOperator, left: Valu
     };
 }
 
+fn isLess(o: std.math.Order) bool {
+    return o == .lt;
+}
+fn isGreater(o: std.math.Order) bool {
+    return o == .gt;
+}
+fn isLessOrEqual(o: std.math.Order) bool {
+    return o != .gt;
+}
+fn isGreaterOrEqual(o: std.math.Order) bool {
+    return o != .lt;
+}
+
 pub fn applyUnaryOperator(self: *Executor, operator: UnaryOperator, value: Value) ExecutionError!Value {
     return switch (operator) {
         .not_ => if (Value.isNull(value)) .{ .null = {} } else .{ .boolean = !try asBool(value) },
@@ -335,17 +346,33 @@ pub fn applyUnaryOperator(self: *Executor, operator: UnaryOperator, value: Value
         .negate => switch (value) {
             .null => .{ .null = {} },
             .int => |n| .{ .int = std.math.negate(n) catch return overflow(self) },
+            .float => |x| .{ .float = -x },
             else => typeMismatch(self, "unary minus needs a number"),
         },
     };
 }
 
-/// `+ - * / %`. Integers overflow-checked (an error, never a silent
+/// `+ - * / % ^`. Integers overflow-checked (an error, never a silent
 /// wrap-around), `/` truncating toward zero and `%` taking the dividend's
-/// sign; `+` also concatenates strings (a number is written in decimal) and
-/// lists (or adds an element to either end). Null with anything is null.
+/// sign. With a float operand the result is a float (IEEE 754: dividing by
+/// zero gives an infinity or NaN); `^` always gives a float. `+` also
+/// concatenates strings (a number is written in decimal) and lists (or adds
+/// an element to either end). Null with anything is null.
 fn arithmetic(self: *Executor, operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {
     if (left.isNull() or right.isNull()) return .{ .null = {} };
+    if (comparison.isNumber(left) and comparison.isNumber(right) and (operator == .power or left == .float or right == .float)) {
+        const a = asFloat(left);
+        const b = asFloat(right);
+        return .{ .float = switch (operator) {
+            .add => a + b,
+            .subtract => a - b,
+            .multiply => a * b,
+            .divide => a / b,
+            .modulo => if (b == 0) std.math.nan(f64) else @rem(a, b),
+            .power => std.math.pow(f64, a, b),
+            else => unreachable,
+        } };
+    }
     if (left == .int and right == .int) {
         const a = left.int;
         const b = right.int;
@@ -381,6 +408,7 @@ fn textOf(self: *Executor, value: Value) ExecutionError![]const u8 {
     return switch (value) {
         .string => |s| s,
         .int => |n| try std.fmt.allocPrint(self.allocator, "{d}", .{n}),
+        .float => |x| try formatFloat(self.allocator, x),
         else => typeMismatch(self, "+ can join a string only with a string or a number"),
     };
 }
@@ -404,6 +432,15 @@ pub fn asInt(value: Value) ExecutionError!i64 {
     return switch (value) {
         .int => |n| n,
         else => error.TypeMismatch,
+    };
+}
+
+/// A number as a float (callers check it is a number).
+pub fn asFloat(value: Value) f64 {
+    return switch (value) {
+        .int => |n| @floatFromInt(n),
+        .float => |x| x,
+        else => unreachable,
     };
 }
 

@@ -31,12 +31,12 @@ with Database(tempfile.mkdtemp()) as db:
 - `Database(path)` opens (or creates) the database; use it as a context manager, or call `close()`.
 - `query(text, parameters=None, /, **named) -> list[list]` runs one query, with its `$name`
   parameters from a dict and/or keyword arguments (`db.query("... {id: $card} ...", card=123)`;
-  values: `int`, `str`, `bool`, `None`, lists and `str`-keyed dicts); maps come back as dicts; cells become `int`, `str`, `bool`, `None` (null), a
+  values: `int`, finite `float`, `str`, `bool`, `None`, lists and `str`-keyed dicts); maps come back as dicts; cells become `int`, `float`, `str`, `bool`, `None` (null), a
   `list`, a `dict`, a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
   properties)`, or a `Path(nodes, relationships)`.
 - `export_graph() -> dict` returns the whole graph, read straight from storage.
 - `allocate_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_property(id, name, value)`
-  write data. `set_property` accepts `int` or `str` values.
+  write data. `set_property` accepts `int`, `float` or `str` values.
 - `write()` is a context manager that batches mutators into **one** write transaction (one fsync):
   the bulk-ingestion path. An exception inside the block aborts it.
 

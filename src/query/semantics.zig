@@ -123,12 +123,14 @@ const Checker = struct {
         const children = self.ast.nodeChildren(index);
         switch (self.ast.kind(index)) {
             .list_comprehension, .quantifier => return self.checkIteration(index),
-            .aggregate => if (self.iteration_depth > 0) {
-                return self.fail("an aggregate cannot be used inside a list comprehension or quantifier", .{});
+            .aggregate => {
+                if (self.iteration_depth > 0) return self.fail("an aggregate cannot be used inside a list comprehension or quantifier", .{});
+                // Aggregating values that change from call to call is meaningless.
+                if (callsFunction(self.ast, index, "rand")) return self.fail("rand() cannot be used inside an aggregate", .{});
             },
             .binary_operation => switch (self.ast.data(index).binary_operator) {
-                .add, .subtract, .multiply, .divide, .modulo => |operator| try self.checkArithmetic(operator, children),
-                .in_ => if (isLiteralOf(self.ast, children[1], &.{ .integer_literal, .string_literal, .boolean_literal, .map_literal })) {
+                .add, .subtract, .multiply, .divide, .modulo, .power => |operator| try self.checkArithmetic(operator, children),
+                .in_ => if (isLiteralOf(self.ast, children[1], &.{ .integer_literal, .float_literal, .string_literal, .boolean_literal, .map_literal })) {
                     return self.fail("the right side of IN must be a list", .{});
                 },
                 .and_, .or_ => for (children) |operand| {
@@ -145,7 +147,7 @@ const Checker = struct {
             .function_call => {
                 try self.checkEntityArgument(index);
                 if (std.ascii.eqlIgnoreCase(self.ast.data(index).text, "properties") and children.len == 1 and
-                    isLiteralOf(self.ast, children[0], &.{ .integer_literal, .string_literal, .boolean_literal, .list_literal }))
+                    isLiteralOf(self.ast, children[0], &.{ .integer_literal, .float_literal, .string_literal, .boolean_literal, .list_literal }))
                 {
                     return self.fail("properties() takes a map, a node or a relationship", .{});
                 }
@@ -186,7 +188,7 @@ const Checker = struct {
     /// The type of a literal, or of a typed comprehension variable.
     fn staticType(self: *Checker, index: Index) ?StaticType {
         return switch (self.ast.kind(index)) {
-            .integer_literal => .number,
+            .integer_literal, .float_literal => .number,
             .string_literal => .string,
             .boolean_literal => .boolean,
             .list_literal => .list,
@@ -222,8 +224,17 @@ const Checker = struct {
         }
     }
 
+    /// True if `name` is called anywhere in the expression `index`.
+    fn callsFunction(ast: *const Ast, index: Index, name: []const u8) bool {
+        if (ast.kind(index) == .function_call and std.ascii.eqlIgnoreCase(ast.data(index).text, name)) return true;
+        for (ast.nodeChildren(index)) |child| {
+            if (callsFunction(ast, child, name)) return true;
+        }
+        return false;
+    }
+
     /// Literals that can never be booleans (null can: it is unknown).
-    const non_boolean_literals = [_]NodeKind{ .integer_literal, .string_literal, .list_literal, .map_literal };
+    const non_boolean_literals = [_]NodeKind{ .integer_literal, .float_literal, .string_literal, .list_literal, .map_literal };
 
     fn isLiteralOf(ast: *const Ast, index: Index, kinds: []const NodeKind) bool {
         return std.mem.indexOfScalar(NodeKind, kinds, ast.kind(index)) != null;

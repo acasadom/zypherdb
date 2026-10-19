@@ -51,7 +51,7 @@ p = (a)-[:TYPE*]->(b)                           # a path variable
 
 ## Expressions
 
-Literals: integers (decimal, `0x…` hex, `0o…` octal), strings (`'…'`), booleans (`true`/`false`),
+Literals: integers (decimal, `0x…` hex, `0o…` octal), floats (`1.5`, `.5`, `1e3`, `2.5e-3`), strings (`'…'`), booleans (`true`/`false`),
 `null`, lists (`[1, 2, 3]`) and maps (`{zone: 'Z1', floors: [1, 2]}`).
 
 Any value takes the postfix operators `.key` (a node's or relationship's property, a map's entry),
@@ -61,8 +61,10 @@ property or entry reads as `null`.
 
 | Operator | Meaning |
 | --- | --- |
-| `+`, `-`, `*`, `/`, `%`, unary `-` | integer arithmetic (overflow and division by zero are errors; `/` truncates); `+` also joins strings and lists |
-| `=`, `<>`, `<`, `>`, `<=`, `>=` | comparison |
+| `+`, `-`, `*`, `/`, `%`, unary `-` | arithmetic. Two integers give an integer (overflow and division by zero are errors; `/` truncates); a float operand gives a float (IEEE 754: `1.0 / 0` is `Infinity`). `+` also joins strings and lists |
+| `^` | power, always a float; binds tighter than `*` and after a sign (`-2 ^ 2` is `4.0`) |
+| `=`, `<>` | equality: numbers by value (`1 = 1.0`), NaN equals nothing, lists and maps element by element; values of different types are not equal |
+| `<`, `>`, `<=`, `>=` | ordering of numbers, strings, booleans (`false < true`) and lists (lexicographic); other pairs give `null` |
 | `AND`, `OR`, `NOT` | boolean logic (three-valued with null) |
 | `x IS NULL`, `x IS NOT NULL` | null tests (always true or false, unlike `x = null`) |
 | `STARTS WITH`, `ENDS WITH`, `CONTAINS` | string predicates |
@@ -84,16 +86,18 @@ points (`size('é')` is 1); `toUpper`/`toLower` change ASCII letters only.
 | Null handling | `coalesce(x, …)` — the first non-null argument |
 | Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
 | Graph and maps | `id(node)`, `labels(node)`, `type(relationship)`, `keys(entity or map)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
-| Conversions | `toString`, `toInteger` (null for a string that is not an integer), `toBoolean` |
+| Conversions | `toString`, `toInteger` (truncates a float; null for a string that is not a number), `toFloat`, `toBoolean` |
 | Strings | `toLower`, `toUpper`, `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)` |
-| Numbers | `abs`, `sign` |
+| Numbers | `abs`, `sign`, `round` (halves up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
 
 An unknown function or a wrong number of arguments fails before the query runs. `id()` of a
 relationship is an error: acmedb identifies a relationship by (source, target, type).
 
 ## Aggregations
 
-`count(x)` (and `count(*)`), `sum(x)`, `min(x)`, `max(x)`, and `collect(x)` (a list). Any projected
+`count(x)` (and `count(*)`), `sum(x)` (an integer unless a float is summed), `avg(x)`, `min(x)`,
+`max(x)`, `stDev(x)` / `stDevP(x)` (sample / population standard deviation) and `collect(x)` (a
+list). Any projected
 expression without an aggregate is an implicit grouping key; aggregations skip nulls, and
 `count(*)` counts all rows.
 
@@ -105,12 +109,11 @@ the projection's names with aggregates the projection computes (`ORDER BY age + 
 
 ## Types
 
-The runtime values are `int` (64-bit), `str`, `boolean`, `null`, `list`, `map`, whole nodes and
+The runtime values are `int` (64-bit), `float` (64-bit IEEE 754), `str`, `boolean`, `null`, `list`, `map`, whole nodes and
 relationships (`RETURN n`), and paths. Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
 `ELSE`; they propagate: a comparison or string predicate with a null operand is null, a null
 `WHERE` filters the row out, and aggregations skip nulls. Properties stored in the graph are
-`int`, `str` or `boolean` (not lists or maps); setting a property to `null` removes it.
+`int`, `float`, `str` or `boolean` (not lists or maps); setting a property to `null` removes it.
 
 ## Notes on the subset
 
-- `avg` (needs floats) is not yet supported.

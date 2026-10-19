@@ -4,6 +4,8 @@ Requires the shared library: run `zig build` first, then
 `pytest` (or `python -m pytest`) from this directory.
 """
 
+import math
+
 import pytest
 
 from acmedb import (
@@ -122,9 +124,22 @@ def test_int_range_is_enforced(db):
 
 def test_unsupported_property_types(db):
     db.add_node(1, "P")
-    for bad in (True, 1.5, None, [1]):
+    for bad in (True, None, [1]):
         with pytest.raises(TypeError):
             db.set_property(1, "x", bad)
+
+
+def test_floats(db):
+    db.add_node(1, "Sensor")
+    db.set_property(1, "reading", 21.5)
+    db.set_property(1, "offset", 2.0)
+    rows = db.query("MATCH (s:Sensor) RETURN s.reading, s.offset, s.reading + 1, 7 / 2, 2 ^ 10, avg(s.reading)")
+    assert rows == [[21.5, 2.0, 22.5, 3, 1024.0, 21.5]]
+    assert isinstance(rows[0][1], float)
+    # An integral float matches the integer it equals.
+    assert db.query("MATCH (s:Sensor {offset: 2}) RETURN s.reading") == [[21.5]]
+    nan, inf = db.query("RETURN 0.0 / 0.0, 1.0 / 0")[0]
+    assert math.isnan(nan) and inf == math.inf
 
 
 def test_non_ascii_names_use_byte_lengths(db):
@@ -190,8 +205,9 @@ def test_query_parameters(db):
     assert db.query("RETURN $text, $parameters", text="t", parameters=1) == [["t", 1]]
     with pytest.raises(ParameterMissingError):
         db.query("RETURN $absent")
-    with pytest.raises(TypeError):
-        db.query("RETURN $x", x=1.5)
+    assert db.query("RETURN $x, $x * 2", x=1.5) == [[1.5, 3.0]]
+    with pytest.raises(ValueError):
+        db.query("RETURN $x", x=float("nan"))
     with pytest.raises(OverflowError):
         db.query("RETURN $x", x=[2**64])
 

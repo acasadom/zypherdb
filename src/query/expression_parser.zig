@@ -116,9 +116,9 @@ pub fn parseAdditive(self: *Parser) ParseError!Index {
     }
 }
 
-/// `*`, `/` and `%`, left-associative, over unary operands.
+/// `*`, `/` and `%`, left-associative, over powers.
 fn parseMultiplicative(self: *Parser) ParseError!Index {
-    var left = try parseUnary(self);
+    var left = try parsePower(self);
     while (true) {
         const operator: BinaryOperator = switch (self.peek().kind) {
             .star => .multiply,
@@ -127,9 +127,20 @@ fn parseMultiplicative(self: *Parser) ParseError!Index {
             else => return left,
         };
         _ = self.advance();
-        const right = try parseUnary(self);
+        const right = try parsePower(self);
         left = try self.ast.addNode(.binary_operation, .{ .binary_operator = operator }, &.{ left, right });
     }
+}
+
+/// `^`, left-associative, over unary operands (so `-2 ^ 2` is 4.0).
+fn parsePower(self: *Parser) ParseError!Index {
+    var left = try parseUnary(self);
+    while (self.at(.caret)) {
+        _ = self.advance();
+        const right = try parseUnary(self);
+        left = try self.ast.addNode(.binary_operation, .{ .binary_operator = .power }, &.{ left, right });
+    }
+    return left;
 }
 
 /// A sign before an operand. `-` directly before an integer literal is part
@@ -142,6 +153,7 @@ fn parseUnary(self: *Parser) ParseError!Index {
     if (self.at(.minus)) {
         _ = self.advance();
         if (self.at(.integer)) return parseIntegerLiteral(self, true);
+        if (self.at(.float)) return parseFloatLiteral(self, true);
         const operand = try parseUnary(self);
         return self.ast.addNode(.unary_operation, .{ .unary_operator = .negate }, &.{operand});
     }
@@ -172,6 +184,20 @@ fn parseIntegerLiteral(self: *Parser, negative: bool) ParseError!Index {
     }
     const value: i64 = if (negative) @intCast(-@as(i128, magnitude)) else @intCast(magnitude);
     return self.ast.addNode(.integer_literal, .{ .int = value }, &.{});
+}
+
+/// A float literal token: `1.5`, `.5`, `1e3`, `1.5e-3`.
+fn parseFloatLiteral(self: *Parser, negative: bool) ParseError!Index {
+    const t = self.advance();
+    const magnitude = std.fmt.parseFloat(f64, t.text) catch {
+        self.fail("invalid float literal {s}", .{t.text});
+        return error.UnexpectedToken;
+    };
+    if (std.math.isInf(magnitude)) {
+        self.fail("float literal {s} is too large", .{t.text});
+        return error.UnexpectedToken;
+    }
+    return self.ast.addNode(.float_literal, .{ .float = if (negative) -magnitude else magnitude }, &.{});
 }
 
 /// Parses a list literal `[e0, e1, ...]` (the empty list is allowed).
@@ -284,6 +310,7 @@ fn parseAtom(self: *Parser) ParseError!Index {
     const t = self.peek();
     switch (t.kind) {
         .integer => return parseIntegerLiteral(self, false),
+        .float => return parseFloatLiteral(self, false),
         .string => {
             _ = self.advance();
             const s = try self.internString(t.text);
@@ -388,6 +415,9 @@ pub fn parseAggregateCall(self: *Parser, kind: AggregateKind) ParseError!Index {
 fn aggregateKindFromName(name: []const u8) ?AggregateKind {
     if (std.ascii.eqlIgnoreCase(name, "count")) return .count;
     if (std.ascii.eqlIgnoreCase(name, "sum")) return .sum;
+    if (std.ascii.eqlIgnoreCase(name, "avg")) return .avg;
+    if (std.ascii.eqlIgnoreCase(name, "stDev")) return .stDev;
+    if (std.ascii.eqlIgnoreCase(name, "stDevP")) return .stDevP;
     if (std.ascii.eqlIgnoreCase(name, "min")) return .min;
     if (std.ascii.eqlIgnoreCase(name, "max")) return .max;
     if (std.ascii.eqlIgnoreCase(name, "collect")) return .collect;

@@ -81,6 +81,7 @@ pub const BinaryOperator = enum {
     multiply,
     divide,
     modulo,
+    power,
 };
 
 pub const UnaryOperator = enum {
@@ -90,10 +91,14 @@ pub const UnaryOperator = enum {
     is_not_null,
 };
 
-/// Aggregation functions (`count`, `sum`, `min`, `max`, `collect`).
+/// Aggregation functions (`count`, `sum`, `avg`, `min`, `max`, `collect`,
+/// `stDev`, `stDevP`).
 pub const AggregateKind = enum {
     count,
     sum,
+    avg,
+    stDev,
+    stDevP,
     min,
     max,
     collect,
@@ -115,6 +120,7 @@ pub const NodeKind = enum {
     variable,
     property_access,
     integer_literal,
+    float_literal,
     string_literal,
     boolean_literal,
     null_literal,
@@ -157,6 +163,7 @@ pub const NodeKind = enum {
 pub const Data = union(enum) {
     none: void,
     int: i64,
+    float: f64,
     boolean: bool,
     /// A single string: a literal value, an identifier (variable, property,
     /// label, edge type) or a RETURN alias.
@@ -296,6 +303,7 @@ fn sameExpressionData(a: Data, b: Data) bool {
     return switch (a) {
         .none => true,
         .int => |x| x == b.int,
+        .float => |x| x == b.float,
         .boolean => |x| x == b.boolean,
         .text => |x| std.mem.eql(u8, x, b.text),
         .binary_operator => |x| x == b.binary_operator,

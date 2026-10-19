@@ -60,10 +60,14 @@ A property `Value` is a one-byte tag + payload:
 | --- | --- | --- |
 | `0x01` | `int` | 8-byte big-endian `i64` |
 | `0x02` | `str` | raw bytes |
+| `0x03` | `boolean` | one byte, `0` or `1` |
+| `0x04` | `float` | 8-byte big-endian IEEE 754 bits |
 
-Booleans, nulls and lists are produced during evaluation but are **never stored** as properties.
+Nulls, lists and maps are produced during evaluation but are **never stored** as properties.
 For index keys, a string value gets a trailing `0x00` so a lookup prefix for `"X"` can't also match
-`"XY"`; integers are fixed-width and need no delimiter.
+`"XY"`; numbers are fixed-width and need no delimiter. Numbers are indexed canonically: a float
+that equals an integer (`2.0`) is indexed as that integer, so `{x: 2}` and `{x: 2.0}` find the same
+nodes, as `=` says they should.
 
 ## The indexes, one by one
 

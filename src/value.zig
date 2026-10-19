@@ -68,6 +68,7 @@ pub const MapEntry = struct { key: []const u8, value: Value };
 /// pattern is bound to).
 pub const Value = union(enum) {
     int: i64,
+    float: f64,
     string: []const u8,
     boolean: bool,
     null: void,
@@ -91,7 +92,8 @@ pub const Value = union(enum) {
 
     /// The openCypher global sort order, ascending: map < node <
     /// relationship < list < path < string < boolean < number < null. Within a type,
-    /// maps compare entry by entry (key, then value), nodes by id,
+    /// numbers (integers and floats together) by value with NaN after every
+    /// other number, maps entry by entry (key, then value), nodes by id,
     /// relationships by (source, target, type), lists lexicographically,
     /// strings by byte (= Unicode code point, for UTF-8), and `false < true`.
     pub fn order(a: Value, b: Value) std.math.Order {
@@ -99,7 +101,7 @@ pub const Value = union(enum) {
         if (rank_order != .eq) return rank_order;
         return switch (a) {
             .null => .eq,
-            .int => |x| std.math.order(x, b.int),
+            .int, .float => orderNumbers(a, b),
             .string => |x| std.mem.order(u8, x, b.string),
             .boolean => |x| std.math.order(@intFromBool(x), @intFromBool(b.boolean)),
             .list => |x| orderSequences(x, b.list),
@@ -121,7 +123,7 @@ pub const Value = union(enum) {
     /// A deep copy whose strings and lists are allocated with `allocator`.
     pub fn clone(self: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!Value {
         return switch (self) {
-            .int, .boolean, .null, .node => self,
+            .int, .float, .boolean, .null, .node => self,
             .string => |s| .{ .string = try allocator.dupe(u8, s) },
             .relationship => |r| .{ .relationship = .{ .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) } },
             .list => |items| blk: {
@@ -148,6 +150,8 @@ pub const Value = union(enum) {
         switch (self) {
             .null => {},
             .int => |x| hasher.update(std.mem.asBytes(&x)),
+            // An integral float hashes as the integer it equals (1.0 = 1).
+            .float => |x| if (exactInteger(x)) |n| hasher.update(std.mem.asBytes(&n)) else if (std.math.isNan(x)) hasher.update("NaN") else hasher.update(std.mem.asBytes(&x)),
             .string => |x| {
                 hasher.update(std.mem.asBytes(&x.len));
                 hasher.update(x);
@@ -181,11 +185,56 @@ pub const Value = union(enum) {
             .path => 4,
             .string => 5,
             .boolean => 6,
-            .int => 7,
+            .int, .float => 7,
             .null => 8,
         };
     }
 };
+
+/// The integer a float holds exactly, if it holds one (`2.0` -> 2), so that
+/// equal numbers hash, index and compare alike whatever their type.
+pub fn exactInteger(x: f64) ?i64 {
+    if (!std.math.isFinite(x) or @floor(x) != x) return null;
+    if (x < -9.223372036854775808e18 or x >= 9.223372036854775808e18) return null;
+    return @intFromFloat(x);
+}
+
+/// A float in the shortest form that reads back as the same float, always
+/// with a `.` or an exponent so it reads as a float (`1.0`, not `1`):
+/// decimal between 1e-6 and 1e16, scientific outside; `NaN`, `Infinity`,
+/// `-Infinity` for the special values.
+pub fn formatFloat(allocator: std.mem.Allocator, x: f64) std.mem.Allocator.Error![]u8 {
+    if (std.math.isNan(x)) return allocator.dupe(u8, "NaN");
+    if (std.math.isInf(x)) return allocator.dupe(u8, if (x > 0) "Infinity" else "-Infinity");
+    const magnitude = @abs(x);
+    if (magnitude != 0 and (magnitude < 1e-6 or magnitude >= 1e16)) return std.fmt.allocPrint(allocator, "{e}", .{x});
+    const decimal = try std.fmt.allocPrint(allocator, "{d}", .{x});
+    if (std.mem.indexOfScalar(u8, decimal, '.') != null) return decimal;
+    defer allocator.free(decimal);
+    return std.fmt.allocPrint(allocator, "{s}.0", .{decimal});
+}
+
+/// Integers and floats in one order, by value; NaN after every other number
+/// and equal to itself (orderability, not the `=` operator).
+pub fn orderNumbers(a: Value, b: Value) std.math.Order {
+    if (a == .int and b == .int) return std.math.order(a.int, b.int);
+    const a_nan = a == .float and std.math.isNan(a.float);
+    const b_nan = b == .float and std.math.isNan(b.float);
+    if (a_nan or b_nan) return std.math.order(@intFromBool(a_nan), @intFromBool(b_nan));
+    // An integer against a float: compare exactly, not through a lossy cast.
+    if (a == .int) return orderIntFloat(a.int, b.float);
+    if (b == .int) return orderIntFloat(b.int, a.float).invert();
+    return std.math.order(a.float, b.float);
+}
+
+fn orderIntFloat(n: i64, x: f64) std.math.Order {
+    if (x >= 9.223372036854775808e18) return .lt;
+    if (x < -9.223372036854775808e18) return .gt;
+    const whole = @floor(x);
+    const by_whole = std.math.order(n, @as(i64, @intFromFloat(whole)));
+    if (by_whole != .eq) return by_whole;
+    return if (x > whole) .lt else .eq;
+}
 
 /// A map value from `entries` in any order: sorted by key; when a key repeats,
 /// the last entry wins (as in a Cypher map literal). Sorts `entries` in place.
@@ -243,7 +292,7 @@ fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
     const strings = [_][]const u8{ "", "a", "ab", "b", "é", "Z" };
     const kinds: u8 = if (depth == 0) 6 else 8;
     return switch (random.uintLessThan(u8, kinds)) {
-        4 => .{ .node = random.uintLessThan(u64, 3) },
+        4 => if (random.boolean()) .{ .node = random.uintLessThan(u64, 3) } else .{ .float = ([_]f64{ 1.0, 1.5, -2.0, std.math.nan(f64), 0.0 })[random.uintLessThan(usize, 5)] },
         5 => .{ .relationship = .{ .src = random.uintLessThan(u64, 2), .dst = random.uintLessThan(u64, 2), .edge_type = strings[random.uintLessThan(usize, 3)] } },
         0 => .{ .null = {} },
         1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },

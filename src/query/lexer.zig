@@ -20,6 +20,7 @@ pub const TokenKind = enum {
     parameter, // `$name`: the text is the name
     string,
     integer,
+    float, // `1.5`, `.5`, `1e3`, `1.5e-3`
     left_paren,
     right_paren,
     left_bracket,
@@ -35,6 +36,7 @@ pub const TokenKind = enum {
     plus,
     slash,
     percent,
+    caret, // `^`
     pipe, // `|`
     arrow_right,
     arrow_left,
@@ -63,6 +65,7 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
         .parameter => "a parameter",
         .string => "a string",
         .integer => "an integer",
+        .float => "a float",
         .left_paren => "'('",
         .right_paren => "')'",
         .left_bracket => "'['",
@@ -78,6 +81,7 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
         .plus => "'+'",
         .slash => "'/'",
         .percent => "'%'",
+        .caret => "'^'",
         .pipe => "'|'",
         .arrow_right => "'->'",
         .arrow_left => "'<-'",
@@ -93,7 +97,7 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
 
 pub fn describeToken(t: Token) []const u8 {
     return switch (t.kind) {
-        .identifier, .parameter, .string, .integer => t.text,
+        .identifier, .parameter, .string, .integer, .float => t.text,
         else => describeTokenKind(t.kind),
     };
 }
@@ -106,6 +110,26 @@ fn isIdentifierStart(c: u8) bool {
 
 fn isIdentifierContinuation(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_' or c >= 0x80;
+}
+
+/// The end of the decimal number starting at `start`: digits, then a
+/// fraction (`.` and digits; `1..3` stays a range) and an exponent if present.
+fn scanNumber(src: []const u8, start: usize) usize {
+    var i = start;
+    while (i < src.len and std.ascii.isDigit(src[i])) i += 1;
+    if (i + 1 < src.len and src[i] == '.' and std.ascii.isDigit(src[i + 1])) {
+        i += 1;
+        while (i < src.len and std.ascii.isDigit(src[i])) i += 1;
+    }
+    if (i < src.len and (src[i] == 'e' or src[i] == 'E')) {
+        var j = i + 1;
+        if (j < src.len and (src[j] == '+' or src[j] == '-')) j += 1;
+        if (j < src.len and std.ascii.isDigit(src[j])) {
+            i = j;
+            while (i < src.len and std.ascii.isDigit(src[i])) i += 1;
+        }
+    }
+    return i;
 }
 
 fn add(tokens: *std.ArrayList(Token), allocator: Allocator, kind: TokenKind, text: []const u8, pos: usize) LexError!void {
@@ -127,6 +151,10 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
             },
             '%' => {
                 try add(&tokens, allocator, .percent, src[i .. i + 1], i);
+                i += 1;
+            },
+            '^' => {
+                try add(&tokens, allocator, .caret, src[i .. i + 1], i);
                 i += 1;
             },
             '|' => {
@@ -182,7 +210,17 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 i += 1;
             },
             '.' => {
-                if (i + 1 < src.len and src[i + 1] == '.') {
+                // `.5` is a float, unless the dot follows something it can
+                // be a property access on (`n.5` is not a number).
+                const after_operand = tokens.items.len > 0 and switch (tokens.items[tokens.items.len - 1].kind) {
+                    .identifier, .parameter, .right_paren, .right_bracket, .right_brace => true,
+                    else => false,
+                };
+                if (!after_operand and i + 1 < src.len and std.ascii.isDigit(src[i + 1])) {
+                    const start = i;
+                    i = scanNumber(src, i);
+                    try add(&tokens, allocator, .float, src[start..i], start);
+                } else if (i + 1 < src.len and src[i + 1] == '.') {
                     try add(&tokens, allocator, .range_dots, src[i .. i + 2], i);
                     i += 2;
                 } else {
@@ -240,11 +278,15 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 i = end + 1;
             },
             '0'...'9' => {
-                // Decimal, or hexadecimal (`0x1F`) / octal (`0o17`): the parser
-                // reads the digits and reports a malformed literal.
+                // Decimal, or hexadecimal (`0x1F`) / octal (`0o17`), or a
+                // float. Trailing letters stay in the token so the parser
+                // reports the malformed literal.
                 const start = i;
+                const prefixed = src[i] == '0' and i + 1 < src.len and std.mem.indexOfScalar(u8, "xXoO", src[i + 1]) != null;
+                if (!prefixed) i = scanNumber(src, i);
+                const is_float = std.mem.indexOfAny(u8, src[start..i], ".eE") != null;
                 while (i < src.len and (std.ascii.isAlphanumeric(src[i]) or src[i] == '_')) i += 1;
-                try add(&tokens, allocator, .integer, src[start..i], start);
+                try add(&tokens, allocator, if (is_float) .float else .integer, src[start..i], start);
             },
             '<' => {
                 if (i + 1 < src.len) {

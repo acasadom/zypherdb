@@ -266,9 +266,18 @@ test "C ABI: query parameters as a JSON object" {
     const json = acmedb_result_to_json(result, &length);
     try testing.expectEqualStrings("[[7,\"x\",true,null,[1,[2]]]]", json[0..length]);
 
+    const float_query = "RETURN $x, $x * 2";
+    const float = "{\"x\": 1.5}";
+    const float_result = c_api.acmedb_query_with_parameters(context, float_query.ptr, float_query.len, float.ptr, float.len).?;
+    defer acmedb_result_free(float_result);
+    try testing.expectEqual(c_api.TYPE_FLOAT64, c_api.acmedb_result_type(float_result, 0, 0));
+    try testing.expectEqual(@as(f64, 3.0), c_api.acmedb_result_float(float_result, 0, 1));
+    const float_json = acmedb_result_to_json(float_result, &length);
+    try testing.expectEqualStrings("[[1.5,3.0]]", float_json[0..length]);
+
     // Unsupported parameter values fail with a message instead of guessing.
-    const float = "{\"n\": 1.5}";
-    try testing.expect(c_api.acmedb_query_with_parameters(context, query.ptr, query.len, float.ptr, float.len) == null);
+    const huge = "{\"n\": 123456789012345678901234567890}";
+    try testing.expect(c_api.acmedb_query_with_parameters(context, query.ptr, query.len, huge.ptr, huge.len) == null);
     try testing.expectEqual(@as(c_int, 4), acmedb_error_code(context));
     const missing = "RETURN $absent";
     try testing.expect(acmedb_query(context, missing.ptr, missing.len) == null);

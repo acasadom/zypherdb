@@ -15,6 +15,29 @@ const Executor = acmedb.Executor;
 const parser = acmedb.parser;
 const eqlSequences = acmedb.eqlSequences;
 
+/// Equal values of the same types, element by element: `Value.eql` holds
+/// 1 and 1.0 equal (as grouping does), a test result must not.
+fn identicalSequences(a: []const Value, b: []const Value) bool {
+    if (!eqlSequences(a, b)) return false;
+    for (a, b) |x, y| {
+        if (!identicalTypes(x, y)) return false;
+    }
+    return true;
+}
+
+fn identicalTypes(a: Value, b: Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .list => |items| for (items, b.list) |x, y| {
+            if (!identicalTypes(x, y)) break false;
+        } else true,
+        .map => |entries| for (entries, b.map) |x, y| {
+            if (!identicalTypes(x.value, y.value)) break false;
+        } else true,
+        else => true,
+    };
+}
+
 /// The path of a test's temporary directory, relative to the build root.
 pub fn testPath(tmp: *testing.TmpDir, buffer: []u8) []const u8 {
     return std.fmt.bufPrint(buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
@@ -77,7 +100,7 @@ fn expectRows(rows: []const Row, expected: []const []const Value) !void {
         var found = false;
         for (rows, 0..) |row, i| {
             if (used[i]) continue;
-            if (eqlSequences(row.items, expected_row)) {
+            if (identicalSequences(row.items, expected_row)) {
                 used[i] = true;
                 found = true;
                 break;
@@ -115,7 +138,7 @@ pub fn expectOrdered(ast: *Ast, g: *Graph, src: []const u8, expected: []const []
     const rows = try executor.run(query);
     try testing.expectEqual(expected.len, rows.len);
     for (expected, rows) |expected_row, row| {
-        try testing.expect(eqlSequences(row.items, expected_row));
+        try testing.expect(identicalSequences(row.items, expected_row));
     }
 }
 

@@ -24,6 +24,7 @@ TYPE_NODE = 5
 TYPE_RELATIONSHIP = 6
 TYPE_MAP = 7
 TYPE_PATH = 8
+TYPE_FLOAT64 = 9
 
 
 def _candidates():
@@ -74,6 +75,8 @@ lib.acmedb_add_edge.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint6
 lib.acmedb_add_edge.restype = ctypes.c_int
 lib.acmedb_set_property_int64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int64]
 lib.acmedb_set_property_int64.restype = ctypes.c_int
+lib.acmedb_set_property_float64.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_double]
+lib.acmedb_set_property_float64.restype = ctypes.c_int
 lib.acmedb_set_property_string.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_set_property_string.restype = ctypes.c_int
 
@@ -91,6 +94,8 @@ lib.acmedb_result_type.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_si
 lib.acmedb_result_type.restype = ctypes.c_int
 lib.acmedb_result_int.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_int.restype = ctypes.c_int64
+lib.acmedb_result_float.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+lib.acmedb_result_float.restype = ctypes.c_double
 lib.acmedb_result_bool.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_bool.restype = ctypes.c_bool
 lib.acmedb_result_string.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
@@ -109,6 +114,8 @@ lib.acmedb_result_list_item_type.argtypes = [ctypes.c_void_p, ctypes.c_size_t, c
 lib.acmedb_result_list_item_type.restype = ctypes.c_int
 lib.acmedb_result_list_item_int.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_list_item_int.restype = ctypes.c_int64
+lib.acmedb_result_list_item_float.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t]
+lib.acmedb_result_list_item_float.restype = ctypes.c_double
 lib.acmedb_result_list_item_bool.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t]
 lib.acmedb_result_list_item_bool.restype = ctypes.c_bool
 lib.acmedb_result_list_item_string.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]

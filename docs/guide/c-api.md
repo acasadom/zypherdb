@@ -17,6 +17,7 @@ Result cells are tagged by type:
 | `TYPE_RELATIONSHIP` | `6` | a whole relationship — read it through the JSON result |
 | `TYPE_MAP` | `7` | a map — a JSON object in the JSON result |
 | `TYPE_PATH` | `8` | a path — `{"~path": {"nodes": [...], "relationships": [...]}}` in the JSON result |
+| `TYPE_FLOAT64` | `9` | `f64`; in JSON always with a `.` or an exponent (`1.0`), and `NaN` / `Infinity` / `-Infinity` for the special values |
 
 ## Lifecycle
 
@@ -53,6 +54,7 @@ uint64_t acmedb_allocate_node_id(Context*);   // fresh id; maxInt(u64) on failur
 int acmedb_add_node(Context*, uint64_t id, const char* label, size_t label_len);
 int acmedb_add_edge(Context*, uint64_t src, uint64_t dst, const char* type, size_t type_len);
 int acmedb_set_property_int64(Context*, uint64_t id, const char* name, size_t name_len, int64_t value);
+int acmedb_set_property_float64(Context*, uint64_t id, const char* name, size_t name_len, double value);
 int acmedb_set_property_string(Context*, uint64_t id, const char* name, size_t name_len,
                         const char* value, size_t value_len);
 
@@ -82,6 +84,7 @@ size_t  acmedb_result_row_count(const Result*);
 size_t  acmedb_result_column_count(const Result*);
 int     acmedb_result_type(const Result*, size_t row, size_t col);   // -1 out of range
 int64_t acmedb_result_int(const Result*, size_t row, size_t col);
+double  acmedb_result_float(const Result*, size_t row, size_t col);
 bool    acmedb_result_bool(const Result*, size_t row, size_t col);
 const char* acmedb_result_string(const Result*, size_t row, size_t col, size_t* out_len);
 const char* acmedb_result_to_json(const Result*, size_t* out_len);   // whole result as JSON
@@ -90,6 +93,7 @@ const char* acmedb_result_to_json(const Result*, size_t* out_len);   // whole re
 size_t acmedb_result_list_length(const Result*, size_t row, size_t col);
 int    acmedb_result_list_item_type(const Result*, size_t row, size_t col, size_t idx);
 int64_t acmedb_result_list_item_int(const Result*, size_t row, size_t col, size_t idx);
+double acmedb_result_list_item_float(const Result*, size_t row, size_t col, size_t idx);
 bool   acmedb_result_list_item_bool(const Result*, size_t row, size_t col, size_t idx);
 const char* acmedb_result_list_item_string(const Result*, size_t row, size_t col, size_t idx, size_t* out_len);
 ```

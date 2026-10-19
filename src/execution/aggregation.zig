@@ -16,7 +16,7 @@ const projection = @import("projection.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
-const asInt = @import("expressions.zig").asInt;
+const asFloat = @import("expressions.zig").asFloat;
 
 /// How a projection (RETURN or WITH) aggregates: its grouping keys, and every
 /// aggregate call inside its aggregating expressions, in order.
@@ -209,8 +209,30 @@ pub fn updateAggregate(self: *Executor, state: *AggregateState, arg: Value) Exec
         .count => {
             if (!Value.isNull(arg)) state.count += 1;
         },
-        .sum => {
-            if (!Value.isNull(arg)) state.sum += try asInt(arg);
+        .sum => switch (arg) {
+            .null => {},
+            .int => |n| state.sum = std.math.add(i64, state.sum, n) catch {
+                self.fail(.arithmetic, "integer overflow: the sum does not fit in 64 bits", .{});
+                return error.IntegerOverflow;
+            },
+            .float => |x| {
+                state.float_sum += x;
+                state.has_float = true;
+            },
+            else => return notANumber(self, "sum"),
+        },
+        .avg, .stDev, .stDevP => switch (arg) {
+            .null => {},
+            // Welford's update: a running mean and sum of squared deviations,
+            // stable where a sum of squares would cancel.
+            .int, .float => {
+                const x = asFloat(arg);
+                state.count += 1;
+                const delta = x - state.mean;
+                state.mean += delta / @as(f64, @floatFromInt(state.count));
+                state.squared_deviations += delta * (x - state.mean);
+            },
+            else => return notANumber(self, @tagName(state.kind)),
         },
         .min => {
             if (Value.isNull(arg)) return;
@@ -228,6 +250,11 @@ pub fn updateAggregate(self: *Executor, state: *AggregateState, arg: Value) Exec
             try state.list.append(self.allocator, arg);
         },
     }
+}
+
+fn notANumber(self: *Executor, function: []const u8) ExecutionError {
+    self.fail(.type_mismatch, "{s}() needs numbers", .{function});
+    return error.TypeMismatch;
 }
 
 /// Turns the groups into RETURN rows: grouping keys and aggregate results in
@@ -269,7 +296,14 @@ pub const ProjectionItem = union(enum) {
 pub const AggregateState = struct {
     kind: AggregateKind,
     count: usize = 0,
+    /// sum: the integers' total, and the floats' (when there are any).
     sum: i64 = 0,
+    float_sum: f64 = 0,
+    has_float: bool = false,
+    /// avg, stDev, stDevP: the running mean and the sum of squared
+    /// deviations from it, over `count` numbers.
+    mean: f64 = 0,
+    squared_deviations: f64 = 0,
     min: ?Value = null,
     max: ?Value = null,
     list: std.ArrayList(Value) = .empty,
@@ -309,7 +343,11 @@ pub const ValueGrouping = Grouping([]const Value, SequenceContext(Value));
 pub fn aggregateResult(kind: AggregateKind, state: AggregateState) Value {
     return switch (kind) {
         .count => .{ .int = @intCast(state.count) },
-        .sum => .{ .int = state.sum },
+        .sum => if (state.has_float) .{ .float = @as(f64, @floatFromInt(state.sum)) + state.float_sum } else .{ .int = state.sum },
+        .avg => if (state.count == 0) .{ .null = {} } else .{ .float = state.mean },
+        // Sample (n - 1) and population (n) standard deviation; 0 when undefined.
+        .stDev => .{ .float = if (state.count < 2) 0 else @sqrt(state.squared_deviations / @as(f64, @floatFromInt(state.count - 1))) },
+        .stDevP => .{ .float = if (state.count == 0) 0 else @sqrt(state.squared_deviations / @as(f64, @floatFromInt(state.count))) },
         .min => state.min orelse .{ .null = {} },
         .max => state.max orelse .{ .null = {} },
         .collect => .{ .list = state.list.items },

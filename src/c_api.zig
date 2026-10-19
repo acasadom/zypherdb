@@ -20,6 +20,7 @@ const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
 const StorageError = @import("storage/key_value_store.zig").StorageError;
 const Value = @import("value.zig").Value;
 const MapEntry = @import("value.zig").MapEntry;
+const formatFloat = @import("value.zig").formatFloat;
 const mapOf = @import("value.zig").mapOf;
 const Executor = @import("execution/Executor.zig");
 const Row = Executor.Row;
@@ -57,6 +58,7 @@ pub const TYPE_RELATIONSHIP: c_int = 6;
 pub const TYPE_MAP: c_int = 7;
 /// A path cell: read it through `acmedb_result_to_json`.
 pub const TYPE_PATH: c_int = 8;
+pub const TYPE_FLOAT64: c_int = 9;
 
 pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     const path = path_ptr[0..path_len];
@@ -161,6 +163,14 @@ pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*
     return RETURN_OK;
 }
 
+/// Sets a float property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
+pub export fn acmedb_set_property_float64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: f64) c_int {
+    const return_code = requireNodes(context, &.{id});
+    if (return_code != RETURN_OK) return return_code;
+    context.graph.setProperty(id, name_ptr[0..name_len], .{ .float = value }) catch return RETURN_STORAGE_ERROR;
+    return RETURN_OK;
+}
+
 /// Sets a string property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
 pub export fn acmedb_set_property_string(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_length: usize) c_int {
     const return_code = requireNodes(context, &.{id});
@@ -175,7 +185,7 @@ pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len:
 
 /// Like `acmedb_query`, with the values of the query's `$name` parameters as
 /// a JSON object (`{"card": 123, "zones": ["A", "B"]}`). Parameter values may
-/// be integers, strings, booleans, null, lists and maps (JSON objects).
+/// be integers, floats, strings, booleans, null, lists and maps (JSON objects).
 pub export fn acmedb_query_with_parameters(context: *Context, query_ptr: [*]const u8, query_len: usize, parameters_ptr: [*]const u8, parameters_len: usize) ?*Result {
     return runQuery(context, query_ptr[0..query_len], parameters_ptr[0..parameters_len]);
 }
@@ -232,7 +242,7 @@ fn parseParameters(arena: Allocator, json: []const u8, diagnostic: *Diagnostic) 
     while (entries.next()) |entry| {
         const value = parameterValue(arena, entry.value_ptr.*) catch |err| {
             diagnostic.set(.type_mismatch, 0, "parameter '{s}': {s}", .{ entry.key_ptr.*, switch (err) {
-                error.UnsupportedNumber => "numbers must be 64-bit integers (floating point is not supported yet)",
+                error.UnsupportedNumber => "integers must fit in 64 bits",
                 error.OutOfMemory => "out of memory",
             } });
             return error.InvalidParameters;
@@ -247,7 +257,9 @@ fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumb
         .null => .{ .null = {} },
         .bool => |b| .{ .boolean = b },
         .integer => |n| .{ .int = n },
-        .float, .number_string => error.UnsupportedNumber,
+        .float => |x| .{ .float = x },
+        // An integer too large for 64 bits: not silently made a float.
+        .number_string => error.UnsupportedNumber,
         .string => |text| .{ .string = text },
         .array => |items| blk: {
             const values = try arena.alloc(Value, items.items.len);
@@ -394,6 +406,9 @@ fn appendJsonString(buffer: *std.ArrayList(u8), result_allocator: Allocator, s: 
 fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: Value, entities: ?*const EntitySnapshot) Allocator.Error!void {
     switch (v) {
         .int => |n| try buffer.print(result_allocator, "{d}", .{n}),
+        // NaN and ±Infinity are written as such (JavaScript-style JSON, which
+        // Python's json module reads).
+        .float => |x| try buffer.appendSlice(result_allocator, try formatFloat(result_allocator, x)),
         .string => |s| try appendJsonString(buffer, result_allocator, s),
         .boolean => |b| try buffer.appendSlice(result_allocator, if (b) "true" else "false"),
         .null => try buffer.appendSlice(result_allocator, "null"),
@@ -510,6 +525,7 @@ pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) 
     if (col >= r.items.len) return -1;
     return switch (r.items[col]) {
         .int => TYPE_INT64,
+        .float => TYPE_FLOAT64,
         .string => TYPE_STRING,
         .boolean => TYPE_BOOLEAN,
         .null => TYPE_NULL,
@@ -525,6 +541,14 @@ pub export fn acmedb_result_int(result: *const Result, row: usize, col: usize) i
     const r = result.rows[row];
     return switch (r.items[col]) {
         .int => |n| n,
+        else => 0,
+    };
+}
+
+pub export fn acmedb_result_float(result: *const Result, row: usize, col: usize) f64 {
+    const r = result.rows[row];
+    return switch (r.items[col]) {
+        .float => |x| x,
         else => 0,
     };
 }
@@ -575,6 +599,7 @@ pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, co
     const item = listItem(result, row, col, item_index) orelse return -1;
     return switch (item) {
         .int => TYPE_INT64,
+        .float => TYPE_FLOAT64,
         .string => TYPE_STRING,
         .boolean => TYPE_BOOLEAN,
         .null => TYPE_NULL,
@@ -590,6 +615,14 @@ pub export fn acmedb_result_list_item_int(result: *const Result, row: usize, col
     const item = listItem(result, row, col, item_index) orelse return 0;
     return switch (item) {
         .int => |n| n,
+        else => 0,
+    };
+}
+
+pub export fn acmedb_result_list_item_float(result: *const Result, row: usize, col: usize, item_index: usize) f64 {
+    const item = listItem(result, row, col, item_index) orelse return 0;
+    return switch (item) {
+        .float => |x| x,
         else => 0,
     };
 }

@@ -21,6 +21,7 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
+const exactInteger = @import("../value.zig").exactInteger;
 
 /// Node identifiers are fixed-width u64.
 pub const NodeId = u64;
@@ -63,6 +64,7 @@ pub const Value = @import("../value.zig").Value;
 pub const value_tag_int: u8 = 0x01;
 pub const value_tag_string: u8 = 0x02;
 pub const value_tag_boolean: u8 = 0x03;
+pub const value_tag_float: u8 = 0x04;
 /// Index-lookup tag for a value that is never stored (`null`, a list): no
 /// index entry carries it, so a lookup by such a value finds nothing.
 pub const value_tag_never_stored: u8 = 0xff;
@@ -71,7 +73,7 @@ pub const value_tag_never_stored: u8 = 0xff;
 /// `boolean`. (`null` is never stored: setting a property to null removes it.)
 pub fn isStorable(value: Value) bool {
     return switch (value) {
-        .int, .string, .boolean => true,
+        .int, .float, .string, .boolean => true,
         .null, .list, .node, .relationship, .map, .path => false,
     };
 }
@@ -89,9 +91,17 @@ pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value)
             try list.append(allocator, value_tag_string);
             try list.appendSlice(allocator, s);
         },
+        .float => |x| try appendFloat(list, allocator, x),
         .boolean => |b| try list.appendSlice(allocator, &.{ value_tag_boolean, @intFromBool(b) }),
         .null, .list, .node, .relationship, .map, .path => unreachable, // callers check `isStorable` first
     }
+}
+
+fn appendFloat(list: *std.ArrayList(u8), allocator: Allocator, x: f64) !void {
+    try list.append(allocator, value_tag_float);
+    var buffer: [8]u8 = undefined;
+    std.mem.writeInt(u64, &buffer, @bitCast(x), .big);
+    try list.appendSlice(allocator, &buffer);
 }
 
 /// Decodes a stored value, returning a `Value` whose `string` variant is an
@@ -109,6 +119,7 @@ pub fn decodeValue(raw: []const u8) Value {
         value_tag_int => .{ .int = std.mem.readInt(i64, @ptrCast(raw[1..9].ptr), .big) },
         value_tag_string => .{ .string = raw[1..] },
         value_tag_boolean => .{ .boolean = raw[1] != 0 },
+        value_tag_float => .{ .float = @bitCast(std.mem.readInt(u64, @ptrCast(raw[1..9].ptr), .big)) },
         else => unreachable,
     };
 }
@@ -129,6 +140,9 @@ pub fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: V
             try list.appendSlice(allocator, s);
             try list.append(allocator, separator);
         },
+        // Numbers are indexed canonically, so `{x: 1}` finds a node whose x
+        // is 1.0: an integral float is indexed as the integer it equals.
+        .float => |x| if (exactInteger(x)) |n| try encodeIndexValue(list, allocator, .{ .int = n }) else try appendFloat(list, allocator, x),
         .boolean => |b| try list.appendSlice(allocator, &.{ value_tag_boolean, @intFromBool(b) }),
         // Never stored, so never indexed: the lookup prefix matches no entry.
         .null, .list, .node, .relationship, .map, .path => try list.append(allocator, value_tag_never_stored),
