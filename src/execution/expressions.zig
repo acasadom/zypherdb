@@ -57,6 +57,9 @@ fn inList(needle: Value, list: Value) ExecutionError!Value {
 }
 
 pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
+    if (self.expression_overrides) |overrides| {
+        if (overrides.get(expr)) |value| return value;
+    }
     return switch (self.ast.kind(expr)) {
         .integer_literal => .{ .int = self.ast.data(expr).int },
         .string_literal => .{ .string = self.ast.data(expr).text },

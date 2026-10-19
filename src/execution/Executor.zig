@@ -21,7 +21,8 @@ const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const ErrorCode = @import("../diagnostics.zig").ErrorCode;
 
 const ValueGrouping = @import("aggregation.zig").ValueGrouping;
-const AggregateKind = @import("../query/ast.zig").AggregateKind;
+const AggregationPlan = @import("aggregation.zig").AggregationPlan;
+const no_aggregation = AggregationPlan{ .keys = &.{}, .aggregates = &.{}, .kinds = &.{} };
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
 const semantics = @import("../query/semantics.zig");
 const functions = @import("functions.zig");
@@ -101,14 +102,18 @@ unwind: ?Index,
 // Aggregation.
 has_aggregates: bool,
 projection_items: std.ArrayList(ProjectionItem),
-/// The aggregate function of each `.aggregate` projection item, in order.
-aggregate_kinds: std.ArrayList(AggregateKind),
+/// How the RETURN aggregates (when `has_aggregates`).
+return_aggregation: AggregationPlan,
 groups: ValueGrouping,
 
 diagnostic: ?*Diagnostic,
 
 /// The values of the query's `$name` parameters (none by default).
 parameters: Parameters,
+
+/// While evaluating an aggregating expression for one group: the values that
+/// replace its aggregate calls and grouping-key sub-expressions.
+expression_overrides: ?*const std.AutoHashMapUnmanaged(Index, Value),
 
 pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
     return .{
@@ -138,10 +143,11 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .unwind = null,
         .has_aggregates = false,
         .projection_items = .empty,
-        .aggregate_kinds = .empty,
+        .return_aggregation = no_aggregation,
         .groups = .{},
         .diagnostic = null,
         .parameters = .empty,
+        .expression_overrides = null,
     };
 }
 
@@ -189,7 +195,8 @@ const MatchClauses = struct { before_with: ?Index, after_with: ?Index };
 fn reset(self: *Executor) void {
     self.rows.clearRetainingCapacity();
     self.groups = .{};
-    self.aggregate_kinds = .empty;
+    self.return_aggregation = no_aggregation;
+    self.expression_overrides = null;
     self.has_aggregates = false;
     self.projection_items = .empty;
     self.with_rows = .empty;
@@ -231,21 +238,45 @@ fn classifyClauses(self: *Executor, query: Index) ExecutionError!MatchClauses {
 }
 
 /// Splits the RETURN projection into grouping keys and aggregates.
+/// The expression of each projection item.
+pub fn projectedExpressions(self: *Executor, projection_node: Index) ExecutionError![]const Index {
+    const items = self.ast.nodeChildren(projection_node);
+    const expressions_list = try self.allocator.alloc(Index, items.len);
+    for (expressions_list, items) |*expr, item| expr.* = self.ast.nodeChildren(item)[0];
+    return expressions_list;
+}
+
+/// The alias of each aliased projection item.
+fn projectionNames(self: *Executor, projection_node: Index) ExecutionError![]const []const u8 {
+    var names = std.ArrayList([]const u8).empty;
+    for (self.ast.nodeChildren(projection_node)) |item| {
+        const alias = self.ast.data(item).text;
+        if (alias.len > 0) try names.append(self.allocator, alias);
+    }
+    return names.items;
+}
+
 fn collectProjectionItems(self: *Executor) ExecutionError!void {
     const return_clause = self.return_clause orelse return;
     const parts = projection.returnClauseParts(self, return_clause);
+    var keys = std.ArrayList(Index).empty;
+    var aggregating = std.ArrayList(Index).empty;
     for (self.ast.nodeChildren(parts.projection)) |item| {
         const expression = self.ast.nodeChildren(item)[0];
-        if (self.ast.kind(expression) != .aggregate) {
+        if (aggregation.containsAggregate(self, expression)) {
+            try self.projection_items.append(self.allocator, .{ .aggregating = expression });
+            try aggregating.append(self.allocator, expression);
+        } else {
             try self.projection_items.append(self.allocator, .{ .key = expression });
-            continue;
+            try keys.append(self.allocator, expression);
         }
-        self.has_aggregates = true;
-        const kind = self.ast.data(expression).aggregate;
-        const children = self.ast.nodeChildren(expression);
-        const argument: ?Index = if (children.len > 0) children[0] else null;
-        try self.projection_items.append(self.allocator, .{ .aggregate = .{ .kind = kind, .arg = argument } });
-        try self.aggregate_kinds.append(self.allocator, kind);
+    }
+    self.has_aggregates = aggregating.items.len > 0;
+    const projected = try projectedExpressions(self, parts.projection);
+    const ordering = try aggregation.orderByAggregating(self, parts.order_by, projected, self.has_aggregates);
+    if (self.has_aggregates) {
+        try aggregating.appendSlice(self.allocator, ordering);
+        self.return_aggregation = try aggregation.plan(self, keys.items, aggregating.items, try projectionNames(self, parts.projection));
     }
 }
 

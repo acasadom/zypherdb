@@ -376,6 +376,7 @@ clauses/match/Match7.feature: [7] MATCH with OPTIONAL MATCH in longer pattern
 clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matches
 clauses/match/Match7.feature: [9] Longer pattern with bound nodes
 clauses/match/Match8.feature: [1] Pattern independent of bound variables results in cross product
+clauses/match/Match8.feature: [3] Matching and disregarding output, then matching again
 clauses/merge/Merge1.feature: [10] Merge must properly handle multiple labels
 clauses/merge/Merge1.feature: [11] Merge should be able to merge using property of bound node
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
@@ -433,6 +434,8 @@ clauses/return-orderby/ReturnOrderBy1.feature: [5] ORDER BY should order ints in
 clauses/return-orderby/ReturnOrderBy1.feature: [6] ORDER BY DESC should order ints in the expected order
 clauses/return-orderby/ReturnOrderBy1.feature: [9] ORDER BY should order lists in the expected order
 clauses/return-orderby/ReturnOrderBy2.feature: [10] Returned columns do not change from using ORDER BY
+clauses/return-orderby/ReturnOrderBy2.feature: [11] Aggregates ordered by arithmetics
+clauses/return-orderby/ReturnOrderBy2.feature: [14] Fail on aggregation in ORDER BY after RETURN
 clauses/return-orderby/ReturnOrderBy2.feature: [1] ORDER BY should return results in ascending order
 clauses/return-orderby/ReturnOrderBy2.feature: [2] ORDER BY DESC should return results in descending order
 clauses/return-orderby/ReturnOrderBy2.feature: [3] Sort on aggregated function
@@ -447,6 +450,7 @@ clauses/return-orderby/ReturnOrderBy5.feature: [1] Renaming columns before ORDER
 clauses/return-orderby/ReturnOrderBy6.feature: [2] Handle returned aliases inside an order by item which contains an aggregation expression
 clauses/return-orderby/ReturnOrderBy6.feature: [3] Handle returned property accesses inside an order by item which contains an aggregation expression
 clauses/return-orderby/ReturnOrderBy6.feature: [4] Fail if not returned variables are used inside an order by item which contains an aggregation expression
+clauses/return-orderby/ReturnOrderBy6.feature: [5] Fail if more complex expressions, even if returned, are used inside an order by item which contains an aggregation expression
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [10] Fail when using non-constants in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [11] Fail when using negative value in SKIP
 clauses/return-skip-limit/ReturnSkipLimit1.feature: [1] Start the result from the second row
@@ -473,6 +477,7 @@ clauses/return-skip-limit/ReturnSkipLimit2.feature: [9] Fail when using non-cons
 clauses/return-skip-limit/ReturnSkipLimit3.feature: [1] Get rows in the middle
 clauses/return-skip-limit/ReturnSkipLimit3.feature: [2] Get rows in the middle by param
 clauses/return-skip-limit/ReturnSkipLimit3.feature: [3] Limiting amount of rows when there are fewer left than the LIMIT argument
+clauses/return/Return2.feature: [10] Return count aggregation over an empty graph
 clauses/return/Return2.feature: [11] RETURN does not lose precision on large integers
 clauses/return/Return2.feature: [12] Projecting a list of nodes and relationships
 clauses/return/Return2.feature: [14] Do not fail when returning type of deleted relationships
@@ -500,7 +505,13 @@ clauses/return/Return6.feature: [15] Using `rand()` in aggregations
 clauses/return/Return6.feature: [18] Handle returned variables inside an expression which contains an aggregation expression
 clauses/return/Return6.feature: [19] Handle returned property accesses inside an expression which contains an aggregation expression
 clauses/return/Return6.feature: [1] Return count aggregation over nodes
+clauses/return/Return6.feature: [20] Fail if not returned variables are used inside an expression which contains an aggregation expression
+clauses/return/Return6.feature: [21] Fail if more complex expressions, even if returned, are used inside expression which contains an aggregation expression
+clauses/return/Return6.feature: [2] Projecting an arithmetic expression with aggregation
+clauses/return/Return6.feature: [4] Support multiple divisions in aggregate function
+clauses/return/Return6.feature: [5] Aggregates inside normal functions
 clauses/return/Return6.feature: [7] Aggregate on property
+clauses/return/Return6.feature: [9] Aggregates with arithmetics
 clauses/return/Return7.feature: [2] Fail when using RETURN * without variables in scope
 clauses/return/Return8.feature: [1] Return aggregation after With filtering
 clauses/set/Set1.feature: [11] Set multiple node properties
@@ -529,6 +540,8 @@ clauses/with-orderBy/WithOrderBy1.feature: [10] Sort lists in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [1] Sort booleans in ascending order
 clauses/with-orderBy/WithOrderBy1.feature: [2] Sort booleans in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [3] Sort integers in ascending order
+clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only partially orderable on a non-distinct binding table #1
+clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only partially orderable on a non-distinct binding table #2
 clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct #1
 clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct #2
 clauses/with-orderBy/WithOrderBy1.feature: [46] Fail on sorting by an undefined variable #Example: <exampleName> #1
@@ -547,9 +560,32 @@ clauses/with-orderBy/WithOrderBy1.feature: [8] Sort strings in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [9] Sort lists in ascending order
 clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key #1
+clauses/with-orderBy/WithOrderBy2.feature: [22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key #2
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #1
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #10
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #11
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #12
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #13
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #14
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #15
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #16
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #17
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #18
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #19
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #2
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #20
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #21
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #22
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #23
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #24
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #25
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #3
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #4
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #5
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #6
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #7
+clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #8
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #9
 clauses/with-orderBy/WithOrderBy2.feature: [2] Sort by a boolean expression in descending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #1
@@ -635,6 +671,7 @@ clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of 
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #7
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #8
 clauses/with-orderBy/WithOrderBy3.feature: [8] Fail on sorting by any number of undefined variables in any position #Example: <exampleName> #9
+clauses/with-orderBy/WithOrderBy4.feature: [11] Sort by an aggregate projection
 clauses/with-orderBy/WithOrderBy4.feature: [12] Sort by an aliased aggregate projection
 clauses/with-orderBy/WithOrderBy4.feature: [13] Fail on sorting by a non-projected aggregation on a variable
 clauses/with-orderBy/WithOrderBy4.feature: [14] Fail on sorting by a non-projected aggregation on an expression

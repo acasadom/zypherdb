@@ -11,7 +11,6 @@
 //! Text functions count Unicode code points, not bytes (`size('é')` is 1).
 
 const std = @import("std");
-const Allocator = std.mem.Allocator;
 
 const Ast = @import("../query/ast.zig").Ast;
 const Index = @import("../query/ast.zig").Index;

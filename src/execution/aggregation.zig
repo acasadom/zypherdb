@@ -1,4 +1,6 @@
-//! Aggregation: count/sum/min/max/collect with implicit grouping (RETURN).
+//! Aggregation: count/sum/min/max/collect with implicit grouping, for RETURN
+//! and WITH. Aggregates may sit anywhere in a projected expression
+//! (`count(*) + 1`, `sum(x) * 100 / count(*)`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -16,18 +18,169 @@ const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
 const asInt = @import("expressions.zig").asInt;
 
-/// Folds one input row into its group (RETURN with aggregates).
-pub fn accumulate(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    var keys = std.ArrayList(Value).empty;
-    var args = std.ArrayList(Value).empty;
-    for (self.projection_items.items) |item| {
-        switch (item) {
-            .key => |expr| try keys.append(self.allocator, try expressions.evaluate(self, expr, bindings)),
-            .aggregate => |a| try args.append(self.allocator, try evaluateAggregateArgument(self, a.arg, bindings)),
+/// How a projection (RETURN or WITH) aggregates: its grouping keys, and every
+/// aggregate call inside its aggregating expressions, in order.
+pub const AggregationPlan = struct {
+    keys: []const Index,
+    aggregates: []const Index,
+    kinds: []const AggregateKind,
+};
+
+/// True if `expr` contains an aggregate call anywhere.
+pub fn containsAggregate(self: *const Executor, expr: Index) bool {
+    if (self.ast.kind(expr) == .aggregate) return true;
+    for (self.ast.nodeChildren(expr)) |child| {
+        if (containsAggregate(self, child)) return true;
+    }
+    return false;
+}
+
+/// Builds the plan of a projection: `keys` are the grouping-key expressions,
+/// `aggregating` the expressions that contain aggregates. Checks openCypher's
+/// rules: no aggregate inside an aggregate, and an aggregating expression
+/// uses, outside its aggregates, only constants and grouping keys
+/// (AmbiguousAggregationExpression).
+/// `aliases` are the projection's names, also usable next to an aggregate
+/// (in ORDER BY: `RETURN n.x AS x, count(*) ORDER BY x + count(*)`).
+pub fn plan(self: *Executor, keys: []const Index, aggregating: []const Index, aliases: []const []const u8) ExecutionError!AggregationPlan {
+    var aggregates = std.ArrayList(Index).empty;
+    var kinds = std.ArrayList(AggregateKind).empty;
+    for (aggregating) |expr| {
+        try checkAggregating(self, expr, keys, aliases);
+        try collectAggregates(self, expr, &aggregates, &kinds);
+    }
+    return .{ .keys = keys, .aggregates = aggregates.items, .kinds = kinds.items };
+}
+
+fn collectAggregates(self: *Executor, expr: Index, aggregates: *std.ArrayList(Index), kinds: *std.ArrayList(AggregateKind)) ExecutionError!void {
+    if (self.ast.kind(expr) == .aggregate) {
+        for (self.ast.nodeChildren(expr)) |argument| {
+            if (containsAggregate(self, argument)) {
+                self.fail(.invalid_expression, "an aggregate cannot contain another aggregate", .{});
+                return error.InvalidExpression;
+            }
+        }
+        try aggregates.append(self.allocator, expr);
+        try kinds.append(self.allocator, self.ast.data(expr).aggregate);
+        return;
+    }
+    for (self.ast.nodeChildren(expr)) |child| try collectAggregates(self, child, aggregates, kinds);
+}
+
+fn checkAggregating(self: *Executor, expr: Index, keys: []const Index, aliases: []const []const u8) ExecutionError!void {
+    if (self.ast.kind(expr) == .aggregate) return; // its argument is read per row
+    // Only a simple grouping key (a variable or a property) may be reused
+    // next to an aggregate, even if a more complex one is projected.
+    switch (self.ast.kind(expr)) {
+        .variable, .property_access => for (keys) |key| {
+            if (self.ast.sameExpression(expr, key)) return;
+        },
+        else => {},
+    }
+    if (self.ast.kind(expr) == .variable) {
+        const name = self.ast.data(expr).text;
+        for (aliases) |alias| {
+            if (std.mem.eql(u8, alias, name)) return;
+        }
+        self.fail(.invalid_expression, "'{s}' is used next to an aggregate but is not a grouping key", .{name});
+        return error.InvalidExpression;
+    }
+    for (self.ast.nodeChildren(expr)) |child| try checkAggregating(self, child, keys, aliases);
+}
+
+/// The ORDER BY expressions that aggregate and are not simply a projected
+/// column: they are computed per group, like the projection's aggregating
+/// expressions. Each aggregate in them must be one the projection computes
+/// (`ORDER BY age + count(x)` with `count(x)` projected), and a projection
+/// that does not aggregate cannot order by an aggregate. Checked before any
+/// row is read.
+pub fn orderByAggregating(self: *Executor, order_by: ?Index, projected: []const Index, projection_aggregates: bool) ExecutionError![]const Index {
+    const order = order_by orelse return &.{};
+    var aggregating = std.ArrayList(Index).empty;
+    for (self.ast.nodeChildren(order)) |order_item| {
+        const expr = self.ast.nodeChildren(order_item)[0];
+        if (!containsAggregate(self, expr)) continue;
+        if (!projection_aggregates) {
+            self.fail(.invalid_expression, "ORDER BY cannot aggregate when the projection does not", .{});
+            return error.InvalidExpression;
+        }
+        for (projected) |item| {
+            if (self.ast.sameExpression(expr, item)) break;
+        } else {
+            try requireProjectedAggregates(self, expr, projected);
+            try aggregating.append(self.allocator, expr);
         }
     }
-    const states = try self.groups.statesFor(self.allocator, keys.items, self.aggregate_kinds.items);
-    for (states, args.items) |*state, arg| try updateAggregate(self, state, arg);
+    return aggregating.items;
+}
+
+/// Every aggregate call under `expr` repeats one under the projection.
+fn requireProjectedAggregates(self: *Executor, expr: Index, projected: []const Index) ExecutionError!void {
+    if (self.ast.kind(expr) == .aggregate) {
+        for (projected) |item| {
+            if (containsExpression(self, item, expr)) return;
+        }
+        self.fail(.invalid_expression, "ORDER BY uses an aggregate the projection does not compute", .{});
+        return error.InvalidExpression;
+    }
+    for (self.ast.nodeChildren(expr)) |child| try requireProjectedAggregates(self, child, projected);
+}
+
+/// True if `needle`'s expression appears anywhere under `haystack`.
+fn containsExpression(self: *Executor, haystack: Index, needle: Index) bool {
+    if (self.ast.sameExpression(haystack, needle)) return true;
+    for (self.ast.nodeChildren(haystack)) |child| {
+        if (containsExpression(self, child, needle)) return true;
+    }
+    return false;
+}
+
+/// Folds one input row into its group.
+pub fn accumulateRow(self: *Executor, grouping: *ValueGrouping, aggregation: AggregationPlan, bindings: *Bindings) ExecutionError!void {
+    const keys = try self.allocator.alloc(Value, aggregation.keys.len);
+    for (keys, aggregation.keys) |*key, expr| key.* = try expressions.evaluate(self, expr, bindings);
+    const states = try grouping.statesFor(self.allocator, keys, aggregation.kinds);
+    for (states, aggregation.aggregates) |*state, call| {
+        const arguments = self.ast.nodeChildren(call);
+        try updateAggregate(self, state, try evaluateAggregateArgument(self, if (arguments.len > 0) arguments[0] else null, bindings));
+    }
+}
+
+/// With no grouping keys, aggregating zero rows still yields one group
+/// (`count` 0, `sum` 0, `min`/`max` null, `collect` []), as in openCypher.
+pub fn ensureGroupWithoutKeys(self: *Executor, grouping: *ValueGrouping, aggregation: AggregationPlan) ExecutionError!void {
+    if (grouping.keys.items.len == 0 and aggregation.keys.len == 0) {
+        _ = try grouping.statesFor(self.allocator, &.{}, aggregation.kinds);
+    }
+}
+
+/// The value of an aggregating expression for one group: each aggregate
+/// call is replaced by its result and each grouping-key expression by the
+/// group's key value; any other variable (an alias) is read from `scope`.
+pub fn evaluateAggregating(self: *Executor, expr: Index, aggregation: AggregationPlan, key_values: []const Value, states: []const AggregateState, scope: *Bindings) ExecutionError!Value {
+    var overrides = std.AutoHashMapUnmanaged(Index, Value).empty;
+    for (aggregation.aggregates, states) |call, state| {
+        try overrides.put(self.allocator, call, aggregateResult(self.ast.data(call).aggregate, state));
+    }
+    try overrideKeys(self, expr, aggregation, key_values, &overrides);
+
+    const saved = self.expression_overrides;
+    self.expression_overrides = &overrides;
+    defer self.expression_overrides = saved;
+    return expressions.evaluate(self, expr, scope);
+}
+
+fn overrideKeys(self: *Executor, expr: Index, aggregation: AggregationPlan, key_values: []const Value, overrides: *std.AutoHashMapUnmanaged(Index, Value)) ExecutionError!void {
+    if (self.ast.kind(expr) == .aggregate) return;
+    for (aggregation.keys, key_values) |key, value| {
+        if (self.ast.sameExpression(expr, key)) return overrides.put(self.allocator, expr, value);
+    }
+    for (self.ast.nodeChildren(expr)) |child| try overrideKeys(self, child, aggregation, key_values, overrides);
+}
+
+/// RETURN with aggregates: folds one input row into its group.
+pub fn accumulate(self: *Executor, bindings: *Bindings) ExecutionError!void {
+    try accumulateRow(self, &self.groups, self.return_aggregation, bindings);
 }
 
 /// Evaluates an aggregation argument. `count(*)` (no argument) returns a
@@ -66,38 +219,38 @@ pub fn updateAggregate(self: *Executor, state: *AggregateState, arg: Value) Exec
 
 /// Turns the groups into RETURN rows: grouping keys and aggregate results in
 /// projection order.
+/// RETURN with aggregates: turns the groups into rows, in projection order.
 pub fn aggregate(self: *Executor, info: projection.ReturnClauseParts) ExecutionError!void {
     self.rows = .empty;
-    // With no grouping keys, aggregating zero rows still yields one row
-    // (`count` 0, `sum` 0, `min`/`max` null, `collect` []), as in openCypher.
-    if (self.groups.keys.items.len == 0 and !hasProjKey(self.projection_items.items)) {
-        _ = try self.groups.statesFor(self.allocator, &.{}, self.aggregate_kinds.items);
-    }
+    try ensureGroupWithoutKeys(self, &self.groups, self.return_aggregation);
+    const projected = try self.projectedExpressions(info.projection);
     for (self.groups.keys.items, self.groups.states.items) |keys, states| {
         var row = std.ArrayList(Value).empty;
         var key_index: usize = 0;
-        var aggregate_index: usize = 0;
-        for (self.projection_items.items) |item| {
-            switch (item) {
-                .key => {
-                    try row.append(self.allocator, keys[key_index]);
+        var scope = Bindings{ .entries = .empty };
+        for (self.projection_items.items, self.ast.nodeChildren(info.projection)) |item, item_node| {
+            const value = switch (item) {
+                .key => value: {
                     key_index += 1;
+                    break :value keys[key_index - 1];
                 },
-                .aggregate => |a| {
-                    try row.append(self.allocator, aggregateResult(a.kind, states[aggregate_index]));
-                    aggregate_index += 1;
-                },
-            }
+                .aggregating => |expr| try evaluateAggregating(self, expr, self.return_aggregation, keys, states, &scope),
+            };
+            try row.append(self.allocator, value);
+            const alias = self.ast.data(item_node).text;
+            if (alias.len > 0) try scope.put(self.allocator, alias, value);
         }
-        const sort_key = try projection.returnSortKey(self, info, row.items, null);
+        const sort_key = try projection.groupSortKey(self, info.order_by, projected, row.items, &scope, self.return_aggregation, keys, states);
         try self.rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
     }
 }
 
 /// One projection item: either a grouping key or an aggregation.
+/// One RETURN projection item: a grouping key, or an expression containing
+/// aggregates.
 pub const ProjectionItem = union(enum) {
-    key: Index, // expression index
-    aggregate: struct { kind: AggregateKind, arg: ?Index }, // arg = null for count(*)
+    key: Index,
+    aggregating: Index,
 };
 
 pub const AggregateState = struct {
@@ -139,11 +292,6 @@ pub fn Grouping(comptime Key: type, comptime KeyContext: type) type {
 
 /// RETURN groups: keyed by the values of the non-aggregate projection items.
 pub const ValueGrouping = Grouping([]const Value, SequenceContext(Value));
-
-pub fn hasProjKey(items: []const ProjectionItem) bool {
-    for (items) |item| if (item == .key) return true;
-    return false;
-}
 
 pub fn aggregateResult(kind: AggregateKind, state: AggregateState) Value {
     return switch (kind) {

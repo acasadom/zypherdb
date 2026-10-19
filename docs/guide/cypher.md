@@ -49,6 +49,7 @@ reads as `null`.
 
 | Operator | Meaning |
 | --- | --- |
+| `+`, `-`, `*`, `/`, `%`, unary `-` | integer arithmetic (overflow and division by zero are errors; `/` truncates); `+` also joins strings and lists |
 | `=`, `<>`, `<`, `>`, `<=`, `>=` | comparison |
 | `AND`, `OR`, `NOT` | boolean logic (three-valued with null) |
 | `STARTS WITH`, `ENDS WITH`, `CONTAINS` | string predicates |
@@ -76,9 +77,15 @@ relationship is an error: acmedb identifies a relationship by (source, target, t
 
 ## Aggregations
 
-`count(x)` (and `count(*)`), `sum(x)`, `min(x)`, `max(x)`, and `collect(x)` (a list). Any non-
-aggregated projected expression is an implicit grouping key; aggregations skip nulls, and
+`count(x)` (and `count(*)`), `sum(x)`, `min(x)`, `max(x)`, and `collect(x)` (a list). Any projected
+expression without an aggregate is an implicit grouping key; aggregations skip nulls, and
 `count(*)` counts all rows.
+
+Aggregates may sit anywhere in an expression: `count(*) + 1`, `sum(n.x) * 100 / count(*)`. Outside
+its aggregates such an expression may use only constants, parameters and *simple* grouping keys (a
+variable or a property that is itself projected), as openCypher requires. `ORDER BY` may combine
+the projection's names with aggregates the projection computes (`ORDER BY age + count(x)`). A
+`WITH` without aggregates keeps every row (it does not group).
 
 ## Types
 
@@ -90,7 +97,7 @@ relationships (`RETURN n`). Nulls come from `OPTIONAL MATCH`, missing properties
 
 ## Notes on the subset
 
-- `avg`, arithmetic, and a `WHERE` *outside* an `OPTIONAL MATCH` (post-join filter) are not yet
+- `avg` (needs floats) and a `WHERE` *outside* an `OPTIONAL MATCH` (post-join filter) are not yet
   supported — filter with a `WITH … WHERE` step.
 - `UNWIND` after `WITH` (unwinding a `collect`ed list) is deferred; project the list and `size`
   it, or `WITH collect(…) AS l` and iterate client-side.
