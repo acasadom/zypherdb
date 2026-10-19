@@ -1,14 +1,15 @@
 # The language — lexer, parser, AST
 
 How a string of text becomes the arena AST the executor consumes. All of it is
-`src/parser/parser.zig` (lexer + parser) and `src/ast/ast.zig` (the AST).
+`src/query/lexer.zig` (the lexer), `src/query/parser.zig` and `src/query/expression_parser.zig` (the
+grammar) and `src/query/ast.zig` (the AST).
 
 There are two passes: a **lexer** that turns text into a flat token array, then a
 **recursive-descent parser** that turns tokens into the AST. No ANTLR, no generator.
 
 ## The lexer
 
-`tokenize(allocator, src, diag)` walks the source once, left to right, and appends one `Token` per
+`tokenize(allocator, src, diagnostic)` walks the source once, left to right, and appends one `Token` per
 lexeme:
 
 ```zig
@@ -23,7 +24,7 @@ pub const TokenKind = enum {
 
 pub const Token = struct {
     kind: TokenKind,
-    text: []const u8,   // lexeme (content for ident/string/integer, symbol otherwise)
+    text: []const u8,   // lexeme (content for identifier/string/integer, symbol otherwise)
     pos: usize,         // byte offset in the source (for diagnostics)
 };
 ```
@@ -66,22 +67,22 @@ parsePattern
 parseNodePattern    → '(' ident? (':' ident)* '{' prop (',' prop)* '}'? ')'
 parseEdgePattern    → ('-' | '<-') '[' ident? (':' ident)? '{' … '}'? ']' ('->' | '-')
 
-parseExpr
+parseExpression   (expression_parser.zig)
 └── parseOr → parseAnd → parseNot → parseComparison → parsePrimary
 
 parseComparison     → parsePrimary ( op parsePrimary )?          # + STARTS/ENDS/CONTAINS/IN
 parsePrimary        → CASE | integer | string | ident | '[' list ']' | '(' expr ')'
-parseCaseExpr       → CASE (WHEN expr THEN expr)+ (ELSE expr)? END
+parseCaseExpression → CASE (WHEN expr THEN expr)+ (ELSE expr)? END
 parseListLiteral    → '[' expr (',' expr)* ']'
-parseAggCall        → count(*) | agg '(' expr ')'
+parseAggregateCall  → count(*) | agg '(' expr ')'
 ```
 
 Three things are worth spelling out:
 
 - **Operator precedence** is encoded in the nesting: `OR` binds loosest, then `AND`, then `NOT`,
   then comparisons, then primary. Each level loops (`while atKeyword("AND")`) to make the operators
-  left-associative, building left-deep `binary_op` nodes.
-- **Keywords vs identifiers.** In `parsePrimary`, an `ident` is checked in order: `true`/`false`
+  left-associative, building left-deep `binary_operation` nodes.
+- **Keywords vs identifiers.** In `parsePrimary`, an `identifier` is checked in order: `true`/`false`
   (booleans), an aggregation name followed by `(` (`count`/`sum`/…), `size` followed by `(`, then
   otherwise it's a variable — optionally a property access if a `.` follows. Because `WHERE`, `AND`,
   etc. are only recognized *between* expressions, a variable named `in`, `and`, or `where` still
@@ -92,7 +93,7 @@ Three things are worth spelling out:
 
 ## The AST
 
-The AST (`src/ast/ast.zig`) is an **arena**: a flat `std.ArrayList` of `Node`s plus a parallel
+The AST (`src/query/ast.zig`) is an **arena**: a flat `std.ArrayList` of `Node`s plus a parallel
 child-index array. There are no pointers between nodes and no inheritance:
 
 ```zig
@@ -104,12 +105,12 @@ pub const Data = union(enum) {               // the payload; which field is acti
     none: void,
     int: i64,
     boolean: bool,
-    text: []const u8,                         // a literal, an identifier, an alias, a prop name
-    node_pattern: struct { var_name: []const u8, labels: []const []const u8 },
-    edge_pattern: struct { var_name: []const u8, etype: []const u8, direction: EdgeDirection },
-    bin_op: BinOp,
-    un_op: UnOp,
-    agg: AggKind,
+    text: []const u8,                         // a literal, an identifier, an alias, a property name
+    node_pattern: struct { variable_name: []const u8, labels: []const []const u8 },
+    edge_pattern: struct { variable_name: []const u8, edge_type: []const u8, direction: EdgeDirection },
+    binary_operator: BinaryOperator,
+    unary_operator: UnaryOperator,
+    aggregate: AggregateKind,
     // ...
 };
 

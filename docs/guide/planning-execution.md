@@ -1,6 +1,6 @@
 # Planning & execution
 
-How a query is turned into work, and how that work runs. Everything here is `src/exec/exec.zig`.
+How a query is turned into work, and how that work runs. Everything here is `src/execution/`.
 This is the page to read before changing the planner or adding an operator.
 
 ## There is no IR (and why that's fine — for now)
@@ -44,7 +44,7 @@ index choice — so it *must* optimize. acmedb's language has no such space. The
   (replicas serving many query shapes) raises the value of statistics-driven planning.
 
 When any of those happens, the IR would slot in between `run` and `setupPattern` — a logical-plan
-layer (`Scan`/`Expand`/`Filter`/…) lowered to the physical `BindStep`s — without touching the
+layer (`Scan`/`Expand`/`Filter`/…) lowered to the physical `PlanStep`s — without touching the
 storage or the parser.
 
 ## The plan
@@ -54,19 +54,19 @@ For one `MATCH` pattern, `setupPattern` walks the chain `[node, edge, node, …]
 ```zig
 const Seek = struct { prop: []const u8, value: Index };          // var.prop = literal
 
-const ChainNode = struct { var_name: []const u8, labels: []const []const u8,
+const PatternNode = struct { variable_name: []const u8, labels: []const []const u8,
                            seeks: std.ArrayList(Seek), bound: bool };
-const ChainEdge = struct { etype: []const u8, fwd_dir: Direction, var_name: []const u8,
+const PatternEdge = struct { edge_type: []const u8, forward_direction: Direction, variable_name: []const u8,
                            seeks: std.ArrayList(Seek) };
 
-const BindStep = union(enum) {
+const PlanStep = union(enum) {
     scan:      struct { node: usize },                 // enumerate a node (label or property index)
     expand:    struct { from: usize, to: usize },      // walk an edge from a bound node
     edge_scan: struct { edge: usize },                 // enumerate an edge (edge-property index)
 };
 ```
 
-`ChainNode.seeks` and `ChainEdge.seeks` come from two places: inline `{prop: value}` maps, and
+`PatternNode.seeks` and `PatternEdge.seeks` come from two places: inline `{prop: value}` maps, and
 `WHERE` equality predicates (`collectWhereSeeks` walks the `AND` tree and pulls out every
 `var.prop = literal`). A node is `bound` if an earlier pattern already gave it a value — the join
 mechanism for comma-separated patterns and for `WITH`.
@@ -90,38 +90,38 @@ inline property seek, and both endpoints are unbound and unselective, the plan i
 
 ## How steps map to graph operations
 
-Each `BindStep` is one graph operation. This is the "volcano translation" — the pattern is not a
+Each `PlanStep` is one graph operation. This is the "volcano translation" — the pattern is not a
 tree of join operators but a flat list of steps, and the recursion **is** the operator tree:
 
 | Step | Graph operation (`graph.zig`) | Storage (see [storage](storage)) |
 | --- | --- | --- |
-| `scan` (with seeks) | `nodesByProp(prop, value)` | property-index prefix scan |
+| `scan` (with seeks) | `nodesByProperty(prop, value)` | property-index prefix scan |
 | `scan` (label) | `nodesWithLabel(label)` then `hasAllLabels` | label-index prefix scan |
-| `expand` (unbound neighbour) | `neighbours(from, dir, type)` | edge prefix scan |
+| `expand` (unbound neighbour) | `neighbours(from, direction, type)` | edge prefix scan |
 | `expand` (bound neighbour) | `hasEdge` (verify) | edge point lookup |
-| `edge_scan` | `edgesByProp(prop, value)` | edge-property-index prefix scan |
+| `edge_scan` | `edgesByProperty(prop, value)` | edge-property-index prefix scan |
 
 The executor is Volcano-shaped in spirit — iterators (`PrefixIterator` / `NodeIdIterator` /
 `EdgeIterator`) that you `next()` until exhausted — but instead of explicit `Open`/`Next`/`Close`
-objects it is a recursive function, `execStep`, that nests the loops directly:
+objects it is a recursive function, `runStep`, that nests the loops directly:
 
 ```text
-execStep(step):
-  if step == steps.len:  → next pattern, then leaf()
-  scan    → for each candidate id (skip if !hasAllLabels / !nodeSeeksMatch): recurse(step+1)
-  expand  → for each neighbour nid (skip if !labels / !nodeSeeksMatch / !edgeSeeksMatch): recurse(step+1)
-  edge_scan → for each (src,dst) (skip if type mismatch / !seeks): bind both endpoints, recurse(step+1)
+runStep(step):
+  if step == steps.len:  → next pattern, then matchFound()
+  scan    → scanNodes: for each candidate id (skip if !hasAllLabels / !nodeSeeksMatch): recurse(step+1)
+  expand  → expandEdge: for each neighbour id (skip if !labels / !nodeSeeksMatch / !edgeSeeksMatch): recurse(step+1)
+  edge_scan → scanEdgeIndex: for each (src,dst) (skip if type mismatch / !seeks): bind both endpoints, recurse(step+1)
 ```
 
 Predicates are checked **as early as possible**: the inline seeks became the scan's own lookup, and
-the remaining `WHERE` is checked at the leaf.
+the remaining `WHERE` is checked once the pattern has matched (`matchFound`).
 
 ## The clause pipeline
 
-`run` sequences the clauses; `leaf` is the join point after a pattern matches:
+`run` sequences the clauses; `matchFound` is the join point after a pattern matches:
 
 ```text
-leaf(bindings):
+matchFound(bindings):
   if WHERE fails → return
   if in OPTIONAL MATCH → record a match, afterOptional()
   if OPTIONAL MATCH pending → runOptional()      # outer join: match, else bind nulls
@@ -141,12 +141,13 @@ leaf(bindings):
 
 ## Aggregation and grouping
 
-The projection is split into `key` items (implicit grouping keys) and `agg` items. `accumulate`
-evaluates each row's keys, finds-or-creates the group (`Group` = keys + one `AggState` per agg), and
+The projection is split into `key` items (implicit grouping keys) and `aggregate` items.
+`accumulate` evaluates each row's keys and finds-or-creates its group in a hashed
+`Grouping(Key, KeyContext)` (keys + one `AggregateState` per aggregate; expected O(1) per row), and
 updates the state; `aggregate` then turns groups back into rows. `WITH` uses the same machinery but
 with `Binding`-valued keys (so a bare node variable passes through as a node, not a scalar).
 
-`AggState` is the running reduction: `count`/`sum`/`min`/`max` accumulate scalars, `collect` appends
+`AggregateState` is the running reduction: `count`/`sum`/`min`/`max` accumulate scalars, `collect` appends
 to an arena list. Nulls are skipped by every aggregate except `count(*)`, which counts all rows.
 
 ## Nulls
@@ -158,5 +159,5 @@ Nulls exist because of `OPTIONAL MATCH` (and `CASE` without `ELSE`). The rule is
 - a null `WHERE` filters the row out;
 - aggregations skip nulls.
 
-This is implemented by `Value.null` plus `isNull` guards in `applyBinOp`/`applyUnOp`/`eval` and the
-`evalBool` → `false` rule — see `exec.zig`.
+This is implemented by `Value.null` plus `isNull` guards in `applyBinaryOperator`/`applyUnaryOperator`/`evaluate` and the
+`evalBool` → `false` rule — see `execution/`.

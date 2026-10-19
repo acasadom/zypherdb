@@ -2,7 +2,7 @@
 
 This is the theory of how the graph is stored. If you are going to add an index, change a property
 type, or debug a traversal, start here. Everything lives in `src/storage/graph.zig` (the encoding)
-and `src/storage/kv_store.zig` (the LMDB wrapper).
+and `src/storage/key_value_store.zig` (the LMDB wrapper).
 
 ## The model: everything is a key
 
@@ -24,13 +24,13 @@ Two rules make that work:
 | Key | Meaning | Answering |
 | --- | --- | --- |
 | `n \| id` | the node exists | `hasNode` |
-| `n \| id \| 0x00 \| prop` | a node property (value = encoded `Value`) | `getProp` |
+| `n \| id \| 0x00 \| prop` | a node property (value = encoded `Value`) | `getProperty` |
 | `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` = `'o'` out / `'i'` in) | `neighbours`, `hasEdge` |
-| `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the **canonical** `src -> dst` orientation | `getEdgeProp` |
+| `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the **canonical** `src -> dst` orientation | `getEdgeProperty` |
 | `l \| label \| 0x00 \| id` | forward label index | `nodesWithLabel`, `hasLabel` |
 | `L \| id \| 0x00 \| label` | reverse label index | enumerating a node's labels on delete |
-| `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProp` (an equality seek) |
-| `g \| prop \| 0x00 \| value \| src \| dst \| 0x00 \| type` | edge-property index | `edgesByProp` (an equality seek) |
+| `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
+| `g \| prop \| 0x00 \| value \| src \| dst \| 0x00 \| type` | edge-property index | `edgesByProperty` (an equality seek) |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
 | `!` | the next node id to allocate | `allocNodeId` |
 
@@ -70,7 +70,7 @@ For index keys, a string value gets a trailing `0x00` so a lookup prefix for `"X
 - **Label index (`l`) and reverse (`L`).** `l` answers "which nodes carry this label" (a prefix
   scan). `L` answers the reverse question — "which labels does this node carry" — which is needed
   only to clean up on `deleteNode`, so a delete doesn't have to guess.
-- **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProp`/`removeProp`
+- **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProp`
   and `deleteNode`. This is what turns `MATCH (p:Person {name: 'Keanu'})` from a scan into a point
   lookup.
 - **Edge-property index (`g`).** The same idea for edges, keyed `prop == value` then `(src, dst,
@@ -97,5 +97,5 @@ counter back too.
 - `MDB_NOTLS` is set on the environment, so a single thread may hold several read transactions at
   once — the executor needs that to run a scan, then a neighbour scan *inside* it.
 - An iterator returned by `scanPrefix` borrows its transaction; it must be `deinit`'d **before** the
-  transaction ends (the cursor belongs to it). The executor scopes every iterator to its `execStep`
+  transaction ends (the cursor belongs to it). The executor scopes every iterator to its `runStep`
   frame, which is what makes this safe.

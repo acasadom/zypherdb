@@ -22,6 +22,11 @@ acmedb is deliberately small and generic. Four decisions explain almost every fi
 - **An arena AST.** Nodes live in one `std.ArrayList`, children are a separate index array, and
   strings are interned into the arena. No pointers, no inheritance, one `deinit` frees the whole
   tree. This is the same shape Zig itself uses for its AST.
+- **Regular types and generic algorithms.** `Value`, `Binding` and `Bindings` define equality, a
+  total order (where meaningful) and a hash that obey their laws, checked by property tests.
+  Algorithms that apply to more than one type — deduplication, pagination, sorting by key,
+  grouping — are written once over those operations (`sequence_algorithms.zig`,
+  `aggregation.Grouping`, `projection.sortByKey`), never copied per type.
 - **LMDB as the storage engine.** A graph is traversed by following adjacencies, not by joining
   tables, so the storage is a single key/value B+tree and *"neighbours of X" is one prefix scan*.
   LMDB is single-writer / multi-reader, which is exactly the intended read-replication model, and
@@ -29,50 +34,68 @@ acmedb is deliberately small and generic. Four decisions explain almost every fi
 
 ## The components
 
-Ten files, five layers, with a strict one-way dependency rule (a layer talks only to the one below
-it):
+Three layers, one directory each, plus a few cross-cutting files. Dependencies point one way: the
+C ABI uses execution and storage, execution uses the query AST and storage, and nothing below
+reaches up.
 
 ```{mermaid}
 flowchart TB
   subgraph embed["Embedding"]
-    CAPI["capi.zig — C ABI (export fn)"]
+    CAPI["c_api.zig — C ABI (export fn)"]
   end
-  subgraph lang["Language"]
-    Parser["parser.zig — lexer + recursive descent"]
+  subgraph query["query/ — text to AST"]
+    Lexer["lexer.zig — tokens"]
+    Parser["parser.zig + expression_parser.zig — grammar"]
     AST["ast.zig — arena AST"]
   end
-  subgraph exec["Execution"]
-    Exec["exec.zig — Volcano executor"]
-    Diag["diag.zig — error messages + offsets"]
+  subgraph execution["execution/ — AST to rows"]
+    Executor["Executor.zig — state, run(), phases"]
+    Steps["planner · pattern_matching · expressions · aggregation · projection · writes"]
   end
-  subgraph storage["Storage"]
-    Graph["graph.zig — key encoding, indexes, adjacency"]
-    KV["kv_store.zig — KvStore over LMDB"]
-    LMDB["lmdb.zig — hand-written C bindings"]
+  subgraph storage["storage/ — graph on LMDB"]
+    Graph["graph.zig — graph operations and indexes"]
+    Keys["key_encoding.zig — key layout"]
+    KV["key_value_store.zig — transactions, prefix scans"]
+    LMDB["lmdb_bindings.zig — C bindings"]
   end
+  Shared["value.zig · sequence_algorithms.zig · diagnostics.zig"]
 
-  CAPI --> Exec
+  CAPI --> Executor
   CAPI --> Graph
-  Exec --> AST
-  Exec --> Graph
+  Executor --> Steps
+  Steps --> AST
+  Steps --> Graph
+  Parser --> Lexer
   Parser --> AST
-  Parser --> Diag
+  Graph --> Keys
   Graph --> KV
   KV --> LMDB
 ```
 
 | File | What it is |
 | --- | --- |
-| `src/storage/lmdb.zig` | Hand-written C bindings: `opaque {}` handles for `MDB_env`/`MDB_txn`/`MDB_cursor`, an `extern struct MDB_val`, ~15 `extern "c" fn`, and the constants (`MDB_RDONLY`, `MDB_NOTLS`, `MDB_NOTFOUND`, `MDB_NEXT`, `MDB_SET_RANGE`). |
-| `src/storage/kv_store.zig` | `KvStore`, a RAII wrapper over LMDB: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix`, plus explicit write and read transactions. `scanPrefix` returns an **iterator**, not a callback — the composable abstraction the executor needs. |
-| `src/storage/graph.zig` | `Graph`: the key encoding, index-free adjacency, the label/property/edge indexes, and value encoding. It is the only place that knows the key layout. |
-| `src/ast/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, and `addNode`/`nodeChildren`/`intern`. |
-| `src/parser/parser.zig` | The lexer (`tokenize`) and the recursive-descent parser (`Parser`), text → arena AST. |
-| `src/exec/exec.zig` | The Volcano executor: planning (anchor selection, predicate pushdown) and execution (nested-loop scans/expansions), plus writes, aggregation and the `WITH` pipeline. |
-| `src/diag.zig` | `Diagnostic`: a message + byte offset, the error-reporting seam. |
-| `src/capi.zig` | The C ABI (`export fn`) for embedding; a `Context` (store + graph) and a self-contained `Result`. |
+| `src/value.zig` | `Value`, the typed value of properties and expressions, as a *regular type*: `eql`, a total `order` (openCypher's global sort order) and `hash`, with property tests of their laws. |
+| `src/sequence_algorithms.zig` | Generic algorithms written once for any regular element type: `removeDuplicates`, `dropFirst`, `truncate`, and the hash-map contexts `ElementContext`/`SequenceContext`. |
+| `src/diagnostics.zig` | `Diagnostic`: an error code, a message and a byte offset — the error-reporting seam. |
+| `src/storage/lmdb_bindings.zig` | Hand-written C bindings: `opaque {}` handles for `MDB_env`/`MDB_txn`/`MDB_cursor`, `extern struct MDB_val`, the `extern "c" fn`s and constants. |
+| `src/storage/key_value_store.zig` | `KeyValueStore`, a RAII wrapper over LMDB: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix` and explicit write/read transactions. `scanPrefix` returns an **iterator**, not a callback. |
+| `src/storage/key_encoding.zig` | The byte layout of every key (markers, node ids, edge keys, index keys) and of stored values. The only place that knows the layout. |
+| `src/storage/graph.zig` | `Graph`: nodes, labels, typed edges, properties and their indexes, built on the key encoding. Each operation documents its cost. |
+| `src/query/lexer.zig` | `tokenize`: query text to tokens (UTF-8 and backtick-quoted identifiers). |
+| `src/query/parser.zig` | The `Parser` and the clause/pattern grammar. |
+| `src/query/expression_parser.zig` | The expression grammar, by precedence. |
+| `src/query/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, `addNode`/`nodeChildren`/`intern`, `sameExpression`. |
+| `src/execution/Executor.zig` | The executor's state and `run()`: classify clauses, open one transaction, run the match (or the WITH pipeline), post-process RETURN. |
+| `src/execution/planner.zig` | Pattern planning: the chain of `PatternNode`s/`PatternEdge`s, predicate pushdown, anchor choice, `PlanStep`s. |
+| `src/execution/pattern_matching.zig` | Runs the steps (`scanNodes`, `scanEdgeIndex`, `expandEdge`), OPTIONAL MATCH and UNWIND. |
+| `src/execution/expressions.zig` | Expression evaluation and operators, with three-valued null logic. |
+| `src/execution/aggregation.zig` | Aggregate states and the generic `Grouping(Key, KeyContext)`. |
+| `src/execution/projection.zig` | WITH, and RETURN's DISTINCT / ORDER BY / SKIP / LIMIT (`Sortable(T)`, `sortByKey`). |
+| `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE. |
+| `src/execution/bindings.zig` | `Binding`/`Bindings`: what each query variable is bound to (regular types). |
+| `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. |
 | `src/root.zig` | The library root: re-exports the public surface. |
-| `build.zig` | One module + static library + shared library (C ABI) + test step; compiles the vendored LMDB C. |
+| `tests/` | The test suite, through the public API only (see [contributing](contributing)). |
 
 ## The lifecycle of a query
 
@@ -82,20 +105,20 @@ A query is text in, rows out, through four stages. Each stage is a separate file
 sequenceDiagram
   autonumber
   participant C as caller (capi)
-  participant P as parser.zig
-  participant A as ast.zig
-  participant E as exec.zig
-  participant G as graph.zig
-  participant S as kv_store.zig
+  participant P as query/
+  participant A as query/ast.zig
+  participant E as execution/
+  participant G as storage/graph.zig
+  participant S as storage/key_value_store.zig
 
   C->>P: "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN m.title"
   P->>P: tokenize → tokens
   P->>A: recursive descent → arena AST
   P-->>C: AST (root query node)
-  C->>E: exec.run(query AST)
+  C->>E: Executor.run(query AST)
   E->>E: plan: choose anchor, push predicates, build steps
   loop scan / expand
-    E->>G: nodesWithLabel / neighbours / nodesByProp
+    E->>G: nodesWithLabel / neighbours / nodesByProperty
     G->>S: scanPrefix(...)
     S-->>G: iterator (LMDB cursor)
     G-->>E: node ids
@@ -107,9 +130,9 @@ sequenceDiagram
 1. **Lex + parse** — `tokenize` turns the text into a token array; the recursive-descent `Parser`
    walks it into the arena AST. See [the language](language).
 2. **Plan** — the executor reads the AST and, for each `MATCH` pattern, builds a plan: a chain of
-   `ChainNode`s/`ChainEdge`s, an anchor choice, and a list of `BindStep`s. This is where the
+   `PatternNode`s/`PatternEdge`s, an anchor choice, and a list of `PlanStep`s. This is where the
    optimizations live. See [planning & execution](planning-execution).
-3. **Execute** — a recursive function (`execStep`) walks the steps; each step is a graph operation
+3. **Execute** — a recursive function (`runStep`) walks the steps; each step is a graph operation
    (a scan or an expansion) backed by a `scanPrefix` iterator. See [storage](storage) for what those
    operations *mean*.
 4. **Return** — rows are projected and handed back through the C ABI.

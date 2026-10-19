@@ -1,7 +1,7 @@
 # C ABI
 
 The engine is exposed as a shared library (`zig-out/lib/libacmedb.dylib` on macOS,
-`libacmedb.so` on Linux) with a small C ABI in `src/capi.zig`. Strings are passed as
+`libacmedb.so` on Linux) with a small C ABI in `src/c_api.zig`. Strings are passed as
 `(pointer, length)` pairs; handles are opaque pointers the caller must release.
 
 Result cells are tagged by type:
@@ -27,7 +27,7 @@ int      acmedb_error_code(Context*);                       // last error code (
 ```
 
 `acmedb_open` opens (or creates) an LMDB database at `path`; the directory must exist. Every other
-function takes the returned `Context*`. Error codes (from `diag.zig`):
+function takes the returned `Context*`. Error codes (from `diagnostics.zig`):
 
 | Code | Meaning |
 | --- | --- |

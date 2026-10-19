@@ -19,9 +19,11 @@ toolchain.
   iteration so *"give me the neighbours of X"* is one prefix scan. LMDB is single-writer /
   multi-reader, which matches the intended read-replication model, and reads are ~6x faster than
   RocksDB.
-- **No class hierarchies, no Visitor.** Generic programming (Stepanov/STL): data as concrete
-  types, algorithms as free functions, errors as values. The AST is an arena of nodes — a flat
-  `std.ArrayList` plus child indices, no pointers, no inheritance.
+- **Generic programming (Stepanov).** Data as concrete types, algorithms as free functions, errors
+  as values. The core types are *regular* (equality, a total order and a hash, with their laws
+  tested), and algorithms shared by several types — deduplication, sorting, grouping, pagination —
+  are written once, generically. No class hierarchies, no Visitor; the AST is an arena of nodes
+  with child indices.
 - **A hand-written recursive-descent parser** for the openCypher subset — no ANTLR, no generator.
 
 ## Building
@@ -93,11 +95,16 @@ make docs    # or: sphinx-build -b html docs docs/_build/html
 ## Development
 
 ```bash
-zig build test    # build and run the test suite
+zig build test    # unit tests in src/ + the suite in tests/
 zig build         # static + shared libraries into zig-out/
 make docs         # build the HTML documentation
 make test-py      # Python bindings (pip install -e "python[dev]" once)
 ```
+
+The source is laid out by layer — `src/storage/` (LMDB, key layout, graph), `src/query/` (lexer,
+parser, AST) and `src/execution/` (planning, matching, projection, writes) — with the test suite in
+`tests/`, which uses only the public API. The [architecture](docs/guide/architecture.md) guide maps
+every file; [contributing](docs/guide/contributing.md) has the principles and the recipes.
 
 See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 
