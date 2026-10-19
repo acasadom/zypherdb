@@ -588,9 +588,9 @@ test "C ABI: batched write transaction commits atomically and aborts cleanly" {
     const q2 = "MATCH (n:Ghost) RETURN count(n)";
     const r2 = acmedb_query(ctx, q2.ptr, q2.len).?;
     defer acmedb_result_free(r2);
-    // No Ghost nodes survive the abort: the aggregation over zero matches yields
-    // zero rows (acmedb does not emit a 0-count row for an empty input).
-    try testing.expectEqual(@as(usize, 0), acmedb_result_rows(r2));
+    // No Ghost nodes survive the abort: the count over zero matches is 0.
+    try testing.expectEqual(@as(usize, 1), acmedb_result_rows(r2));
+    try testing.expectEqual(@as(i64, 0), acmedb_result_int(r2, 0, 0));
 }
 
 test "C ABI: mutators reject nodes that do not exist" {

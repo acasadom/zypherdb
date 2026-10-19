@@ -935,6 +935,11 @@ pub const Executor = struct {
             }
         }
 
+        // No grouping keys: zero input rows still aggregate into one row.
+        if (groups.items.len == 0 and !hasWithKey(items.items)) {
+            _ = try self.findOrCreateWithGroup(&groups, &.{}, items.items);
+        }
+
         var out = std.ArrayList(Bindings).empty;
         for (groups.items) |group| {
             var b = Bindings{ .entries = .empty };
@@ -1156,6 +1161,11 @@ pub const Executor = struct {
     fn aggregate(self: *Executor) ExecError!void {
         self.rows = .empty;
         self.row_keys = .empty;
+        // With no grouping keys, aggregating zero rows still yields one row
+        // (`count` 0, `sum` 0, `min`/`max` null, `collect` []), as in openCypher.
+        if (self.groups.items.len == 0 and !hasProjKey(self.proj_items.items)) {
+            _ = try self.findOrCreateGroup(&.{});
+        }
         for (self.groups.items) |group| {
             var row = std.ArrayList(Value).empty;
             var key_i: usize = 0;
@@ -1651,6 +1661,16 @@ fn rowsEq(a: []const Value, b: []const Value) bool {
         if (!valueEq(av, bv)) return false;
     }
     return true;
+}
+
+fn hasProjKey(items: []const ProjItem) bool {
+    for (items) |item| if (item == .key) return true;
+    return false;
+}
+
+fn hasWithKey(items: []const WithItem) bool {
+    for (items) |item| if (item != .agg) return true;
+    return false;
 }
 
 fn aggResult(kind: AggKind, state: AggState) Value {
@@ -2602,4 +2622,28 @@ test "UTF-8 and quoted names round-trip through labels and properties" {
     try expectQuery(&ast, &g, "MATCH (n:`MATCH`) RETURN n.`count`", &.{
         &.{.{ .int = 3 }},
     });
+}
+
+test "ungrouped aggregation over zero rows yields one row" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buf);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadSlice(&g);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "MATCH (x:Nope) RETURN count(*), count(x), sum(x.v), min(x.v), max(x.v)", &.{
+        &.{ .{ .int = 0 }, .{ .int = 0 }, .{ .int = 0 }, .{ .null = {} }, .{ .null = {} } },
+    });
+    try expectQuery(&ast, &g, "MATCH (x:Nope) WITH count(x) AS c RETURN c", &.{
+        &.{.{ .int = 0 }},
+    });
+    // With a grouping key, zero rows still yield zero groups.
+    try expectQuery(&ast, &g, "MATCH (x:Nope) RETURN x.name, count(*)", &.{});
+    try expectQuery(&ast, &g, "MATCH (x:Nope) WITH x.name AS n, count(*) AS c RETURN n, c", &.{});
 }

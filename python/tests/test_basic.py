@@ -85,7 +85,7 @@ def test_write_abort(db):
             db.add_node(1, "Ghost")
             raise RuntimeError("boom")
     # Nothing survived the abort.
-    assert db.query("MATCH (n:Ghost) RETURN count(n)") == []
+    assert db.query("MATCH (n:Ghost) RETURN count(n)") == [[0]]
 
 
 def test_closed_database_raises(tmp_path):
@@ -140,7 +140,7 @@ def test_mutators_reject_missing_nodes(db):
         db.add_edge(1, 999, "X")
     with pytest.raises(NodeNotFoundError):
         db.set_prop(999, "v", 1)
-    assert db.query("MATCH (a)-[:X]->(b) RETURN count(*)") == []
+    assert db.query("MATCH (a)-[:X]->(b) RETURN count(*)") == [[0]]
 
 
 def test_query_inside_write_is_refused(db):
@@ -149,4 +149,4 @@ def test_query_inside_write_is_refused(db):
             db.add_node(1, "P")
             db.query("RETURN 1")
     # The batch was aborted.
-    assert db.query("MATCH (n) RETURN count(*)") == []
+    assert db.query("MATCH (n) RETURN count(*)") == [[0]]
