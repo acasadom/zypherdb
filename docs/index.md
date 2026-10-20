@@ -49,6 +49,20 @@ tutorial/18-door-controller
 tutorial/19-monitoring
 ```
 
+## Examples
+
+Complete programs under `examples/`, built on the same lab: the smallest program that uses acmedb,
+and a simulated day of the whole access-control system, with door controllers and a monitor in
+separate processes. They run in the test suite too.
+
+```{toctree}
+:maxdepth: 1
+:caption: Examples
+
+examples/minimal
+examples/helix
+```
+
 ## References
 
 ```{toctree}

@@ -11,7 +11,10 @@ Every ```c block that is a whole program (it has a ``main``) is compiled with
 ``zig cc`` against the library in zig-out/ and run with a fresh database
 directory as its argument.
 
-A ```text block that directly follows a python or c block (only blank lines
+Every ```bash block whose only line is ``python -m examples.…`` runs that
+example from the repository root.
+
+A ```text block that directly follows a python, c or bash block (only blank lines
 between them) is that block's expected output: what the block prints must match
 it exactly (trailing spaces aside). Mark a block that must not run with
 ``# docs-test: skip`` (``// docs-test: skip`` in C) as its first line.
@@ -22,8 +25,10 @@ from __future__ import annotations
 import contextlib
 import io
 import re
+import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -36,7 +41,7 @@ BUILD = ROOT / "zig-out"
 _FENCE = re.compile(r"^```(\w*)[^\n]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
 
 
-_SKIP = {"python": "# docs-test: skip", "c": "// docs-test: skip"}
+_SKIP = {"python": "# docs-test: skip", "c": "// docs-test: skip", "bash": "# docs-test: skip"}
 
 
 def _examples(page: Path, wanted: str = "python") -> list[tuple[str, str | None]]:
@@ -131,3 +136,22 @@ def test_c_program(page, index, code, expected, scratch):
     assert run.returncode == 0, f"{page.name} C block {index} exited with {run.returncode}:\n{run.stderr}"
     if expected is not None:
         assert _matches(run.stdout, expected), f"{page.name} C block {index} printed:\n{run.stdout}\n--- the page shows ---\n{expected}"
+
+
+def _example_runs() -> list:
+    runs = []
+    for page in sorted(p for p in DOCS.rglob("*.md") if "_build" not in p.parts):
+        for i, (command, expected) in enumerate(_examples(page, "bash")):
+            line = command.strip()
+            if "\n" not in line and line.startswith("python -m examples."):
+                runs.append(pytest.param(line.split()[1:], expected, id=f"{page.relative_to(DOCS)}-{i}"))
+    return runs
+
+
+@pytest.mark.parametrize("arguments, expected", _example_runs())
+def test_example(arguments, expected):
+    environment = {**os.environ, "PYTHONPATH": os.pathsep.join([str(ROOT / "python"), str(ROOT)])}
+    run = subprocess.run([sys.executable, *arguments], cwd=ROOT, env=environment, capture_output=True, text=True, timeout=300)
+    assert run.returncode == 0, f"{' '.join(arguments)} exited with {run.returncode}:\n{run.stderr}"
+    if expected is not None:
+        assert _matches(run.stdout, expected), f"{' '.join(arguments)} printed:\n{run.stdout}\n--- the page shows ---\n{expected}"

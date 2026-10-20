@@ -1,0 +1,37 @@
+{
+  "building": "North Wing",
+  "zones": [
+    {"name": "Common Areas", "public": true},
+    {"name": "Genomics Floor", "closes_at": "22:00"},
+    {"name": "Containment Suite", "closes_at": "18:00"},
+    {"name": "Vivarium"}
+  ],
+  "certifications": ["BSL-3", "Animal handling"],
+  "rooms": [
+    {"name": "Lobby", "zone": "Common Areas", "bsl": 1},
+    {"name": "Seminar Room", "zone": "Common Areas", "bsl": 1},
+    {"name": "Genomics Office", "zone": "Genomics Floor", "bsl": 1},
+    {"name": "Sequencing Lab", "zone": "Genomics Floor", "bsl": 2, "max_occupancy": 5},
+    {"name": "Airlock", "zone": "Containment Suite", "bsl": 3},
+    {"name": "BSL-3 Lab", "zone": "Containment Suite", "bsl": 3, "high_containment": true,
+     "min_occupancy": 2, "max_occupancy": 4, "requires": ["BSL-3"]},
+    {"name": "Vivarium Control", "zone": "Vivarium", "bsl": 1, "staffed": true},
+    {"name": "Animal Holding", "zone": "Vivarium", "bsl": 2, "requires": ["Animal handling"]}
+  ],
+  "teams": [
+    {"name": "Research"},
+    {"name": "Genomics", "part_of": "Research"},
+    {"name": "Sequencing", "part_of": "Genomics"},
+    {"name": "Virology", "part_of": "Research"},
+    {"name": "Animal Care"},
+    {"name": "Biosafety"}
+  ],
+  "grants": [
+    {"team": "Genomics", "zone": "Genomics Floor", "days": [1, 2, 3, 4, 5], "from": "07:00", "until": "20:00"},
+    {"team": "Virology", "zone": "Containment Suite", "days": [1, 2, 3, 4, 5], "from": "08:00", "until": "18:00"},
+    {"team": "Animal Care", "zone": "Vivarium", "days": [1, 2, 3, 4, 5, 6, 7], "from": "06:00", "until": "22:00"},
+    {"team": "Biosafety", "zone": "Genomics Floor"},
+    {"team": "Biosafety", "zone": "Containment Suite"},
+    {"team": "Biosafety", "zone": "Vivarium"}
+  ]
+}
