@@ -405,6 +405,11 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
         return raise(classes.storage_error, "could not open the database at {s}", .{path_pointer[0..@intCast(path_length)]});
     };
     database.graph = Graph.init(&database.store, allocator);
+    database.graph.upgrade() catch {
+        database.store.deinit();
+        allocator.destroy(database);
+        return raise(classes.storage_error, "could not upgrade the database at {s} to this version's format", .{path_pointer[0..@intCast(path_length)]});
+    };
     database.diagnostic = Diagnostic.init();
     database.iso_temporals = iso_temporals != 0;
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
