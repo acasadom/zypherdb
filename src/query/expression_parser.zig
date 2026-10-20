@@ -287,12 +287,17 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
             expr = try self.ast.addNode(.property_access, .{ .text = key }, &.{expr});
         } else if (self.at(.left_bracket)) {
             _ = self.advance();
-            const from = if (self.at(.range_dots)) try nullNode(self) else try parseExpression(self);
+            const open_start = self.at(.range_dots);
+            const from = if (open_start) try nullNode(self) else try parseExpression(self);
             if (self.at(.range_dots)) {
                 _ = self.advance();
-                const to = if (self.at(.right_bracket)) try nullNode(self) else try parseExpression(self);
+                const open_end = self.at(.right_bracket);
+                const to = if (open_end) try nullNode(self) else try parseExpression(self);
                 try self.expect(.right_bracket);
-                expr = try self.ast.addNode(.slice, .{ .none = {} }, &.{ expr, from, to });
+                // data.int: which ends were written (1: from, 2: to); an open end
+                // is unbounded, a written one that is null makes the slice null.
+                const written: i64 = @as(i64, @intFromBool(!open_start)) | (@as(i64, @intFromBool(!open_end)) << 1);
+                expr = try self.ast.addNode(.slice, .{ .int = written }, &.{ expr, from, to });
             } else {
                 try self.expect(.right_bracket);
                 expr = try self.ast.addNode(.subscript, .{ .none = {} }, &.{ expr, from });
@@ -540,6 +545,12 @@ pub fn parseAggregateCall(self: *Parser, kind: AggregateKind) ParseError!Index {
     const distinct = self.atKeyword("DISTINCT");
     if (distinct) _ = self.advance();
     const arg = try parseExpression(self);
+    if (kind == .percentileDisc or kind == .percentileCont) {
+        try self.expect(.comma);
+        const percentile = try parseExpression(self);
+        try self.expect(.right_paren);
+        return self.ast.addNode(.aggregate, .{ .aggregate = .{ .kind = kind, .distinct = distinct } }, &.{ arg, percentile });
+    }
     try self.expect(.right_paren);
     return self.ast.addNode(.aggregate, .{ .aggregate = .{ .kind = kind, .distinct = distinct } }, &.{arg});
 }
@@ -553,5 +564,7 @@ fn aggregateKindFromName(name: []const u8) ?AggregateKind {
     if (std.ascii.eqlIgnoreCase(name, "min")) return .min;
     if (std.ascii.eqlIgnoreCase(name, "max")) return .max;
     if (std.ascii.eqlIgnoreCase(name, "collect")) return .collect;
+    if (std.ascii.eqlIgnoreCase(name, "percentileDisc")) return .percentileDisc;
+    if (std.ascii.eqlIgnoreCase(name, "percentileCont")) return .percentileCont;
     return null;
 }

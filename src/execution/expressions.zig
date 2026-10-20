@@ -196,7 +196,14 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         },
         .slice => blk: {
             const children = self.ast.nodeChildren(expr);
-            break :blk try slice(self, try evaluate(self, children[0], bindings), try evaluate(self, children[1], bindings), try evaluate(self, children[2], bindings));
+            const from = try evaluate(self, children[1], bindings);
+            const to = try evaluate(self, children[2], bindings);
+            // A bound written as an expression that is null makes the slice null;
+            // an end left out is unbounded.
+            const data = self.ast.data(expr);
+            const written: i64 = if (data == .int) data.int else 0;
+            if ((written & 1 != 0 and from == .null) or (written & 2 != 0 and to == .null)) break :blk .null;
+            break :blk try slice(self, try evaluate(self, children[0], bindings), from, to);
         },
         .binary_operation => blk: {
             const operator = self.ast.data(expr).binary_operator;

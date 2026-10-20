@@ -445,6 +445,22 @@ pub const Parser = struct {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
         while (true) {
+            // `(expression).prop = v`: a property of any expression's value.
+            if (self.at(.left_paren)) {
+                const access = try expression_parser.parsePrimary(self);
+                if (self.ast.kind(access) != .property_access) {
+                    self.fail("SET (expression) needs a property: SET (n).name = value", .{});
+                    return error.UnexpectedToken;
+                }
+                try self.expect(.equal);
+                const value = try expression_parser.parseExpression(self);
+                try items.append(self.ast.allocator, try self.ast.addNode(.set_item, .{ .none = {} }, &.{ access, value }));
+                if (self.at(.comma)) {
+                    _ = self.advance();
+                    continue;
+                }
+                break;
+            }
             // `n.prop = v`, `n = map`, `n += map` or `n:Label...`.
             const variable_name = try self.internIdentifier();
             const var_node = try self.ast.addNode(.variable, .{ .text = variable_name }, &.{});
@@ -479,9 +495,9 @@ pub const Parser = struct {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
         while (true) {
-            const name = try self.internIdentifier();
-            const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
-            const item = try self.ast.addNode(.delete_item, .{ .none = {} }, &.{var_node});
+            // Any expression: a variable, `list[i]`, `map.key`, a path.
+            const target = try expression_parser.parseExpression(self);
+            const item = try self.ast.addNode(.delete_item, .{ .none = {} }, &.{target});
             try items.append(self.ast.allocator, item);
             if (self.at(.comma)) {
                 _ = self.advance();
@@ -499,9 +515,11 @@ pub const Parser = struct {
             const variable_name = try self.internIdentifier();
             const var_node = try self.ast.addNode(.variable, .{ .text = variable_name }, &.{});
             if (self.at(.colon)) {
-                _ = self.advance();
-                const label = try self.internIdentifier();
-                try items.append(self.ast.allocator, try self.ast.addNode(.label_reference, .{ .text = label }, &.{var_node}));
+                while (self.at(.colon)) {
+                    _ = self.advance();
+                    const label = try self.internIdentifier();
+                    try items.append(self.ast.allocator, try self.ast.addNode(.label_reference, .{ .text = label }, &.{var_node}));
+                }
             } else {
                 try self.expect(.dot);
                 const property = try self.internIdentifier();
@@ -531,27 +549,25 @@ pub const Parser = struct {
         _ = self.advance(); // MERGE
         const pattern = try self.parsePattern();
 
-        var on_create = try self.ast.addNode(.set_clause, .{ .none = {} }, &.{});
-        var on_match = try self.ast.addNode(.set_clause, .{ .none = {} }, &.{});
-        var seen: u2 = 0;
-        while (seen < 2 and self.atKeyword("ON")) {
+        // ON CREATE SET and ON MATCH SET, in any order and number: the items of
+        // each kind are applied in the order written.
+        var on_create = std.ArrayList(Index).empty;
+        defer on_create.deinit(self.ast.allocator);
+        var on_match = std.ArrayList(Index).empty;
+        defer on_match.deinit(self.ast.allocator);
+        while (self.atKeyword("ON")) {
             _ = self.advance();
-            if (self.atKeyword("CREATE")) {
-                _ = self.advance();
-                try self.expectKeyword("SET");
-                on_create = try self.parseSetClause();
-                seen |= 1;
-            } else if (self.atKeyword("MATCH")) {
-                _ = self.advance();
-                try self.expectKeyword("SET");
-                on_match = try self.parseSetClause();
-                seen |= 2;
-            } else {
+            const items = if (self.atKeyword("CREATE")) &on_create else if (self.atKeyword("MATCH")) &on_match else {
                 self.fail("expected CREATE or MATCH after ON, found {s}", .{describeToken(self.peek())});
                 return error.UnexpectedToken;
-            }
+            };
+            _ = self.advance();
+            try self.expectKeyword("SET");
+            try items.appendSlice(self.ast.allocator, self.ast.nodeChildren(try self.parseSetClause()));
         }
-        return self.ast.addNode(.merge_clause, .{ .none = {} }, &.{ pattern, on_create, on_match });
+        const create_set = try self.ast.addNode(.set_clause, .{ .none = {} }, on_create.items);
+        const match_set = try self.ast.addNode(.set_clause, .{ .none = {} }, on_match.items);
+        return self.ast.addNode(.merge_clause, .{ .none = {} }, &.{ pattern, create_set, match_set });
     }
 
     /// A chain `(a)-[r]->(b)...`, optionally named as a path: `p = (a)-->(b)`

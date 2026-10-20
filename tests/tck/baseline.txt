@@ -44,6 +44,8 @@ clauses/create/Create3.feature: [11] WITH-MERGE-CREATE: A bound node should be r
 clauses/create/Create3.feature: [12] WITH-MERGE-CREATE: A bound node should be recognized after projection with WITH + MERGE pattern
 clauses/create/Create3.feature: [13] Merge followed by multiple creates
 clauses/create/Create3.feature: [1] MATCH-CREATE
+clauses/create/Create3.feature: [2] WITH-CREATE
+clauses/create/Create3.feature: [3] MATCH-CREATE-WITH-CREATE
 clauses/create/Create3.feature: [4] MATCH-CREATE: Newly-created nodes not visible to preceding MATCH
 clauses/create/Create3.feature: [5] WITH-CREATE: Nodes are not created when aliases are applied to variable names
 clauses/create/Create3.feature: [6] WITH-CREATE: Only a single node is created when an alias is applied to a variable name
@@ -82,9 +84,16 @@ clauses/delete/Delete2.feature: [2] Delete optionally matched relationship
 clauses/delete/Delete2.feature: [3] Delete relationship with bidirectional matching
 clauses/delete/Delete2.feature: [4] Ignore null when deleting relationship
 clauses/delete/Delete2.feature: [5] Failing when deleting a relationship type
+clauses/delete/Delete3.feature: [1] Detach deleting paths
 clauses/delete/Delete4.feature: [1] Undirected expand followed by delete and count
 clauses/delete/Delete4.feature: [2] Undirected variable length expand followed by delete and count
 clauses/delete/Delete4.feature: [3] Create and delete in same query
+clauses/delete/Delete5.feature: [1] Delete node from a list
+clauses/delete/Delete5.feature: [2] Delete relationship from a list
+clauses/delete/Delete5.feature: [3] Delete nodes from a map
+clauses/delete/Delete5.feature: [4] Delete relationships from a map
+clauses/delete/Delete5.feature: [5] Detach delete nodes from nested map/list
+clauses/delete/Delete5.feature: [6] Delete relationships from nested map/list
 clauses/delete/Delete5.feature: [9] Failing when deleting an integer expression
 clauses/delete/Delete6.feature: [10] Skipping and limiting to a few results after deleting relationships affects the result set but not the side effects
 clauses/delete/Delete6.feature: [11] Skipping zero result and limiting to all results after deleting relationships does not affect the result set nor the side effects
@@ -526,6 +535,8 @@ clauses/merge/Merge3.feature: [1] Merge should be able to set labels on match
 clauses/merge/Merge3.feature: [2] Merge node with label add label on match when it exists
 clauses/merge/Merge3.feature: [3] Merge node and set property on match
 clauses/merge/Merge3.feature: [4] Merge should be able to use properties of bound node in ON MATCH
+clauses/merge/Merge4.feature: [1] Merge should be able to set labels on match and on create
+clauses/merge/Merge4.feature: [2] Merge should be able to use properties of bound node in ON MATCH and ON CREATE
 clauses/merge/Merge5.feature: [11] Use outgoing direction when unspecified
 clauses/merge/Merge5.feature: [12] Match outgoing relationship when direction unspecified
 clauses/merge/Merge5.feature: [13] Match both incoming and outgoing relationships when direction unspecified
@@ -568,10 +579,14 @@ clauses/remove/Remove1.feature: [1] Remove a single node property
 clauses/remove/Remove1.feature: [2] Remove multiple node properties
 clauses/remove/Remove1.feature: [3] Remove a single relationship property
 clauses/remove/Remove1.feature: [4] Remove multiple relationship properties
+clauses/remove/Remove1.feature: [5] Ignore null when removing property from a node
+clauses/remove/Remove1.feature: [6] Ignore null when removing property from a relationship
 clauses/remove/Remove1.feature: [7] Remove a missing node property
 clauses/remove/Remove2.feature: [1] Remove a single label from a node with a single label
 clauses/remove/Remove2.feature: [2] Remove a single label from a node with two labels
+clauses/remove/Remove2.feature: [3] Remove two labels from a node with three labels
 clauses/remove/Remove2.feature: [4] Remove a non-existent node label
+clauses/remove/Remove2.feature: [5] Ignore null when removing a node label
 clauses/remove/Remove3.feature: [10] Skipping and limiting to a few results after removing a label from nodes affects the result set but not the side effects
 clauses/remove/Remove3.feature: [11] Skipping zero result and limiting to all results after removing a label from nodes does not affect the result set nor the side effects
 clauses/remove/Remove3.feature: [12] Filtering after removing a label from nodes affects the result set but not the side effects
@@ -721,6 +736,8 @@ clauses/return/Return8.feature: [1] Return aggregation after With filtering
 clauses/set/Set1.feature: [11] Set multiple node properties
 clauses/set/Set1.feature: [1] Set a property
 clauses/set/Set1.feature: [2] Set a property to an expression
+clauses/set/Set1.feature: [3] Set a property by selecting the node using a simple expression
+clauses/set/Set1.feature: [4] Set a property by selecting the relationship using a simple expression
 clauses/set/Set1.feature: [5] Adding a list property
 clauses/set/Set1.feature: [6] Concatenate elements onto a list property
 clauses/set/Set1.feature: [7] Concatenate elements in reverse onto a list property
@@ -735,6 +752,7 @@ clauses/set/Set3.feature: [4] Adding multiple labels to a node with an existing 
 clauses/set/Set3.feature: [5] Ignore whitespace before colon 1
 clauses/set/Set3.feature: [6] Ignore whitespace before colon 2
 clauses/set/Set3.feature: [7] Ignore whitespace before colon 3
+clauses/set/Set3.feature: [8] Ignore null when setting label
 clauses/set/Set4.feature: [1] Set multiple properties with a property map
 clauses/set/Set4.feature: [2] Non-existent values in a property map are removed with SET
 clauses/set/Set4.feature: [3] Null values in a property map are removed with SET
@@ -1148,6 +1166,12 @@ expressions/aggregation/Aggregation3.feature: [1] Sum only non-null values
 expressions/aggregation/Aggregation3.feature: [2] No overflow during summation
 expressions/aggregation/Aggregation5.feature: [1] `collect()` filtering nulls
 expressions/aggregation/Aggregation5.feature: [2] OPTIONAL MATCH and `collect()` on node property
+expressions/aggregation/Aggregation6.feature: [1] `percentileDisc()` #1
+expressions/aggregation/Aggregation6.feature: [1] `percentileDisc()` #2
+expressions/aggregation/Aggregation6.feature: [1] `percentileDisc()` #3
+expressions/aggregation/Aggregation6.feature: [2] `percentileCont()` #1
+expressions/aggregation/Aggregation6.feature: [2] `percentileCont()` #2
+expressions/aggregation/Aggregation6.feature: [2] `percentileCont()` #3
 expressions/aggregation/Aggregation6.feature: [3] `percentileCont()` failing on bad arguments #1
 expressions/aggregation/Aggregation6.feature: [3] `percentileCont()` failing on bad arguments #2
 expressions/aggregation/Aggregation6.feature: [3] `percentileCont()` failing on bad arguments #3
@@ -1569,6 +1593,11 @@ expressions/list/List2.feature: [5] List slice with empty range
 expressions/list/List2.feature: [6] List slice with negative range
 expressions/list/List2.feature: [7] List slice with invalid range
 expressions/list/List2.feature: [8] List slice with exceeding range
+expressions/list/List2.feature: [9] List slice with null range #1
+expressions/list/List2.feature: [9] List slice with null range #2
+expressions/list/List2.feature: [9] List slice with null range #3
+expressions/list/List2.feature: [9] List slice with null range #4
+expressions/list/List2.feature: [9] List slice with null range #5
 expressions/list/List3.feature: [1] Equality between list and literal should return false
 expressions/list/List3.feature: [2] Equality of lists of different length should return false despite nulls
 expressions/list/List3.feature: [3] Equality between different lists with null should return false
@@ -1721,6 +1750,7 @@ expressions/literals/Literals6.feature: [1] Return a single-quoted empty string
 expressions/literals/Literals6.feature: [2] Return a single-quoted string with one character
 expressions/literals/Literals6.feature: [3] Return a single-quoted string with uft-8 characters
 expressions/literals/Literals6.feature: [4] Return a single-quoted string with escaped single-quoted
+expressions/literals/Literals6.feature: [5] Return a single-quoted string with escaped characters
 expressions/literals/Literals6.feature: [6] Return a single-quoted string with 100 characters
 expressions/literals/Literals6.feature: [7] Return a single-quoted string with 1000 characters
 expressions/literals/Literals6.feature: [8] Return a single-quoted string with 10000 characters

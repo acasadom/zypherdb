@@ -107,6 +107,9 @@ pub const AggregateKind = enum {
     min,
     max,
     collect,
+    /// `percentileDisc(x, p)`, `percentileCont(x, p)`: the second child is p.
+    percentileDisc,
+    percentileCont,
 };
 
 /// Written direction of an edge pattern.
@@ -134,7 +137,7 @@ pub const NodeKind = enum {
     list_literal,
     map_literal, // `{key: value, ...}`; children are `property` nodes
     subscript, // `value[index]`: children [value, index]
-    slice, // `list[from..to]`: children [list, from, to] (null_literal for an open end)
+    slice, // `list[from..to]`: children [list, from, to] (null_literal for an open end); data.int: the written ends (1 from, 2 to)
     list_comprehension, // `[x IN list WHERE predicate | projection]`: data.text is x; children [list, predicate, projection]
     quantifier, // `any(x IN list WHERE predicate)`: data.quantifier; children [list, predicate]
     function_call, // `name(args...)`; data.text is the name as written, children the arguments

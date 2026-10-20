@@ -442,3 +442,31 @@ test "SET n = map, SET n += map and SET n:Label" {
     try expectQuery(&ast, &g, "MATCH (c:Card:Blocked:Audited) RETURN c.id", &.{&.{.{ .int = 2 }}});
     try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Missing) SET x += {a: 1}, x.b = 2", &.{});
 }
+
+test "write targets are expressions; nulls are ignored; MERGE takes its ON clauses in any order" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:A:B:C {n: 1})-[:R]->(:A {n: 2})-[:R]->(:A {n: 3})", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:A {n: 1}) SET (a).name = 'one' REMOVE a:B:C RETURN a.name, labels(a)", &.{
+        &.{ .{ .string = "one" }, .{ .list = &.{.{ .string = "A" }} } },
+    });
+    // On null (an OPTIONAL MATCH that found nothing), SET and REMOVE do nothing.
+    try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Nothing) SET x.n = 1, x:L REMOVE x.n, x:L RETURN x", &.{&.{.null}});
+    // MERGE: ON MATCH and ON CREATE in any order.
+    try expectQuery(&ast, &g, "MERGE (m:M) ON MATCH SET m.seen = true ON CREATE SET m.created = true RETURN m.created, m.seen", &.{&.{ .{ .boolean = true }, .null }});
+    try expectQuery(&ast, &g, "MERGE (m:M) ON MATCH SET m.seen = true ON CREATE SET m.created = false RETURN m.created, m.seen", &.{&.{ .{ .boolean = true }, .{ .boolean = true } }});
+    // DELETE takes expressions: list elements, map values, whole paths.
+    try expectQuery(&ast, &g, "MATCH ()-[r:R]->() WITH collect(r) AS rs DELETE rs[0]", &.{});
+    try expectQuery(&ast, &g, "MATCH ()-[r]->() RETURN count(r)", &.{&.{.{ .int = 1 }}});
+    try expectQuery(&ast, &g, "MATCH p = (:A {n: 2})-[:R]->(:A {n: 3}) WITH {path: p} AS m DELETE m.path", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:A) RETURN collect(a.n)", &.{&.{.{ .list = &.{.{ .int = 1 }} }}});
+    try expectQueryError(&ast, &g, "MATCH (a) DELETE a:A", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (a) DELETE 1 + 1", error.InvalidExpression);
+}

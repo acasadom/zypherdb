@@ -46,10 +46,24 @@ class _Outline:
 
 
 def _split_row(line: str) -> list[str]:
-    """Cells of a table row; `\\|` is an escaped pipe inside a cell."""
+    """Cells of a table row, with Gherkin's escapes inside a cell: `\\|` a
+    pipe, `\\\\` a backslash, `\\n` a newline."""
     inner = line.strip()[1:-1]
-    cells = re.split(r"(?<!\\)\|", inner)
-    return [cell.strip().replace("\\|", "|") for cell in cells]
+    cells, cell, i = [], [], 0
+    while i < len(inner):
+        c = inner[i]
+        if c == "\\" and i + 1 < len(inner) and inner[i + 1] in "|\\n":
+            cell.append("\n" if inner[i + 1] == "n" else inner[i + 1])
+            i += 2
+            continue
+        if c == "|":
+            cells.append("".join(cell).strip())
+            cell = []
+        else:
+            cell.append(c)
+        i += 1
+    cells.append("".join(cell).strip())
+    return cells
 
 
 def _substitute(text: str | None, values: dict[str, str]) -> str | None:

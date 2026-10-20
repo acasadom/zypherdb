@@ -114,12 +114,12 @@ const Checker = struct {
 
     /// Records the variables a `*` projection stands for: those in scope,
     /// sorted (as Neo4j orders its columns).
-    fn recordStar(self: *Checker, projection: Index) SemanticError!void {
+    fn recordStar(self: *Checker, projection: Index, in_return: bool) SemanticError!void {
         if (!self.hasStar(projection)) return;
         var names = std.ArrayList([]const u8).empty;
         var iterator = self.scope.names.keyIterator();
         while (iterator.next()) |name| try names.append(self.allocator, name.*);
-        if (names.items.len == 0) return self.fail("RETURN * and WITH * need a variable in scope", .{});
+        if (names.items.len == 0 and in_return) return self.fail("RETURN * needs a variable in scope", .{});
         std.mem.sort([]const u8, names.items, {}, struct {
             fn lessThan(_: void, a: []const u8, b: []const u8) bool {
                 return std.mem.order(u8, a, b) == .lt;
@@ -378,6 +378,18 @@ const Checker = struct {
         }
     }
 
+    /// DELETE takes a node, a relationship or a path; an expression that can
+    /// only be something else fails here (DELETE of a label is REMOVE's job).
+    fn checkDeleted(self: *Checker, expression: Index) SemanticError!void {
+        switch (self.ast.kind(expression)) {
+            .label_predicate => return self.fail("DELETE removes nodes, relationships and paths; use REMOVE n:Label to remove a label", .{}),
+            .integer_literal, .float_literal, .string_literal, .boolean_literal, .list_literal, .map_literal, .binary_operation, .unary_operation, .map_projection => {
+                return self.fail("DELETE needs a node, a relationship or a path", .{});
+            },
+            else => {},
+        }
+    }
+
     /// Clause by clause: declare what the clause binds, then check its
     /// expressions with those variables in scope (WITH and RETURN expressions
     /// see the scope before their projection).
@@ -386,6 +398,7 @@ const Checker = struct {
         for (query_clauses, 0..) |clause, position| {
             const children = self.ast.nodeChildren(clause);
             switch (self.ast.kind(clause)) {
+                .delete_clause => for (children) |item| try self.checkDeleted(self.ast.nodeChildren(item)[0]),
                 .call_clause => {
                     try self.checkCall(clause, position + 1 == query_clauses.len);
                     try self.checkExpressions(clause);
@@ -400,12 +413,12 @@ const Checker = struct {
                     continue;
                 },
                 .with_clause => {
-                    try self.recordStar(children[0]);
+                    try self.recordStar(children[0], false);
                     try self.checkExpressions(clause);
                     try self.projectScope(children[0]);
                     continue;
                 },
-                .return_clause => try self.recordStar(children[0]),
+                .return_clause => try self.recordStar(children[0], true),
                 else => {},
             }
             try self.checkExpressions(clause);
