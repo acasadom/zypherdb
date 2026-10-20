@@ -91,6 +91,33 @@ pub fn nestedMatchClauses(self: *Executor, match_clauses: []const Index, row: Bi
     return rows;
 }
 
+/// MERGE: for each input row, every match of the whole pattern (each one a
+/// row, with ON MATCH SET applied), or, when there is none, the pattern
+/// created — its unbound nodes and its relationships — with ON CREATE SET.
+fn runMerge(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const children = self.ast.nodeChildren(clause);
+    const pattern = children[0];
+    const on_create = children[1];
+    const on_match = children[2];
+    var output = std.ArrayList(Bindings).empty;
+    for (input) |row| {
+        var scope = try copyRow(self, row);
+        try writes.rejectNullProperties(self, pattern, &scope);
+        const matches = try nestedMatches(self, &.{pattern}, Executor.no_where, row);
+        if (matches.len > 0) {
+            for (matches) |*match| {
+                try writes.applySet(self, on_match, match);
+                try output.append(self.allocator, match.*);
+            }
+            continue;
+        }
+        try writes.createPattern(self, pattern, &scope, .merge);
+        try writes.applySet(self, on_create, &scope);
+        try output.append(self.allocator, scope);
+    }
+    return output.items;
+}
+
 /// Binds every variable of `patterns` that `row` does not bind yet to null.
 fn bindNewVariablesToNull(self: *Executor, patterns: []const Index, row: *Bindings) ExecutionError!void {
     for (patterns) |pattern| {
@@ -131,12 +158,12 @@ pub fn runUnwind(self: *Executor, clause: Index, input: []Bindings) ExecutionErr
 /// sees the writes made for the rows before it); the rows go on, with any
 /// variables the clause bound.
 pub fn runWrite(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    if (self.ast.kind(clause) == .merge_clause) return runMerge(self, clause, input);
     for (input) |*row| {
         switch (self.ast.kind(clause)) {
             .create_clause => for (self.ast.nodeChildren(clause)) |pattern| {
                 try writes.applyCreate(self, pattern, row);
             },
-            .merge_clause => try writes.applyMerge(self, clause, row),
             .set_clause => try writes.applySet(self, clause, row),
             .delete_clause => try writes.applyDelete(self, clause, row),
             .remove_clause => try writes.applyRemove(self, clause, row),

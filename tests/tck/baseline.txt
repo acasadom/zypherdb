@@ -21,7 +21,10 @@ clauses/create/Create2.feature: [10] Create a single self loop on an existing no
 clauses/create/Create2.feature: [11] Create a single relationship and an end node on an existing starting node
 clauses/create/Create2.feature: [12] Create a single relationship and a starting node on an existing end node
 clauses/create/Create2.feature: [13] Create a single relationship with a property
+clauses/create/Create2.feature: [14] Create a single relationship with a property and return it
 clauses/create/Create2.feature: [15] Create a single relationship with two properties
+clauses/create/Create2.feature: [16] Create a single relationship with two properties and return them
+clauses/create/Create2.feature: [17] Create a single relationship with null properties should not return those properties
 clauses/create/Create2.feature: [18] Fail when creating a relationship without a type
 clauses/create/Create2.feature: [19] Fail when creating a relationship without a direction
 clauses/create/Create2.feature: [1] Create two nodes and a single relationship in a single pattern
@@ -49,6 +52,11 @@ clauses/create/Create5.feature: [1] Create a pattern with multiple hops
 clauses/create/Create5.feature: [2] Create a pattern with multiple hops in the reverse direction
 clauses/create/Create5.feature: [3] Create a pattern with multiple hops in varying directions
 clauses/create/Create5.feature: [4] Create a pattern with multiple hops with multiple types and varying directions
+clauses/create/Create6.feature: [10] Skipping and limiting to a few results after creating relationships does not affect the result set nor the side effects
+clauses/create/Create6.feature: [11] Skipping zero result and limiting to all results after creating relationships does not affect the result set nor the side effects
+clauses/create/Create6.feature: [12] Filtering after creating relationships affects the result set but not the side effects
+clauses/create/Create6.feature: [13] Aggregating in `RETURN` after creating relationships affects the result set but not the side effects
+clauses/create/Create6.feature: [14] Aggregating in `WITH` after creating relationships affects the result set but not the side effects
 clauses/create/Create6.feature: [1] Limiting to zero results after creating nodes affects the result set but not the side effects
 clauses/create/Create6.feature: [2] Skipping all results after creating nodes affects the result set but not the side effects
 clauses/create/Create6.feature: [3] Skipping and limiting to a few results after creating nodes does not affect the result set nor the side effects
@@ -56,6 +64,8 @@ clauses/create/Create6.feature: [4] Skipping zero result and limiting to all res
 clauses/create/Create6.feature: [5] Filtering after creating nodes affects the result set but not the side effects
 clauses/create/Create6.feature: [6] Aggregating in `RETURN` after creating nodes affects the result set but not the side effects
 clauses/create/Create6.feature: [7] Aggregating in `WITH` after creating nodes affects the result set but not the side effects
+clauses/create/Create6.feature: [8] Limiting to zero results after creating relationships affects the result set but not the side effects
+clauses/create/Create6.feature: [9] Skipping all results after creating relationships affects the result set but not the side effects
 clauses/delete/Delete1.feature: [1] Delete nodes
 clauses/delete/Delete1.feature: [2] Detach delete node
 clauses/delete/Delete1.feature: [3] Detach deleting connected nodes and relationships
@@ -505,6 +515,9 @@ clauses/merge/Merge3.feature: [1] Merge should be able to set labels on match
 clauses/merge/Merge3.feature: [2] Merge node with label add label on match when it exists
 clauses/merge/Merge3.feature: [3] Merge node and set property on match
 clauses/merge/Merge3.feature: [4] Merge should be able to use properties of bound node in ON MATCH
+clauses/merge/Merge5.feature: [11] Use outgoing direction when unspecified
+clauses/merge/Merge5.feature: [12] Match outgoing relationship when direction unspecified
+clauses/merge/Merge5.feature: [13] Match both incoming and outgoing relationships when direction unspecified
 clauses/merge/Merge5.feature: [14] Using list properties via variable
 clauses/merge/Merge5.feature: [15] Matching using list property
 clauses/merge/Merge5.feature: [16] Aliasing of existing nodes 1
@@ -518,9 +531,24 @@ clauses/merge/Merge5.feature: [25] Fail when merging relationship with more than
 clauses/merge/Merge5.feature: [27] Fail when using parameter as relationship predicate in MERGE
 clauses/merge/Merge5.feature: [28] Fail when using variable length relationship in MERGE
 clauses/merge/Merge5.feature: [29] Fail on merging relationship with null property
+clauses/merge/Merge5.feature: [2] Matching a relationship
 clauses/merge/Merge5.feature: [4] Using bound variables from other updating clause
+clauses/merge/Merge5.feature: [5] Filtering relationships
+clauses/merge/Merge5.feature: [7] Matching incoming relationship
+clauses/merge/Merge5.feature: [8] Creating relationship with property
 clauses/merge/Merge5.feature: [9] Creating relationship using merged nodes
+clauses/merge/Merge6.feature: [1] Using ON CREATE on a node
+clauses/merge/Merge6.feature: [2] Using ON CREATE on a relationship
+clauses/merge/Merge6.feature: [3] Updating one property with ON CREATE
 clauses/merge/Merge6.feature: [4] Null-setting one property with ON CREATE
+clauses/merge/Merge6.feature: [6] Copying properties from node with ON CREATE
+clauses/merge/Merge6.feature: [7] Copying properties from literal map with ON CREATE
+clauses/merge/Merge7.feature: [1] Using ON MATCH on created node
+clauses/merge/Merge7.feature: [2] Using ON MATCH on created relationship
+clauses/merge/Merge7.feature: [3] Using ON MATCH on a relationship
+clauses/merge/Merge7.feature: [4] Copying properties from node with ON MATCH
+clauses/merge/Merge7.feature: [5] Copying properties from literal map with ON MATCH
+clauses/merge/Merge8.feature: [1] Using ON CREATE and ON MATCH
 clauses/merge/Merge9.feature: [1] UNWIND with one MERGE
 clauses/merge/Merge9.feature: [2] UNWIND with multiple MERGE
 clauses/merge/Merge9.feature: [3] Mixing MERGE with CREATE

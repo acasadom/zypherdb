@@ -58,6 +58,9 @@ pub const Row = std.ArrayList(Value);
 /// Query parameters (`$name`), by name.
 pub const Parameters = std.StringHashMapUnmanaged(Value);
 
+/// A `where_expression` that keeps every match (a MERGE's pattern has no WHERE).
+pub const no_where: Index = std.math.maxInt(Index);
+
 pub const no_aggregation = AggregationPlan{ .keys = &.{}, .aggregates = &.{}, .kinds = &.{} };
 
 ast: *Ast,
@@ -228,7 +231,7 @@ pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) Exe
 /// Called by pattern matching for every complete match of the MATCH being
 /// run: keeps it, as a row of its own, if it passes the MATCH's WHERE.
 pub fn matchFound(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    if (!try expressions.evaluateBool(self, self.where_expression, bindings)) return;
+    if (self.where_expression != no_where and !try expressions.evaluateBool(self, self.where_expression, bindings)) return;
     const output = self.matches orelse return;
     try output.append(self.allocator, try clauses.copyRow(self, bindings.*));
 }

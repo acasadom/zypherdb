@@ -63,7 +63,7 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
     }
 
     self.path_variable = self.ast.data(pattern).text;
-    try collectWhereSeeks(self, self.where_expression);
+    if (self.where_expression != Executor.no_where) try collectWhereSeeks(self, self.where_expression);
     if (shouldEdgeAnchor(self)) {
         try buildEdgeSteps(self);
     } else {

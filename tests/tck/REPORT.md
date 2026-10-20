@@ -6,16 +6,16 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 2962/3202 (92.5%)** · Negative: 659/694 (95.0%)
+**Positive: 2990/3202 (93.4%)** · Negative: 659/694 (95.0%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
 | clauses/call | 0/36 (0.0%) | 2/16 (12.5%) | 50 | 0 |
-| clauses/create | 46/63 (73.0%) | 10/15 (66.7%) | 0 | 0 |
+| clauses/create | 56/63 (88.9%) | 10/15 (66.7%) | 0 | 0 |
 | clauses/delete | 27/36 (75.0%) | 4/5 (80.0%) | 0 | 0 |
 | clauses/match | 124/141 (87.9%) | 241/241 (100.0%) | 5 | 0 |
 | clauses/match-where | 27/32 (84.4%) | 1/2 (50.0%) | 0 | 0 |
-| clauses/merge | 37/62 (59.7%) | 8/13 (61.5%) | 0 | 0 |
+| clauses/merge | 55/62 (88.7%) | 8/13 (61.5%) | 0 | 0 |
 | clauses/remove | 29/33 (87.9%) | – | 0 | 0 |
 | clauses/return | 49/52 (94.2%) | 9/11 (81.8%) | 0 | 0 |
 | clauses/return-orderby | 30/31 (96.8%) | 3/4 (75.0%) | 0 | 0 |
@@ -53,24 +53,24 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | Scenarios | Reason |
 | --- | --- |
 | 50 | unsupported: procedures |
-| 37 | fail: unexpected error: unknown variable '…' |
 | 28 | fail: unexpected error: unexpected ASCENDING (unsupported syntax or missing clause) |
 | 28 | fail: unexpected error: unexpected DESCENDING (unsupported syntax or missing clause) |
 | 26 | fail: unexpected error: expected an expression, found '*' |
 | 21 | fail: expected SyntaxError, but the query succeeded |
+| 16 | fail: unexpected error: unknown variable '…' |
+| 13 | fail: rows differ: expected other rows |
 | 12 | fail: unexpected error: unexpected ':' (unsupported syntax or missing clause) |
-| 11 | fail: rows differ: expected other rows |
-| 7 | fail: side effects: expected other side effects |
-| 7 | fail: unexpected error: query failed: UnknownVariable |
 | 7 | fail: unexpected error: expected an expression, found '.' |
 | 5 | fail: unexpected error: unexpected '.' (unsupported syntax or missing clause) |
 | 5 | unsupported: then: having executed: |
 | 4 | fail: unexpected error: unexpected character '"' |
 | 4 | fail: unexpected error: variable '…' is a value; it cannot be used as a node |
+| 3 | fail: side effects: expected other side effects |
 | 3 | fail: unexpected error: query failed: TypeMismatch |
 | 3 | fail: unexpected error: unknown function 'percentileDisc' |
 | 3 | fail: unexpected error: unknown function 'percentileCont' |
 | 3 | fail: unexpected error: RETURN must be the last clause, found ':' after it |
+| 2 | fail: unexpected error: query failed: UnknownVariable |
 | 2 | fail: unexpected error: unexpected '[' (unsupported syntax or missing clause) |
 | 2 | fail: unexpected error: expected ')', found ':' |
 | 2 | fail: unexpected error: unexpected ON (unsupported syntax or missing clause) |

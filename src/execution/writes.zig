@@ -16,55 +16,31 @@ const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
 
 pub fn applyCreate(self: *Executor, pattern: Index, bindings: *Bindings) ExecutionError!void {
+    try createPattern(self, pattern, bindings, .create);
+}
+
+/// Who creates a pattern: CREATE, or MERGE when the pattern has no match
+/// (it may reuse bound nodes as they are, and creates an undirected
+/// relationship left to right).
+pub const Creator = enum { create, merge };
+
+/// Creates a pattern's unbound nodes and its relationships, binding their
+/// variables in `bindings`.
+pub fn createPattern(self: *Executor, pattern: Index, bindings: *Bindings, creator: Creator) ExecutionError!void {
     const chain = self.ast.nodeChildren(pattern);
     const node_ids = try self.allocator.alloc(NodeId, (chain.len + 1) / 2);
     for (node_ids, 0..) |*id, i| {
         const node_pattern_index = chain[i * 2];
         const variable_name = self.ast.data(node_pattern_index).node_pattern.variable_name;
         if (boundNode(bindings, variable_name)) |bound| {
-            try checkReusedNode(self, node_pattern_index, chain.len == 1);
+            if (creator == .create) try checkReusedNode(self, node_pattern_index, chain.len == 1);
             id.* = bound;
             continue;
         }
         id.* = try createNode(self, node_pattern_index, bindings);
         if (variable_name.len > 0) try bindings.put(self.allocator, variable_name, .{ .node = id.* });
     }
-    try applyEdges(self, chain, node_ids, bindings, false);
-}
-
-pub fn applyMerge(self: *Executor, merge_clause: Index, bindings: *Bindings) ExecutionError!void {
-    const children = self.ast.nodeChildren(merge_clause);
-    const pattern = children[0];
-    const on_create = children[1];
-    const on_match = children[2];
-    const chain = self.ast.nodeChildren(pattern);
-    const node_ids = try self.allocator.alloc(NodeId, (chain.len + 1) / 2);
-
-    var created = false;
-    for (node_ids, 0..) |*id, i| {
-        const node_pattern_index = chain[i * 2];
-        const variable_name = self.ast.data(node_pattern_index).node_pattern.variable_name;
-        if (boundNode(bindings, variable_name)) |bound| {
-            id.* = bound;
-            continue;
-        }
-        try rejectNullProperties(self, node_pattern_index, bindings);
-        if (try findMatchingNode(self, node_pattern_index, bindings)) |found| {
-            id.* = found;
-        } else {
-            id.* = try createNode(self, node_pattern_index, bindings);
-            created = true;
-        }
-        if (variable_name.len > 0) try bindings.put(self.allocator, variable_name, .{ .node = id.* });
-    }
-    try applyEdges(self, chain, node_ids, bindings, true);
-
-    // ON CREATE / ON MATCH SET (an empty set clause does nothing).
-    if (created) {
-        try applySet(self, on_create, bindings);
-    } else {
-        try applySet(self, on_match, bindings);
-    }
+    try applyEdges(self, chain, node_ids, bindings, creator);
 }
 
 /// CREATE may reuse a bound node only as a relationship endpoint, as it is:
@@ -140,7 +116,7 @@ pub fn nodePropertiesMatch(self: *Executor, node_pattern_index: Index, id: NodeI
 /// Writes the edges of a CREATE/MERGE chain between the already resolved
 /// `node_ids` (one per node position, so anonymous nodes work too). With
 /// `merge`, an existing edge is kept instead of duplicated.
-pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeId, bindings: *Bindings, merge: bool) ExecutionError!void {
+pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeId, bindings: *Bindings, creator: Creator) ExecutionError!void {
     for (node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |left_id, right_id, i| {
         const edge_pattern_index = chain[i * 2 + 1];
         const edge_pattern = self.ast.data(edge_pattern_index).edge_pattern;
@@ -152,23 +128,21 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
             self.fail(.invalid_expression, "CREATE and MERGE cannot write a variable-length relationship", .{});
             return error.InvalidExpression;
         }
-        if (edge_pattern.direction == .undirected and !merge) {
+        if (edge_pattern.direction == .undirected and creator == .create) {
             self.fail(.invalid_expression, "CREATE needs a relationship direction (-> or <-)", .{});
             return error.InvalidExpression;
         }
         // MERGE without a direction matches either way and creates left to right.
         const src: NodeId = if (edge_pattern.direction == .right_to_left) right_id else left_id;
         const dst: NodeId = if (edge_pattern.direction == .right_to_left) left_id else right_id;
-        if (merge) {
-            try rejectNullProperties(self, edge_pattern_index, bindings);
-            if (try self.graph.hasEdge(src, dst, edge_type)) continue;
-            if (edge_pattern.direction == .undirected and try self.graph.hasEdge(dst, src, edge_type)) continue;
-        }
         try self.graph.addEdge(src, dst, edge_type);
         for (self.ast.nodeChildren(edge_pattern_index)) |property_node| {
             const property_name = self.ast.data(property_node).text;
             const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
             try setEdgeProperty(self, src, dst, edge_type, property_name, value);
+        }
+        if (edge_pattern.variable_name.len > 0) {
+            try bindings.put(self.allocator, edge_pattern.variable_name, .{ .relationship = .{ .src = src, .dst = dst, .edge_type = edge_type } });
         }
     }
 }
@@ -314,8 +288,13 @@ fn reportPropertyError(self: *Executor, name: []const u8, err: GraphError) Execu
 }
 
 /// MERGE cannot match or create on a null property value (openCypher raises a
-/// semantic error rather than guessing).
-fn rejectNullProperties(self: *Executor, pattern_index: Index, bindings: *Bindings) ExecutionError!void {
+/// semantic error rather than guessing): checks every node and relationship
+/// of `pattern`.
+pub fn rejectNullProperties(self: *Executor, pattern: Index, bindings: *Bindings) ExecutionError!void {
+    for (self.ast.nodeChildren(pattern)) |element| try rejectNullPropertiesOf(self, element, bindings);
+}
+
+fn rejectNullPropertiesOf(self: *Executor, pattern_index: Index, bindings: *Bindings) ExecutionError!void {
     for (self.ast.nodeChildren(pattern_index)) |property_node| {
         const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
         if (value == .null) {

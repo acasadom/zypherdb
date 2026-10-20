@@ -88,7 +88,11 @@ pub const Graph = struct {
     /// an unlabeled node). Idempotent. A non-empty label also writes the label
     /// index entries so `nodesWithLabel` can find it.
     pub fn addNode(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
-        if (!try self.hasNode(id)) try self.writeRecord(id, "");
+        if (!try self.hasNode(id)) {
+            try self.writeRecord(id, "");
+            // A caller-chosen id is never handed out by `allocateNodeId` later.
+            if (id >= try self.nextNodeId()) try self.setNextNodeId(id +| 1);
+        }
         if (label.len > 0) try self.addLabel(id, label);
     }
 
@@ -138,16 +142,22 @@ pub const Graph = struct {
 
     /// Allocates a fresh, never-used node id (persistent counter). O(log N).
     pub fn allocateNodeId(self: *Graph) StorageError!NodeId {
-        var next: NodeId = 0;
-        const raw = try self.store.get(key_encoding.counter_key);
-        if (raw) |r| {
-            defer self.allocator.free(r);
-            if (r.len == key_encoding.node_id_length) next = key_encoding.readNodeId(r);
-        }
-        var buffer: [key_encoding.node_id_length]u8 = undefined;
-        std.mem.writeInt(NodeId, &buffer, next + 1, .big);
-        try self.store.put(key_encoding.counter_key, &buffer);
+        const next = try self.nextNodeId();
+        try self.setNextNodeId(next + 1);
         return next;
+    }
+
+    /// The id `allocateNodeId` gives next.
+    fn nextNodeId(self: *Graph) StorageError!NodeId {
+        const raw = (try self.store.get(key_encoding.counter_key)) orelse return 0;
+        defer self.allocator.free(raw);
+        return if (raw.len == key_encoding.node_id_length) key_encoding.readNodeId(raw) else 0;
+    }
+
+    fn setNextNodeId(self: *Graph, next: NodeId) StorageError!void {
+        var buffer: [key_encoding.node_id_length]u8 = undefined;
+        std.mem.writeInt(NodeId, &buffer, next, .big);
+        try self.store.put(key_encoding.counter_key, &buffer);
     }
 
     /// Deletes a node; fails with `error.NodeStillConnected` if it still has
