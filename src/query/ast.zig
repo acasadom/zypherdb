@@ -166,6 +166,13 @@ pub const NodeKind = enum {
     order_item,
     limit,
     skip,
+    /// `x {.a, .*, key: expression, other}`: a map built from `x` (a node, a
+    /// relationship or a map); children [x, item...], each item a `property`
+    /// (key: expression), a `map_projection_property` (`.a`, data.text) or a
+    /// `map_projection_all` (`.*`).
+    map_projection,
+    map_projection_property,
+    map_projection_all,
     /// `x:A:B`: true if node `x` has every label (relationship `x`: its type is
     /// each); data.labels; children [x].
     label_predicate,

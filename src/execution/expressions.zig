@@ -160,6 +160,28 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         },
         .list_comprehension => listComprehension(self, expr, bindings),
         .quantifier => quantifier(self, expr, bindings),
+        .map_projection => blk: {
+            const children = self.ast.nodeChildren(expr);
+            const subject = try evaluate(self, children[0], bindings);
+            if (subject == .null) break :blk .null;
+            if (subject != .node and subject != .relationship and subject != .map) {
+                self.fail(.type_mismatch, "a map projection needs a node, a relationship or a map", .{});
+                return error.TypeMismatch;
+            }
+            var entries = std.ArrayList(MapEntry).empty;
+            for (children[1..]) |item| switch (self.ast.kind(item)) {
+                .map_projection_all => {
+                    const all = if (subject == .map) subject else try functions.propertiesOf(self, subject);
+                    try entries.appendSlice(self.allocator, all.map);
+                },
+                .map_projection_property => {
+                    const key = self.ast.data(item).text;
+                    try entries.append(self.allocator, .{ .key = key, .value = try propertyOf(self, subject, key) });
+                },
+                else => try entries.append(self.allocator, .{ .key = self.ast.data(item).text, .value = try evaluate(self, self.ast.nodeChildren(item)[0], bindings) }),
+            };
+            break :blk mapOf(entries.items);
+        },
         .map_literal => blk: {
             const property_nodes = self.ast.nodeChildren(expr);
             const entries = try self.allocator.alloc(MapEntry, property_nodes.len);

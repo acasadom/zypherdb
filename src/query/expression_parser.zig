@@ -297,6 +297,8 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
                 try self.expect(.right_bracket);
                 expr = try self.ast.addNode(.subscript, .{ .none = {} }, &.{ expr, from });
             }
+        } else if (self.at(.left_brace) and self.ast.kind(expr) == .variable) {
+            expr = try parseMapProjection(self, expr);
         } else if (self.at(.colon) and self.peekAhead(1).kind == .identifier) {
             // `n:Label:Other`: a label predicate.
             var labels = std.ArrayList([]const u8).empty;
@@ -356,6 +358,37 @@ fn parseQuantifier(self: *Parser, kind: QuantifierKind) ParseError!Index {
 }
 
 /// A map literal `{key: value, ...}` (the empty map is allowed).
+/// `subject {.a, .*, key: expression, variable}` (the `{` is next).
+fn parseMapProjection(self: *Parser, subject: Index) ParseError!Index {
+    try self.expect(.left_brace);
+    var children = std.ArrayList(Index).empty;
+    defer children.deinit(self.ast.allocator);
+    try children.append(self.ast.allocator, subject);
+    while (!self.at(.right_brace)) {
+        if (self.at(.dot)) {
+            _ = self.advance();
+            if (self.at(.star)) {
+                _ = self.advance();
+                try children.append(self.ast.allocator, try self.ast.addNode(.map_projection_all, .{ .none = {} }, &.{}));
+            } else {
+                const property = try self.internIdentifier();
+                try children.append(self.ast.allocator, try self.ast.addNode(.map_projection_property, .{ .text = property }, &.{}));
+            }
+        } else {
+            const key = try self.internIdentifier();
+            const value = if (self.at(.colon)) value: {
+                _ = self.advance();
+                break :value try parseExpression(self);
+            } else try self.ast.addNode(.variable, .{ .text = key }, &.{});
+            try children.append(self.ast.allocator, try self.ast.addNode(.property, .{ .text = key }, &.{value}));
+        }
+        if (!self.at(.comma)) break;
+        _ = self.advance();
+    }
+    try self.expect(.right_brace);
+    return self.ast.addNode(.map_projection, .{ .none = {} }, children.items);
+}
+
 fn parseMapLiteral(self: *Parser) ParseError!Index {
     try self.expect(.left_brace);
     var entries = std.ArrayList(Index).empty;

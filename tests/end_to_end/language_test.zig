@@ -171,3 +171,31 @@ test "RETURN * and WITH * project every variable in scope, sorted by name" {
     try expectQuery(&ast, &g, "WITH 1 AS x WITH *, x + 1 AS y RETURN *, y * 2 AS z", &.{&.{ .{ .int = 1 }, .{ .int = 2 }, .{ .int = 4 } }});
     try expectQueryError(&ast, &g, "MATCH () RETURN *", error.InvalidExpression);
 }
+
+test "map projections build maps from nodes, relationships and maps" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:P {name: 'Ana', age: 30})-[:R {since: 2020}]->(:P {name: 'Luis'})", &.{});
+    const s = struct {
+        fn str(text: []const u8) Value {
+            return .{ .string = text };
+        }
+    }.str;
+    try expectQuery(&ast, &g, "MATCH (p:P {name: 'Ana'}) RETURN p {.name, .missing, years: p.age + 1}", &.{&.{.{ .map = &.{
+        .{ .key = "missing", .value = .null }, .{ .key = "name", .value = s("Ana") }, .{ .key = "years", .value = .{ .int = 31 } },
+    } }}});
+    // .* takes every property; a later key overrides; a variable selector keys itself.
+    try expectQuery(&ast, &g, "MATCH (p:P {name: 'Ana'})-[r:R]->(q) WITH p, r, q.name AS friend RETURN p {.*, age: 0, friend}, r {.*}", &.{&.{
+        .{ .map = &.{ .{ .key = "age", .value = .{ .int = 0 } }, .{ .key = "friend", .value = s("Luis") }, .{ .key = "name", .value = s("Ana") } } },
+        .{ .map = &.{.{ .key = "since", .value = .{ .int = 2020 } }} },
+    }});
+    try expectQuery(&ast, &g, "WITH {a: 1, b: 2} AS m RETURN m {.a, c: 3}", &.{&.{.{ .map = &.{ .{ .key = "a", .value = .{ .int = 1 } }, .{ .key = "c", .value = .{ .int = 3 } } } }}});
+    try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Nothing) RETURN x {.name}", &.{&.{.null}});
+}
