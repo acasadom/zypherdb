@@ -26,6 +26,10 @@ pub const KeyValueStore = struct {
     allocator: std.mem.Allocator,
     active_write_transaction: ?*c.MDB_txn,
     active_read_transaction: ?*c.MDB_txn,
+    /// A cursor of the active read transaction that `view` reuses: LMDB
+    /// finds a key near the cursor's last one without searching down from
+    /// the root, so reads in key order (a scan's nodes) are cheaper.
+    read_cursor: ?*c.MDB_cursor = null,
 
     /// Opens (or creates) an LMDB environment at `path`. The directory must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8) StorageError!KeyValueStore {
@@ -110,6 +114,10 @@ pub const KeyValueStore = struct {
     }
 
     pub fn abortRead(self: *KeyValueStore) void {
+        if (self.read_cursor) |cursor| {
+            c.mdb_cursor_close(cursor);
+            self.read_cursor = null;
+        }
         if (self.active_read_transaction) |transaction| {
             _ = c.mdb_txn_abort(transaction);
             self.active_read_transaction = null;
@@ -144,10 +152,17 @@ pub const KeyValueStore = struct {
     /// (null without one, or if the key is absent: callers then use `get`).
     /// The bytes are LMDB's own: valid until the transaction ends or writes.
     pub fn view(self: *KeyValueStore, key: []const u8) StorageError!?[]const u8 {
-        const transaction = self.active_write_transaction orelse self.active_read_transaction orelse return null;
         var key_val = makeVal(key);
         var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_get(transaction, self.database, &key_val, &data_val);
+        const rc = if (self.active_read_transaction) |transaction| rc: {
+            if (self.read_cursor == null) {
+                if (c.mdb_cursor_open(transaction, self.database, &self.read_cursor) != 0) return error.ReadFailed;
+            }
+            break :rc c.mdb_cursor_get(self.read_cursor.?, &key_val, &data_val, c.MDB_SET_KEY);
+        } else if (self.active_write_transaction) |transaction|
+            c.mdb_get(transaction, self.database, &key_val, &data_val)
+        else
+            return null;
         if (rc == c.MDB_NOTFOUND) return null;
         if (rc != 0) return error.ReadFailed;
         return valSlice(data_val);

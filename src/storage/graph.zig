@@ -25,6 +25,8 @@ const Allocator = std.mem.Allocator;
 
 const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
+const node_record = @import("node_record.zig");
+const NodeRecord = node_record.NodeRecord;
 
 pub const NodeId = key_encoding.NodeId;
 pub const Direction = key_encoding.Direction;
@@ -86,36 +88,61 @@ pub const Graph = struct {
     /// an unlabeled node). Idempotent. A non-empty label also writes the label
     /// index entries so `nodesWithLabel` can find it.
     pub fn addNode(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendNodeKey(&key, self.allocator, id);
-        try self.store.put(key.items, "");
-
+        if (!try self.hasNode(id)) try self.writeRecord(id, "");
         if (label.len > 0) try self.addLabel(id, label);
     }
 
-    /// Adds a label to a node (forward + reverse index). Idempotent.
+    /// Adds a label to a node (its record and the label index). Idempotent.
     pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
+        if (record.hasLabel(label)) return;
+        try self.writeRecord(id, try node_record.withLabel(scratch.allocator(), record, label, true));
+
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try key_encoding.appendLabelKey(&key, self.allocator, label, id);
-        try self.store.put(key.items, "");
-
-        key.clearRetainingCapacity();
-        try key_encoding.appendReverseLabelKey(&key, self.allocator, id, label);
         try self.store.put(key.items, "");
     }
 
-    /// Removes a label from a node (forward + reverse index). Idempotent.
+    /// Removes a label from a node (its record and the label index). Idempotent.
     pub fn removeLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const record = try self.readRecord(id, scratch.allocator()) orelse return;
+        if (!record.hasLabel(label)) return;
+        try self.writeRecord(id, try node_record.withLabel(scratch.allocator(), record, label, false));
+
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         try self.store.del(key.items);
+    }
 
-        key.clearRetainingCapacity();
-        try key_encoding.appendReverseLabelKey(&key, self.allocator, id, label);
-        try self.store.del(key.items);
+    /// The record of node `id` (null if there is no such node): a view into
+    /// the store inside a transaction, else a copy made with `scratch`.
+    fn readRecord(self: *Graph, id: NodeId, scratch: Allocator) StorageError!?NodeRecord {
+        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
+        const key = nodeKey(&key_buffer, id);
+        if (self.store.inTransaction()) {
+            const bytes = (try self.store.view(key)) orelse return null;
+            return .{ .bytes = bytes };
+        }
+        const bytes = (try self.store.get(key)) orelse return null;
+        defer self.store.allocator.free(bytes);
+        return .{ .bytes = try scratch.dupe(u8, bytes) };
+    }
+
+    fn writeRecord(self: *Graph, id: NodeId, bytes: []const u8) StorageError!void {
+        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
+        try self.store.put(nodeKey(&key_buffer, id), bytes);
+    }
+
+    fn nodeKey(buffer: *[1 + key_encoding.node_id_length]u8, id: NodeId) []const u8 {
+        buffer[0] = key_encoding.node_marker;
+        std.mem.writeInt(NodeId, buffer[1..], id, .big);
+        return buffer;
     }
 
     /// Allocates a fresh, never-used node id (persistent counter). O(log N).
@@ -166,42 +193,25 @@ pub const Graph = struct {
     }
 
     fn deleteNodeOnly(self: *Graph, id: NodeId) StorageError!void {
-        // Enumerate and remove all labels (forward + reverse index).
-        var labels = std.ArrayList([]u8).empty;
-        defer {
-            for (labels.items) |l| self.allocator.free(l);
-            labels.deinit(self.allocator);
-        }
-        var lprefix = std.ArrayList(u8).empty;
-        defer lprefix.deinit(self.allocator);
-        try lprefix.append(self.allocator, key_encoding.reverse_label_marker);
-        try key_encoding.appendNodeId(&lprefix, self.allocator, id);
-        try lprefix.append(self.allocator, key_encoding.separator);
-        var lit = try self.store.scanPrefix(lprefix.items);
-        while (try lit.next()) |entry| {
-            try labels.append(self.allocator, try self.allocator.dupe(u8, entry.key[lprefix.items.len..]));
-        }
-        lit.deinit();
-        for (labels.items) |label| try self.removeLabel(id, label);
-
-        var nprefix = std.ArrayList(u8).empty;
-        defer nprefix.deinit(self.allocator);
-        try key_encoding.appendNodeKey(&nprefix, self.allocator, id);
-
-        // Remove property-index entries before deleting the properties.
-        var pprefix = std.ArrayList(u8).empty;
-        defer pprefix.deinit(self.allocator);
-        try key_encoding.appendNodePropertyKey(&pprefix, self.allocator, id, "");
-        var pit = try self.store.scanPrefix(pprefix.items);
-        defer pit.deinit();
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        while (try pit.next()) |entry| {
-            const property_name = entry.key[1 + key_encoding.node_id_length + 1 ..];
-            try self.deleteIndexEntry(id, property_name, try value_encoding.decodeValue(entry.value, scratch.allocator()));
+        // Copied: deleting keys invalidates views into the store.
+        const view = try self.readRecord(id, scratch.allocator()) orelse return;
+        const record = NodeRecord{ .bytes = try scratch.allocator().dupe(u8, view.bytes) };
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        var labels = record.labels();
+        while (labels.next()) |label| {
+            key.clearRetainingCapacity();
+            try key_encoding.appendLabelKey(&key, self.allocator, label, id);
+            try self.store.del(key.items);
         }
-
-        try self.deleteKeysUnder(nprefix.items);
+        var properties = record.properties();
+        while (properties.next()) |property| {
+            try self.deleteIndexEntry(id, property.name, try value_encoding.decodeValue(property.encoded_value, scratch.allocator()));
+        }
+        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
+        try self.store.del(nodeKey(&key_buffer, id));
     }
 
     fn deleteEdgesInDirection(self: *Graph, id: NodeId, direction: Direction) StorageError!void {
@@ -271,22 +281,6 @@ pub const Graph = struct {
         try self.bumpEdgeType(edge_type, false);
     }
 
-    /// Deletes every key under `prefix` (collected first so the scan cursor is
-    /// not open across the deletes).
-    fn deleteKeysUnder(self: *Graph, prefix: []const u8) StorageError!void {
-        var keys = std.ArrayList([]u8).empty;
-        defer {
-            for (keys.items) |k| self.allocator.free(k);
-            keys.deinit(self.allocator);
-        }
-        var iterator = try self.store.scanPrefix(prefix);
-        defer iterator.deinit();
-        while (try iterator.next()) |entry| {
-            try keys.append(self.allocator, try self.allocator.dupe(u8, entry.key));
-        }
-        for (keys.items) |k| try self.store.del(k);
-    }
-
     pub fn hasNode(self: *Graph, id: NodeId) StorageError!bool {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -295,13 +289,10 @@ pub const Graph = struct {
     }
 
     pub fn hasLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!bool {
-        var key_buffer: [128]u8 = undefined;
-        var key_memory = std.heap.BufferFirstAllocator.init(&key_buffer, self.allocator);
-        const key_allocator = key_memory.allocator();
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(key_allocator);
-        try key_encoding.appendLabelKey(&key, key_allocator, label, id);
-        return self.store.exists(key.items);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const record = try self.readRecord(id, scratch.allocator()) orelse return false;
+        return record.hasLabel(label);
     }
 
     /// Stores a typed property `name` on node `id`. Idempotent. Maintains the
@@ -310,20 +301,15 @@ pub const Graph = struct {
     pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeProperty(id, name);
         if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
-        // Remove the previous index entry, if any.
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        if (try self.getProperty(id, name, scratch.allocator())) |old| try self.deleteIndexEntry(id, name, old);
-
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendNodePropertyKey(&key, self.allocator, id, name);
-
+        const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
         var encoded = std.ArrayList(u8).empty;
-        defer encoded.deinit(self.allocator);
-        try value_encoding.encodeValue(&encoded, self.allocator, value);
-        try self.store.put(key.items, encoded.items);
-
+        try value_encoding.encodeValue(&encoded, scratch.allocator(), value);
+        const updated = try node_record.withProperty(scratch.allocator(), record, name, encoded.items);
+        // Remove the previous index entry, if any (read before the record changes).
+        if (record.property(name)) |old| try self.deleteIndexEntry(id, name, try value_encoding.decodeValue(old, scratch.allocator()));
+        try self.writeRecord(id, updated);
         try self.putIndexEntry(id, name, value);
     }
 
@@ -332,11 +318,12 @@ pub const Graph = struct {
     pub fn removeProperty(self: *Graph, id: NodeId, name: []const u8) StorageError!void {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        if (try self.getProperty(id, name, scratch.allocator())) |old| try self.deleteIndexEntry(id, name, old);
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendNodePropertyKey(&key, self.allocator, id, name);
-        try self.store.del(key.items);
+        const record = try self.readRecord(id, scratch.allocator()) orelse return;
+        const old = record.property(name) orelse return;
+        const old_value = try value_encoding.decodeValue(old, scratch.allocator());
+        const updated = try node_record.withProperty(scratch.allocator(), record, name, null);
+        try self.writeRecord(id, updated);
+        try self.deleteIndexEntry(id, name, old_value);
     }
 
     /// Iterates all nodes whose property `name` equals `value` (via the
@@ -366,13 +353,11 @@ pub const Graph = struct {
     /// Reads a typed property `name` of node `id`, or `null` if absent. A
     /// `string` value is an owned copy allocated with `allocator`. O(log N).
     pub fn getProperty(self: *Graph, id: NodeId, name: []const u8, allocator: Allocator) StorageError!?Value {
-        var key_buffer: [128]u8 = undefined;
-        var key_memory = std.heap.BufferFirstAllocator.init(&key_buffer, self.allocator);
-        const key_allocator = key_memory.allocator();
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(key_allocator);
-        try key_encoding.appendNodePropertyKey(&key, key_allocator, id, name);
-        return self.readValue(key.items, allocator);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const record = try self.readRecord(id, scratch.allocator()) orelse return null;
+        const encoded = record.property(name) orelse return null;
+        return try value_encoding.decodeValue(encoded, allocator);
     }
 
     /// The stored value at `key`, decoded with `allocator`: read in place
@@ -539,9 +524,8 @@ pub const Graph = struct {
         return .{ .inner = iterator };
     }
 
-    /// Iterates every node (labeled or not), in ascending node-id order. Scans
-    /// the `n | node_id` existence markers, skipping the property keys that
-    /// share the `n` prefix. O(log N + nodes + node properties).
+    /// Iterates every node (labeled or not), in ascending node-id order: a
+    /// scan of the node records. O(log N + nodes).
     pub fn allNodes(self: *Graph) StorageError!NodeIdIterator {
         const iterator = try self.store.scanPrefix(&.{key_encoding.node_marker});
         return .{ .inner = iterator, .key_length = 1 + key_encoding.node_id_length };
@@ -549,21 +533,25 @@ pub const Graph = struct {
 
     /// Iterates the labels of node `id` (views into the store). O(log N + labels).
     pub fn labelsOf(self: *Graph, id: NodeId) StorageError!LabelIterator {
-        var prefix = std.ArrayList(u8).empty;
-        defer prefix.deinit(self.allocator);
-        try prefix.append(self.allocator, key_encoding.reverse_label_marker);
-        try key_encoding.appendNodeId(&prefix, self.allocator, id);
-        try prefix.append(self.allocator, key_encoding.separator);
-        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+        const held = try self.holdRecord(id);
+        return .{ .inner = held.record.labels(), .held = held };
     }
 
     /// Iterates the properties of node `id`, in name order (views into the
     /// store). O(log N + properties).
     pub fn propertiesOf(self: *Graph, id: NodeId) StorageError!PropertyIterator {
-        var prefix = std.ArrayList(u8).empty;
-        defer prefix.deinit(self.allocator);
-        try key_encoding.appendNodePropertyKey(&prefix, self.allocator, id, "");
-        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+        const held = try self.holdRecord(id);
+        return .{ .source = .{ .record = held.record.properties() }, .held = held };
+    }
+
+    /// A node's record for an iterator to read: a view inside a transaction,
+    /// else a copy the iterator frees.
+    fn holdRecord(self: *Graph, id: NodeId) StorageError!HeldRecord {
+        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
+        const key = nodeKey(&key_buffer, id);
+        if (self.store.inTransaction()) return .{ .record = .{ .bytes = (try self.store.view(key)) orelse "" } };
+        const bytes = (try self.store.get(key)) orelse return .{ .record = .empty };
+        return .{ .record = .{ .bytes = bytes }, .owner = self.store.allocator };
     }
 
     /// Iterates the properties of the edge `src -> dst` of type `edge_type`, in
@@ -572,7 +560,7 @@ pub const Graph = struct {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try key_encoding.appendEdgePropertyPrefix(&prefix, self.allocator, src, dst, edge_type);
-        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+        return .{ .source = .{ .keys = .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len } } };
     }
 
     /// Iterates the edges of node `id` in `direction`, of every type, as
@@ -667,17 +655,58 @@ pub const Property = struct {
     }
 };
 
-pub const LabelIterator = KeyRangeIterator([]const u8, struct {
-    fn decode(entry: PrefixIterator.Entry, prefix_length: usize) []const u8 {
-        return entry.key[prefix_length..];
-    }
-}.decode);
+/// A node record an iterator reads, and who frees it (null: a view).
+const HeldRecord = struct {
+    record: NodeRecord,
+    owner: ?Allocator = null,
 
-pub const PropertyIterator = KeyRangeIterator(Property, struct {
-    fn decode(entry: PrefixIterator.Entry, prefix_length: usize) Property {
-        return .{ .name = entry.key[prefix_length..], .encoded_value = entry.value };
+    fn release(self: HeldRecord) void {
+        if (self.owner) |allocator| allocator.free(self.record.bytes);
     }
-}.decode);
+};
+
+/// The labels of a node, in byte order (views into its record).
+pub const LabelIterator = struct {
+    inner: node_record.LabelIterator,
+    held: HeldRecord,
+
+    pub fn deinit(self: *LabelIterator) void {
+        self.held.release();
+    }
+
+    pub fn next(self: *LabelIterator) StorageError!?[]const u8 {
+        return self.inner.next();
+    }
+};
+
+/// The properties of a node (from its record) or of an edge (from its keys),
+/// in name order.
+pub const PropertyIterator = struct {
+    source: union(enum) {
+        record: node_record.PropertyIterator,
+        keys: KeyRangeIterator(Property, struct {
+            fn decode(entry: PrefixIterator.Entry, prefix_length: usize) Property {
+                return .{ .name = entry.key[prefix_length..], .encoded_value = entry.value };
+            }
+        }.decode),
+    },
+    held: HeldRecord = .{ .record = .empty },
+
+    pub fn deinit(self: *PropertyIterator) void {
+        switch (self.source) {
+            .record => {},
+            .keys => |*keys| keys.deinit(),
+        }
+        self.held.release();
+    }
+
+    pub fn next(self: *PropertyIterator) StorageError!?Property {
+        return switch (self.source) {
+            .record => |*record| if (record.next()) |p| .{ .name = p.name, .encoded_value = p.encoded_value } else null,
+            .keys => |*keys| keys.next(),
+        };
+    }
+};
 
 pub const EdgeKeyIterator = KeyRangeIterator(EdgeKey, struct {
     fn decode(entry: PrefixIterator.Entry, _: usize) EdgeKey {

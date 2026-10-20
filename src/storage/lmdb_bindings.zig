@@ -40,6 +40,7 @@ pub const MDB_NOTFOUND: c_int = -30798;
 /// Position at next data item.
 pub const MDB_NEXT: c_int = 8;
 /// Position at first key greater than or equal to the specified key.
+pub const MDB_SET_KEY: c_int = 16;
 pub const MDB_SET_RANGE: c_int = 17;
 
 // --- Environment ---

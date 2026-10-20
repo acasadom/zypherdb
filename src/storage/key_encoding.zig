@@ -6,8 +6,8 @@
 //!
 //! Key layout (all integers big-endian, fixed width):
 //!
-//! - node marker:            `n | node_id`
-//! - node property:          `n | node_id | 0x00 | property_name`
+//! - node record:            `n | node_id` -> the node's labels and properties
+//!                           (see node_record.zig)
 //! - edge (per direction):   `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`
 //!
 //! `node_id` is a fixed-width u64, so lexicographic byte order equals numeric
@@ -45,7 +45,6 @@ pub const EdgeKey = struct {
 pub const node_marker: u8 = 'n';
 pub const edge_marker: u8 = 'e';
 pub const label_marker: u8 = 'l';
-pub const reverse_label_marker: u8 = 'L';
 pub const index_marker: u8 = 'p';
 pub const edge_property_marker: u8 = 'f';
 pub const edge_index_marker: u8 = 'g';
@@ -77,28 +76,12 @@ pub fn appendNodeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId)
     try appendNodeId(list, allocator, id);
 }
 
-/// Appends the key for a node property: `n | node_id | 0x00 | property_name`.
-pub fn appendNodePropertyKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, property: []const u8) !void {
-    try appendNodeKey(list, allocator, id);
-    try list.append(allocator, separator);
-    try list.appendSlice(allocator, property);
-}
-
 /// Appends the key for a label-index entry: `l | label | 0x00 | node_id`.
 pub fn appendLabelKey(list: *std.ArrayList(u8), allocator: Allocator, label: []const u8, id: NodeId) !void {
     try list.append(allocator, label_marker);
     try list.appendSlice(allocator, label);
     try list.append(allocator, separator);
     try appendNodeId(list, allocator, id);
-}
-
-/// Appends the key for a reverse label-index entry: `L | node_id | 0x00 | label`
-/// (so a node's labels can be enumerated on delete).
-pub fn appendReverseLabelKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, label: []const u8) !void {
-    try list.append(allocator, reverse_label_marker);
-    try appendNodeId(list, allocator, id);
-    try list.append(allocator, separator);
-    try list.appendSlice(allocator, label);
 }
 
 /// Appends the key for a property-index entry:

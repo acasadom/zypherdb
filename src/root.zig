@@ -72,6 +72,7 @@ test {
     @import("std").testing.refAllDecls(@This());
     // Modules with unit tests that no declaration above reaches yet.
     _ = @import("storage/value_encoding.zig");
+    _ = @import("storage/node_record.zig");
     _ = @import("temporal/calendar.zig");
     _ = @import("temporal/zones.zig");
     _ = @import("temporal/types.zig");

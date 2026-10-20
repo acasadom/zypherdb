@@ -23,12 +23,10 @@ Two rules make that work:
 
 | Key | Meaning | Answering |
 | --- | --- | --- |
-| `n \| id` | the node exists | `hasNode` |
-| `n \| id \| 0x00 \| prop` | a node property (value = encoded `Value`) | `getProperty` |
+| `n \| id` | the node's **record**: its labels and properties (below) | `hasNode`, `hasLabel`, `getProperty` |
 | `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` = `'o'` out / `'i'` in) | `neighbours`, `hasEdge` |
 | `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the **canonical** `src -> dst` orientation | `getEdgeProperty` |
-| `l \| label \| 0x00 \| id` | forward label index | `nodesWithLabel`, `hasLabel` |
-| `L \| id \| 0x00 \| label` | reverse label index | enumerating a node's labels on delete |
+| `l \| label \| 0x00 \| id` | label index | `nodesWithLabel` |
 | `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
 | `g \| prop \| 0x00 \| value \| src \| dst \| 0x00 \| type` | edge-property index | `edgesByProperty` (an equality seek) |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
@@ -84,9 +82,13 @@ integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should
 
 ## The indexes, one by one
 
-- **Label index (`l`) and reverse (`L`).** `l` answers "which nodes carry this label" (a prefix
-  scan). `L` answers the reverse question — "which labels does this node carry" — which is needed
-  only to clean up on `deleteNode`, so a delete doesn't have to guess.
+- **Node records (`n`).** A node's labels and properties are one value (`node_record.zig`):
+  label count, then each label; property count, then each name and encoded value, both sorted.
+  One B-tree search reads everything about a node, and a read transaction looks records up
+  through one reused cursor, which LMDB repositions without searching from the root when the
+  next key is near the last (a scan's nodes come in id order). A change rewrites the record.
+- **Label index (`l`).** Answers "which nodes carry this label" (a prefix scan), maintained with
+  the record.
 - **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProp`
   and `deleteNode`. This is what turns `MATCH (p:Person {name: 'Keanu'})` from a scan into a point
   lookup.
