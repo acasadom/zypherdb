@@ -66,10 +66,29 @@ pub const TYPE_LOCAL_DATE_TIME: c_int = 13;
 pub const TYPE_DATE_TIME: c_int = 14;
 pub const TYPE_DURATION: c_int = 15;
 
+pub const DURABILITY_FULL: c_int = 0;
+pub const DURABILITY_RELAXED: c_int = 1;
+pub const DURABILITY_DEFERRED: c_int = 2;
+
 pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
+    return acmedb_open_with_durability(path_ptr, path_len, DURABILITY_FULL);
+}
+
+/// Opens with a durability mode: `DURABILITY_FULL` (each commit is on disk
+/// when it returns), `DURABILITY_RELAXED` (a power failure can lose the last
+/// commit, never corrupt the database) or `DURABILITY_DEFERRED` (commits are
+/// written by the operating system or `acmedb_sync`; a power failure can
+/// lose the recent ones). NULL on an unknown mode.
+pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize, durability: c_int) ?*Context {
+    const mode: KeyValueStore.Durability = switch (durability) {
+        DURABILITY_FULL => .full,
+        DURABILITY_RELAXED => .relaxed,
+        DURABILITY_DEFERRED => .deferred,
+        else => return null,
+    };
     const path = path_ptr[0..path_len];
     const context = allocator.create(Context) catch return null;
-    context.store = KeyValueStore.open(allocator, path) catch {
+    context.store = KeyValueStore.openWithOptions(allocator, path, .{ .durability = mode }) catch {
         allocator.destroy(context);
         return null;
     };
@@ -78,6 +97,12 @@ pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     context.diagnostic = Diagnostic.init();
     context.export_json = &.{};
     return context;
+}
+
+/// Writes every commit so far to disk. RETURN_OK or RETURN_STORAGE_ERROR.
+pub export fn acmedb_sync(context: *Context) c_int {
+    context.store.sync() catch return RETURN_STORAGE_ERROR;
+    return RETURN_OK;
 }
 
 pub export fn acmedb_close(context: *Context) void {

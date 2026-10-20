@@ -123,26 +123,17 @@ pub const Graph = struct {
     /// The record of node `id` (null if there is no such node): a view into
     /// the store inside a transaction, else a copy made with `scratch`.
     fn readRecord(self: *Graph, id: NodeId, scratch: Allocator) StorageError!?NodeRecord {
-        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
-        const key = nodeKey(&key_buffer, id);
         if (self.store.inTransaction()) {
-            const bytes = (try self.store.view(key)) orelse return null;
+            const bytes = (try self.store.viewNode(id)) orelse return null;
             return .{ .bytes = bytes };
         }
-        const bytes = (try self.store.get(key)) orelse return null;
+        const bytes = (try self.store.getNode(id)) orelse return null;
         defer self.store.allocator.free(bytes);
         return .{ .bytes = try scratch.dupe(u8, bytes) };
     }
 
     fn writeRecord(self: *Graph, id: NodeId, bytes: []const u8) StorageError!void {
-        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
-        try self.store.put(nodeKey(&key_buffer, id), bytes);
-    }
-
-    fn nodeKey(buffer: *[1 + key_encoding.node_id_length]u8, id: NodeId) []const u8 {
-        buffer[0] = key_encoding.node_marker;
-        std.mem.writeInt(NodeId, buffer[1..], id, .big);
-        return buffer;
+        try self.store.putNode(id, bytes);
     }
 
     /// Allocates a fresh, never-used node id (persistent counter). O(log N).
@@ -210,8 +201,7 @@ pub const Graph = struct {
         while (properties.next()) |property| {
             try self.deleteIndexEntry(id, property.name, try value_encoding.decodeValue(property.encoded_value, scratch.allocator()));
         }
-        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
-        try self.store.del(nodeKey(&key_buffer, id));
+        try self.store.deleteNode(id);
     }
 
     fn deleteEdgesInDirection(self: *Graph, id: NodeId, direction: Direction) StorageError!void {
@@ -282,10 +272,9 @@ pub const Graph = struct {
     }
 
     pub fn hasNode(self: *Graph, id: NodeId) StorageError!bool {
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendNodeKey(&key, self.allocator, id);
-        return self.store.exists(key.items);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        return try self.readRecord(id, scratch.allocator()) != null;
     }
 
     pub fn hasLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!bool {
@@ -527,8 +516,7 @@ pub const Graph = struct {
     /// Iterates every node (labeled or not), in ascending node-id order: a
     /// scan of the node records. O(log N + nodes).
     pub fn allNodes(self: *Graph) StorageError!NodeIdIterator {
-        const iterator = try self.store.scanPrefix(&.{key_encoding.node_marker});
-        return .{ .inner = iterator, .key_length = 1 + key_encoding.node_id_length };
+        return .{ .inner = try self.store.scanNodes(), .native_keys = true };
     }
 
     /// Iterates the labels of node `id` (views into the store). O(log N + labels).
@@ -547,10 +535,8 @@ pub const Graph = struct {
     /// A node's record for an iterator to read: a view inside a transaction,
     /// else a copy the iterator frees.
     fn holdRecord(self: *Graph, id: NodeId) StorageError!HeldRecord {
-        var key_buffer: [1 + key_encoding.node_id_length]u8 = undefined;
-        const key = nodeKey(&key_buffer, id);
-        if (self.store.inTransaction()) return .{ .record = .{ .bytes = (try self.store.view(key)) orelse "" } };
-        const bytes = (try self.store.get(key)) orelse return .{ .record = .empty };
+        if (self.store.inTransaction()) return .{ .record = .{ .bytes = (try self.store.viewNode(id)) orelse "" } };
+        const bytes = (try self.store.getNode(id)) orelse return .{ .record = .empty };
         return .{ .record = .{ .bytes = bytes }, .owner = self.store.allocator };
     }
 
@@ -603,6 +589,8 @@ pub const NodeIdIterator = struct {
     inner: PrefixIterator,
     /// When set, only keys of exactly this length are yielded (others skipped).
     key_length: ?usize = null,
+    /// The keys are node ids in native byte order (the node table's).
+    native_keys: bool = false,
 
     pub fn deinit(self: *NodeIdIterator) void {
         self.inner.deinit();
@@ -614,6 +602,7 @@ pub const NodeIdIterator = struct {
             if (self.key_length) |len| {
                 if (entry.key.len != len) continue;
             }
+            if (self.native_keys) return std.mem.readInt(NodeId, entry.key[0..8], .native);
             return key_encoding.readNodeId(entry.key[entry.key.len - key_encoding.node_id_length ..]);
         }
         return null;

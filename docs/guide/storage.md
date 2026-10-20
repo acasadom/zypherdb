@@ -23,7 +23,6 @@ Two rules make that work:
 
 | Key | Meaning | Answering |
 | --- | --- | --- |
-| `n \| id` | the node's **record**: its labels and properties (below) | `hasNode`, `hasLabel`, `getProperty` |
 | `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` = `'o'` out / `'i'` in) | `neighbours`, `hasEdge` |
 | `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the **canonical** `src -> dst` orientation | `getEdgeProperty` |
 | `l \| label \| 0x00 \| id` | label index | `nodesWithLabel` |
@@ -82,7 +81,8 @@ integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should
 
 ## The indexes, one by one
 
-- **Node records (`n`).** A node's labels and properties are one value (`node_record.zig`):
+- **Node records** (a table of their own, `#nodes`, keyed by the id as an integer). A node's
+  labels and properties are one value (`node_record.zig`):
   label count, then each label; property count, then each name and encoded value, both sorted.
   One B-tree search reads everything about a node, and a read transaction looks records up
   through one reused cursor, which LMDB repositions without searching from the root when the

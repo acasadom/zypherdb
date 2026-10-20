@@ -6,6 +6,7 @@ import contextlib
 import ctypes
 import json
 import math
+import os
 import threading
 
 from . import _ffi, entities, temporal
@@ -79,10 +80,22 @@ class Database:
             db.query("CREATE (n:Movie {title: 'The Matrix'})")
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, durability: str = "full"):
+        """Opens (or creates) the database in directory `path`.
+
+        `durability` is how much a commit waits for the disk: "full" (each
+        commit is on disk when it returns), "relaxed" (a power failure can lose
+        the last commit, never corrupt the database) or "deferred" (commits are
+        written by the operating system or by `sync()`; a power failure can lose
+        the recent ones, hundreds of times faster for many small writes).
+        """
+        modes = {"full": 0, "relaxed": 1, "deferred": 2}
+        if durability not in modes:
+            raise ValueError(f"durability must be one of {', '.join(modes)}, not {durability!r}")
         self.path = path
+        os.makedirs(path, exist_ok=True)
         encoded = path.encode()
-        self._ctx = _ffi.lib.acmedb_open(encoded, len(encoded))
+        self._ctx = _ffi.lib.acmedb_open_with_durability(encoded, len(encoded), modes[durability])
         if not self._ctx:
             raise StorageError(f"could not open database at {path!r}")
         # The native context holds per-handle transaction state, so every call
@@ -90,6 +103,12 @@ class Database:
         # mutators that themselves take the lock.
         self._lock = threading.RLock()
         self._in_write = False
+
+    def sync(self) -> None:
+        """Writes every commit so far to disk (for "deferred" durability)."""
+        with self._lock:
+            if _ffi.lib.acmedb_sync(self._handle()) != _RETURN_OK:
+                raise StorageError("sync failed")
 
     def close(self) -> None:
         with self._lock:

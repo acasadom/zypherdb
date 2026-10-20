@@ -55,6 +55,10 @@ lib = _load()
 # --- Lifecycle ---------------------------------------------------------------
 lib.acmedb_open.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
 lib.acmedb_open.restype = ctypes.c_void_p
+lib.acmedb_open_with_durability.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int]
+lib.acmedb_open_with_durability.restype = ctypes.c_void_p
+lib.acmedb_sync.argtypes = [ctypes.c_void_p]
+lib.acmedb_sync.restype = ctypes.c_int
 lib.acmedb_close.argtypes = [ctypes.c_void_p]
 lib.acmedb_last_error.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
 lib.acmedb_last_error.restype = ctypes.c_void_p

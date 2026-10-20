@@ -144,6 +144,17 @@ def test_floats(db):
     assert math.isnan(nan) and inf == math.inf
 
 
+def test_durability_modes(tmp_path):
+    with Database(str(tmp_path / "deferred"), durability="deferred") as fast:
+        fast.query("UNWIND range(1, 10) AS i CREATE (:Event {n: i})")
+        fast.sync()
+        assert fast.query("MATCH (e:Event) RETURN count(*)") == [[10]]
+    with Database(str(tmp_path / "deferred")) as reopened:
+        assert reopened.query("MATCH (e:Event) RETURN count(*)") == [[10]]
+    with pytest.raises(ValueError):
+        Database(str(tmp_path), durability="sometimes")
+
+
 def test_temporal_values(db):
     import datetime as dt
     from zoneinfo import ZoneInfo

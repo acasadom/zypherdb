@@ -142,23 +142,77 @@ fn expandEdge(self: *Executor, from: usize, to: usize, next_step: usize, pattern
     if (self.edges.items[edge_index].variable_length) return expandVariableLength(self, from, to, next_step, pattern_index, bindings);
     const from_id = self.nodes.items[from].id;
     const edge = self.edges.items[edge_index];
-    const to_node = self.nodes.items[to];
     const traversal: Direction = if (from < to) edge.forward_direction else opposite(edge.forward_direction);
+
+    // A target found by an index seek (`(:Door {id: $door})`) is reached
+    // by testing the edges to its few candidates, not by reading every
+    // neighbour's properties.
+    if (edge.edge_types.len > 0) if (try indexedCandidates(self, to, bindings)) |candidates| {
+        for (candidates) |candidate| {
+            for (edge.edge_types) |edge_type| {
+                for (edgeOrientations(edge, traversal, from_id, candidate)) |orientation| {
+                    const ends = orientation orelse continue;
+                    if (!try self.graph.hasEdge(ends.src, ends.dst, edge_type)) continue;
+                    try tryNeighbour(self, to, edge_index, candidate, .{ .src = ends.src, .dst = ends.dst, .edge_type = edge_type }, next_step, pattern_index, bindings);
+                }
+            }
+        }
+        return;
+    };
 
     var edges = MatchingEdges.init(self.graph, from_id, edge, traversal);
     defer edges.deinit();
     while (try edges.next()) |found| {
-        if (!(try hasAllLabels(self, found.neighbour, to_node.labels))) continue;
-        const saved = bindings.mark();
-        defer bindings.restore(saved);
-        // A `to` variable bound already (earlier in the pattern or the
-        // query) must be this neighbour; otherwise bind it.
-        if (!try bindings.bindNode(self.allocator, to_node.variable_name, found.neighbour)) continue;
-        self.nodes.items[to].id = found.neighbour;
-        if (!try nodeSeeksMatch(self, to, found.neighbour, bindings)) continue;
-        const ref = Relationship{ .src = found.ref.src, .dst = found.ref.dst, .edge_type = try self.ownedEdgeType(edge, found.ref.edge_type) };
-        try followEdge(self, edge_index, ref, next_step, pattern_index, bindings);
+        try tryNeighbour(self, to, edge_index, found.neighbour, found.ref, next_step, pattern_index, bindings);
     }
+}
+
+/// Continues the match with `neighbour` at pattern position `to`, reached
+/// through `ref`, if it fits the node pattern there.
+fn tryNeighbour(self: *Executor, to: usize, edge_index: usize, neighbour: NodeId, ref: Relationship, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
+    const to_node = self.nodes.items[to];
+    if (!(try hasAllLabels(self, neighbour, to_node.labels))) return;
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
+    // A `to` variable bound already (earlier in the pattern or the query)
+    // must be this neighbour; otherwise bind it.
+    if (!try bindings.bindNode(self.allocator, to_node.variable_name, neighbour)) return;
+    self.nodes.items[to].id = neighbour;
+    if (!try nodeSeeksMatch(self, to, neighbour, bindings)) return;
+    const owned = Relationship{ .src = ref.src, .dst = ref.dst, .edge_type = try self.ownedEdgeType(self.edges.items[edge_index], ref.edge_type) };
+    try followEdge(self, edge_index, owned, next_step, pattern_index, bindings);
+}
+
+/// Above this many index candidates, scanning the neighbours is cheaper.
+const max_indexed_candidates = 8;
+
+/// The nodes the index gives for the first seek of the unbound node at
+/// `to`, if it has one and they are few; null to scan the neighbours instead.
+/// (Only for edges that name their types: an edge test needs the type.)
+fn indexedCandidates(self: *Executor, to: usize, bindings: *Bindings) ExecutionError!?[]const NodeId {
+    const node = self.nodes.items[to];
+    if (node.bound or node.seeks.items.len == 0) return null;
+    if (node.variable_name.len > 0 and bindings.getNode(node.variable_name) != null) return null;
+    const seek = node.seeks.items[0];
+    var iterator = try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
+    defer iterator.deinit();
+    var candidates = std.ArrayList(NodeId).empty;
+    while (try iterator.next()) |id| {
+        if (candidates.items.len == max_indexed_candidates) return null;
+        try candidates.append(self.allocator, id);
+    }
+    return candidates.items;
+}
+
+const EdgeEnds = struct { src: NodeId, dst: NodeId };
+
+/// The source and target an edge between `from` and `to_id` would have, for
+/// each orientation the pattern edge allows (null: not this one).
+fn edgeOrientations(edge: PatternEdge, traversal: Direction, from: NodeId, to_id: NodeId) [2]?EdgeEnds {
+    const outgoing = EdgeEnds{ .src = from, .dst = to_id };
+    const incoming = EdgeEnds{ .src = to_id, .dst = from };
+    if (edge.undirected) return .{ outgoing, if (from == to_id) null else incoming };
+    return .{ if (traversal == .out) outgoing else incoming, null };
 }
 
 /// Binds the matched edge (if the pattern names it), checks its predicates and

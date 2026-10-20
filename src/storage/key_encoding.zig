@@ -6,8 +6,9 @@
 //!
 //! Key layout (all integers big-endian, fixed width):
 //!
-//! - node record:            `n | node_id` -> the node's labels and properties
-//!                           (see node_record.zig)
+//! Node records (a node's labels and properties, see node_record.zig) are
+//! not here: they live in a table of their own, keyed by the id as an
+//! integer (see key_value_store.zig).
 //! - edge (per direction):   `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`
 //!
 //! `node_id` is a fixed-width u64, so lexicographic byte order equals numeric
@@ -42,7 +43,6 @@ pub const EdgeKey = struct {
     neighbour: NodeId,
 };
 
-pub const node_marker: u8 = 'n';
 pub const edge_marker: u8 = 'e';
 pub const label_marker: u8 = 'l';
 pub const index_marker: u8 = 'p';
@@ -68,12 +68,6 @@ pub fn appendNodeId(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId) 
 pub fn readNodeId(bytes: []const u8) NodeId {
     std.debug.assert(bytes.len == node_id_length);
     return std.mem.readInt(NodeId, @ptrCast(bytes.ptr), .big);
-}
-
-/// Appends the key for a node existence marker: `n | node_id`.
-pub fn appendNodeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId) !void {
-    try list.append(allocator, node_marker);
-    try appendNodeId(list, allocator, id);
 }
 
 /// Appends the key for a label-index entry: `l | label | 0x00 | node_id`.

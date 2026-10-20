@@ -32,12 +32,18 @@ pub const MDB_RDONLY: c_uint = 0x20000;
 /// can hold several concurrent readers (needed for nested scans). Each read
 /// txn then owns a reader-table slot until it is aborted.
 pub const MDB_NOTLS: c_uint = 0x200000;
+pub const MDB_NOSYNC: c_uint = 0x10000;
+pub const MDB_NOMETASYNC: c_uint = 0x40000;
+/// mdb_dbi_open flags.
+pub const MDB_INTEGERKEY: c_uint = 0x08;
+pub const MDB_CREATE: c_uint = 0x40000;
 /// Returned by mdb_get / mdb_del / mdb_cursor_get when a key is absent.
 pub const MDB_NOTFOUND: c_int = -30798;
 
 // --- Cursor operations (MDB_cursor_op enum values, counted from MDB_FIRST) ---
 
 /// Position at next data item.
+pub const MDB_FIRST: c_int = 0;
 pub const MDB_NEXT: c_int = 8;
 /// Position at first key greater than or equal to the specified key.
 pub const MDB_SET_KEY: c_int = 16;
@@ -47,6 +53,7 @@ pub const MDB_SET_RANGE: c_int = 17;
 
 pub extern "c" fn mdb_env_create(env: *?*MDB_env) c_int;
 pub extern "c" fn mdb_env_set_mapsize(env: *MDB_env, size: usize) c_int;
+pub extern "c" fn mdb_env_set_maxdbs(env: *MDB_env, dbs: MDB_dbi) c_int;
 pub extern "c" fn mdb_env_open(env: *MDB_env, path: [*:0]const u8, flags: c_uint, mode: c_uint) c_int;
 pub extern "c" fn mdb_env_close(env: *MDB_env) void;
 
@@ -70,4 +77,5 @@ pub extern "c" fn mdb_del(txn: *MDB_txn, dbi: MDB_dbi, key: *MDB_val, data: ?*MD
 
 pub extern "c" fn mdb_cursor_open(txn: *MDB_txn, dbi: MDB_dbi, cursor: *?*MDB_cursor) c_int;
 pub extern "c" fn mdb_cursor_close(cursor: *MDB_cursor) void;
+pub extern "c" fn mdb_env_sync(env: *MDB_env, force: c_int) c_int;
 pub extern "c" fn mdb_cursor_get(cursor: *MDB_cursor, key: *MDB_val, data: *MDB_val, op: c_int) c_int;

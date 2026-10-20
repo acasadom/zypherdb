@@ -3,6 +3,7 @@
 //!
 //!     zig build bench -Doptimize=ReleaseFast -- [--people N] [--runs N] [--dir PATH]
 //!                                               [--only TEXT] [--reuse]
+//!                                               [--durability full|relaxed|deferred]
 //!
 //! The graph (deterministic, from a fixed seed), for `--people` P (default
 //! 100,000):
@@ -32,8 +33,10 @@ const Config = struct {
     dir: []const u8 = ".bench-data",
     /// Run only the queries whose name contains this text.
     only: []const u8 = "",
-    /// Reuse the graph already in `dir` instead of loading it again.
+    /// Reuse the graph already in `dir` instead of loading it again (to
+    /// profile one query: the write queries of earlier runs stay in it).
     reuse: bool = false,
+    durability: KeyValueStore.Durability = .full,
 };
 
 const Counts = struct {
@@ -85,11 +88,11 @@ pub fn main(init: std.process.Init) !void {
     if (!config.reuse) std.Io.Dir.cwd().deleteTree(io, config.dir) catch {};
     try std.Io.Dir.cwd().createDirPath(io, config.dir);
     const allocator = std.heap.smp_allocator;
-    var store = try KeyValueStore.open(allocator, config.dir);
+    var store = try KeyValueStore.openWithOptions(allocator, config.dir, .{ .durability = config.durability });
     defer store.deinit();
     var graph = Graph.init(&store, allocator);
 
-    try out.print("acmedb access-control benchmark ({s} build)\n", .{@tagName(@import("builtin").mode)});
+    try out.print("acmedb access-control benchmark ({s} build, {s} durability)\n", .{ @tagName(@import("builtin").mode), @tagName(config.durability) });
     try out.print("graph: {d} people and cards, {d} groups, {d} zones, {d} doors\n\n", .{ counts.people, counts.groups, counts.zones, counts.doors });
     try out.flush();
 
@@ -135,6 +138,8 @@ fn parseArguments(args: []const []const u8) !Config {
             config.dir = args[i];
         } else if (std.mem.eql(u8, name, "--only")) {
             config.only = args[i];
+        } else if (std.mem.eql(u8, name, "--durability")) {
+            config.durability = std.meta.stringToEnum(KeyValueStore.Durability, args[i]) orelse return error.UnknownDurability;
         } else return error.UnknownArgument;
     }
     return config;
