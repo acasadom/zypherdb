@@ -671,7 +671,6 @@ clauses/return/Return6.feature: [8] Handle aggregation on functions
 clauses/return/Return6.feature: [9] Aggregates with arithmetics
 clauses/return/Return7.feature: [2] Fail when using RETURN * without variables in scope
 clauses/return/Return8.feature: [1] Return aggregation after With filtering
-clauses/set/Set1.feature: [10] Failing when setting a list of maps as a property
 clauses/set/Set1.feature: [11] Set multiple node properties
 clauses/set/Set1.feature: [1] Set a property
 clauses/set/Set1.feature: [2] Set a property to an expression

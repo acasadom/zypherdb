@@ -122,8 +122,23 @@ The runtime values are `int` (64-bit), `float` (64-bit IEEE 754), `str`, `boolea
 relationships (`RETURN n`), paths, and the temporal types (below). Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
 `ELSE`; they propagate: a comparison or string predicate with a null operand is null, a null
 `WHERE` filters the row out, and aggregations skip nulls. Properties stored in the graph are
-`int`, `float`, `str`, `boolean`, temporal values, and lists of one of those types (`[1, 2.5]`,
-`['a', 'b']`; not mixed lists or maps); setting a property to `null` removes it.
+`int`, `float`, `str`, `boolean`, temporal values, lists of one of those types (`[1, 2.5]`,
+`['a', 'b']`; not mixed lists), and maps; setting a property to `null` removes it.
+
+**Documents (an acmedb extension).** openCypher does not store maps as properties; acmedb does,
+so a property can hold a JSON-like document: nested maps, lists of any elements, and nulls.
+Fields are read with the usual operators, and filter like any other value:
+
+```text
+CREATE (:Card {id: 1, holder: {name: 'Ana', address: {city: 'Madrid'}, phones: ['600', null]}})
+MATCH (c:Card) WHERE c.holder.address.city = 'Madrid' RETURN c.holder.name
+MATCH (c:Card {holder: {name: 'Ana', address: {city: 'Madrid'}, phones: ['600', null]}}) RETURN c
+```
+
+A whole document is indexed (an equality lookup on it is an index seek); a filter on a field
+inside it reads the property of each candidate node. Graph entities (nodes, relationships, paths)
+cannot be stored inside a document. The TCK scenarios this changes are listed in
+`tests/tck/deviations.txt`.
 
 ## Temporal values
 

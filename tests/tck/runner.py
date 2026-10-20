@@ -35,6 +35,16 @@ REPO = HERE.parent.parent
 FEATURES = HERE / "features"
 GRAPHS = HERE / "graphs"
 BASELINE = HERE / "baseline.txt"
+DEVIATIONS = HERE / "deviations.txt"
+
+
+def load_deviations() -> set[str]:
+    """Scenarios acmedb deliberately answers differently (its extensions to
+    openCypher): not run, and reported apart. One scenario id per line;
+    `#` lines explain them."""
+    if not DEVIATIONS.exists():
+        return set()
+    return {line for line in DEVIATIONS.read_text().splitlines() if line and not line.startswith("#")}
 
 sys.path.insert(0, str(HERE))
 import cypher_values  # noqa: E402
@@ -368,9 +378,14 @@ def main():
         _worker(json.loads(sys.stdin.read()))
         return
 
-    scenarios = [s for s in load_scenarios(FEATURES) if "@ignore" not in s.tags and args.filter in s.id]
+    deviations = load_deviations()
+    selected = [s for s in load_scenarios(FEATURES) if "@ignore" not in s.tags and args.filter in s.id]
+    scenarios = [s for s in selected if s.id not in deviations]
     results = run_all(scenarios, args.jobs, args.timeout)
     summary = summarize(scenarios, results)
+    excluded = len(selected) - len(scenarios)
+    if excluded:
+        summary += f"\n{excluded} scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.\n"
     print(summary)
     if args.verbose:
         for scenario in scenarios:
@@ -385,7 +400,7 @@ def main():
         BASELINE.write_text("\n".join(passing) + "\n")
         print(f"baseline: {len(passing)} passing scenarios recorded in {BASELINE.relative_to(REPO)}")
     if args.check_baseline:
-        baseline = {line for line in BASELINE.read_text().splitlines() if line and args.filter in line}
+        baseline = {line for line in BASELINE.read_text().splitlines() if line and args.filter in line and line not in deviations}
         regressed = sorted(baseline - set(passing))
         newly_passing = sorted(set(passing) - baseline)
         for scenario_id in regressed:

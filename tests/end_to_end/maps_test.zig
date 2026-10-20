@@ -79,8 +79,9 @@ test "properties of entities as maps" {
         string("D1"),
         int(2),
     }});
-    // A map is not a storable property value.
-    try expectQueryError(&ast, &g, "MATCH (d:Door) SET d.meta = {a: 1}", error.UnsupportedPropertyType);
+    // A map holding an entity is not a storable property value (a map of
+    // plain values is: see writing_test.zig).
+    try expectQueryError(&ast, &g, "MATCH (d:Door) SET d.meta = {door: d}", error.UnsupportedPropertyType);
 }
 
 test "literal operands of the wrong type are compile-time errors" {

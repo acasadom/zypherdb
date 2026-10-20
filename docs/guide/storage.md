@@ -70,9 +70,12 @@ big-endian:
 | `0x09` | date-time | UTC seconds, `i64`; nanoseconds, `u32`; offset, `i32`; zone name bytes |
 | `0x0a` | duration | months, days, seconds, `i64`; nanoseconds, `u32` |
 | `0x0b` | list | count, `u32`; per element its length, `u32`, and its encoding |
+| `0x0c` | map | count, `u32`; per entry the key and the value, each as a list element |
+| `0x0d` | null | nothing (only inside a map) |
 
 A list is stored only when its elements share one storable type (integers and floats count as
-one). Nulls and maps are produced during evaluation but are **never stored** as properties.
+one). A map — a document, an acmedb extension — holds any of these values, nested maps, lists of
+any elements, and nulls. A null on its own is never stored: setting a property to null removes it.
 
 Index keys use the same encoding except that variable-length parts (strings, zone names) end in
 `0x00`, so a lookup prefix for `"X"` can't also match `"XY"`, and list elements carry no length.

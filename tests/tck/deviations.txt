@@ -1,0 +1,5 @@
+# Scenarios acmedb answers differently on purpose. The runner skips them.
+#
+# Map properties (documents) are an acmedb extension: openCypher refuses a
+# map, or a list of maps, as a property value; acmedb stores it.
+clauses/set/Set1.feature: [10] Failing when setting a list of maps as a property

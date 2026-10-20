@@ -272,14 +272,39 @@ test "boolean and list properties are stored, null removes, mixed lists are refu
         &.{.{ .int = 0 }},
     });
 
-    // A list of one type is stored (and indexed); a mixed list or a map is
-    // refused with an error instead of aborting the process.
+    // A list of one type is stored (and indexed); a mixed list is refused
+    // with an error instead of aborting the process.
     try expectQuery(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = [1, 2.5], c.names = ['a', 'b']", &.{});
     try expectQuery(&ast, &g, "MATCH (c:Card {tags: [1, 2.5]}) RETURN c.tags, c.names", &.{
         &.{ .{ .list = &.{ .{ .int = 1 }, .{ .float = 2.5 } } }, .{ .list = &.{ .{ .string = "a" }, .{ .string = "b" } } } },
     });
     try expectQueryError(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = [1, 'a']", error.UnsupportedPropertyType);
-    try expectQueryError(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = {a: 1}", error.UnsupportedPropertyType);
+}
+
+test "map properties hold documents and filter by their fields (an extension)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g,
+        \\CREATE (:Card {id: 1, holder: {name: 'Ana', address: {city: 'Madrid'}, phones: ['600', null, 7]}}),
+        \\       (:Card {id: 2, holder: {name: 'Bo', address: {city: 'Lugo'}}})
+    , &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card) WHERE c.holder.address.city = 'Madrid' RETURN c.id, c.holder.phones[2], c.holder['name']", &.{
+        &.{ .{ .int = 1 }, .{ .int = 7 }, .{ .string = "Ana" } },
+    });
+    // A whole document is found by equality, whatever order its keys are written in.
+    try expectQuery(&ast, &g, "MATCH (c:Card {holder: {address: {city: 'Lugo'}, name: 'Bo'}}) RETURN c.id", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "MATCH (c:Card {id: 2}) SET c.holder = {name: c.holder.name, badge: 42} RETURN c.holder", &.{
+        &.{.{ .map = &.{ .{ .key = "badge", .value = .{ .int = 42 } }, .{ .key = "name", .value = .{ .string = "Bo" } } } }},
+    });
+    // Graph entities cannot be stored inside a document.
+    try expectQueryError(&ast, &g, "MATCH (c:Card {id: 1}) SET c.holder = {card: c}", error.UnsupportedPropertyType);
 }
 
 test "null property values: MATCH finds nothing, MERGE is refused" {

@@ -1,12 +1,12 @@
 # openCypher TCK results
 
-TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
+TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 
 - **Positive** scenarios expect a result: the headline measure of what works.
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 2893/3202 (90.3%)** · Negative: 660/695 (95.0%)
+**Positive: 2893/3202 (90.3%)** · Negative: 659/694 (95.0%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
@@ -20,7 +20,7 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | clauses/return | 44/52 (84.6%) | 9/11 (81.8%) | 0 | 0 |
 | clauses/return-orderby | 30/31 (96.8%) | 3/4 (75.0%) | 0 | 0 |
 | clauses/return-skip-limit | 15/15 (100.0%) | 16/16 (100.0%) | 0 | 0 |
-| clauses/set | 48/51 (94.1%) | 1/2 (50.0%) | 0 | 0 |
+| clauses/set | 48/51 (94.1%) | 0/1 (0.0%) | 0 | 0 |
 | clauses/union | 8/8 (100.0%) | 4/4 (100.0%) | 0 | 0 |
 | clauses/unwind | 11/14 (78.6%) | – | 0 | 0 |
 | clauses/with | 18/25 (72.0%) | 3/4 (75.0%) | 0 | 0 |
@@ -85,3 +85,5 @@ TCK 2024.3, 3897 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 1 | fail: unexpected error: expected ')', found n |
 | 1 | fail: unexpected error: expected '}', found WITH |
 | 1 | fail: unexpected error: expected ')', found r |
+
+1 scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.

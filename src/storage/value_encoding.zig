@@ -16,9 +16,13 @@
 //! | `0x09` | date-time       | seconds, i64; nanoseconds, u32; offset, i32; zone bytes |
 //! | `0x0a` | duration        | months, days, seconds, i64; nanoseconds, u32    |
 //! | `0x0b` | list            | count, u32; per element its length, u32, and its encoding |
+//! | `0x0c` | map             | count, u32; per entry its key and its value, each as a list element |
+//! | `0x0d` | null            | nothing (only inside a map)                     |
 //!
 //! A list is stored only when its elements are all of one storable,
-//! non-list type (integers and floats count as one: numbers).
+//! non-list type (integers and floats count as one: numbers), as openCypher
+//! requires. A map (a document, an acmedb extension to openCypher) holds any
+//! JSON-like value: nested maps, lists of any elements, and nulls.
 //!
 //! The index encoding is the same except that variable-length parts end in
 //! `0x00` (strings, zone names; so a lookup prefix for "X" cannot also match
@@ -31,6 +35,7 @@ const Allocator = std.mem.Allocator;
 
 const Value = @import("../value.zig").Value;
 const exactInteger = @import("../value.zig").exactInteger;
+const MapEntry = @import("../value.zig").MapEntry;
 
 pub const Tag = enum(u8) {
     int = 0x01,
@@ -44,7 +49,9 @@ pub const Tag = enum(u8) {
     date_time = 0x09,
     duration = 0x0a,
     list = 0x0b,
-    /// Index-lookup tag for a value that is never stored (`null`, a map):
+    map = 0x0c,
+    null = 0x0d,
+    /// Index-lookup tag for a value that is never stored (`null`, a node):
     /// no index entry carries it, so a lookup by such a value finds nothing.
     never_stored = 0xff,
 };
@@ -65,7 +72,22 @@ pub fn isStorable(value: Value) bool {
 fn isStorableElement(value: Value) bool {
     return switch (value) {
         .int, .float, .string, .boolean, .date, .local_time, .time, .local_date_time, .date_time, .duration => true,
-        .null, .list, .node, .relationship, .map, .path => false,
+        .map => |entries| for (entries) |entry| {
+            if (!isDocumentValue(entry.value)) break false;
+        } else true,
+        .null, .list, .node, .relationship, .path => false,
+    };
+}
+
+/// A value inside a map property: anything storable, a null, or a list of
+/// any of them.
+fn isDocumentValue(value: Value) bool {
+    return switch (value) {
+        .null => true,
+        .list => |items| for (items) |item| {
+            if (!isDocumentValue(item)) break false;
+        } else true,
+        else => isStorableElement(value),
     };
 }
 
@@ -97,6 +119,20 @@ pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value)
 pub fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) Allocator.Error!void {
     if (!isStorable(value)) return list.append(allocator, @backingInt(Tag.never_stored));
     try encode(list, allocator, value, .index);
+}
+
+/// A list element or map entry: stored with its length before it (so it can
+/// be skipped while decoding), indexed as is.
+fn encodeElement(list: *std.ArrayList(u8), allocator: Allocator, value: Value, form: Form) Allocator.Error!void {
+    switch (form) {
+        .index => try encode(list, allocator, value, .index),
+        .stored => {
+            const length_at = list.items.len;
+            try appendInt(list, allocator, u32, 0);
+            try encode(list, allocator, value, .stored);
+            std.mem.writeInt(u32, list.items[length_at..][0..4], @intCast(list.items.len - length_at - 4), .big);
+        },
+    }
 }
 
 fn encode(list: *std.ArrayList(u8), allocator: Allocator, value: Value, form: Form) Allocator.Error!void {
@@ -152,18 +188,27 @@ fn encode(list: *std.ArrayList(u8), allocator: Allocator, value: Value, form: Fo
         .list => |items| {
             try list.append(allocator, @backingInt(Tag.list));
             try appendInt(list, allocator, u32, @intCast(items.len));
-            for (items) |item| switch (form) {
-                .index => try encode(list, allocator, item, .index),
-                .stored => {
-                    const length_at = list.items.len;
-                    try appendInt(list, allocator, u32, 0);
-                    try encode(list, allocator, item, .stored);
-                    std.mem.writeInt(u32, list.items[length_at..][0..4], @intCast(list.items.len - length_at - 4), .big);
-                },
-            };
+            for (items) |item| try encodeElement(list, allocator, item, form);
         },
-        .null, .node, .relationship, .map, .path => unreachable, // callers check `isStorable` first
+        // Entries are sorted by key (see `mapOf`), so equal maps encode alike.
+        .map => |entries| {
+            try list.append(allocator, @backingInt(Tag.map));
+            try appendInt(list, allocator, u32, @intCast(entries.len));
+            for (entries) |entry| {
+                try encodeElement(list, allocator, .{ .string = entry.key }, form);
+                try encodeElement(list, allocator, entry.value, form);
+            }
+        },
+        .null => try list.append(allocator, @backingInt(Tag.null)), // only inside a map
+        .node, .relationship, .path => unreachable, // callers check `isStorable` first
     }
+}
+
+fn decodeElement(payload: []const u8, position: *usize, allocator: Allocator) Allocator.Error!Value {
+    const length = readInt(u32, payload[position.*..]);
+    const start = position.* + 4;
+    position.* = start + length;
+    return decodeValue(payload[start..position.*], allocator);
 }
 
 /// Decodes a stored value. Strings, zone names and lists are allocated
@@ -194,13 +239,19 @@ pub fn decodeValue(raw: []const u8, allocator: Allocator) Allocator.Error!Value 
         .list => blk: {
             const items = try allocator.alloc(Value, readInt(u32, payload));
             var position: usize = 4;
-            for (items) |*item| {
-                const length = readInt(u32, payload[position..]);
-                item.* = try decodeValue(payload[position + 4 .. position + 4 + length], allocator);
-                position += 4 + length;
-            }
+            for (items) |*item| item.* = try decodeElement(payload, &position, allocator);
             break :blk .{ .list = items };
         },
+        .map => blk: {
+            const entries = try allocator.alloc(MapEntry, readInt(u32, payload));
+            var position: usize = 4;
+            for (entries) |*entry| {
+                const key = try decodeElement(payload, &position, allocator);
+                entry.* = .{ .key = key.string, .value = try decodeElement(payload, &position, allocator) };
+            }
+            break :blk .{ .map = entries };
+        },
+        .null => .{ .null = {} },
         .never_stored => unreachable, // index-only
     };
 }
@@ -221,6 +272,7 @@ test "every storable value round-trips" {
         .{ .list = &.{ .{ .string = "a" }, .{ .string = "" } } },
         .{ .list = &.{ .{ .int = 1 }, .{ .float = 1.5 } } },
         .{ .list = &.{} },
+        .{ .map = &.{ .{ .key = "address", .value = .{ .map = &.{.{ .key = "city", .value = .{ .string = "Madrid" } }} } }, .{ .key = "tags", .value = .{ .list = &.{ .{ .int = 1 }, .{ .string = "a" }, .{ .null = {} } } } } } },
     };
     for (values) |value| {
         try std.testing.expect(isStorable(value));
@@ -230,6 +282,7 @@ test "every storable value round-trips" {
     }
     try std.testing.expect(!isStorable(.{ .list = &.{ .{ .int = 1 }, .{ .string = "a" } } }));
     try std.testing.expect(!isStorable(.{ .list = &.{.{ .null = {} }} }));
+    try std.testing.expect(!isStorable(.{ .map = &.{.{ .key = "n", .value = .{ .node = 1 } }} }));
 }
 
 test "index keys are canonical for numbers and never prefixes of each other" {
