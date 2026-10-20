@@ -249,14 +249,17 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
 pub fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) ExecutionError!void {
     const detach = self.ast.data(delete_clause).delete.detach;
     for (self.ast.nodeChildren(delete_clause)) |item| {
-        const value = try expressions.evaluate(self, self.ast.nodeChildren(item)[0], bindings);
+        const expression = self.ast.nodeChildren(item)[0];
+        const value = try expressions.evaluate(self, expression, bindings);
+        // How a refusal names the node: by its variable, when it has one.
+        const name = if (self.ast.kind(expression) == .variable) self.ast.data(expression).text else "";
         switch (value) {
-            .node => |id| try deleteNode(self, id, detach),
+            .node => |id| try deleteNode(self, id, detach, name),
             .relationship => |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
             // A path: its relationships, then its nodes.
             .path => |path| {
                 for (path.relationships) |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type);
-                for (path.nodes) |id| try deleteNode(self, id, detach);
+                for (path.nodes) |id| try deleteNode(self, id, detach, "");
             },
             .null => {}, // e.g. from an OPTIONAL MATCH that found nothing
             else => {
@@ -267,11 +270,15 @@ pub fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) E
     }
 }
 
-fn deleteNode(self: *Executor, id: NodeId, detach: bool) ExecutionError!void {
+fn deleteNode(self: *Executor, id: NodeId, detach: bool, name: []const u8) ExecutionError!void {
     if (detach) return self.graph.deleteNodeDetach(id);
     self.graph.deleteNode(id) catch |err| {
         if (err == error.NodeStillConnected) {
-            self.fail(.node_still_connected, "a node to delete still has relationships (use DETACH DELETE)", .{});
+            if (name.len > 0) {
+                self.fail(.node_still_connected, "node '{s}' still has relationships (use DETACH DELETE)", .{name});
+            } else {
+                self.fail(.node_still_connected, "a node to delete still has relationships (use DETACH DELETE)", .{});
+            }
         }
         return err;
     };
