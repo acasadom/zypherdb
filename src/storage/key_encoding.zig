@@ -52,6 +52,7 @@ pub const index_marker: u8 = 'p';
 pub const edge_property_marker: u8 = 'f';
 pub const edge_index_marker: u8 = 'g';
 pub const edge_type_marker: u8 = 't';
+pub const label_count_marker: u8 = 'c';
 pub const separator: u8 = 0x00;
 pub const node_id_length: usize = @sizeOf(NodeId);
 

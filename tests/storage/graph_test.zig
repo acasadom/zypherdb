@@ -362,6 +362,38 @@ test "edge-type cardinality tracks add and delete" {
     try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
 }
 
+test "label counts track labels added, removed and deleted" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try testing.expectEqual(@as(usize, 0), try g.labelCount("Person"));
+    try g.addNode(1, "Person");
+    try g.addNode(2, "Person");
+    try g.addNode(3, "Team");
+    try testing.expectEqual(@as(usize, 2), try g.labelCount("Person"));
+    try testing.expectEqual(@as(usize, 1), try g.labelCount("Team"));
+
+    // Adding a label a node has, or removing one it lacks, changes nothing.
+    try g.addLabel(1, "Person");
+    try g.removeLabel(3, "Person");
+    try testing.expectEqual(@as(usize, 2), try g.labelCount("Person"));
+
+    try g.addLabel(3, "Person");
+    try g.removeLabel(1, "Person");
+    try testing.expectEqual(@as(usize, 2), try g.labelCount("Person"));
+
+    // Deleting a node removes it from every label it carried.
+    try g.deleteNodeDetach(3);
+    try testing.expectEqual(@as(usize, 1), try g.labelCount("Person"));
+    try testing.expectEqual(@as(usize, 0), try g.labelCount("Team"));
+    try testing.expectEqual(@as(usize, 0), try g.labelCount("Unknown"));
+}
+
 test "labelsOf, propertiesOf, edgePropertiesOf and edgesOf enumerate a node" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

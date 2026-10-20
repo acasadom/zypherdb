@@ -34,8 +34,9 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   `n.age > 60`, `STARTS WITH` and `IN` scan every node of the label. Fix: range-ordered index
   keys (integers are big-endian two's complement, so negatives sort after positives today) and
   range seeks.
-- **Cost estimates count a label's nodes by scanning them** (`labelCount`) for every MATCH
-  without a seek. Fix: per-label counters, like the edge-type counters.
+- **Each label change reads and writes the label's counter** (`c | label`, kept for the
+  planner). Creating many labeled nodes in one transaction pays one counter update per node,
+  about 2 µs. Fix: keep the transaction's counter changes in memory and write them at commit.
 - **Anchor choice is per node, greedy.** Joins of several patterns are matched in written order,
   with no reordering by selectivity.
 - **Edge keys carry the neighbour's labels as text** (about 11 bytes for one short label). Fewer

@@ -152,7 +152,10 @@ fn containsExpression(self: *Executor, haystack: Index, needle: Index) bool {
 
 /// Folds one input row into its group.
 pub fn accumulateRow(self: *Executor, grouping: *ValueGrouping, aggregation: AggregationPlan, bindings: *Bindings) ExecutionError!void {
-    const keys = try self.allocator.alloc(Value, aggregation.keys.len);
+    // The key is evaluated into a scratch buffer: most rows join a group that
+    // exists, and only a new group keeps a copy (see `statesFor`).
+    var buffer: [8]Value = undefined;
+    const keys = if (aggregation.keys.len <= buffer.len) buffer[0..aggregation.keys.len] else try self.allocator.alloc(Value, aggregation.keys.len);
     for (keys, aggregation.keys) |*key, expr| key.* = try expressions.evaluate(self, expr, bindings);
     const states = try grouping.statesFor(self.allocator, keys, aggregation.kinds);
     for (states, aggregation.aggregates) |*state, call| {
@@ -329,14 +332,18 @@ pub fn Grouping(comptime Key: type, comptime KeyContext: type) type {
         index: std.HashMapUnmanaged(Key, usize, KeyContext, std.hash_map.default_max_load_percentage) = .empty,
 
         /// The aggregation states of `key`'s group, created (one per entry of
-        /// `kinds`) the first time the key is seen. `key` must outlive `self`.
+        /// `kinds`) the first time the key is seen. A slice key (a row of
+        /// values) is copied then, so the caller may reuse its buffer.
         pub fn statesFor(self: *Self, allocator: Allocator, key: Key, kinds: []const AggregateCall) Allocator.Error![]AggregateState {
             const entry = try self.index.getOrPutContext(allocator, key, .{});
             if (!entry.found_existing) {
+                if (@typeInfo(Key) == .pointer and @typeInfo(Key).pointer.size == .slice) {
+                    entry.key_ptr.* = try allocator.dupe(@typeInfo(Key).pointer.child, key);
+                }
                 const states = try allocator.alloc(AggregateState, kinds.len);
                 for (states, kinds) |*state, call| state.* = .{ .kind = call.kind, .distinct = call.distinct };
                 entry.value_ptr.* = self.keys.items.len;
-                try self.keys.append(allocator, key);
+                try self.keys.append(allocator, entry.key_ptr.*);
                 try self.states.append(allocator, states);
             }
             return self.states.items[entry.value_ptr.*];

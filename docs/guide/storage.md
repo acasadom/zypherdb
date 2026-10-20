@@ -34,6 +34,7 @@ Two rules make that work:
 | `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
 | `g \| prop \| 0x00 \| value \| src \| dst \| 0x00 \| type` | edge-property index | `edgesByProperty` (an equality seek) |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
+| `c \| label` | label cardinality counter (absent in databases written before it: the label index is counted) | `labelCount` (anchor selection) |
 | `!` | the next node id to allocate | `allocateNodeId` |
 
 Every "index" is just more keys, maintained by the same `put`/`del` primitives. There is no

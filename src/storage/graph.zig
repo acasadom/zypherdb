@@ -108,6 +108,7 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         try self.store.put(key.items, "");
+        try self.bumpLabelCount(label, true);
         try self.refreshNeighbourLabels(id);
     }
 
@@ -123,6 +124,7 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         try self.store.del(key.items);
+        try self.bumpLabelCount(label, false);
         try self.refreshNeighbourLabels(id);
     }
 
@@ -208,6 +210,7 @@ pub const Graph = struct {
             key.clearRetainingCapacity();
             try key_encoding.appendLabelKey(&key, self.allocator, label, id);
             try self.store.del(key.items);
+            try self.bumpLabelCount(label, false);
         }
         var properties = record.properties();
         while (properties.next()) |property| {
@@ -626,16 +629,51 @@ pub const Graph = struct {
         return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
     }
 
-    /// Number of nodes carrying `label`. Counts by scanning the label index:
-    /// O(log N + nodes with the label). The planner calls it once per query
-    /// and label, so a maintained counter (like `edgeTypeCount`) would make
-    /// planning O(log N) on large labels.
+    /// Number of nodes carrying `label`, from a maintained counter: O(log N).
+    /// A database written before the counters existed has none for a label
+    /// until its next change: then the label index is counted instead.
     pub fn labelCount(self: *Graph, label: []const u8) StorageError!usize {
+        if (try self.storedLabelCount(label)) |count| return @intCast(count);
+        return self.countLabelIndex(label);
+    }
+
+    fn storedLabelCount(self: *Graph, label: []const u8) StorageError!?u64 {
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendLabelCountKey(&key, self.allocator, label);
+        const raw = (try self.store.get(key.items)) orelse return null;
+        defer self.store.allocator.free(raw);
+        if (raw.len != key_encoding.node_id_length) return null;
+        return std.mem.readInt(u64, @ptrCast(raw.ptr), .big);
+    }
+
+    /// O(log N + nodes with the label).
+    fn countLabelIndex(self: *Graph, label: []const u8) StorageError!usize {
         var iterator = try self.nodesWithLabel(label);
         defer iterator.deinit();
         var count: usize = 0;
         while (try iterator.next()) |_| count += 1;
         return count;
+    }
+
+    /// Updates `label`'s counter after a node gained (or lost) it and the
+    /// label index changed. A missing counter starts from the index's count.
+    fn bumpLabelCount(self: *Graph, label: []const u8, increment: bool) StorageError!void {
+        const count: u64 = if (try self.storedLabelCount(label)) |stored|
+            (if (increment) stored + 1 else stored -| 1)
+        else
+            try self.countLabelIndex(label);
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        try appendLabelCountKey(&key, self.allocator, label);
+        var buffer: [key_encoding.node_id_length]u8 = undefined;
+        std.mem.writeInt(u64, &buffer, count, .big);
+        try self.store.put(key.items, &buffer);
+    }
+
+    fn appendLabelCountKey(key: *std.ArrayList(u8), allocator: Allocator, label: []const u8) Allocator.Error!void {
+        try key.append(allocator, key_encoding.label_count_marker);
+        try key.appendSlice(allocator, label);
     }
 };
 
