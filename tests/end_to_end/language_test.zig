@@ -231,3 +231,32 @@ test "variables of unknown type can be matched as nodes, and named paths are nul
     try expectQuery(&ast, &g, "MATCH (s:S)-->(e) WITH collect(e) AS es UNWIND es AS x MATCH (y)-->(x) RETURN labels(y)", &.{&.{.{ .list = &.{.{ .string = "S" }} }}});
     try expectQuery(&ast, &g, "WITH null AS a OPTIONAL MATCH p = (a)-->() RETURN p, nodes(p)", &.{&.{ .null, .null }});
 }
+
+test "queries that cannot be right fail before they run" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    const invalid = [_][]const u8{
+        "MATCH (s) WHERE s.name = missing RETURN s",
+        "MATCH (a) CREATE (a)",
+        "MATCH (a) CREATE (a:New)-[:R]->()",
+        "MATCH ()-[r]->() CREATE ()-[r]->()",
+        "MATCH (a) MERGE (a)",
+        "MATCH (a), (b) MERGE (a)-[r]->(b)",
+        "MATCH (a) WHERE count(a) > 1 RETURN a",
+        "MATCH (n) WHERE (n) RETURN n",
+        "RETURN 1 AS a, 2 AS a",
+        "MATCH (a) RETURN DISTINCT a.name ORDER BY a.age",
+    };
+    for (invalid) |query| try expectQueryError(&ast, &g, query, error.InvalidExpression);
+    // Nothing was created by any of them.
+    try expectQuery(&ast, &g, "MATCH (n) RETURN count(n)", &.{&.{.{ .int = 0 }}});
+    // Still valid: the ORDER BY of a DISTINCT repeats a projected expression.
+    try expectQuery(&ast, &g, "MATCH (a) RETURN DISTINCT a.name ORDER BY a.name", &.{});
+}

@@ -85,8 +85,19 @@ const Checker = struct {
         try self.scope.names.put(self.allocator, name, kind);
     }
 
+    fn failUnknown(self: *Checker, name: []const u8) SemanticError {
+        if (self.diagnostic) |d| d.set(.unknown_variable, 0, "unknown variable '{s}'", .{name});
+        return error.InvalidExpression;
+    }
+
+    const PatternUse = enum { match, create, merge };
+
     /// Checks the patterns of one MATCH / OPTIONAL MATCH / CREATE / MERGE.
-    fn checkPatterns(self: *Checker, patterns: []const Index, reading: bool) SemanticError!void {
+    /// A written pattern can only reuse a bound node as an endpoint, as it is
+    /// (no new labels or properties), and cannot reuse a relationship.
+    fn checkPatterns(self: *Checker, patterns: []const Index, pattern_use: PatternUse) SemanticError!void {
+        const reading = pattern_use == .match;
+        if (!reading) for (patterns) |pattern| try self.checkWrittenPattern(pattern, pattern_use);
         var relationships = std.StringHashMapUnmanaged(void).empty;
         defer relationships.deinit(self.allocator);
         for (patterns) |pattern| {
@@ -113,6 +124,29 @@ const Checker = struct {
                 }
             }
         }
+    }
+
+    fn checkWrittenPattern(self: *Checker, pattern: Index, pattern_use: PatternUse) SemanticError!void {
+        const verb = if (pattern_use == .merge) "MERGE" else "CREATE";
+        const elements = self.ast.nodeChildren(pattern);
+        for (elements) |element| switch (self.ast.kind(element)) {
+            .node_pattern => {
+                const node = self.ast.data(element).node_pattern;
+                if (node.variable_name.len == 0 or self.scope.kindOf(node.variable_name) == null) continue;
+                if (elements.len == 1) return self.fail("{s} of node '{s}', which is already bound", .{ verb, node.variable_name });
+                if (node.labels.len > 0 or self.ast.nodeChildren(element).len > 0) {
+                    return self.fail("{s} cannot add labels or properties to '{s}', which is already bound", .{ verb, node.variable_name });
+                }
+            },
+            .edge_pattern => {
+                const edge = self.ast.data(element).edge_pattern;
+                if (edge.variable_name.len > 0 and self.scope.kindOf(edge.variable_name) != null) {
+                    return self.fail("{s} of relationship '{s}', which is already bound", .{ verb, edge.variable_name });
+                }
+                if (edge.edge_types.len != 1) return self.fail("{s} needs a relationship with exactly one type", .{verb});
+            },
+            else => {},
+        };
     }
 
     /// WITH replaces the scope by its projected names: a projected variable
@@ -169,6 +203,10 @@ const Checker = struct {
         const children = self.ast.nodeChildren(index);
         switch (self.ast.kind(index)) {
             .list_comprehension, .quantifier => return self.checkIteration(index),
+            .variable => {
+                const name = self.ast.data(index).text;
+                if (self.scope.kindOf(name) == null and !self.isLocal(name)) return self.failUnknown(name);
+            },
             // A pattern predicate only tests variables already bound.
             .pattern_predicate => for (self.ast.nodeChildren(children[0])) |element| {
                 const name = elementName(self.ast, element);
@@ -389,6 +427,73 @@ const Checker = struct {
         }
     }
 
+    /// A WHERE is a condition on each row: no aggregates, and not a bare
+    /// node, relationship or path (`WHERE (n)`).
+    fn checkWhere(self: *Checker, where: Index) SemanticError!void {
+        if (containsAggregate(self.ast, where)) return self.fail("an aggregate cannot be used in WHERE; aggregate in a WITH, then filter", .{});
+        if (self.ast.kind(where) == .variable) {
+            const kind = self.scope.kindOf(self.ast.data(where).text) orelse return;
+            if (kind == .node or kind == .relationship or kind == .path) return self.fail("WHERE needs a condition, not a {s}", .{@tagName(kind)});
+        }
+    }
+
+    /// The projection of a WITH or RETURN sees the variables in scope; its
+    /// WHERE and ORDER BY see its names as well, except that after DISTINCT
+    /// the ORDER BY sees only what is projected.
+    fn checkProjectionClause(self: *Checker, clause: Index, distinct: bool) SemanticError!void {
+        const children = self.ast.nodeChildren(clause);
+        const projection = children[0];
+        try self.checkExpressions(projection);
+        try self.checkColumnNames(projection);
+
+        var shadowed = std.ArrayList(struct { name: []const u8, kind: ?Kind }).empty;
+        defer shadowed.deinit(self.allocator);
+        for (self.ast.nodeChildren(projection)) |item| {
+            const alias = self.ast.data(item).text;
+            if (alias.len == 0) continue;
+            try shadowed.append(self.allocator, .{ .name = alias, .kind = self.scope.kindOf(alias) });
+            try self.scope.names.put(self.allocator, alias, .any);
+        }
+        defer {
+            var i = shadowed.items.len;
+            while (i > 0) {
+                i -= 1;
+                const entry = shadowed.items[i];
+                if (entry.kind) |kind| self.scope.names.putAssumeCapacity(entry.name, kind) else _ = self.scope.names.remove(entry.name);
+            }
+        }
+        for (children[1..]) |child| {
+            if (distinct and !self.hasStar(projection) and self.ast.kind(child) == .order_by) try self.checkProjectedOnly(projection, child);
+            try self.checkExpressions(child);
+        }
+    }
+
+    /// Every variable in `index` is a projected name, or is inside a part
+    /// that repeats a projected expression.
+    fn checkProjectedOnly(self: *Checker, projection: Index, index: Index) SemanticError!void {
+        for (self.ast.nodeChildren(projection)) |item| {
+            if (self.ast.sameExpression(self.ast.nodeChildren(item)[0], index)) return;
+        }
+        if (self.ast.kind(index) == .variable) {
+            const name = self.ast.data(index).text;
+            if (!self.isLocal(name) and !projectsName(self.ast, projection, name)) return self.failUnknown(name);
+            return;
+        }
+        for (self.ast.nodeChildren(index)) |child| try self.checkProjectedOnly(projection, child);
+    }
+
+    /// No two columns of a projection have the same name.
+    fn checkColumnNames(self: *Checker, projection: Index) SemanticError!void {
+        const items = self.ast.nodeChildren(projection);
+        for (items, 0..) |item, i| {
+            const name = columnName(self.ast, item) orelse continue;
+            for (items[0..i]) |earlier| {
+                const other = columnName(self.ast, earlier) orelse continue;
+                if (std.mem.eql(u8, name, other)) return self.fail("two columns are named '{s}'", .{name});
+            }
+        }
+    }
+
     /// DELETE takes a node, a relationship or a path; an expression that can
     /// only be something else fails here (DELETE of a label is REMOVE's job).
     fn checkDeleted(self: *Checker, expression: Index) SemanticError!void {
@@ -415,9 +520,12 @@ const Checker = struct {
                     try self.checkExpressions(clause);
                     continue;
                 },
-                .match_clause, .optional_match_clause => try self.checkPatterns(children[0 .. children.len - 1], true),
-                .create_clause => try self.checkPatterns(children, false),
-                .merge_clause => try self.checkPatterns(children[0..1], false),
+                .match_clause, .optional_match_clause => {
+                    try self.checkPatterns(children[0 .. children.len - 1], .match);
+                    try self.checkWhere(children[children.len - 1]);
+                },
+                .create_clause => try self.checkPatterns(children, .create),
+                .merge_clause => try self.checkPatterns(children[0..1], .merge),
                 .unwind_clause => {
                     try self.checkExpressions(clause);
                     try self.use(self.ast.data(clause).unwind.variable_name, .any);
@@ -425,11 +533,16 @@ const Checker = struct {
                 },
                 .with_clause => {
                     try self.recordStar(children[0], false);
-                    try self.checkExpressions(clause);
+                    try self.checkWhere(children[children.len - 1]);
+                    try self.checkProjectionClause(clause, self.ast.data(clause).with_.distinct);
                     try self.projectScope(children[0]);
                     continue;
                 },
-                .return_clause => try self.recordStar(children[0], true),
+                .return_clause => {
+                    try self.recordStar(children[0], true);
+                    try self.checkProjectionClause(clause, self.ast.data(clause).return_.distinct);
+                    continue;
+                },
                 else => {},
             }
             try self.checkExpressions(clause);
@@ -502,5 +615,21 @@ fn expandStar(ast: *Ast, query: Index, star: Star) Allocator.Error!void {
 fn containsAggregate(ast: *const Ast, expression: Index) bool {
     if (ast.kind(expression) == .aggregate) return true;
     for (ast.nodeChildren(expression)) |child| if (containsAggregate(ast, child)) return true;
+    return false;
+}
+
+/// The name of a projection item's column: its alias, or the variable it
+/// projects (null for an expression without an alias).
+fn columnName(ast: *const Ast, item: Index) ?[]const u8 {
+    const alias = ast.data(item).text;
+    if (alias.len > 0) return alias;
+    const expression = ast.nodeChildren(item)[0];
+    return if (ast.kind(expression) == .variable) ast.data(expression).text else null;
+}
+
+fn projectsName(ast: *const Ast, projection: Index, name: []const u8) bool {
+    for (ast.nodeChildren(projection)) |item| {
+        if (columnName(ast, item)) |column| if (std.mem.eql(u8, column, name)) return true;
+    }
     return false;
 }
