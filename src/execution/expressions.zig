@@ -135,6 +135,25 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
                 return error.UnknownVariable;
             };
         },
+        .label_predicate => blk: {
+            const subject = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
+            const labels = self.ast.data(expr).labels;
+            break :blk switch (subject) {
+                .null => .null,
+                .node => |id| has: {
+                    for (labels) |label| if (!try self.graph.hasLabel(id, label)) break :has .{ .boolean = false };
+                    break :has .{ .boolean = true };
+                },
+                .relationship => |relationship| has: {
+                    for (labels) |label| if (!std.mem.eql(u8, relationship.edge_type, label)) break :has .{ .boolean = false };
+                    break :has .{ .boolean = true };
+                },
+                else => {
+                    self.fail(.type_mismatch, "a label predicate (x:Label) needs a node or a relationship", .{});
+                    return error.TypeMismatch;
+                },
+            };
+        },
         .property_access => blk: {
             const object = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
             break :blk try propertyOf(self, object, self.ast.data(expr).text);

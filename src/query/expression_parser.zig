@@ -297,6 +297,15 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
                 try self.expect(.right_bracket);
                 expr = try self.ast.addNode(.subscript, .{ .none = {} }, &.{ expr, from });
             }
+        } else if (self.at(.colon) and self.peekAhead(1).kind == .identifier) {
+            // `n:Label:Other`: a label predicate.
+            var labels = std.ArrayList([]const u8).empty;
+            defer labels.deinit(self.ast.allocator);
+            while (self.at(.colon) and self.peekAhead(1).kind == .identifier) {
+                _ = self.advance();
+                try labels.append(self.ast.allocator, try self.internIdentifier());
+            }
+            expr = try self.ast.addNode(.label_predicate, .{ .labels = try self.ast.internSlice(labels.items) }, &.{expr});
         } else return expr;
     }
 }

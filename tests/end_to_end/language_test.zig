@@ -12,6 +12,7 @@ const Value = acmedb.Value;
 const support = @import("../support.zig");
 const openStore = support.openStore;
 const expectQuery = support.expectQuery;
+const expectQueryError = support.expectQueryError;
 
 fn int(n: i64) Value {
     return .{ .int = n };
@@ -127,4 +128,28 @@ test "a WITH's WHERE also sees the variables from before it" {
         \\WITH letters[i] AS letter WHERE i > 0
         \\RETURN letter
     , &.{ &.{string("b")}, &.{string("c")} });
+}
+
+test "label predicates are expressions: nodes, relationships, null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Person:Admin {n: 1})-[:KNOWS]->(:Person {n: 2})", &.{});
+    try expectQuery(&ast, &g, "MATCH (p) WHERE p:Admin RETURN p.n", &.{&.{.{ .int = 1 }}});
+    try expectQuery(&ast, &g, "MATCH (p) WHERE NOT p:Admin RETURN p.n", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "MATCH (p) RETURN p.n, p:Person:Admin ORDER BY p.n", &.{
+        &.{ .{ .int = 1 }, .{ .boolean = true } },
+        &.{ .{ .int = 2 }, .{ .boolean = false } },
+    });
+    try expectQuery(&ast, &g, "MATCH ()-[r]->() RETURN r:KNOWS, r:OTHER", &.{&.{ .{ .boolean = true }, .{ .boolean = false } }});
+    try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Nothing) RETURN x:Person", &.{&.{.null}});
+    // A map literal's keys are not label predicates.
+    try expectQuery(&ast, &g, "MATCH (p {n: 2}) RETURN {admin: p:Admin}", &.{&.{.{ .map = &.{.{ .key = "admin", .value = .{ .boolean = false } }} }}});
+    try expectQueryError(&ast, &g, "RETURN 1:Person", error.TypeMismatch);
 }

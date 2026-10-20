@@ -166,6 +166,9 @@ pub const NodeKind = enum {
     order_item,
     limit,
     skip,
+    /// `x:A:B`: true if node `x` has every label (relationship `x`: its type is
+    /// each); data.labels; children [x].
+    label_predicate,
     /// `CALL proc(args) [YIELD ...] [WHERE ...]`: data.call; children are the
     /// arguments, then the `yield_item`s, then the WHERE (a `true` literal
     /// when there is none).
@@ -218,6 +221,7 @@ pub const Data = union(enum) {
         if_not_exists: bool,
     },
     drop_index: struct { name: []const u8, if_exists: bool },
+    labels: []const []const u8,
 };
 
 pub const QuantifierKind = enum { any, all, none, single };
