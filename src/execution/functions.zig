@@ -16,6 +16,7 @@ const Ast = @import("../query/ast.zig").Ast;
 const Index = @import("../query/ast.zig").Index;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const Value = @import("../value.zig").Value;
+const unicode = @import("../text/unicode.zig");
 const MapEntry = @import("../value.zig").MapEntry;
 const formatFloat = @import("../value.zig").formatFloat;
 
@@ -496,16 +497,16 @@ fn stringArgument(self: *Executor, value: Value, comptime function: []const u8) 
     };
 }
 
-/// Lower-cases ASCII letters (other characters are kept as they are).
+/// Lower case, with Unicode's full case mappings ("ÁRBOL" is "árbol").
 fn toLower(self: *Executor, arguments: []const Value) ExecutionError!Value {
     const s = try stringArgument(self, arguments[0], "toLower") orelse return .{ .null = {} };
-    return .{ .string = try std.ascii.allocLowerString(self.allocator, s) };
+    return .{ .string = try unicode.changeCase(self.allocator, s, .lower) };
 }
 
-/// Upper-cases ASCII letters (other characters are kept as they are).
+/// Upper case, with Unicode's full case mappings ("straße" is "STRASSE").
 fn toUpper(self: *Executor, arguments: []const Value) ExecutionError!Value {
     const s = try stringArgument(self, arguments[0], "toUpper") orelse return .{ .null = {} };
-    return .{ .string = try std.ascii.allocUpperString(self.allocator, s) };
+    return .{ .string = try unicode.changeCase(self.allocator, s, .upper) };
 }
 
 const whitespace = " \t\r\n";

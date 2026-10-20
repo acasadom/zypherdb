@@ -148,7 +148,7 @@ before the query runs.
 | Group | Functions |
 | --- | --- |
 | Lists | `size(list)`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])`, `keys(map or entity)` |
-| Strings | `size(text)` (counts code points), `toLower`, `toUpper` (ASCII letters only), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
+| Strings | `size(text)` (counts code points), `toLower`, `toUpper` (full Unicode case mappings: `toUpper('straße')` is `'STRASSE'`), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
 | Conversion | `toString`, `toInteger` (truncates a float; `null` for a string that is not a number), `toFloat`, `toBoolean` |
 | Numbers | `abs`, `sign`, `round` (a float; halves round up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
 | Null | `coalesce(x, …)` returns the first argument that is not `null` |
