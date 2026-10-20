@@ -134,3 +134,22 @@ test "WITH without aggregates keeps every row" {
         &.{.{ .int = 2 }},
     });
 }
+
+test "percentileDisc and percentileCont, as Neo4j computes them" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "UNWIND [10, 20, 30, 40, null] AS x RETURN percentileDisc(x, 0.5), percentileCont(x, 0.5), percentileDisc(x, 0), percentileCont(x, 1)", &.{
+        &.{ .{ .int = 20 }, .{ .float = 25 }, .{ .int = 10 }, .{ .float = 40 } },
+    });
+    try expectQuery(&ast, &g, "UNWIND [] AS x RETURN percentileCont(x, 0.5)", &.{&.{.null}});
+    try expectQueryError(&ast, &g, "UNWIND [1] AS x RETURN percentileDisc(x, 1.5)", error.InvalidExpression);
+    // A slice bound that is null makes the slice null; a bound left out does not.
+    try expectQuery(&ast, &g, "RETURN [1, 2, 3][null..2], [1, 2, 3][1..]", &.{&.{ .null, .{ .list = &.{ .{ .int = 2 }, .{ .int = 3 } } } }});
+}

@@ -135,12 +135,53 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
                 return error.UnknownVariable;
             };
         },
+        .label_predicate => blk: {
+            const subject = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
+            const labels = self.ast.data(expr).labels;
+            break :blk switch (subject) {
+                .null => .null,
+                .node => |id| has: {
+                    for (labels) |label| if (!try self.graph.hasLabel(id, label)) break :has .{ .boolean = false };
+                    break :has .{ .boolean = true };
+                },
+                .relationship => |relationship| has: {
+                    for (labels) |label| if (!std.mem.eql(u8, relationship.edge_type, label)) break :has .{ .boolean = false };
+                    break :has .{ .boolean = true };
+                },
+                else => {
+                    self.fail(.type_mismatch, "a label predicate (x:Label) needs a node or a relationship", .{});
+                    return error.TypeMismatch;
+                },
+            };
+        },
         .property_access => blk: {
             const object = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
             break :blk try propertyOf(self, object, self.ast.data(expr).text);
         },
         .list_comprehension => listComprehension(self, expr, bindings),
         .quantifier => quantifier(self, expr, bindings),
+        .map_projection => blk: {
+            const children = self.ast.nodeChildren(expr);
+            const subject = try evaluate(self, children[0], bindings);
+            if (subject == .null) break :blk .null;
+            if (subject != .node and subject != .relationship and subject != .map) {
+                self.fail(.type_mismatch, "a map projection needs a node, a relationship or a map", .{});
+                return error.TypeMismatch;
+            }
+            var entries = std.ArrayList(MapEntry).empty;
+            for (children[1..]) |item| switch (self.ast.kind(item)) {
+                .map_projection_all => {
+                    const all = if (subject == .map) subject else try functions.propertiesOf(self, subject);
+                    try entries.appendSlice(self.allocator, all.map);
+                },
+                .map_projection_property => {
+                    const key = self.ast.data(item).text;
+                    try entries.append(self.allocator, .{ .key = key, .value = try propertyOf(self, subject, key) });
+                },
+                else => try entries.append(self.allocator, .{ .key = self.ast.data(item).text, .value = try evaluate(self, self.ast.nodeChildren(item)[0], bindings) }),
+            };
+            break :blk mapOf(entries.items);
+        },
         .map_literal => blk: {
             const property_nodes = self.ast.nodeChildren(expr);
             const entries = try self.allocator.alloc(MapEntry, property_nodes.len);
@@ -155,7 +196,14 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
         },
         .slice => blk: {
             const children = self.ast.nodeChildren(expr);
-            break :blk try slice(self, try evaluate(self, children[0], bindings), try evaluate(self, children[1], bindings), try evaluate(self, children[2], bindings));
+            const from = try evaluate(self, children[1], bindings);
+            const to = try evaluate(self, children[2], bindings);
+            // A bound written as an expression that is null makes the slice null;
+            // an end left out is unbounded.
+            const data = self.ast.data(expr);
+            const written: i64 = if (data == .int) data.int else 0;
+            if ((written & 1 != 0 and from == .null) or (written & 2 != 0 and to == .null)) break :blk .null;
+            break :blk try slice(self, try evaluate(self, children[0], bindings), from, to);
         },
         .binary_operation => blk: {
             const operator = self.ast.data(expr).binary_operator;

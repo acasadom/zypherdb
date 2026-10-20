@@ -121,6 +121,9 @@ fn runMerge(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]
 /// Binds every variable of `patterns` that `row` does not bind yet to null.
 pub fn bindNewVariablesToNull(self: *Executor, patterns: []const Index, row: *Bindings) ExecutionError!void {
     for (patterns) |pattern| {
+        // A named path (`p = (a)-->(b)`) is null as well.
+        const path_name = self.ast.data(pattern).text;
+        if (path_name.len > 0 and row.get(path_name) == null) try row.put(self.allocator, path_name, .null);
         for (self.ast.nodeChildren(pattern)) |element| {
             const name = switch (self.ast.kind(element)) {
                 .node_pattern => self.ast.data(element).node_pattern.variable_name,

@@ -179,6 +179,27 @@ def _setup(db, query: str):
         raise Failed(f"setup query failed: {type(error).__name__}: {error}")
 
 
+_PROCEDURE = re.compile(r"there exists a procedure ([\w.]+)\((.*?)\) :: \((.*?)\)\s*:$")
+
+
+def _define_procedure(db, text: str, table) -> None:
+    """`there exists a procedure test.my.proc(in :: INTEGER?) :: (out :: STRING?):`
+    with its rows as the step's table (the argument columns, then the output
+    columns)."""
+    match = _PROCEDURE.match(text)
+    if not match:
+        raise Unsupported(f"procedure signature: {text}")
+
+    def declared(part: str) -> list[tuple[str, str]]:
+        return [tuple(s.strip() for s in item.split("::")) for item in part.split(",") if item.strip()]
+
+    arguments, columns = declared(match.group(2)), declared(match.group(3))
+    # A table with no columns at all reads as one empty row.
+    rows = [row for row in (table or [])[1:] if row != [""]]
+    values = [[cypher_values.to_python(cypher_values.parse(cell)) for cell in row] for row in rows]
+    db._define_procedure(match.group(1), arguments, columns, values)
+
+
 def run_scenario(scenario: Scenario) -> dict:
     """Runs one scenario in a fresh database; returns its status and reason."""
     from acmedb import Database
@@ -206,7 +227,8 @@ def run_scenario(scenario: Scenario) -> dict:
                         parameters = {name: cypher_values.to_python(cypher_values.parse(value)) for name, value in step.table}
                         continue
                     if text.startswith("there exists a procedure"):
-                        raise Unsupported("procedures")
+                        _define_procedure(db, text, step.table)
+                        continue
                     raise Unsupported(f"given: {text}")
                 if step.keyword == "When":
                     if text.startswith("executing query"):

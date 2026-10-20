@@ -114,8 +114,14 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     if (aggregating.items.len == 0) {
         // No aggregates: project each row (no grouping, so no deduplication).
         for (input) |*input_row| {
-            var row = try withRow(self, info, items, input_row) orelse continue;
-            const sort_key = if (info.order_by) |order_by| try orderByKey(self, order_by, &row) else &.{};
+            const row = try withRow(self, info, items, input_row) orelse continue;
+            // Without grouping, the ORDER BY also sees the variables from
+            // before the WITH (the projected names win).
+            const sort_key = if (info.order_by) |order_by| key: {
+                var scope = try clauses.copyRow(self, input_row.*);
+                for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
+                break :key try orderByKey(self, order_by, &scope);
+            } else &.{};
             try rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
         }
     } else {
@@ -198,8 +204,8 @@ pub fn withItems(self: *Executor, projection: Index) ExecutionError![]const With
     return items.items;
 }
 
-/// Evaluates the ORDER BY expressions against `bindings` (WITH rows, whose
-/// bindings already hold the projected names).
+/// Evaluates the ORDER BY expressions against `bindings` (the projected
+/// names over the variables from before the WITH).
 fn orderByKey(self: *Executor, order_by: Index, bindings: *Bindings) ExecutionError![]const Value {
     const order_items = self.ast.nodeChildren(order_by);
     const key = try self.allocator.alloc(Value, order_items.len);

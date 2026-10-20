@@ -91,6 +91,28 @@ pub const Value = union(enum) {
         return self == .null;
     }
 
+    /// The value's type, as openCypher names it (for messages).
+    pub fn typeName(self: Value) []const u8 {
+        return switch (self) {
+            .int => "integer",
+            .float => "float",
+            .string => "string",
+            .boolean => "boolean",
+            .null => "null",
+            .list => "list",
+            .node => "node",
+            .relationship => "relationship",
+            .map => "map",
+            .path => "path",
+            .date => "date",
+            .local_time => "local time",
+            .time => "time",
+            .local_date_time => "local date-time",
+            .date_time => "date-time",
+            .duration => "duration",
+        };
+    }
+
     /// Structural equality. `null` equals `null` here (this is identity for
     /// DISTINCT and grouping, not the three-valued `=` operator).
     pub fn eql(a: Value, b: Value) bool {

@@ -299,3 +299,19 @@ def test_paths(db):
     assert isinstance(path, Path)
     assert [n.properties["n"] for n in path.nodes] == ["a", "b", "c"]
     assert [r.type for r in path.relationships] == ["IN", "IN"]
+
+
+def test_table_procedures(db):
+    # The hook the openCypher TCK runner defines its test procedures with.
+    db._define_procedure("test.city", [("name", "STRING?"), ("id", "INTEGER?")], [("city", "STRING?")],
+                         [["Ana", 1, "Madrid"], ["Ana", 2, "Lyon"], [None, 1, "Nowhere"]])
+    db._define_procedure("test.nothing", [], [], [])
+    assert db.query("CALL test.city('Ana', 2)") == [["Lyon"]]
+    assert db.query("CALL test.city(null, 1) YIELD city RETURN city") == [["Nowhere"]]
+    assert db.query("CALL test.city", name="Ana", id=1) == [["Madrid"]]
+    db.query("CREATE (:P), (:P)")
+    assert db.query("MATCH (p:P) CALL test.nothing() RETURN count(p)") == [[2]]
+    with pytest.raises(AcmedbError):
+        db.query("CALL test.city(true, 1)")
+    with pytest.raises(AcmedbError):
+        db.query("CALL test.city YIELD city RETURN city", name="Ana", id=1)

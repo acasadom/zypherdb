@@ -121,6 +121,15 @@ class Database:
         with self._lock:
             return native.export_graph(self._handle())
 
+    def _define_procedure(self, name: str, arguments: list, columns: list, rows: list) -> None:
+        """For the openCypher TCK: a procedure, for this open database only,
+        whose rows are a table. ``arguments`` and ``columns`` are ``(name,
+        type)`` pairs (``("in", "INTEGER?")``); each row has a value per
+        argument, then per column. A call emits the rows whose arguments
+        equal its own."""
+        with self._lock:
+            native.define_procedure(self._handle(), name, list(arguments), list(columns), [list(row) for row in rows])
+
     # --- Writes --------------------------------------------------------------
 
     @contextlib.contextmanager

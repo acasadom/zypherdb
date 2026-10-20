@@ -12,6 +12,7 @@ const Value = acmedb.Value;
 const support = @import("../support.zig");
 const openStore = support.openStore;
 const expectQuery = support.expectQuery;
+const expectQueryError = support.expectQueryError;
 
 fn int(n: i64) Value {
     return .{ .int = n };
@@ -127,4 +128,135 @@ test "a WITH's WHERE also sees the variables from before it" {
         \\WITH letters[i] AS letter WHERE i > 0
         \\RETURN letter
     , &.{ &.{string("b")}, &.{string("c")} });
+}
+
+test "label predicates are expressions: nodes, relationships, null" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Person:Admin {n: 1})-[:KNOWS]->(:Person {n: 2})", &.{});
+    try expectQuery(&ast, &g, "MATCH (p) WHERE p:Admin RETURN p.n", &.{&.{.{ .int = 1 }}});
+    try expectQuery(&ast, &g, "MATCH (p) WHERE NOT p:Admin RETURN p.n", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "MATCH (p) RETURN p.n, p:Person:Admin ORDER BY p.n", &.{
+        &.{ .{ .int = 1 }, .{ .boolean = true } },
+        &.{ .{ .int = 2 }, .{ .boolean = false } },
+    });
+    try expectQuery(&ast, &g, "MATCH ()-[r]->() RETURN r:KNOWS, r:OTHER", &.{&.{ .{ .boolean = true }, .{ .boolean = false } }});
+    try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Nothing) RETURN x:Person", &.{&.{.null}});
+    // A map literal's keys are not label predicates.
+    try expectQuery(&ast, &g, "MATCH (p {n: 2}) RETURN {admin: p:Admin}", &.{&.{.{ .map = &.{.{ .key = "admin", .value = .{ .boolean = false } }} }}});
+    try expectQueryError(&ast, &g, "RETURN 1:Person", error.TypeMismatch);
+}
+
+test "RETURN * and WITH * project every variable in scope, sorted by name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "UNWIND [1, 2] AS b WITH b, b * 10 AS a RETURN *", &.{
+        &.{ .{ .int = 10 }, .{ .int = 1 } },
+        &.{ .{ .int = 20 }, .{ .int = 2 } },
+    });
+    try expectQuery(&ast, &g, "WITH 1 AS x WITH *, x + 1 AS y RETURN *, y * 2 AS z", &.{&.{ .{ .int = 1 }, .{ .int = 2 }, .{ .int = 4 } }});
+    try expectQueryError(&ast, &g, "MATCH () RETURN *", error.InvalidExpression);
+}
+
+test "map projections build maps from nodes, relationships and maps" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:P {name: 'Ana', age: 30})-[:R {since: 2020}]->(:P {name: 'Luis'})", &.{});
+    const s = struct {
+        fn str(text: []const u8) Value {
+            return .{ .string = text };
+        }
+    }.str;
+    try expectQuery(&ast, &g, "MATCH (p:P {name: 'Ana'}) RETURN p {.name, .missing, years: p.age + 1}", &.{&.{.{ .map = &.{
+        .{ .key = "missing", .value = .null }, .{ .key = "name", .value = s("Ana") }, .{ .key = "years", .value = .{ .int = 31 } },
+    } }}});
+    // .* takes every property; a later key overrides; a variable selector keys itself.
+    try expectQuery(&ast, &g, "MATCH (p:P {name: 'Ana'})-[r:R]->(q) WITH p, r, q.name AS friend RETURN p {.*, age: 0, friend}, r {.*}", &.{&.{
+        .{ .map = &.{ .{ .key = "age", .value = .{ .int = 0 } }, .{ .key = "friend", .value = s("Luis") }, .{ .key = "name", .value = s("Ana") } } },
+        .{ .map = &.{.{ .key = "since", .value = .{ .int = 2020 } }} },
+    }});
+    try expectQuery(&ast, &g, "WITH {a: 1, b: 2} AS m RETURN m {.a, c: 3}", &.{&.{.{ .map = &.{ .{ .key = "a", .value = .{ .int = 1 } }, .{ .key = "c", .value = .{ .int = 3 } } } }}});
+    try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Nothing) RETURN x {.name}", &.{&.{.null}});
+}
+
+test "WITH ORDER BY sees earlier variables, and projected parts by their names" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:A {n: 3, m: 1}), (:A {n: 1, m: 9}), (:A {n: 2, m: 2})", &.{});
+    // `a` is not projected, but a WITH without grouping can still sort by it.
+    try expectQuery(&ast, &g, "MATCH (a:A) WITH a.m AS m ORDER BY a.n LIMIT 2 RETURN m", &.{ &.{.{ .int = 9 }}, &.{.{ .int = 2 }} });
+    // After grouping, `a.n` is the projected column `n`.
+    try expectQuery(&ast, &g, "MATCH (a:A) WITH a.n AS n, count(*) AS c ORDER BY a.n * -1 LIMIT 1 RETURN n, c", &.{&.{ .{ .int = 3 }, .{ .int = 1 } }});
+}
+
+test "variables of unknown type can be matched as nodes, and named paths are null when unmatched" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:S)-[:R]->(:E)", &.{});
+    try expectQuery(&ast, &g, "MATCH (s:S)-->(e) WITH collect(e) AS es UNWIND es AS x MATCH (y)-->(x) RETURN labels(y)", &.{&.{.{ .list = &.{.{ .string = "S" }} }}});
+    try expectQuery(&ast, &g, "WITH null AS a OPTIONAL MATCH p = (a)-->() RETURN p, nodes(p)", &.{&.{ .null, .null }});
+}
+
+test "queries that cannot be right fail before they run" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    const invalid = [_][]const u8{
+        "MATCH (s) WHERE s.name = missing RETURN s",
+        "MATCH (a) CREATE (a)",
+        "MATCH (a) CREATE (a:New)-[:R]->()",
+        "MATCH ()-[r]->() CREATE ()-[r]->()",
+        "MATCH (a) MERGE (a)",
+        "MATCH (a), (b) MERGE (a)-[r]->(b)",
+        "MATCH (a) WHERE count(a) > 1 RETURN a",
+        "MATCH (n) WHERE (n) RETURN n",
+        "RETURN 1 AS a, 2 AS a",
+        "MATCH (a) RETURN DISTINCT a.name ORDER BY a.age",
+    };
+    for (invalid) |query| try expectQueryError(&ast, &g, query, error.InvalidExpression);
+    // Nothing was created by any of them.
+    try expectQuery(&ast, &g, "MATCH (n) RETURN count(n)", &.{&.{.{ .int = 0 }}});
+    // Still valid: the ORDER BY of a DISTINCT repeats a projected expression.
+    try expectQuery(&ast, &g, "MATCH (a) RETURN DISTINCT a.name ORDER BY a.name", &.{});
 }

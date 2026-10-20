@@ -8,6 +8,7 @@
 const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
 const Value = @import("../value.zig").Value;
+const eqlSequences = @import("../value.zig").eqlSequences;
 const signatures = @import("../query/procedures.zig");
 const fulltext = @import("../storage/fulltext.zig");
 const fulltext_search = @import("../storage/fulltext_search.zig");
@@ -37,12 +38,23 @@ pub const Consumer = struct {
 pub fn callRow(executor: *Executor, clause: Index, row: *Bindings, ends_query: bool, consumer: Consumer) ExecutionError!void {
     const call = executor.ast.data(clause).call;
     const children = executor.ast.nodeChildren(clause);
-    const arguments = try executor.allocator.alloc(Value, call.argument_count);
-    for (arguments, children[0..call.argument_count]) |*argument, expression| argument.* = try expressions.evaluate(executor, expression, row);
+    const signature = signatures.find(call.procedure, executor.table_procedures).?; // checked by the semantic checks
+    const arguments = if (call.implicit_arguments) try implicitArguments(executor, signature) else arguments: {
+        const values = try executor.allocator.alloc(Value, call.argument_count);
+        for (values, children[0..call.argument_count]) |*argument, expression| argument.* = try expressions.evaluate(executor, expression, row);
+        break :arguments values;
+    };
+
+    // A procedure without columns yields nothing: each row goes on as it is.
+    if (signature.columns.len == 0) {
+        try run(executor, call.procedure, arguments, .{ .context = executor, .row = ignoreRow });
+        if (!ends_query) try consumer.extended(consumer.context, row);
+        return;
+    }
 
     var binder = Binder{
         .executor = executor,
-        .signature = signatures.find(call.procedure).?, // checked by the semantic checks
+        .signature = signature,
         .yield_items = children[call.argument_count .. children.len - 1],
         .where_expression = children[children.len - 1],
         .yield_all = call.yield_all,
@@ -84,8 +96,24 @@ const Binder = struct {
     }
 };
 
+fn ignoreRow(_: *anyopaque, _: []const Value) ExecutionError!void {}
+
+/// `CALL proc` without parentheses: each declared argument is the query
+/// parameter of its name.
+fn implicitArguments(executor: *Executor, signature: signatures.Signature) ExecutionError![]const Value {
+    const values = try executor.allocator.alloc(Value, signature.arguments.len);
+    for (values, signature.arguments) |*value, argument| {
+        value.* = executor.parameters.get(argument.name) orelse {
+            executor.fail(.parameter_missing, "{s} takes its argument '{s}' from the parameter ${s}, which is missing", .{ signature.name, argument.name, argument.name });
+            return error.ParameterMissing;
+        };
+    }
+    return values;
+}
+
 /// Runs procedure `name` with `arguments`, emitting its rows.
 fn run(executor: *Executor, name: []const u8, arguments: []const Value, emit: Emit) ExecutionError!void {
+    if (signatures.findTable(name, executor.table_procedures)) |procedure| return runTable(procedure, arguments, emit);
     if (std.mem.eql(u8, name, "db.index.fulltext.queryNodes")) return queryIndex(executor, name, .nodes, arguments, emit);
     if (std.mem.eql(u8, name, "db.index.fulltext.queryRelationships")) return queryIndex(executor, name, .relationships, arguments, emit);
     if (std.mem.eql(u8, name, "db.labels")) {
@@ -97,6 +125,17 @@ fn run(executor: *Executor, name: []const u8, arguments: []const Value, emit: Em
     } else {
         executor.fail(.invalid_expression, "procedure '{s}' is not available yet", .{name});
         return error.InvalidExpression;
+    }
+}
+
+/// A table procedure: the columns of each row whose arguments equal the
+/// call's (null equals null here, as the TCK's tables expect).
+fn runTable(procedure: *const signatures.TableProcedure, arguments: []const Value, emit: Emit) ExecutionError!void {
+    for (procedure.rows) |row| {
+        const argument_count = row.len - procedure.signature.columns.len;
+        if (argument_count != arguments.len) continue;
+        if (!eqlSequences(row[0..argument_count], arguments)) continue;
+        try emit.row(emit.context, row[argument_count..]);
     }
 }
 

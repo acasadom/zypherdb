@@ -40,7 +40,18 @@ const Database = struct {
     diagnostic: Diagnostic,
     /// Return temporal values as their ISO 8601 text, not `datetime` objects.
     iso_temporals: bool,
+    /// Procedures defined by `define_procedure` (the TCK's test procedures),
+    /// with their values in `procedure_arena`.
+    table_procedures: std.ArrayList(acmedb.procedures.TableProcedure) = .empty,
+    procedure_arena: std.heap.ArenaAllocator,
 };
+
+/// Frees what an open database holds, and the database.
+fn release(database: *Database) void {
+    database.store.deinit();
+    database.procedure_arena.deinit();
+    allocator.destroy(database);
+}
 
 /// How result values become Python objects: the entities the rows refer to,
 /// and how temporal values are returned.
@@ -379,12 +390,69 @@ fn callClass(class: ?*py.PyObject, arguments: []const ?*py.PyObject) ?*py.PyObje
     return py.PyObject_Call(class, tuple, null);
 }
 
+// --- Test procedures ---------------------------------------------------------------
+
+/// `define_procedure(db, name, arguments, columns, rows)`: a procedure whose
+/// rows are a table, as the openCypher TCK defines them. `arguments` and
+/// `columns` are lists of `(name, type)` (types as declared: `INTEGER?`);
+/// each row lists a value per argument, then per column.
+fn defineProcedure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var name_object: ?*py.PyObject = null;
+    var arguments_object: ?*py.PyObject = null;
+    var columns_object: ?*py.PyObject = null;
+    var rows_object: ?*py.PyObject = null;
+    if (py.PyArg_ParseTuple(args, "OUO!O!O!", &capsule, &name_object, &py.PyList_Type, &arguments_object, &py.PyList_Type, &columns_object, &py.PyList_Type, &rows_object) == 0) return null;
+    const database = databaseOf(capsule) orelse return null;
+    const arena = database.procedure_arena.allocator();
+
+    const arguments = arena.alloc(acmedb.procedures.Argument, @intCast(py.PyList_Size(arguments_object))) catch return py.PyErr_NoMemory();
+    for (arguments, 0..) |*argument, i| {
+        const declared = declaredPair(py.PyList_GetItem(arguments_object, @intCast(i)), arena) orelse return null;
+        argument.* = .{ .name = declared[0], .type = acmedb.procedures.argumentType(declared[1]) orelse return raise(py.PyExc_ValueError, "unknown type {s}", .{declared[1]}) };
+    }
+    const columns = arena.alloc(acmedb.procedures.Column, @intCast(py.PyList_Size(columns_object))) catch return py.PyErr_NoMemory();
+    for (columns, 0..) |*column, i| {
+        const declared = declaredPair(py.PyList_GetItem(columns_object, @intCast(i)), arena) orelse return null;
+        const column_type = acmedb.procedures.argumentType(declared[1]) orelse return raise(py.PyExc_ValueError, "unknown type {s}", .{declared[1]});
+        column.* = .{ .name = declared[0], .kind = switch (column_type) {
+            .node => .node,
+            .relationship => .relationship,
+            else => .value,
+        } };
+    }
+    const rows = arena.alloc([]const Value, @intCast(py.PyList_Size(rows_object))) catch return py.PyErr_NoMemory();
+    for (rows, 0..) |*row, i| {
+        const row_object = py.PyList_GetItem(rows_object, @intCast(i)) orelse return null;
+        if (typeOf(row_object) != &py.PyList_Type) return raise(py.PyExc_TypeError, "each row must be a list", .{});
+        const values = arena.alloc(Value, @intCast(py.PyList_Size(row_object))) catch return py.PyErr_NoMemory();
+        if (values.len != arguments.len + columns.len) return raise(py.PyExc_ValueError, "a row needs a value per argument and per column", .{});
+        for (values, 0..) |*value, j| value.* = valueOf(py.PyList_GetItem(row_object, @intCast(j)).?, arena, false) orelse return null;
+        row.* = values;
+    }
+    const name = stringOf(name_object.?, arena) orelse return null;
+    database.table_procedures.append(arena, .{
+        .signature = .{ .name = name, .min_arguments = arguments.len, .max_arguments = arguments.len, .columns = columns, .arguments = arguments },
+        .rows = rows,
+    }) catch return py.PyErr_NoMemory();
+    return none();
+}
+
+/// A `(name, type)` tuple's two strings.
+fn declaredPair(object: ?*py.PyObject, arena: std.mem.Allocator) ?[2][]const u8 {
+    const pair = object orelse return null;
+    if (typeOf(pair) != &py.PyTuple_Type or py.PyTuple_Size(pair) != 2) {
+        _ = raise(py.PyExc_TypeError, "expected a (name, type) tuple", .{});
+        return null;
+    }
+    return .{ stringOf(py.PyTuple_GetItem(pair, 0).?, arena) orelse return null, stringOf(py.PyTuple_GetItem(pair, 1).?, arena) orelse return null };
+}
+
 // --- Opening and closing -----------------------------------------------------------
 
 fn destroyCapsule(capsule: ?*py.PyObject) callconv(.c) void {
     const database = databaseOf(capsule) orelse return;
-    database.store.deinit();
-    allocator.destroy(database);
+    release(database);
 }
 
 fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
@@ -412,9 +480,10 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     };
     database.diagnostic = Diagnostic.init();
     database.iso_temporals = iso_temporals != 0;
+    database.table_procedures = .empty;
+    database.procedure_arena = std.heap.ArenaAllocator.init(allocator);
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
-        database.store.deinit();
-        allocator.destroy(database);
+        release(database);
         return null;
     };
 }
@@ -425,8 +494,7 @@ fn close(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = databaseOf(capsule) orelse return null;
     // The capsule is emptied so a later call fails cleanly, not on freed memory.
     _ = py.PyCapsule_SetDestructor(capsule, null);
-    database.store.deinit();
-    allocator.destroy(database);
+    release(database);
     _ = py.PyCapsule_SetName(capsule, "acmedb.Database.closed");
     return none();
 }
@@ -470,6 +538,7 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var executor = Executor.init(&ast, &database.graph, arena);
     executor.diagnostic = &database.diagnostic;
     executor.parameters = parameters;
+    executor.table_procedures = database.table_procedures.items;
     const thread_state = py.PyEval_SaveThread();
     const outcome = run(&executor, &ast, text, &database.diagnostic);
     py.PyEval_RestoreThread(thread_state);
@@ -722,6 +791,7 @@ var methods = [_]py.PyMethodDef{
     method("add_edge", addEdge),
     method("set_property", setProperty),
     method("export_graph", exportGraph),
+    method("define_procedure", defineProcedure),
     method("duration_text", durationText),
     .{ .ml_name = null, .ml_meth = null, .ml_flags = 0, .ml_doc = null },
 };

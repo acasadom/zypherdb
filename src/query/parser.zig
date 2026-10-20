@@ -117,7 +117,9 @@ pub const Parser = struct {
         return self.ast.intern(t.text);
     }
 
-    /// Unescapes `\'` and `\\` and interns the result into the AST arena.
+    /// Unescapes a string literal's content (Cypher's escapes: `\\` `\'` `\"`
+    /// `\b` `\f` `\n` `\r` `\t`, `\uXXXX` and `\UXXXXXXXX`) and interns it
+    /// into the AST arena. Any other backslash stays as it is.
     pub fn internString(self: *Parser, raw: []const u8) ParseError![]const u8 {
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) {
             return self.ast.intern(raw);
@@ -126,16 +128,35 @@ pub const Parser = struct {
         defer buffer.deinit(self.ast.allocator);
         var i: usize = 0;
         while (i < raw.len) : (i += 1) {
-            if (raw[i] == '\\' and i + 1 < raw.len) {
-                i += 1;
-                switch (raw[i]) {
-                    '\\', '\'' => try buffer.append(self.ast.allocator, raw[i]),
-                    else => {
-                        try buffer.append(self.ast.allocator, '\\');
-                        try buffer.append(self.ast.allocator, raw[i]);
-                    },
+            if (raw[i] != '\\' or i + 1 >= raw.len) {
+                try buffer.append(self.ast.allocator, raw[i]);
+                continue;
+            }
+            i += 1;
+            const escaped: ?u8 = switch (raw[i]) {
+                '\\', '\'', '"' => raw[i],
+                'b' => 0x08,
+                'f' => 0x0c,
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                else => null,
+            };
+            if (escaped) |byte| {
+                try buffer.append(self.ast.allocator, byte);
+            } else if (raw[i] == 'u' or raw[i] == 'U') {
+                const digits: usize = if (raw[i] == 'u') 4 else 8;
+                const code = if (i + digits < raw.len) std.fmt.parseInt(u21, raw[i + 1 ..][0..digits], 16) catch null else null;
+                var bytes: [4]u8 = undefined;
+                const length = if (code) |c| std.unicode.utf8Encode(c, &bytes) catch null else null;
+                if (length == null) {
+                    self.fail("invalid Unicode escape in a string: \\{c} takes {d} hexadecimal digits of a code point", .{ raw[i], digits });
+                    return error.UnexpectedToken;
                 }
+                try buffer.appendSlice(self.ast.allocator, bytes[0..length.?]);
+                i += digits;
             } else {
+                try buffer.append(self.ast.allocator, '\\');
                 try buffer.append(self.ast.allocator, raw[i]);
             }
         }
@@ -424,6 +445,22 @@ pub const Parser = struct {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
         while (true) {
+            // `(expression).prop = v`: a property of any expression's value.
+            if (self.at(.left_paren)) {
+                const access = try expression_parser.parsePrimary(self);
+                if (self.ast.kind(access) != .property_access) {
+                    self.fail("SET (expression) needs a property: SET (n).name = value", .{});
+                    return error.UnexpectedToken;
+                }
+                try self.expect(.equal);
+                const value = try expression_parser.parseExpression(self);
+                try items.append(self.ast.allocator, try self.ast.addNode(.set_item, .{ .none = {} }, &.{ access, value }));
+                if (self.at(.comma)) {
+                    _ = self.advance();
+                    continue;
+                }
+                break;
+            }
             // `n.prop = v`, `n = map`, `n += map` or `n:Label...`.
             const variable_name = try self.internIdentifier();
             const var_node = try self.ast.addNode(.variable, .{ .text = variable_name }, &.{});
@@ -458,9 +495,9 @@ pub const Parser = struct {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
         while (true) {
-            const name = try self.internIdentifier();
-            const var_node = try self.ast.addNode(.variable, .{ .text = name }, &.{});
-            const item = try self.ast.addNode(.delete_item, .{ .none = {} }, &.{var_node});
+            // Any expression: a variable, `list[i]`, `map.key`, a path.
+            const target = try expression_parser.parseExpression(self);
+            const item = try self.ast.addNode(.delete_item, .{ .none = {} }, &.{target});
             try items.append(self.ast.allocator, item);
             if (self.at(.comma)) {
                 _ = self.advance();
@@ -478,9 +515,11 @@ pub const Parser = struct {
             const variable_name = try self.internIdentifier();
             const var_node = try self.ast.addNode(.variable, .{ .text = variable_name }, &.{});
             if (self.at(.colon)) {
-                _ = self.advance();
-                const label = try self.internIdentifier();
-                try items.append(self.ast.allocator, try self.ast.addNode(.label_reference, .{ .text = label }, &.{var_node}));
+                while (self.at(.colon)) {
+                    _ = self.advance();
+                    const label = try self.internIdentifier();
+                    try items.append(self.ast.allocator, try self.ast.addNode(.label_reference, .{ .text = label }, &.{var_node}));
+                }
             } else {
                 try self.expect(.dot);
                 const property = try self.internIdentifier();
@@ -510,27 +549,25 @@ pub const Parser = struct {
         _ = self.advance(); // MERGE
         const pattern = try self.parsePattern();
 
-        var on_create = try self.ast.addNode(.set_clause, .{ .none = {} }, &.{});
-        var on_match = try self.ast.addNode(.set_clause, .{ .none = {} }, &.{});
-        var seen: u2 = 0;
-        while (seen < 2 and self.atKeyword("ON")) {
+        // ON CREATE SET and ON MATCH SET, in any order and number: the items of
+        // each kind are applied in the order written.
+        var on_create = std.ArrayList(Index).empty;
+        defer on_create.deinit(self.ast.allocator);
+        var on_match = std.ArrayList(Index).empty;
+        defer on_match.deinit(self.ast.allocator);
+        while (self.atKeyword("ON")) {
             _ = self.advance();
-            if (self.atKeyword("CREATE")) {
-                _ = self.advance();
-                try self.expectKeyword("SET");
-                on_create = try self.parseSetClause();
-                seen |= 1;
-            } else if (self.atKeyword("MATCH")) {
-                _ = self.advance();
-                try self.expectKeyword("SET");
-                on_match = try self.parseSetClause();
-                seen |= 2;
-            } else {
+            const items = if (self.atKeyword("CREATE")) &on_create else if (self.atKeyword("MATCH")) &on_match else {
                 self.fail("expected CREATE or MATCH after ON, found {s}", .{describeToken(self.peek())});
                 return error.UnexpectedToken;
-            }
+            };
+            _ = self.advance();
+            try self.expectKeyword("SET");
+            try items.appendSlice(self.ast.allocator, self.ast.nodeChildren(try self.parseSetClause()));
         }
-        return self.ast.addNode(.merge_clause, .{ .none = {} }, &.{ pattern, on_create, on_match });
+        const create_set = try self.ast.addNode(.set_clause, .{ .none = {} }, on_create.items);
+        const match_set = try self.ast.addNode(.set_clause, .{ .none = {} }, on_match.items);
+        return self.ast.addNode(.merge_clause, .{ .none = {} }, &.{ pattern, create_set, match_set });
     }
 
     /// A chain `(a)-[r]->(b)...`, optionally named as a path: `p = (a)-->(b)`
@@ -568,7 +605,8 @@ pub const Parser = struct {
 
         var properties = std.ArrayList(Index).empty;
         defer properties.deinit(self.ast.allocator);
-        if (self.at(.left_brace)) {
+        const has_map = self.at(.left_brace);
+        if (has_map) {
             _ = self.advance();
             while (!self.at(.right_brace)) {
                 const name = try self.internIdentifier();
@@ -584,7 +622,7 @@ pub const Parser = struct {
         }
 
         try self.expect(.right_paren);
-        return self.ast.addNode(.node_pattern, .{ .node_pattern = .{ .variable_name = variable_name, .labels = labels_slice } }, properties.items);
+        return self.ast.addNode(.node_pattern, .{ .node_pattern = .{ .variable_name = variable_name, .labels = labels_slice, .has_map = has_map } }, properties.items);
     }
 
     const EdgeDetails = struct {
@@ -684,16 +722,25 @@ pub const Parser = struct {
         } }, details.properties.items);
     }
 
+    /// `items` or `*[, items]`; data.boolean says whether `*` came first
+    /// (every variable in scope; the semantic checks expand it).
     fn parseProjection(self: *Parser) ParseError!Index {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
+        var star = false;
+        if (self.at(.star)) {
+            _ = self.advance();
+            star = true;
+            if (!self.at(.comma)) return self.ast.addNode(.projection, .{ .boolean = true }, &.{});
+            _ = self.advance();
+        }
         while (true) {
             try items.append(self.ast.allocator, try self.parseProjectionItem());
             if (self.at(.comma)) {
                 _ = self.advance();
             } else break;
         }
-        return self.ast.addNode(.projection, .{ .none = {} }, items.items);
+        return self.ast.addNode(.projection, .{ .boolean = star }, items.items);
     }
 
     fn parseProjectionItem(self: *Parser) ParseError!Index {
@@ -748,10 +795,10 @@ pub const Parser = struct {
         while (true) {
             const expr = try expression_parser.parseExpression(self);
             var ascending = true;
-            if (self.atKeyword("DESC")) {
+            if (self.atKeyword("DESC") or self.atKeyword("DESCENDING")) {
                 _ = self.advance();
                 ascending = false;
-            } else if (self.atKeyword("ASC")) {
+            } else if (self.atKeyword("ASC") or self.atKeyword("ASCENDING")) {
                 _ = self.advance();
             }
             const item = try self.ast.addNode(.order_item, .{ .order_item = .{ .ascending = ascending } }, &.{expr});

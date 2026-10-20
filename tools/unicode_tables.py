@@ -2,11 +2,11 @@
 
     python3 tools/unicode_tables.py UCD_DIR > src/text/unicode_tables.zig
 
-UCD_DIR holds UnicodeData.txt and CaseFolding.txt of one Unicode version
+UCD_DIR holds UnicodeData.txt, CaseFolding.txt and SpecialCasing.txt of one Unicode version
 (https://www.unicode.org/Public/<version>/ucd/). The tables are data under
 the Unicode License v3 (https://www.unicode.org/license.txt).
 
-Three tables, for full-text search:
+Five tables: three for full-text search,
 
 - word_ranges: the code points that make up words: letters (L*), numbers
   (N*) and marks (M*), as sorted inclusive ranges.
@@ -16,6 +16,11 @@ Three tables, for full-text search:
   alike, "Straße" folds to "strasse", "ﬁ" to "fi". A mark folds to nothing.
 - case_fold: full case folding alone (C + F), accents kept: what stemmers
   work on, since their rules know accented letters.
+
+and two for toUpper() and toLower():
+
+- upper, lower: the full case mappings (UnicodeData's simple mappings, and
+  SpecialCasing's unconditional ones, so "ß" upper-cases to "SS").
 """
 
 import sys
@@ -26,6 +31,8 @@ version = (ucd / "version.txt").read_text().strip() if (ucd / "version.txt").exi
 
 categories = {}
 decompositions = {}
+simple_upper = {}
+simple_lower = {}
 lines = (ucd / "UnicodeData.txt").read_text().splitlines()
 index = 0
 while index < len(lines):
@@ -38,6 +45,10 @@ while index < len(lines):
         index += 2
         continue
     categories[code] = category
+    if fields[12]:
+        simple_upper[code] = [int(fields[12], 16)]
+    if fields[13]:
+        simple_lower[code] = [int(fields[13], 16)]
     if decomposition:
         parts = decomposition.split()
         if parts[0].startswith("<"):
@@ -53,6 +64,26 @@ for line in (ucd / "CaseFolding.txt").read_text().splitlines():
     code, status, mapping = [f.strip() for f in line.split(";")[:3]]
     if status in ("C", "F"):
         case_folding[int(code, 16)] = [int(p, 16) for p in mapping.split()]
+
+
+special_lower = {}
+special_upper = {}
+for line in (ucd / "SpecialCasing.txt").read_text().splitlines():
+    line = line.split("#")[0].strip()
+    if not line:
+        continue
+    fields = [f.strip() for f in line.split(";")]
+    if fields[4]:
+        continue  # a conditional mapping (a language, or final sigma): not table data
+    code = int(fields[0], 16)
+    special_lower[code] = [int(p, 16) for p in fields[1].split()]
+    special_upper[code] = [int(p, 16) for p in fields[3].split()]
+
+
+def full_mapping(simple, special):
+    codes = set(simple) | set(special)
+    mapping = {c: special.get(c, simple.get(c, [c])) for c in codes}
+    return sorted((c, m) for c, m in mapping.items() if m != [c])
 
 
 def fold_case(codes):
@@ -123,24 +154,41 @@ out.write("pub const fold_data = [_]u21{\n")
 for i in range(0, len(data), 12):
     out.write("    " + " ".join(f"0x{c:X}," for c in data[i:i + 12]) + "\n")
 out.write("};\n\n")
-cases = sorted((c, m) for c, m in case_folding.items() if m != [c])
-out.write("/// Full case folding (C + F), accents kept: the form of `case_keys[i]` is\n")
-out.write("/// `case_data[case_starts[i]..case_starts[i + 1]]`.\n")
-out.write("pub const case_keys = [_]u21{\n")
-for i in range(0, len(cases), 12):
-    out.write("    " + " ".join(f"0x{c:X}," for c, _ in cases[i:i + 12]) + "\n")
-out.write("};\n\n")
-case_starts = [0]
-case_data = []
-for _, mapping in cases:
-    case_data.extend(mapping)
-    case_starts.append(len(case_data))
-out.write("pub const case_starts = [_]u32{\n")
-for i in range(0, len(case_starts), 16):
-    out.write("    " + " ".join(f"{s}," for s in case_starts[i:i + 16]) + "\n")
-out.write("};\n\n")
-out.write("pub const case_data = [_]u21{\n")
-for i in range(0, len(case_data), 12):
-    out.write("    " + " ".join(f"0x{c:X}," for c in case_data[i:i + 12]) + "\n")
-out.write("};\n")
+
+
+def write_mapping(prefix, mappings, doc):
+    """A code point -> code points table: `<prefix>_keys`, `<prefix>_starts`, `<prefix>_data`."""
+    for line in doc:
+        out.write(f"/// {line}\n")
+    out.write(f"pub const {prefix}_keys = [_]u21{{\n")
+    for i in range(0, len(mappings), 12):
+        out.write("    " + " ".join(f"0x{c:X}," for c, _ in mappings[i:i + 12]) + "\n")
+    out.write("};\n\n")
+    starts = [0]
+    data = []
+    for _, mapping in mappings:
+        data.extend(mapping)
+        starts.append(len(data))
+    out.write(f"pub const {prefix}_starts = [_]u32{{\n")
+    for i in range(0, len(starts), 16):
+        out.write("    " + " ".join(f"{s}," for s in starts[i:i + 16]) + "\n")
+    out.write("};\n\n")
+    out.write(f"pub const {prefix}_data = [_]u21{{\n")
+    for i in range(0, len(data), 12):
+        out.write("    " + " ".join(f"0x{c:X}," for c in data[i:i + 12]) + "\n")
+    out.write("};\n")
+
+
+write_mapping("case", sorted((c, m) for c, m in case_folding.items() if m != [c]), [
+    "Full case folding (C + F), accents kept: the form of `case_keys[i]` is",
+    "`case_data[case_starts[i]..case_starts[i + 1]]`.",
+])
+out.write("\n")
+write_mapping("upper", full_mapping(simple_upper, special_upper), [
+    "Full upper-case mappings, laid out as the case folding table.",
+])
+out.write("\n")
+write_mapping("lower", full_mapping(simple_lower, special_lower), [
+    "Full lower-case mappings, laid out as the case folding table.",
+])
 print(f"{len(ranges)} word ranges, {len(folds)} folds, {len(data)} folded code points", file=sys.stderr)

@@ -287,16 +287,32 @@ pub fn parsePrimary(self: *Parser) ParseError!Index {
             expr = try self.ast.addNode(.property_access, .{ .text = key }, &.{expr});
         } else if (self.at(.left_bracket)) {
             _ = self.advance();
-            const from = if (self.at(.range_dots)) try nullNode(self) else try parseExpression(self);
+            const open_start = self.at(.range_dots);
+            const from = if (open_start) try nullNode(self) else try parseExpression(self);
             if (self.at(.range_dots)) {
                 _ = self.advance();
-                const to = if (self.at(.right_bracket)) try nullNode(self) else try parseExpression(self);
+                const open_end = self.at(.right_bracket);
+                const to = if (open_end) try nullNode(self) else try parseExpression(self);
                 try self.expect(.right_bracket);
-                expr = try self.ast.addNode(.slice, .{ .none = {} }, &.{ expr, from, to });
+                // data.int: which ends were written (1: from, 2: to); an open end
+                // is unbounded, a written one that is null makes the slice null.
+                const written: i64 = @as(i64, @intFromBool(!open_start)) | (@as(i64, @intFromBool(!open_end)) << 1);
+                expr = try self.ast.addNode(.slice, .{ .int = written }, &.{ expr, from, to });
             } else {
                 try self.expect(.right_bracket);
                 expr = try self.ast.addNode(.subscript, .{ .none = {} }, &.{ expr, from });
             }
+        } else if (self.at(.left_brace) and self.ast.kind(expr) == .variable) {
+            expr = try parseMapProjection(self, expr);
+        } else if (self.at(.colon) and self.peekAhead(1).kind == .identifier) {
+            // `n:Label:Other`: a label predicate.
+            var labels = std.ArrayList([]const u8).empty;
+            defer labels.deinit(self.ast.allocator);
+            while (self.at(.colon) and self.peekAhead(1).kind == .identifier) {
+                _ = self.advance();
+                try labels.append(self.ast.allocator, try self.internIdentifier());
+            }
+            expr = try self.ast.addNode(.label_predicate, .{ .labels = try self.ast.internSlice(labels.items) }, &.{expr});
         } else return expr;
     }
 }
@@ -347,6 +363,37 @@ fn parseQuantifier(self: *Parser, kind: QuantifierKind) ParseError!Index {
 }
 
 /// A map literal `{key: value, ...}` (the empty map is allowed).
+/// `subject {.a, .*, key: expression, variable}` (the `{` is next).
+fn parseMapProjection(self: *Parser, subject: Index) ParseError!Index {
+    try self.expect(.left_brace);
+    var children = std.ArrayList(Index).empty;
+    defer children.deinit(self.ast.allocator);
+    try children.append(self.ast.allocator, subject);
+    while (!self.at(.right_brace)) {
+        if (self.at(.dot)) {
+            _ = self.advance();
+            if (self.at(.star)) {
+                _ = self.advance();
+                try children.append(self.ast.allocator, try self.ast.addNode(.map_projection_all, .{ .none = {} }, &.{}));
+            } else {
+                const property = try self.internIdentifier();
+                try children.append(self.ast.allocator, try self.ast.addNode(.map_projection_property, .{ .text = property }, &.{}));
+            }
+        } else {
+            const key = try self.internIdentifier();
+            const value = if (self.at(.colon)) value: {
+                _ = self.advance();
+                break :value try parseExpression(self);
+            } else try self.ast.addNode(.variable, .{ .text = key }, &.{});
+            try children.append(self.ast.allocator, try self.ast.addNode(.property, .{ .text = key }, &.{value}));
+        }
+        if (!self.at(.comma)) break;
+        _ = self.advance();
+    }
+    try self.expect(.right_brace);
+    return self.ast.addNode(.map_projection, .{ .none = {} }, children.items);
+}
+
 fn parseMapLiteral(self: *Parser) ParseError!Index {
     try self.expect(.left_brace);
     var entries = std.ArrayList(Index).empty;
@@ -498,6 +545,12 @@ pub fn parseAggregateCall(self: *Parser, kind: AggregateKind) ParseError!Index {
     const distinct = self.atKeyword("DISTINCT");
     if (distinct) _ = self.advance();
     const arg = try parseExpression(self);
+    if (kind == .percentileDisc or kind == .percentileCont) {
+        try self.expect(.comma);
+        const percentile = try parseExpression(self);
+        try self.expect(.right_paren);
+        return self.ast.addNode(.aggregate, .{ .aggregate = .{ .kind = kind, .distinct = distinct } }, &.{ arg, percentile });
+    }
     try self.expect(.right_paren);
     return self.ast.addNode(.aggregate, .{ .aggregate = .{ .kind = kind, .distinct = distinct } }, &.{arg});
 }
@@ -511,5 +564,7 @@ fn aggregateKindFromName(name: []const u8) ?AggregateKind {
     if (std.ascii.eqlIgnoreCase(name, "min")) return .min;
     if (std.ascii.eqlIgnoreCase(name, "max")) return .max;
     if (std.ascii.eqlIgnoreCase(name, "collect")) return .collect;
+    if (std.ascii.eqlIgnoreCase(name, "percentileDisc")) return .percentileDisc;
+    if (std.ascii.eqlIgnoreCase(name, "percentileCont")) return .percentileCont;
     return null;
 }

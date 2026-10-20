@@ -42,4 +42,5 @@ python -I tests/tck/runner.py --update-baseline                  # record newly 
 
 - acmedb returns rows without column names, so columns are compared by position.
 - acmedb identifies a relationship by (source, target, type): it has no parallel relationships yet.
-- Scenarios that need procedures are reported as `unsupported`.
+- The TCK's test procedures (`there exists a procedure …`) are defined with the private
+  `Database._define_procedure`, a procedure whose rows are the step's table.

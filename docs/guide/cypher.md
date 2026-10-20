@@ -9,7 +9,9 @@ leaves out a few features; both are listed below. This page is the complete refe
 - **Keywords** are case-insensitive: `MATCH` and `match` are the same keyword. **Identifiers** are
   case-sensitive; that covers variables, labels, relationship types and property names. Write an
   identifier that has spaces or symbols between backticks: `` (`my node`:`Floor 3`) ``.
-- **Strings** use single quotes, with backslash escapes (`'it\'s'`, `'\n'`).
+- **Strings** use single or double quotes (`'Ana'`, `"Ana"`), with backslash escapes: `\'`, `\"`,
+  `\\`, `\n`, `\t`, `\r`, `\b`, `\f`, and `\uXXXX` or `\UXXXXXXXX` for a code point. A malformed
+  escape is a syntax error.
 - **Numbers**:
   - integers in decimal, hexadecimal (`0x1F`) or octal (`0o17`);
   - floats (`1.5`, `.5`, `1e3`, `2.5e-3`).
@@ -30,11 +32,11 @@ its own rows on; the first clause receives one empty row.
 | `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
 | `CALL procedure(arguments) [YIELD column [AS name], … \| *] [WHERE condition]` | runs a [procedure](#procedures) for each row; each row it returns extends the row with the yielded columns |
 | `WITH items [ORDER BY …] [SKIP n] [LIMIT n] [WHERE condition]` | projects the rows like `RETURN` (aggregating, sorting, paging) and continues; only the projected names remain |
-| `CREATE pattern, …` | creates the nodes and relationships of the pattern; a node already bound is reused as it is |
+| `CREATE pattern, …` | creates the nodes and relationships of the pattern; a node already bound is reused as it is, and `CREATE p = …` binds the path created |
 | `MERGE pattern [ON CREATE SET …] [ON MATCH SET …]` | matches the whole pattern, and each match becomes a row (with `ON MATCH SET` applied); if nothing matches, creates the whole pattern (with `ON CREATE SET` applied) |
-| `SET item, …` | `n.prop = v` sets one property; `n = map` replaces all properties; `n += map` adds and changes properties (a `null` entry removes one); `n:Label` adds labels |
-| `REMOVE item, …` | removes a property (`n.prop`) or labels (`n:Label`) |
-| `DELETE x, …` / `DETACH DELETE x, …` | deletes nodes and relationships; deleting a node that has relationships needs `DETACH`, which deletes those relationships too |
+| `SET item, …` | `n.prop = v` sets one property; `n = map` replaces all properties; `n += map` adds and changes properties (a `null` entry removes one); `n:Label` adds labels. The target may be any expression that gives a node or relationship (`SET (CASE WHEN … THEN a ELSE b END).prop = v`); a `null` target does nothing |
+| `REMOVE item, …` | removes a property (`n.prop`) or labels (`n:Label:Other`) |
+| `DELETE x, …` / `DETACH DELETE x, …` | deletes nodes, relationships and paths, given by any expression (`DELETE paths[0]`; `null` is ignored). It deletes every relationship it is given before any node, and deleting a node that still has relationships needs `DETACH`, which deletes those relationships too |
 | `RETURN [DISTINCT] items [ORDER BY …] [SKIP n] [LIMIT n]` | produces the result of the query |
 | `query UNION query`, `query UNION ALL query` | combines the rows of both parts (`UNION` drops duplicates, `UNION ALL` keeps them); both parts return the same column names |
 
@@ -45,11 +47,25 @@ its own rows on; the first clause receives one empty row.
   - a `CALL` without `YIELD` (or with `YIELD *`) ends the query, and its rows are the result. So
     does a `CALL … YIELD` that is the whole query. Inside a longer query, a `CALL` names the
     columns it uses with `YIELD`.
+- `RETURN *` and `WITH *` project every variable in scope, in name order; more items may follow
+  (`RETURN *, n.name AS name`).
 - The `WHERE` of a `WITH` filters the projected rows before `DISTINCT`, `ORDER BY`, `SKIP` and
   `LIMIT` apply. When the `WITH` does not aggregate, its `WHERE` can also use the variables from
   before the `WITH`.
-- `ORDER BY x [ASC | DESC], …` sorts the rows, ascending by default. Ascending order puts `null`s
-  last. `SKIP` and `LIMIT` take an integer expression or a parameter.
+- `ORDER BY x [ASC | ASCENDING | DESC | DESCENDING], …` sorts the rows, ascending by default.
+  Ascending order puts `null`s last. `SKIP` and `LIMIT` take an integer expression or a parameter.
+- `ORDER BY` uses the projected names, and, when the projection neither aggregates nor is
+  `DISTINCT`, the variables from before it too. A part of an `ORDER BY` expression that repeats a
+  projected expression reads its column: `WITH a.name AS name, count(*) AS c ORDER BY a.name` sorts
+  by `name`.
+- A query is checked before it runs. It fails with an error, and changes nothing, when it:
+  - uses a variable that is not defined;
+  - `CREATE`s or `MERGE`s a bound node alone or with new labels or properties, or a bound
+    relationship;
+  - `MERGE`s a relationship without exactly one type;
+  - aggregates in a `WHERE` or in a procedure's arguments;
+  - names two columns of one projection alike, or two `YIELD` columns alike;
+  - after `DISTINCT`, sorts by something that is not projected.
 - A whole query is one transaction, `UNION` included: either all of its writes are kept or none
   are.
 
@@ -91,7 +107,9 @@ The literals are:
 | --- | --- |
 | `x.key` | a property of a node or relationship, or an entry of a map; `null` if missing |
 | `x[i]` | a list element (a negative index counts from the end, an index out of range gives `null`), or a map entry by a string key |
-| `x[from..to]` | a list slice; either end may be left out, and negative values count from the end |
+| `x[from..to]` | a list slice; either end may be left out, and negative values count from the end; a `null` end gives `null` |
+| `n:Label`, `n:A:B` | true if the node has every label (`null` for `null`) |
+| `n {.name, .*, key: expression, variable}` | a map projection: the map built from the selectors, in order — a property (`.name`, `null` if missing), every property (`.*`), a computed entry, or a variable under its own name. It works on nodes, relationships and maps; on `null` it gives `null` |
 
 ### Operators, by precedence (tightest first)
 
@@ -148,7 +166,7 @@ before the query runs.
 | Group | Functions |
 | --- | --- |
 | Lists | `size(list)`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])`, `keys(map or entity)` |
-| Strings | `size(text)` (counts code points), `toLower`, `toUpper` (ASCII letters only), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
+| Strings | `size(text)` (counts code points), `toLower`, `toUpper` (full Unicode case mappings: `toUpper('straße')` is `'STRASSE'`), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
 | Conversion | `toString`, `toInteger` (truncates a float; `null` for a string that is not a number), `toFloat`, `toBoolean` |
 | Numbers | `abs`, `sign`, `round` (a float; halves round up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
 | Null | `coalesce(x, …)` returns the first argument that is not `null` |
@@ -167,7 +185,9 @@ The aggregates are:
 - `sum(x)`, an integer unless a float is summed;
 - `avg(x)`, `min(x)`, `max(x)`;
 - `collect(x)`, which builds a list;
-- `stDev(x)` and `stDevP(x)`, the sample and population standard deviation.
+- `stDev(x)` and `stDevP(x)`, the sample and population standard deviation;
+- `percentileDisc(x, p)` and `percentileCont(x, p)`, the percentile `p` (between 0 and 1) of the
+  numbers: the nearest value, or one interpolated between the two nearest.
 
 Each aggregate accepts `DISTINCT` to use each value only once: `count(DISTINCT x)`.
 
@@ -286,6 +306,9 @@ zones come from the system's time zone database.
 Procedure names are case-sensitive, as in Neo4j. The `options` of a full-text query are a map with
 `skip` and `limit`, non-negative integers.
 
+A `CALL` that is the whole query may leave out the parentheses: `CALL db.labels`. A procedure that
+takes arguments then takes each one from the query parameter of the same name.
+
 ## Schema commands
 
 Every property is indexed for equality and ranges without being asked. The one kind of index a
@@ -372,14 +395,9 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
 - `CALL { … }` subqueries and procedures other than those [listed](#procedures); `LOAD CSV` and
   `FOREACH`;
 - `shortestPath` and `allShortestPaths`;
-- label tests as expressions (`WHERE n:Label`); use `'Label' IN labels(n)` instead;
-- `RETURN *` and `WITH *`;
-- map projections (`n {.name, .age}`);
-- `COUNT { … }` subqueries; use `size([(a)-->(b) | b])` instead;
+- `COUNT { … }` subqueries, and `WITH` inside `EXISTS { … }`; use `size([(a)-->(b) | b])` instead;
 - the regular-expression operator `=~`;
-- `percentileCont` and `percentileDisc`;
 - the function `exists(n.property)`; use `n.property IS NOT NULL` instead;
-- the long sort keywords `ASCENDING` and `DESCENDING`; use `ASC` and `DESC` instead;
 - schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
   already indexed for equality and ranges;
 - parallel relationships of the same type between the same two nodes.

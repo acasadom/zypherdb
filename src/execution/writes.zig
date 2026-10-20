@@ -5,6 +5,7 @@ const Index = @import("../query/ast.zig").Index;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
+const Relationship = @import("../value.zig").Relationship;
 const GraphError = @import("../storage/graph.zig").GraphError;
 
 const Executor = @import("Executor.zig");
@@ -41,6 +42,21 @@ pub fn createPattern(self: *Executor, pattern: Index, bindings: *Bindings, creat
         if (variable_name.len > 0) try bindings.put(self.allocator, variable_name, .{ .node = id.* });
     }
     try applyEdges(self, chain, node_ids, bindings, creator);
+    const path_variable = self.ast.data(pattern).text;
+    if (path_variable.len > 0) try bindings.put(self.allocator, path_variable, try writtenPath(self, chain, node_ids));
+}
+
+/// The path a CREATE or MERGE pattern wrote, for its path variable
+/// (`CREATE p = (a)-[:R]->(b)`): its nodes and, between them, the
+/// relationships as `applyEdges` stored them.
+fn writtenPath(self: *Executor, chain: []const Index, node_ids: []const NodeId) ExecutionError!Value {
+    const relationships = try self.allocator.alloc(Relationship, node_ids.len - 1);
+    for (relationships, node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |*relationship, left_id, right_id, i| {
+        const edge_pattern = self.ast.data(chain[i * 2 + 1]).edge_pattern;
+        const reversed = edge_pattern.direction == .right_to_left;
+        relationship.* = .{ .src = if (reversed) right_id else left_id, .dst = if (reversed) left_id else right_id, .edge_type = edge_pattern.singleType().? };
+    }
+    return .{ .path = .{ .nodes = node_ids, .relationships = relationships } };
 }
 
 /// CREATE may reuse a bound node only as a relationship endpoint, as it is:
@@ -154,19 +170,19 @@ pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) Executi
             .set_item => {
                 const access = item_children[0];
                 const property = self.ast.data(access).text;
-                const name = try targetVariable(self, self.ast.nodeChildren(access)[0]);
+                const entity = try writeTarget(self, self.ast.nodeChildren(access)[0], bindings, "SET");
                 const value = try expressions.evaluate(self, item_children[1], bindings);
-                try setProperty(self, try targetEntity(self, name, bindings), property, value);
+                try setProperty(self, entity, property, value);
             },
             .set_properties => {
-                const target = try targetEntity(self, try targetVariable(self, item_children[0]), bindings);
+                const entity = try writeTarget(self, item_children[0], bindings, "SET");
                 const replace = !self.ast.data(item).boolean;
-                try setProperties(self, target, try expressions.evaluate(self, item_children[1], bindings), replace);
+                try setProperties(self, entity, try expressions.evaluate(self, item_children[1], bindings), replace);
             },
-            .label_reference => {
-                const name = try targetVariable(self, item_children[0]);
-                const id = bindings.getNode(name) orelse return error.TypeMismatch;
-                try self.graph.addLabel(id, self.ast.data(item).text);
+            .label_reference => switch (try writeTarget(self, item_children[0], bindings, "SET")) {
+                .node => |id| try self.graph.addLabel(id, self.ast.data(item).text),
+                .null => {},
+                else => return labelsOnNodesOnly(self),
             },
             else => {},
         }
@@ -175,15 +191,23 @@ pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) Executi
 
 /// The node or relationship a SET writes to (`null` from an OPTIONAL MATCH
 /// that found nothing: the item does nothing).
-fn targetEntity(self: *Executor, name: []const u8, bindings: *Bindings) ExecutionError!Value {
-    const target = bindings.get(name) orelse return error.UnknownVariable;
-    return switch (target) {
-        .node, .relationship, .null => target,
+/// What a SET, REMOVE or DELETE item writes to: `expression`'s value, a node
+/// or a relationship, or null (from an OPTIONAL MATCH that found nothing:
+/// the item then does nothing).
+fn writeTarget(self: *Executor, expression: Index, bindings: *Bindings, clause: []const u8) ExecutionError!Value {
+    const value = try expressions.evaluate(self, expression, bindings);
+    return switch (value) {
+        .node, .relationship, .null => value,
         else => {
-            self.fail(.type_mismatch, "SET writes to a node or a relationship; '{s}' is neither", .{name});
+            self.fail(.type_mismatch, "{s} writes to a node or a relationship, not to a {s}", .{ clause, value.typeName() });
             return error.TypeMismatch;
         },
     };
+}
+
+fn labelsOnNodesOnly(self: *Executor) ExecutionError {
+    self.fail(.type_mismatch, "only nodes have labels", .{});
+    return error.TypeMismatch;
 }
 
 fn setProperty(self: *Executor, target: Value, name: []const u8, value: Value) ExecutionError!void {
@@ -222,18 +246,16 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
         switch (self.ast.kind(item)) {
             .property_access => {
                 const property = self.ast.data(item).text;
-                const name = try targetVariable(self, self.ast.nodeChildren(item)[0]);
-                switch (bindings.get(name) orelse return error.UnknownVariable) {
+                switch (try writeTarget(self, self.ast.nodeChildren(item)[0], bindings, "REMOVE")) {
                     .node => |id| try self.graph.removeProperty(id, property),
                     .relationship => |r| try self.graph.removeEdgeProperty(r.src, r.dst, r.edge_type, property),
-                    else => return error.TypeMismatch,
+                    else => {},
                 }
             },
-            .label_reference => {
-                const label = self.ast.data(item).text;
-                const name = try targetVariable(self, self.ast.nodeChildren(item)[0]);
-                const id = bindings.getNode(name) orelse return error.UnknownVariable;
-                try self.graph.removeLabel(id, label);
+            .label_reference => switch (try writeTarget(self, self.ast.nodeChildren(item)[0], bindings, "REMOVE")) {
+                .node => |id| try self.graph.removeLabel(id, self.ast.data(item).text),
+                .null => {},
+                else => return labelsOnNodesOnly(self),
             },
             else => {},
         }
@@ -242,32 +264,44 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
 
 pub fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) ExecutionError!void {
     const detach = self.ast.data(delete_clause).delete.detach;
-    for (self.ast.nodeChildren(delete_clause)) |item| {
-        const object = self.ast.nodeChildren(item)[0];
-        const name = self.ast.data(object).text;
-        const id = switch (bindings.get(name) orelse return error.UnknownVariable) {
-            .node => |id| id,
-            .relationship => |r| {
-                try self.graph.deleteEdge(r.src, r.dst, r.edge_type);
-                continue;
-            },
-            .null => continue, // e.g. from an OPTIONAL MATCH that found nothing
-            else => {
-                self.fail(.type_mismatch, "DELETE needs a node or a relationship, '{s}' is neither", .{name});
-                return error.TypeMismatch;
-            },
-        };
-        if (detach) {
-            try self.graph.deleteNodeDetach(id);
-        } else {
-            self.graph.deleteNode(id) catch |err| {
-                if (err == error.NodeStillConnected) {
-                    self.fail(.node_still_connected, "node '{s}' still has relationships (use DETACH DELETE)", .{name});
-                }
-                return err;
-            };
+    const items = self.ast.nodeChildren(delete_clause);
+    const values = try self.allocator.alloc(Value, items.len);
+    for (values, items) |*value, item| value.* = try expressions.evaluate(self, self.ast.nodeChildren(item)[0], bindings);
+    // Every relationship first, then the nodes: a node is refused only if
+    // something this DELETE does not remove still connects it.
+    for (values) |value| switch (value) {
+        .relationship => |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
+        .path => |path| for (path.relationships) |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
+        .node, .null => {}, // null: e.g. from an OPTIONAL MATCH that found nothing
+        else => {
+            self.fail(.type_mismatch, "DELETE needs a node, a relationship or a path, not a {s}", .{value.typeName()});
+            return error.TypeMismatch;
+        },
+    };
+    for (values, items) |value, item| switch (value) {
+        .node => |id| {
+            // How a refusal names the node: by its variable, when it has one.
+            const expression = self.ast.nodeChildren(item)[0];
+            const name = if (self.ast.kind(expression) == .variable) self.ast.data(expression).text else "";
+            try deleteNode(self, id, detach, name);
+        },
+        .path => |path| for (path.nodes) |id| try deleteNode(self, id, detach, ""),
+        else => {},
+    };
+}
+
+fn deleteNode(self: *Executor, id: NodeId, detach: bool, name: []const u8) ExecutionError!void {
+    if (detach) return self.graph.deleteNodeDetach(id);
+    self.graph.deleteNode(id) catch |err| {
+        if (err == error.NodeStillConnected) {
+            if (name.len > 0) {
+                self.fail(.node_still_connected, "node '{s}' still has relationships (use DETACH DELETE)", .{name});
+            } else {
+                self.fail(.node_still_connected, "a node to delete still has relationships (use DETACH DELETE)", .{});
+            }
         }
-    }
+        return err;
+    };
 }
 
 /// Sets a node property, explaining an unstorable value in the diagnostic.
@@ -302,13 +336,4 @@ fn rejectNullPropertiesOf(self: *Executor, pattern_index: Index, bindings: *Bind
             return error.InvalidExpression;
         }
     }
-}
-
-/// The variable a SET or REMOVE item writes to (`n` in `n.x = 1`).
-fn targetVariable(self: *Executor, object: Index) ExecutionError![]const u8 {
-    if (self.ast.kind(object) != .variable) {
-        self.fail(.invalid_expression, "SET and REMOVE write to a variable's property", .{});
-        return error.InvalidExpression;
-    }
-    return self.ast.data(object).text;
 }

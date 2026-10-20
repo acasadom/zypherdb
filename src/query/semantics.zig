@@ -27,7 +27,12 @@ const procedures = @import("procedures.zig");
 
 pub const SemanticError = Allocator.Error || error{InvalidExpression};
 
-const Kind = enum { node, relationship, path, value };
+/// `value` is something that is not an entity (a literal, arithmetic);
+/// `any` is not known until the query runs (null, a function's result, a
+/// list's element), so any use of it is accepted here.
+const Kind = enum { node, relationship, path, value, any };
+
+const Star = struct { projection: Index, names: []const []const u8 };
 
 const Scope = struct {
     names: std.StringHashMapUnmanaged(Kind) = .empty,
@@ -37,6 +42,14 @@ const Scope = struct {
     }
 };
 
+/// An expression that can never be a node, relationship or path.
+fn isPlainValue(ast: *const Ast, expression: Index) bool {
+    return switch (ast.kind(expression)) {
+        .integer_literal, .float_literal, .string_literal, .boolean_literal, .list_literal, .map_literal, .binary_operation, .unary_operation, .map_projection => true,
+        else => false,
+    };
+}
+
 /// What is known statically about an expression's type.
 const StaticType = enum { number, string, boolean, list, map };
 
@@ -44,9 +57,13 @@ const Checker = struct {
     ast: *const Ast,
     allocator: Allocator,
     diagnostic: ?*Diagnostic,
+    /// The procedures defined besides the built-in ones.
+    table_procedures: []const procedures.TableProcedure = &.{},
     scope: Scope = .{},
     /// Comprehension and quantifier variables in scope with a known type.
     local_types: std.ArrayList(struct { name: []const u8, type: StaticType }) = .empty,
+    /// The `*` projections met, each with the variables in scope there.
+    stars: std.ArrayList(Star) = .empty,
     /// Nesting depth of comprehensions and quantifiers being checked.
     iteration_depth: usize = 0,
     /// Variables local to the expression being checked: of comprehensions,
@@ -62,7 +79,7 @@ const Checker = struct {
     fn use(self: *Checker, name: []const u8, kind: Kind) SemanticError!void {
         if (name.len == 0) return;
         if (self.scope.kindOf(name)) |existing| {
-            if (existing != kind) {
+            if (existing != kind and existing != .any) {
                 return self.fail("variable '{s}' is a {s}; it cannot be used as a {s}", .{ name, @tagName(existing), @tagName(kind) });
             }
             return;
@@ -70,8 +87,19 @@ const Checker = struct {
         try self.scope.names.put(self.allocator, name, kind);
     }
 
+    fn failUnknown(self: *Checker, name: []const u8) SemanticError {
+        if (self.diagnostic) |d| d.set(.unknown_variable, 0, "unknown variable '{s}'", .{name});
+        return error.InvalidExpression;
+    }
+
+    const PatternUse = enum { match, create, merge };
+
     /// Checks the patterns of one MATCH / OPTIONAL MATCH / CREATE / MERGE.
-    fn checkPatterns(self: *Checker, patterns: []const Index, reading: bool) SemanticError!void {
+    /// A written pattern can only reuse a bound node as an endpoint, as it is
+    /// (no new labels or properties), and cannot reuse a relationship.
+    fn checkPatterns(self: *Checker, patterns: []const Index, pattern_use: PatternUse) SemanticError!void {
+        const reading = pattern_use == .match;
+        if (!reading) for (patterns) |pattern| try self.checkWrittenPattern(pattern, pattern_use);
         var relationships = std.StringHashMapUnmanaged(void).empty;
         defer relationships.deinit(self.allocator);
         for (patterns) |pattern| {
@@ -100,18 +128,68 @@ const Checker = struct {
         }
     }
 
+    fn checkWrittenPattern(self: *Checker, pattern: Index, pattern_use: PatternUse) SemanticError!void {
+        const verb = if (pattern_use == .merge) "MERGE" else "CREATE";
+        const elements = self.ast.nodeChildren(pattern);
+        for (elements) |element| switch (self.ast.kind(element)) {
+            .node_pattern => {
+                const node = self.ast.data(element).node_pattern;
+                if (node.variable_name.len == 0 or self.scope.kindOf(node.variable_name) == null) continue;
+                if (elements.len == 1) return self.fail("{s} of node '{s}', which is already bound", .{ verb, node.variable_name });
+                if (node.labels.len > 0 or node.has_map) {
+                    return self.fail("{s} cannot add labels or properties to '{s}', which is already bound", .{ verb, node.variable_name });
+                }
+            },
+            .edge_pattern => {
+                const edge = self.ast.data(element).edge_pattern;
+                if (edge.variable_name.len > 0 and self.scope.kindOf(edge.variable_name) != null) {
+                    return self.fail("{s} of relationship '{s}', which is already bound", .{ verb, edge.variable_name });
+                }
+                if (edge.edge_types.len != 1) return self.fail("{s} needs a relationship with exactly one type", .{verb});
+            },
+            else => {},
+        };
+    }
+
     /// WITH replaces the scope by its projected names: a projected variable
     /// keeps its kind, anything else is a value.
+    /// True if `projection` starts with `*`.
+    fn hasStar(self: *const Checker, projection: Index) bool {
+        const data = self.ast.data(projection);
+        return data == .boolean and data.boolean;
+    }
+
+    /// Records the variables a `*` projection stands for: those in scope,
+    /// sorted (as Neo4j orders its columns).
+    fn recordStar(self: *Checker, projection: Index, in_return: bool) SemanticError!void {
+        if (!self.hasStar(projection)) return;
+        var names = std.ArrayList([]const u8).empty;
+        var iterator = self.scope.names.keyIterator();
+        while (iterator.next()) |name| try names.append(self.allocator, name.*);
+        if (names.items.len == 0 and in_return) return self.fail("RETURN * needs a variable in scope", .{});
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+        try self.stars.append(self.allocator, .{ .projection = projection, .names = names.items });
+    }
+
     fn projectScope(self: *Checker, projection: Index) SemanticError!void {
         var next = Scope{};
+        // `WITH *` keeps every variable in scope.
+        if (self.hasStar(projection)) {
+            var entries = self.scope.names.iterator();
+            while (entries.next()) |entry| try next.names.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
         for (self.ast.nodeChildren(projection)) |item| {
             const expression = self.ast.nodeChildren(item)[0];
             const alias = self.ast.data(item).text;
-            var kind: Kind = .value;
+            var kind: Kind = if (isPlainValue(self.ast, expression)) .value else .any;
             var name = alias;
             if (self.ast.kind(expression) == .variable) {
                 const source = self.ast.data(expression).text;
-                kind = self.scope.kindOf(source) orelse .value;
+                kind = self.scope.kindOf(source) orelse .any;
                 if (name.len == 0) name = source;
             }
             if (name.len > 0) try next.names.put(self.allocator, name, kind);
@@ -127,6 +205,10 @@ const Checker = struct {
         const children = self.ast.nodeChildren(index);
         switch (self.ast.kind(index)) {
             .list_comprehension, .quantifier => return self.checkIteration(index),
+            .variable => {
+                const name = self.ast.data(index).text;
+                if (self.scope.kindOf(name) == null and !self.isLocal(name)) return self.failUnknown(name);
+            },
             // A pattern predicate only tests variables already bound.
             .pattern_predicate => for (self.ast.nodeChildren(children[0])) |element| {
                 const name = elementName(self.ast, element);
@@ -315,7 +397,7 @@ const Checker = struct {
         const actual = self.scope.kindOf(variable) orelse return;
         for (entity_functions) |function| {
             if (!std.ascii.eqlIgnoreCase(function.name, name)) continue;
-            if (actual != function.kind and actual != .value) {
+            if (actual != function.kind and actual != .value and actual != .any) {
                 return self.fail("{s}() takes a {s}, but '{s}' is a {s}", .{ function.name, @tagName(function.kind), variable, @tagName(actual) });
             }
         }
@@ -326,16 +408,31 @@ const Checker = struct {
     /// CALL that yields every column ends the query.
     fn checkCall(self: *Checker, clause: Index, last: bool) SemanticError!void {
         const call = self.ast.data(clause).call;
-        const signature = procedures.find(call.procedure) orelse return self.fail("unknown procedure '{s}'", .{call.procedure});
-        if (call.argument_count < signature.min_arguments or call.argument_count > signature.max_arguments) {
+        const signature = procedures.find(call.procedure, self.table_procedures) orelse return self.fail("unknown procedure '{s}'", .{call.procedure});
+        const children = self.ast.nodeChildren(clause);
+        if (call.implicit_arguments) {
+            // Only a CALL that is the whole query takes its arguments from the parameters.
+            if (signature.max_arguments > 0 and !(call.yield_all and last)) {
+                return self.fail("{s} needs its arguments in parentheses here: CALL {s}(...)", .{ call.procedure, call.procedure });
+            }
+        } else if (call.argument_count < signature.min_arguments or call.argument_count > signature.max_arguments) {
             return self.fail("{s}() takes {d} to {d} arguments, not {d}", .{ call.procedure, signature.min_arguments, signature.max_arguments, call.argument_count });
         }
+        for (children[0..call.argument_count]) |expression| {
+            if (containsAggregate(self.ast, expression)) return self.fail("an aggregate cannot be a procedure's argument; aggregate in a WITH first", .{});
+        }
+        for (signature.arguments[0..@min(signature.arguments.len, call.argument_count)], children[0..@min(signature.arguments.len, call.argument_count)]) |argument, expression| {
+            if (!literalFits(self.ast, expression, argument.type)) {
+                return self.fail("{s}(): the argument '{s}' must be of type {s}", .{ call.procedure, argument.name, @tagName(argument.type) });
+            }
+        }
         if (call.yield_all) {
-            if (!last) return self.fail("a CALL inside a query must YIELD the columns it uses: CALL {s}(...) YIELD ...", .{call.procedure});
+            // A procedure without columns needs no YIELD anywhere.
+            if (!last and signature.columns.len > 0) return self.fail("a CALL inside a query must YIELD the columns it uses: CALL {s}(...) YIELD ...", .{call.procedure});
             return;
         }
-        const children = self.ast.nodeChildren(clause);
-        for (children[call.argument_count .. children.len - 1]) |item| {
+        const yield_items = children[call.argument_count .. children.len - 1];
+        for (yield_items, 0..) |item, i| {
             const yield_item = self.ast.data(item).yield_;
             const column = signature.column(yield_item.column) orelse return self.fail("{s}() has no column '{s}'", .{ call.procedure, yield_item.column });
             const kind: Kind = switch (column.kind) {
@@ -343,7 +440,112 @@ const Checker = struct {
                 .relationship => .relationship,
                 .value => .value,
             };
-            try self.use(if (yield_item.alias.len > 0) yield_item.alias else yield_item.column, kind);
+            const name = yieldedName(self.ast, item);
+            for (yield_items[0..i]) |earlier| {
+                if (std.mem.eql(u8, yieldedName(self.ast, earlier), name)) return self.fail("YIELD binds '{s}' twice", .{name});
+            }
+            if (self.scope.kindOf(name) != null) return self.fail("YIELD binds '{s}', which is already bound", .{name});
+            try self.use(name, kind);
+        }
+    }
+
+    fn yieldedName(ast: *const Ast, item: Index) []const u8 {
+        const yield_item = ast.data(item).yield_;
+        return if (yield_item.alias.len > 0) yield_item.alias else yield_item.column;
+    }
+
+    /// False for a literal that can never be of `declared` type (null fits
+    /// any; an integer fits FLOAT and NUMBER); other expressions are checked
+    /// when they run.
+    fn literalFits(ast: *const Ast, expression: Index, declared: procedures.ArgumentType) bool {
+        const accepted: []const procedures.ArgumentType = switch (ast.kind(expression)) {
+            .integer_literal => &.{ .integer, .float, .number },
+            .float_literal => &.{ .float, .number },
+            .string_literal => &.{.string},
+            .boolean_literal => &.{.boolean},
+            .list_literal => &.{.list},
+            .map_literal => &.{.map},
+            else => return true,
+        };
+        return declared == .any or std.mem.indexOfScalar(procedures.ArgumentType, accepted, declared) != null;
+    }
+
+    /// A WHERE is a condition on each row: no aggregates, and not a bare
+    /// node, relationship or path (`WHERE (n)`).
+    fn checkWhere(self: *Checker, where: Index) SemanticError!void {
+        if (containsAggregate(self.ast, where)) return self.fail("an aggregate cannot be used in WHERE; aggregate in a WITH, then filter", .{});
+        if (self.ast.kind(where) == .variable) {
+            const kind = self.scope.kindOf(self.ast.data(where).text) orelse return;
+            if (kind == .node or kind == .relationship or kind == .path) return self.fail("WHERE needs a condition, not a {s}", .{@tagName(kind)});
+        }
+    }
+
+    /// The projection of a WITH or RETURN sees the variables in scope; its
+    /// WHERE and ORDER BY see its names as well, except that after DISTINCT
+    /// the ORDER BY sees only what is projected.
+    fn checkProjectionClause(self: *Checker, clause: Index, distinct: bool) SemanticError!void {
+        const children = self.ast.nodeChildren(clause);
+        const projection = children[0];
+        try self.checkExpressions(projection);
+        try self.checkColumnNames(projection);
+
+        var shadowed = std.ArrayList(struct { name: []const u8, kind: ?Kind }).empty;
+        defer shadowed.deinit(self.allocator);
+        for (self.ast.nodeChildren(projection)) |item| {
+            const alias = self.ast.data(item).text;
+            if (alias.len == 0) continue;
+            try shadowed.append(self.allocator, .{ .name = alias, .kind = self.scope.kindOf(alias) });
+            try self.scope.names.put(self.allocator, alias, .any);
+        }
+        defer {
+            var i = shadowed.items.len;
+            while (i > 0) {
+                i -= 1;
+                const entry = shadowed.items[i];
+                if (entry.kind) |kind| self.scope.names.putAssumeCapacity(entry.name, kind) else _ = self.scope.names.remove(entry.name);
+            }
+        }
+        for (children[1..]) |child| {
+            if (distinct and !self.hasStar(projection) and self.ast.kind(child) == .order_by) try self.checkProjectedOnly(projection, child);
+            try self.checkExpressions(child);
+        }
+    }
+
+    /// Every variable in `index` is a projected name, or is inside a part
+    /// that repeats a projected expression.
+    fn checkProjectedOnly(self: *Checker, projection: Index, index: Index) SemanticError!void {
+        for (self.ast.nodeChildren(projection)) |item| {
+            if (self.ast.sameExpression(self.ast.nodeChildren(item)[0], index)) return;
+        }
+        if (self.ast.kind(index) == .variable) {
+            const name = self.ast.data(index).text;
+            if (!self.isLocal(name) and !projectsName(self.ast, projection, name)) return self.failUnknown(name);
+            return;
+        }
+        for (self.ast.nodeChildren(index)) |child| try self.checkProjectedOnly(projection, child);
+    }
+
+    /// No two columns of a projection have the same name.
+    fn checkColumnNames(self: *Checker, projection: Index) SemanticError!void {
+        const items = self.ast.nodeChildren(projection);
+        for (items, 0..) |item, i| {
+            const name = columnName(self.ast, item) orelse continue;
+            for (items[0..i]) |earlier| {
+                const other = columnName(self.ast, earlier) orelse continue;
+                if (std.mem.eql(u8, name, other)) return self.fail("two columns are named '{s}'", .{name});
+            }
+        }
+    }
+
+    /// DELETE takes a node, a relationship or a path; an expression that can
+    /// only be something else fails here (DELETE of a label is REMOVE's job).
+    fn checkDeleted(self: *Checker, expression: Index) SemanticError!void {
+        switch (self.ast.kind(expression)) {
+            .label_predicate => return self.fail("DELETE removes nodes, relationships and paths; use REMOVE n:Label to remove a label", .{}),
+            .integer_literal, .float_literal, .string_literal, .boolean_literal, .list_literal, .map_literal, .binary_operation, .unary_operation, .map_projection => {
+                return self.fail("DELETE needs a node, a relationship or a path", .{});
+            },
+            else => {},
         }
     }
 
@@ -355,22 +557,33 @@ const Checker = struct {
         for (query_clauses, 0..) |clause, position| {
             const children = self.ast.nodeChildren(clause);
             switch (self.ast.kind(clause)) {
+                .delete_clause => for (children) |item| try self.checkDeleted(self.ast.nodeChildren(item)[0]),
                 .call_clause => {
                     try self.checkCall(clause, position + 1 == query_clauses.len);
                     try self.checkExpressions(clause);
                     continue;
                 },
-                .match_clause, .optional_match_clause => try self.checkPatterns(children[0 .. children.len - 1], true),
-                .create_clause => try self.checkPatterns(children, false),
-                .merge_clause => try self.checkPatterns(children[0..1], false),
+                .match_clause, .optional_match_clause => {
+                    try self.checkPatterns(children[0 .. children.len - 1], .match);
+                    try self.checkWhere(children[children.len - 1]);
+                },
+                .create_clause => try self.checkPatterns(children, .create),
+                .merge_clause => try self.checkPatterns(children[0..1], .merge),
                 .unwind_clause => {
                     try self.checkExpressions(clause);
-                    try self.use(self.ast.data(clause).unwind.variable_name, .value);
+                    try self.use(self.ast.data(clause).unwind.variable_name, .any);
                     continue;
                 },
                 .with_clause => {
-                    try self.checkExpressions(clause);
+                    try self.recordStar(children[0], false);
+                    try self.checkWhere(children[children.len - 1]);
+                    try self.checkProjectionClause(clause, self.ast.data(clause).with_.distinct);
                     try self.projectScope(children[0]);
+                    continue;
+                },
+                .return_clause => {
+                    try self.recordStar(children[0], true);
+                    try self.checkProjectionClause(clause, self.ast.data(clause).return_.distinct);
                     continue;
                 },
                 else => {},
@@ -382,9 +595,84 @@ const Checker = struct {
 
 /// Checks `query`; on a violation fills `diagnostic` and returns
 /// `error.InvalidExpression`. O(size of the query).
-pub fn check(ast: *const Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagnostic) SemanticError!void {
-    var checker = Checker{ .ast = ast, .allocator = allocator, .diagnostic = diagnostic };
+pub fn check(ast: *Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagnostic, table_procedures: []const procedures.TableProcedure) SemanticError!void {
+    var checker = Checker{ .ast = ast, .allocator = allocator, .diagnostic = diagnostic, .table_procedures = table_procedures };
     defer checker.scope.names.deinit(allocator);
     defer checker.local_types.deinit(allocator);
+    defer checker.stars.deinit(allocator);
     try checker.checkQuery(query);
+    // `*` becomes the variables it stands for, so execution sees plain items.
+    for (checker.stars.items) |star| try expandStar(ast, query, star);
+    for (ast.nodeChildren(query)) |clause| try nameProjectedInOrderBy(ast, clause);
+}
+
+/// In the ORDER BY of a WITH or RETURN, each part that repeats a projected
+/// expression becomes the column's name: `WITH a.name AS name, count(*) AS c
+/// ORDER BY a.name + 'C'` sorts by `name + 'C'`, which the projected rows can
+/// evaluate after grouping has removed `a`.
+fn nameProjectedInOrderBy(ast: *Ast, clause: Index) Allocator.Error!void {
+    if (ast.kind(clause) != .with_clause and ast.kind(clause) != .return_clause) return;
+    const children = ast.nodeChildren(clause);
+    if (children.len < 2 or ast.kind(children[1]) != .order_by) return;
+    const projection = children[0];
+    for (ast.nodeChildren(children[1])) |order_item| try nameProjectedParts(ast, projection, order_item);
+}
+
+fn nameProjectedParts(ast: *Ast, projection: Index, parent: Index) Allocator.Error!void {
+    for (ast.nodeChildren(parent)) |child| {
+        if (projectedName(ast, projection, child)) |name| {
+            const variable = try ast.addNode(.variable, .{ .text = name }, &.{});
+            ast.replaceChild(parent, child, variable);
+        } else {
+            try nameProjectedParts(ast, projection, child);
+        }
+    }
+}
+
+/// The alias of the projection item whose expression is `expression`, if it
+/// has one (a projected variable needs no renaming; an aggregate stays, for
+/// the checks on aggregating expressions).
+fn projectedName(ast: *const Ast, projection: Index, expression: Index) ?[]const u8 {
+    if (ast.kind(expression) == .variable or containsAggregate(ast, expression)) return null;
+    for (ast.nodeChildren(projection)) |item| {
+        const alias = ast.data(item).text;
+        if (alias.len > 0 and ast.sameExpression(ast.nodeChildren(item)[0], expression)) return alias;
+    }
+    return null;
+}
+
+/// Replaces a `*` projection with one that lists `star.names` (as variables)
+/// and then the projection's own items.
+fn expandStar(ast: *Ast, query: Index, star: Star) Allocator.Error!void {
+    var items = std.ArrayList(Index).empty;
+    defer items.deinit(ast.allocator);
+    for (star.names) |name| {
+        const variable = try ast.addNode(.variable, .{ .text = try ast.intern(name) }, &.{});
+        try items.append(ast.allocator, try ast.addNode(.projection_item, .{ .text = "" }, &.{variable}));
+    }
+    try items.appendSlice(ast.allocator, ast.nodeChildren(star.projection));
+    const expanded = try ast.addNode(.projection, .{ .none = {} }, items.items);
+    for (ast.nodeChildren(query)) |clause| ast.replaceChild(clause, star.projection, expanded);
+}
+
+fn containsAggregate(ast: *const Ast, expression: Index) bool {
+    if (ast.kind(expression) == .aggregate) return true;
+    for (ast.nodeChildren(expression)) |child| if (containsAggregate(ast, child)) return true;
+    return false;
+}
+
+/// The name of a projection item's column: its alias, or the variable it
+/// projects (null for an expression without an alias).
+fn columnName(ast: *const Ast, item: Index) ?[]const u8 {
+    const alias = ast.data(item).text;
+    if (alias.len > 0) return alias;
+    const expression = ast.nodeChildren(item)[0];
+    return if (ast.kind(expression) == .variable) ast.data(expression).text else null;
+}
+
+fn projectsName(ast: *const Ast, projection: Index, name: []const u8) bool {
+    for (ast.nodeChildren(projection)) |item| {
+        if (columnName(ast, item)) |column| if (std.mem.eql(u8, column, name)) return true;
+    }
+    return false;
 }

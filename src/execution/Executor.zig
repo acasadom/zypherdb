@@ -23,6 +23,7 @@ const Relationship = @import("../value.zig").Relationship;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const ErrorCode = @import("../diagnostics.zig").ErrorCode;
 const semantics = @import("../query/semantics.zig");
+const procedure_signatures = @import("../query/procedures.zig");
 
 const ValueGrouping = @import("aggregation.zig").ValueGrouping;
 const AggregationPlan = @import("aggregation.zig").AggregationPlan;
@@ -97,6 +98,8 @@ pipeline_stage: usize,
 stream_emitted: usize,
 /// The path variable of the pattern being matched (`p = ...`), or empty.
 path_variable: []const u8,
+/// Procedures defined besides the built-in ones (the TCK's test procedures).
+table_procedures: []const procedure_signatures.TableProcedure = &.{},
 /// Relationship uniqueness: the edges bound on the current search branch of
 /// the MATCH being run.
 used_edges: std.ArrayList(Relationship),
@@ -154,7 +157,7 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     const is_union = self.ast.kind(root) == .union_query;
     const queries: []const Index = if (is_union) self.ast.nodeChildren(root) else &.{root};
     for (queries) |query| {
-        try semantics.check(self.ast, query, self.allocator, self.diagnostic);
+        try semantics.check(self.ast, query, self.allocator, self.diagnostic, self.table_procedures);
         try functions.checkCalls(self.ast, query, self.diagnostic);
     }
     self.reset();

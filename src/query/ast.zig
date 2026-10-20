@@ -107,6 +107,9 @@ pub const AggregateKind = enum {
     min,
     max,
     collect,
+    /// `percentileDisc(x, p)`, `percentileCont(x, p)`: the second child is p.
+    percentileDisc,
+    percentileCont,
 };
 
 /// Written direction of an edge pattern.
@@ -134,7 +137,7 @@ pub const NodeKind = enum {
     list_literal,
     map_literal, // `{key: value, ...}`; children are `property` nodes
     subscript, // `value[index]`: children [value, index]
-    slice, // `list[from..to]`: children [list, from, to] (null_literal for an open end)
+    slice, // `list[from..to]`: children [list, from, to] (null_literal for an open end); data.int: the written ends (1 from, 2 to)
     list_comprehension, // `[x IN list WHERE predicate | projection]`: data.text is x; children [list, predicate, projection]
     quantifier, // `any(x IN list WHERE predicate)`: data.quantifier; children [list, predicate]
     function_call, // `name(args...)`; data.text is the name as written, children the arguments
@@ -166,6 +169,16 @@ pub const NodeKind = enum {
     order_item,
     limit,
     skip,
+    /// `x {.a, .*, key: expression, other}`: a map built from `x` (a node, a
+    /// relationship or a map); children [x, item...], each item a `property`
+    /// (key: expression), a `map_projection_property` (`.a`, data.text) or a
+    /// `map_projection_all` (`.*`).
+    map_projection,
+    map_projection_property,
+    map_projection_all,
+    /// `x:A:B`: true if node `x` has every label (relationship `x`: its type is
+    /// each); data.labels; children [x].
+    label_predicate,
     /// `CALL proc(args) [YIELD ...] [WHERE ...]`: data.call; children are the
     /// arguments, then the `yield_item`s, then the WHERE (a `true` literal
     /// when there is none).
@@ -191,7 +204,8 @@ pub const Data = union(enum) {
     /// A single string: a literal value, an identifier (variable, property,
     /// label, edge type) or a RETURN alias.
     text: []const u8,
-    node_pattern: struct { variable_name: []const u8, labels: []const []const u8 },
+    /// `has_map`: a property map was written, even an empty one (`(n {})`).
+    node_pattern: struct { variable_name: []const u8, labels: []const []const u8, has_map: bool = false },
     edge_pattern: EdgePatternData,
     binary_operator: BinaryOperator,
     unary_operator: UnaryOperator,
@@ -207,6 +221,9 @@ pub const Data = union(enum) {
         argument_count: u32,
         /// No YIELD: every column of the procedure, as the query's result.
         yield_all: bool,
+        /// `CALL proc` without parentheses: the arguments are the query
+        /// parameters named as the procedure's arguments.
+        implicit_arguments: bool = false,
     },
     yield_: struct { column: []const u8, alias: []const u8 },
     fulltext_index: struct {
@@ -218,6 +235,7 @@ pub const Data = union(enum) {
         if_not_exists: bool,
     },
     drop_index: struct { name: []const u8, if_exists: bool },
+    labels: []const []const u8,
 };
 
 pub const QuantifierKind = enum { any, all, none, single };
@@ -307,6 +325,14 @@ pub const Ast = struct {
     }
 
     /// The child indices of `index`, in order.
+    /// Makes `parent`'s child `old` be `new` instead (if it has it).
+    pub fn replaceChild(self: *Ast, parent: Index, old: Index, new: Index) void {
+        const n = self.nodes.items[parent];
+        for (self.children.items[n.first_child .. n.first_child + n.child_count]) |*child| {
+            if (child.* == old) child.* = new;
+        }
+    }
+
     pub fn nodeChildren(self: *const Ast, index: Index) []const Index {
         const n = self.nodes.items[index];
         return self.children.items[n.first_child .. n.first_child + n.child_count];

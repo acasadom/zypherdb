@@ -160,6 +160,9 @@ pub fn accumulateRow(self: *Executor, grouping: *ValueGrouping, aggregation: Agg
     const states = try grouping.statesFor(self.allocator, keys, aggregation.kinds);
     for (states, aggregation.aggregates) |*state, call| {
         const arguments = self.ast.nodeChildren(call);
+        if (state.kind == .percentileDisc or state.kind == .percentileCont) {
+            state.percentile = try percentileArgument(self, try expressions.evaluate(self, arguments[1], bindings));
+        }
         try updateAggregate(self, state, try evaluateAggregateArgument(self, if (arguments.len > 0) arguments[0] else null, bindings));
     }
 }
@@ -256,7 +259,51 @@ pub fn updateAggregate(self: *Executor, state: *AggregateState, arg: Value) Exec
         },
         // Like every aggregate, collect skips nulls.
         .collect => if (arg != .null) try state.list.append(self.allocator, arg),
+        .percentileDisc, .percentileCont => switch (arg) {
+            .null => {},
+            .int, .float => try state.list.append(self.allocator, arg),
+            else => return notANumber(self, @tagName(state.kind)),
+        },
     }
+}
+
+/// A percentile: a number from 0 to 1.
+fn percentileArgument(self: *Executor, value: Value) ExecutionError!f64 {
+    const p: f64 = switch (value) {
+        .int => |n| @floatFromInt(n),
+        .float => |x| x,
+        else => return notANumber(self, "the percentile"),
+    };
+    if (!(p >= 0 and p <= 1)) {
+        self.fail(.invalid_expression, "a percentile is a number from 0.0 to 1.0, not {d}", .{p});
+        return error.InvalidExpression;
+    }
+    return p;
+}
+
+/// The percentile of `numbers` (sorted here), as Neo4j computes it:
+/// `percentileDisc` the value at index floor(p * n) (one less when p * n is
+/// a whole number other than 0), `percentileCont` interpolated at p * (n - 1).
+fn percentile(kind: AggregateKind, numbers: []Value, p: f64) Value {
+    if (numbers.len == 0) return .{ .null = {} };
+    std.mem.sort(Value, numbers, {}, struct {
+        fn lessThan(_: void, a: Value, b: Value) bool {
+            return Value.order(a, b) == .lt;
+        }
+    }.lessThan);
+    const count: f64 = @floatFromInt(numbers.len);
+    if (kind == .percentileDisc) {
+        const position = p * count;
+        const whole: usize = @intFromFloat(@floor(position));
+        const index = if (position != @floor(position) or whole == 0) whole else whole - 1;
+        return numbers[@min(index, numbers.len - 1)];
+    }
+    const position = p * (count - 1);
+    const below: usize = @intFromFloat(@floor(position));
+    const above: usize = @intFromFloat(@ceil(position));
+    const low = asFloat(numbers[below]);
+    if (below == above) return .{ .float = low };
+    return .{ .float = low + (asFloat(numbers[above]) - low) * (position - @floor(position)) };
 }
 
 fn notANumber(self: *Executor, function: []const u8) ExecutionError {
@@ -302,6 +349,8 @@ pub const ProjectionItem = union(enum) {
 
 pub const AggregateState = struct {
     kind: AggregateKind,
+    /// percentileDisc / percentileCont: the percentile asked for.
+    percentile: f64 = 0,
     /// `count(DISTINCT x)`: each value counts once; `seen` holds those met.
     distinct: bool = false,
     seen: std.HashMapUnmanaged(Value, void, ElementContext(Value), std.hash_map.default_max_load_percentage) = .empty,
@@ -365,5 +414,6 @@ pub fn aggregateResult(kind: AggregateKind, state: AggregateState) Value {
         .min => state.min orelse .{ .null = {} },
         .max => state.max orelse .{ .null = {} },
         .collect => .{ .list = state.list.items },
+        .percentileDisc, .percentileCont => percentile(kind, state.list.items, state.percentile),
     };
 }
