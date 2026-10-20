@@ -312,6 +312,15 @@ pub fn termEntities(graph: *Graph, arena: Allocator, name: []const u8, term: []c
     return if (raw.len == 8) std.mem.readInt(u64, raw[0..8], .big) else 0;
 }
 
+/// An entity's length in terms, per property (empty if not indexed).
+pub fn entityLengths(graph: *Graph, arena: Allocator, name: []const u8, entity: []const u8) StorageError![]const u32 {
+    const raw = (try graph.store.get(try entityKey(arena, document_marker, name, entity))) orelse return &.{};
+    defer graph.store.allocator.free(raw);
+    const lengths = try arena.alloc(u32, raw.len / 4);
+    for (lengths, 0..) |*length, i| length.* = std.mem.readInt(u32, raw[i * 4 ..][0..4], .big);
+    return lengths;
+}
+
 /// An entity's length in terms (over every property), 0 if not indexed.
 pub fn entityLength(graph: *Graph, arena: Allocator, name: []const u8, entity: []const u8) StorageError!u64 {
     const raw = (try graph.store.get(try entityKey(arena, document_marker, name, entity))) orelse return 0;
@@ -340,7 +349,7 @@ pub fn postingPrefix(arena: Allocator, name: []const u8, term: []const u8) Alloc
     return key.items;
 }
 
-fn postingKey(arena: Allocator, name: []const u8, term: []const u8, entity: []const u8) Allocator.Error![]u8 {
+pub fn postingKey(arena: Allocator, name: []const u8, term: []const u8, entity: []const u8) Allocator.Error![]u8 {
     var key = std.ArrayList(u8).fromOwnedSlice(try postingPrefix(arena, name, term));
     try key.appendSlice(arena, entity);
     return key.items;

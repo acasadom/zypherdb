@@ -134,7 +134,14 @@ fn queryIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, ar
             }
         }
     }
-    const hits = try fulltext_search.search(executor.graph, executor.allocator, definition, arguments[1].string);
+    var message: []const u8 = "";
+    const hits = fulltext_search.search(executor.graph, executor.allocator, definition, arguments[1].string, &message) catch |err| switch (err) {
+        error.InvalidQuery => {
+            executor.fail(.invalid_expression, "invalid full-text query: {s}", .{message});
+            return error.InvalidExpression;
+        },
+        else => |other| return other,
+    };
     const end = @min(hits.len, skip +| limit);
     if (skip >= end) return;
     for (hits[skip..end]) |hit| {

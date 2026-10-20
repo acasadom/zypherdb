@@ -172,3 +172,72 @@ test "full-text search finds, ranks and follows changes to nodes and relationshi
         try testing.expectEqual(@as(usize, 0), try store.countPrefix(prefix));
     }
 }
+
+test "full-text query syntax: phrases, prefixes, fuzzy terms, boolean operators, fields" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g,
+        \\CREATE (:Doc {id: 1, title: 'Laboratorio de nivel 3', body: 'Contención biológica estricta'}),
+        \\       (:Doc {id: 2, title: 'Nivel del agua', body: 'El nivel 3 no aplica; contencion de animales'}),
+        \\       (:Doc {id: 3, title: 'Animales', body: 'Normas del vivario y de contenedores'}),
+        \\       (:Doc {id: 4, title: 'Notas', body: 'precio: 3 euros'})
+    , &.{});
+    try expectQuery(&ast, &g, "CREATE FULLTEXT INDEX docs FOR (d:Doc) ON EACH [d.title, d.body]", &.{});
+
+    const Case = struct { []const u8, []const i64 };
+    const cases = [_]Case{
+        // A phrase needs its terms in a row, in one property.
+        .{ "\"nivel 3\"", &.{ 1, 2 } },
+        .{ "\"3 nivel\"", &.{} },
+        .{ "title:\"nivel 3\"", &.{1} },
+        // A word that splits in two is a phrase.
+        .{ "nivel-3", &.{ 1, 2 } },
+        // Prefix and fuzzy expansions.
+        .{ "conten*", &.{ 1, 2, 3 } },
+        .{ "contenedor*", &.{3} },
+        .{ "contension~", &.{ 1, 2 } },
+        .{ "laboratorios~1", &.{1} },
+        .{ "laboratorios~0", &.{} },
+        // Required, excluded, and the words for them.
+        .{ "+contencion -animales", &.{1} },
+        .{ "contencion AND animales", &.{2} },
+        .{ "animales NOT contencion", &.{3} },
+        .{ "-animales", &.{} },
+        .{ "(agua OR vivario) AND animales", &.{ 2, 3 } },
+        // Fields.
+        .{ "title:animales", &.{3} },
+        .{ "body:animales", &.{2} },
+        .{ "body:(precio OR agua)", &.{4} },
+        // Escapes.
+        .{ "precio\\:", &.{4} },
+    };
+    for (cases) |case| {
+        var expected = std.ArrayList([]const Value).empty;
+        defer {
+            for (expected.items) |row| testing.allocator.free(row);
+            expected.deinit(testing.allocator);
+        }
+        for (case[1]) |id| try expected.append(testing.allocator, try testing.allocator.dupe(Value, &.{.{ .int = id }}));
+        var text = std.ArrayList(u8).empty;
+        defer text.deinit(testing.allocator);
+        try text.print(testing.allocator, "CALL db.index.fulltext.queryNodes('docs', $q) YIELD node RETURN node.id", .{});
+        support.expectQueryWithParameters(&ast, &g, text.items, &.{.{ "q", string(case[0]) }}, expected.items) catch |err| {
+            std.debug.print("query {s}\n", .{case[0]});
+            return err;
+        };
+    }
+
+    // A boost raises a clause's share of the score.
+    try expectOrdered(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'agua animales^10') YIELD node RETURN node.id", &.{ &.{.{ .int = 3 }}, &.{.{ .int = 2 }} });
+    try expectOrdered(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'agua^10 animales') YIELD node RETURN node.id", &.{ &.{.{ .int = 2 }}, &.{.{ .int = 3 }} });
+    // Malformed queries and unknown fields fail with a message.
+    try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', '\"open') YIELD node RETURN node", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'author:x') YIELD node RETURN node", error.InvalidExpression);
+}

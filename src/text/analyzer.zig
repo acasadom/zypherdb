@@ -65,6 +65,17 @@ pub fn analyze(allocator: Allocator, analyzer: Analyzer, text: []const u8) Alloc
     return terms.items;
 }
 
+/// One word in its search form, as written in a query (a prefix or a fuzzy
+/// term): the folded word characters of `text`, without stemming.
+pub fn normalize(allocator: Allocator, text: []const u8) Allocator.Error![]const u8 {
+    var word = std.ArrayList(u8).empty;
+    var code_points = unicode.CodePoints{ .bytes = text };
+    while (code_points.next()) |code| {
+        if (unicode.isWordCharacter(code)) try appendSearchForm(allocator, &word, code) else if (code == '\'' and word.items.len > 0) try word.append(allocator, '\'');
+    }
+    return word.items;
+}
+
 fn appendSearchForm(allocator: Allocator, word: *std.ArrayList(u8), code: u21) Allocator.Error!void {
     var buffer: [4]u8 = undefined;
     if (unicode.searchForm(code)) |form| {

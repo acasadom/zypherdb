@@ -37,6 +37,7 @@ pub const temporal = struct {
 pub const text = struct {
     pub const analyzer = @import("text/analyzer.zig");
     pub const unicode = @import("text/unicode.zig");
+    pub const query = @import("text/query.zig");
 };
 
 pub const ast = @import("query/ast.zig");
