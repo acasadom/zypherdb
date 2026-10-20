@@ -605,7 +605,8 @@ pub const Parser = struct {
 
         var properties = std.ArrayList(Index).empty;
         defer properties.deinit(self.ast.allocator);
-        if (self.at(.left_brace)) {
+        const has_map = self.at(.left_brace);
+        if (has_map) {
             _ = self.advance();
             while (!self.at(.right_brace)) {
                 const name = try self.internIdentifier();
@@ -621,7 +622,7 @@ pub const Parser = struct {
         }
 
         try self.expect(.right_paren);
-        return self.ast.addNode(.node_pattern, .{ .node_pattern = .{ .variable_name = variable_name, .labels = labels_slice } }, properties.items);
+        return self.ast.addNode(.node_pattern, .{ .node_pattern = .{ .variable_name = variable_name, .labels = labels_slice, .has_map = has_map } }, properties.items);
     }
 
     const EdgeDetails = struct {

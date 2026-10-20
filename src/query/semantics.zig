@@ -136,7 +136,7 @@ const Checker = struct {
                 const node = self.ast.data(element).node_pattern;
                 if (node.variable_name.len == 0 or self.scope.kindOf(node.variable_name) == null) continue;
                 if (elements.len == 1) return self.fail("{s} of node '{s}', which is already bound", .{ verb, node.variable_name });
-                if (node.labels.len > 0 or self.ast.nodeChildren(element).len > 0) {
+                if (node.labels.len > 0 or node.has_map) {
                     return self.fail("{s} cannot add labels or properties to '{s}', which is already bound", .{ verb, node.variable_name });
                 }
             },

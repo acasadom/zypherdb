@@ -204,7 +204,8 @@ pub const Data = union(enum) {
     /// A single string: a literal value, an identifier (variable, property,
     /// label, edge type) or a RETURN alias.
     text: []const u8,
-    node_pattern: struct { variable_name: []const u8, labels: []const []const u8 },
+    /// `has_map`: a property map was written, even an empty one (`(n {})`).
+    node_pattern: struct { variable_name: []const u8, labels: []const []const u8, has_map: bool = false },
     edge_pattern: EdgePatternData,
     binary_operator: BinaryOperator,
     unary_operator: UnaryOperator,

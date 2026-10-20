@@ -59,6 +59,7 @@ clauses/create/Create1.feature: [15] Fail when adding a new label predicate on a
 clauses/create/Create1.feature: [16] Fail when adding new label predicate on a node that is already bound 2
 clauses/create/Create1.feature: [17] Fail when adding new label predicate on a node that is already bound 3
 clauses/create/Create1.feature: [18] Fail when adding new label predicate on a node that is already bound 4
+clauses/create/Create1.feature: [19] Fail when adding new label predicate on a node that is already bound 5
 clauses/create/Create1.feature: [1] Create a single node
 clauses/create/Create1.feature: [20] Fail when creating a node using undefined variable in pattern
 clauses/create/Create1.feature: [2] Create two nodes
