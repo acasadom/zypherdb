@@ -27,7 +27,10 @@ const procedures = @import("procedures.zig");
 
 pub const SemanticError = Allocator.Error || error{InvalidExpression};
 
-const Kind = enum { node, relationship, path, value };
+/// `value` is something that is not an entity (a literal, arithmetic);
+/// `any` is not known until the query runs (null, a function's result, a
+/// list's element), so any use of it is accepted here.
+const Kind = enum { node, relationship, path, value, any };
 
 const Star = struct { projection: Index, names: []const []const u8 };
 
@@ -38,6 +41,14 @@ const Scope = struct {
         return self.names.get(name);
     }
 };
+
+/// An expression that can never be a node, relationship or path.
+fn isPlainValue(ast: *const Ast, expression: Index) bool {
+    return switch (ast.kind(expression)) {
+        .integer_literal, .float_literal, .string_literal, .boolean_literal, .list_literal, .map_literal, .binary_operation, .unary_operation, .map_projection => true,
+        else => false,
+    };
+}
 
 /// What is known statically about an expression's type.
 const StaticType = enum { number, string, boolean, list, map };
@@ -66,7 +77,7 @@ const Checker = struct {
     fn use(self: *Checker, name: []const u8, kind: Kind) SemanticError!void {
         if (name.len == 0) return;
         if (self.scope.kindOf(name)) |existing| {
-            if (existing != kind) {
+            if (existing != kind and existing != .any) {
                 return self.fail("variable '{s}' is a {s}; it cannot be used as a {s}", .{ name, @tagName(existing), @tagName(kind) });
             }
             return;
@@ -138,11 +149,11 @@ const Checker = struct {
         for (self.ast.nodeChildren(projection)) |item| {
             const expression = self.ast.nodeChildren(item)[0];
             const alias = self.ast.data(item).text;
-            var kind: Kind = .value;
+            var kind: Kind = if (isPlainValue(self.ast, expression)) .value else .any;
             var name = alias;
             if (self.ast.kind(expression) == .variable) {
                 const source = self.ast.data(expression).text;
-                kind = self.scope.kindOf(source) orelse .value;
+                kind = self.scope.kindOf(source) orelse .any;
                 if (name.len == 0) name = source;
             }
             if (name.len > 0) try next.names.put(self.allocator, name, kind);
@@ -346,7 +357,7 @@ const Checker = struct {
         const actual = self.scope.kindOf(variable) orelse return;
         for (entity_functions) |function| {
             if (!std.ascii.eqlIgnoreCase(function.name, name)) continue;
-            if (actual != function.kind and actual != .value) {
+            if (actual != function.kind and actual != .value and actual != .any) {
                 return self.fail("{s}() takes a {s}, but '{s}' is a {s}", .{ function.name, @tagName(function.kind), variable, @tagName(actual) });
             }
         }
@@ -409,7 +420,7 @@ const Checker = struct {
                 .merge_clause => try self.checkPatterns(children[0..1], false),
                 .unwind_clause => {
                     try self.checkExpressions(clause);
-                    try self.use(self.ast.data(clause).unwind.variable_name, .value);
+                    try self.use(self.ast.data(clause).unwind.variable_name, .any);
                     continue;
                 },
                 .with_clause => {
@@ -436,6 +447,42 @@ pub fn check(ast: *Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagno
     try checker.checkQuery(query);
     // `*` becomes the variables it stands for, so execution sees plain items.
     for (checker.stars.items) |star| try expandStar(ast, query, star);
+    for (ast.nodeChildren(query)) |clause| try nameProjectedInOrderBy(ast, clause);
+}
+
+/// In the ORDER BY of a WITH or RETURN, each part that repeats a projected
+/// expression becomes the column's name: `WITH a.name AS name, count(*) AS c
+/// ORDER BY a.name + 'C'` sorts by `name + 'C'`, which the projected rows can
+/// evaluate after grouping has removed `a`.
+fn nameProjectedInOrderBy(ast: *Ast, clause: Index) Allocator.Error!void {
+    if (ast.kind(clause) != .with_clause and ast.kind(clause) != .return_clause) return;
+    const children = ast.nodeChildren(clause);
+    if (children.len < 2 or ast.kind(children[1]) != .order_by) return;
+    const projection = children[0];
+    for (ast.nodeChildren(children[1])) |order_item| try nameProjectedParts(ast, projection, order_item);
+}
+
+fn nameProjectedParts(ast: *Ast, projection: Index, parent: Index) Allocator.Error!void {
+    for (ast.nodeChildren(parent)) |child| {
+        if (projectedName(ast, projection, child)) |name| {
+            const variable = try ast.addNode(.variable, .{ .text = name }, &.{});
+            ast.replaceChild(parent, child, variable);
+        } else {
+            try nameProjectedParts(ast, projection, child);
+        }
+    }
+}
+
+/// The alias of the projection item whose expression is `expression`, if it
+/// has one (a projected variable needs no renaming; an aggregate stays, for
+/// the checks on aggregating expressions).
+fn projectedName(ast: *const Ast, projection: Index, expression: Index) ?[]const u8 {
+    if (ast.kind(expression) == .variable or containsAggregate(ast, expression)) return null;
+    for (ast.nodeChildren(projection)) |item| {
+        const alias = ast.data(item).text;
+        if (alias.len > 0 and ast.sameExpression(ast.nodeChildren(item)[0], expression)) return alias;
+    }
+    return null;
 }
 
 /// Replaces a `*` projection with one that lists `star.names` (as variables)
@@ -450,4 +497,10 @@ fn expandStar(ast: *Ast, query: Index, star: Star) Allocator.Error!void {
     try items.appendSlice(ast.allocator, ast.nodeChildren(star.projection));
     const expanded = try ast.addNode(.projection, .{ .none = {} }, items.items);
     for (ast.nodeChildren(query)) |clause| ast.replaceChild(clause, star.projection, expanded);
+}
+
+fn containsAggregate(ast: *const Ast, expression: Index) bool {
+    if (ast.kind(expression) == .aggregate) return true;
+    for (ast.nodeChildren(expression)) |child| if (containsAggregate(ast, child)) return true;
+    return false;
 }

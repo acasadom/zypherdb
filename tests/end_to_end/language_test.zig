@@ -199,3 +199,35 @@ test "map projections build maps from nodes, relationships and maps" {
     try expectQuery(&ast, &g, "WITH {a: 1, b: 2} AS m RETURN m {.a, c: 3}", &.{&.{.{ .map = &.{ .{ .key = "a", .value = .{ .int = 1 } }, .{ .key = "c", .value = .{ .int = 3 } } } }}});
     try expectQuery(&ast, &g, "OPTIONAL MATCH (x:Nothing) RETURN x {.name}", &.{&.{.null}});
 }
+
+test "WITH ORDER BY sees earlier variables, and projected parts by their names" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:A {n: 3, m: 1}), (:A {n: 1, m: 9}), (:A {n: 2, m: 2})", &.{});
+    // `a` is not projected, but a WITH without grouping can still sort by it.
+    try expectQuery(&ast, &g, "MATCH (a:A) WITH a.m AS m ORDER BY a.n LIMIT 2 RETURN m", &.{ &.{.{ .int = 9 }}, &.{.{ .int = 2 }} });
+    // After grouping, `a.n` is the projected column `n`.
+    try expectQuery(&ast, &g, "MATCH (a:A) WITH a.n AS n, count(*) AS c ORDER BY a.n * -1 LIMIT 1 RETURN n, c", &.{&.{ .{ .int = 3 }, .{ .int = 1 } }});
+}
+
+test "variables of unknown type can be matched as nodes, and named paths are null when unmatched" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:S)-[:R]->(:E)", &.{});
+    try expectQuery(&ast, &g, "MATCH (s:S)-->(e) WITH collect(e) AS es UNWIND es AS x MATCH (y)-->(x) RETURN labels(y)", &.{&.{.{ .list = &.{.{ .string = "S" }} }}});
+    try expectQuery(&ast, &g, "WITH null AS a OPTIONAL MATCH p = (a)-->() RETURN p, nodes(p)", &.{&.{ .null, .null }});
+}

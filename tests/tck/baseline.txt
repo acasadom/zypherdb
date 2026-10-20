@@ -85,6 +85,7 @@ clauses/delete/Delete2.feature: [3] Delete relationship with bidirectional match
 clauses/delete/Delete2.feature: [4] Ignore null when deleting relationship
 clauses/delete/Delete2.feature: [5] Failing when deleting a relationship type
 clauses/delete/Delete3.feature: [1] Detach deleting paths
+clauses/delete/Delete3.feature: [2] Delete on null path
 clauses/delete/Delete4.feature: [1] Undirected expand followed by delete and count
 clauses/delete/Delete4.feature: [2] Undirected variable length expand followed by delete and count
 clauses/delete/Delete4.feature: [3] Create and delete in same query
@@ -348,6 +349,7 @@ clauses/match/Match4.feature: [10] Fail on negative bound
 clauses/match/Match4.feature: [1] Handling fixed-length variable length pattern
 clauses/match/Match4.feature: [2] Simple variable length pattern
 clauses/match/Match4.feature: [3] Zero-length variable length pattern in the middle of the pattern
+clauses/match/Match4.feature: [4] Matching longer variable length paths
 clauses/match/Match4.feature: [5] Matching variable length pattern with property predicate
 clauses/match/Match4.feature: [6] Matching variable length patterns from a bound node
 clauses/match/Match4.feature: [7] Matching variable length patterns including a bound relationship
@@ -480,8 +482,14 @@ clauses/match/Match7.feature: [12] Variable length optional relationships
 clauses/match/Match7.feature: [13] Variable length optional relationships with bound nodes
 clauses/match/Match7.feature: [14] Variable length optional relationships with length predicates
 clauses/match/Match7.feature: [15] Variable length patterns and nulls
+clauses/match/Match7.feature: [16] Optionally matching named paths - null result
+clauses/match/Match7.feature: [17] Optionally matching named paths - existing result
+clauses/match/Match7.feature: [18] Named paths inside optional matches with node predicates
+clauses/match/Match7.feature: [19] Optionally matching named paths with single and variable length patterns
 clauses/match/Match7.feature: [1] Simple OPTIONAL MATCH on empty graph
+clauses/match/Match7.feature: [20] Variable length optional relationships with bound nodes, no matches
 clauses/match/Match7.feature: [21] Handling optional matches between nulls
+clauses/match/Match7.feature: [22] MATCH after OPTIONAL MATCH
 clauses/match/Match7.feature: [23] OPTIONAL MATCH with labels on the optional end node
 clauses/match/Match7.feature: [24] Optionally matching self-loops
 clauses/match/Match7.feature: [25] Optionally matching self-loops without matches
@@ -510,6 +518,7 @@ clauses/match/Match9.feature: [5] Variable length pattern with label predicate o
 clauses/match/Match9.feature: [6] Matching relationships into a list and matching variable length using the list, with bound nodes
 clauses/match/Match9.feature: [7] Matching relationships into a list and matching variable length using the list, with bound nodes, wrong direction
 clauses/match/Match9.feature: [8] Variable length relationship in OPTIONAL MATCH
+clauses/match/Match9.feature: [9] Optionally matching named paths with variable length patterns
 clauses/merge/Merge1.feature: [10] Merge must properly handle multiple labels
 clauses/merge/Merge1.feature: [11] Merge should be able to merge using property of bound node
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
@@ -695,6 +704,7 @@ clauses/return/Return2.feature: [9] Returning a projected map
 clauses/return/Return3.feature: [1] Returning multiple expressions
 clauses/return/Return3.feature: [2] Returning multiple node property values
 clauses/return/Return3.feature: [3] Projecting nodes and relationships
+clauses/return/Return4.feature: [11] Reusing variable names in RETURN
 clauses/return/Return4.feature: [1] Honour the column name for RETURN items
 clauses/return/Return4.feature: [2] Support column renaming
 clauses/return/Return4.feature: [3] Aliasing expressions
@@ -798,6 +808,7 @@ clauses/union/Union3.feature: [1] Failing when mixing UNION and UNION ALL
 clauses/union/Union3.feature: [2] Failing when mixing UNION ALL and UNION
 clauses/unwind/Unwind1.feature: [10] Unwinding list with duplicates
 clauses/unwind/Unwind1.feature: [11] Unwind does not prune context
+clauses/unwind/Unwind1.feature: [12] Unwind does not remove variables from scope
 clauses/unwind/Unwind1.feature: [13] Multiple unwinds after each other
 clauses/unwind/Unwind1.feature: [14] Unwind with merge
 clauses/unwind/Unwind1.feature: [1] Unwinding a list
@@ -935,8 +946,14 @@ clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in a
 clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [20] Sort by a date time expression in descending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [20] Sort by a date time expression in descending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [21] Sort by an expression that is only partially orderable on a non-distinct binding table #1
+clauses/with-orderBy/WithOrderBy2.feature: [21] Sort by an expression that is only partially orderable on a non-distinct binding table #2
 clauses/with-orderBy/WithOrderBy2.feature: [22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key #1
 clauses/with-orderBy/WithOrderBy2.feature: [22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key #2
+clauses/with-orderBy/WithOrderBy2.feature: [23] Sort by an expression that is only partially orderable on a non-distinct binding table, but used in parts as a grouping key #1
+clauses/with-orderBy/WithOrderBy2.feature: [23] Sort by an expression that is only partially orderable on a non-distinct binding table, but used in parts as a grouping key #2
+clauses/with-orderBy/WithOrderBy2.feature: [24] Sort by an expression that is only partially orderable on a non-distinct binding table, but made distinct #1
+clauses/with-orderBy/WithOrderBy2.feature: [24] Sort by an expression that is only partially orderable on a non-distinct binding table, but made distinct #2
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #1
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #10
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #11
@@ -1093,6 +1110,7 @@ clauses/with-orderBy/WithOrderBy4.feature: [4] Sort by one projected expression 
 clauses/with-orderBy/WithOrderBy4.feature: [5] Sort by one alias of a projected expression and one projected expression with order priority being different than projection order
 clauses/with-orderBy/WithOrderBy4.feature: [6] Sort by aliases of two projected expressions with order priority being different than projection order
 clauses/with-orderBy/WithOrderBy4.feature: [7] Sort by an alias of a projected expression where the alias shadows an existing variable
+clauses/with-orderBy/WithOrderBy4.feature: [8] Sort by non-projected existing variable
 clauses/with-orderBy/WithOrderBy4.feature: [9] Sort by an alias of a projected expression containing the variable shadowed by the alias
 clauses/with-skip-limit/WithSkipLimit1.feature: [1] Handle dependencies across WITH with SKIP
 clauses/with-skip-limit/WithSkipLimit1.feature: [2] Ordering and skipping on aggregate
@@ -1102,6 +1120,7 @@ clauses/with-skip-limit/WithSkipLimit2.feature: [3] Connected components succeed
 clauses/with-skip-limit/WithSkipLimit2.feature: [4] Ordering and limiting on aggregate
 clauses/with-skip-limit/WithSkipLimit3.feature: [1] Get rows in the middle
 clauses/with-skip-limit/WithSkipLimit3.feature: [2] Get rows in the middle by param
+clauses/with-skip-limit/WithSkipLimit3.feature: [3] Limiting amount of rows when there are fewer left than the LIMIT argument
 clauses/with-where/WithWhere1.feature: [1] Filter node with property predicate on a single variable with multiple bindings
 clauses/with-where/WithWhere1.feature: [2] Filter node with property predicate on a single variable with multiple distinct bindings
 clauses/with-where/WithWhere1.feature: [3] Filter for an unbound relationship variable
@@ -1134,6 +1153,7 @@ clauses/with/With4.feature: [1] Aliasing relationship variable
 clauses/with/With4.feature: [2] Aliasing expression to new variable name
 clauses/with/With4.feature: [3] Aliasing expression to existing variable name
 clauses/with/With4.feature: [5] Fail when not aliasing expressions in WITH
+clauses/with/With4.feature: [6] Reusing variable names in WITH
 clauses/with/With4.feature: [7] Multiple aliasing and backreferencing
 clauses/with/With5.feature: [1] DISTINCT on an expression
 clauses/with/With5.feature: [2] Handling DISTINCT with lists in maps
@@ -1896,8 +1916,10 @@ expressions/null/Null3.feature: [4] Using null in IN #4
 expressions/null/Null3.feature: [4] Using null in IN #5
 expressions/null/Null3.feature: [4] Using null in IN #6
 expressions/null/Null3.feature: [4] Using null in IN #7
+expressions/path/Path1.feature: [1] `nodes()` on null path
 expressions/path/Path2.feature: [1] Return relationships by fetching them from the path
 expressions/path/Path2.feature: [2] Return relationships by fetching them from the path - starting from the end
+expressions/path/Path2.feature: [3] `relationships()` on null path
 expressions/path/Path3.feature: [1] Return a var length path of length zero
 expressions/path/Path3.feature: [2] Failing when using `length()` on a node
 expressions/path/Path3.feature: [3] Failing when using `length()` on a relationship
