@@ -136,3 +136,7 @@ the language: **175 of 3202 scenarios that expect a result pass (5.5%)** — see
 [tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area and what is missing. The
 supported subset above works and is covered by `zig build test`; the TCK shows how far that subset
 is from openCypher. See `STATUS.md` (kept out of git) for the working notes and the roadmap.
+
+## License
+
+MIT (see [LICENSE](LICENSE)). acmedb includes LMDB and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

@@ -7,7 +7,7 @@ name = "acmedb"
 version = "0.1.0"
 description = "Python bindings for acmedb, an embedded graph database (openCypher on LMDB)"
 requires-python = ">=3.10"
-license = { text = "See the repository LICENSE" }
+license = { text = "MIT" }
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
