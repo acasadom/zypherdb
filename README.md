@@ -132,10 +132,11 @@ See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 ## Status
 
 acmedb is measured against the [openCypher TCK](tests/tck/README.md), the reference scenarios of
-the language: **175 of 3202 scenarios that expect a result pass (5.5%)** — see
-[tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area and what is missing. The
-supported subset above works and is covered by `zig build test`; the TCK shows how far that subset
-is from openCypher. See `STATUS.md` (kept out of git) for the working notes and the roadmap.
+the language: **3195 of the 3202 scenarios that expect a result pass (99.8%)**, and all 694 that
+expect an error — see [tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area. The
+scenarios left need parallel relationships (several of one type between the same two nodes) or a
+`WITH` inside `EXISTS { … }`; the [Cypher reference](docs/guide/cypher.md#not-supported) lists
+what acmedb does not implement. See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 
 ## License
 
