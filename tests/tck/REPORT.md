@@ -6,11 +6,11 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 3159/3202 (98.7%)** · Negative: 679/694 (97.8%)
+**Positive: 3195/3202 (99.8%)** · Negative: 693/694 (99.9%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
-| clauses/call | 0/36 (0.0%) | 2/16 (12.5%) | 50 | 0 |
+| clauses/call | 36/36 (100.0%) | 16/16 (100.0%) | 0 | 0 |
 | clauses/create | 61/63 (96.8%) | 14/15 (93.3%) | 0 | 0 |
 | clauses/delete | 36/36 (100.0%) | 5/5 (100.0%) | 0 | 0 |
 | clauses/match | 140/141 (99.3%) | 241/241 (100.0%) | 0 | 0 |
@@ -52,7 +52,6 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 
 | Scenarios | Reason |
 | --- | --- |
-| 50 | unsupported: procedures |
 | 3 | fail: side effects: expected other side effects |
 | 3 | fail: rows differ: expected other rows |
 | 1 | fail: expected SyntaxError, but the query succeeded |

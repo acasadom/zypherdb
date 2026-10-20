@@ -46,6 +46,7 @@ pub const ast = @import("query/ast.zig");
 
 pub const Ast = ast.Ast;
 pub const Index = ast.Index;
+pub const procedures = @import("query/procedures.zig");
 pub const NodeKind = ast.NodeKind;
 pub const Node = ast.Node;
 pub const Data = ast.Data;

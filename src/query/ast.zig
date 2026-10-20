@@ -220,6 +220,9 @@ pub const Data = union(enum) {
         argument_count: u32,
         /// No YIELD: every column of the procedure, as the query's result.
         yield_all: bool,
+        /// `CALL proc` without parentheses: the arguments are the query
+        /// parameters named as the procedure's arguments.
+        implicit_arguments: bool = false,
     },
     yield_: struct { column: []const u8, alias: []const u8 },
     fulltext_index: struct {

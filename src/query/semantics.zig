@@ -57,6 +57,8 @@ const Checker = struct {
     ast: *const Ast,
     allocator: Allocator,
     diagnostic: ?*Diagnostic,
+    /// The procedures defined besides the built-in ones.
+    table_procedures: []const procedures.TableProcedure = &.{},
     scope: Scope = .{},
     /// Comprehension and quantifier variables in scope with a known type.
     local_types: std.ArrayList(struct { name: []const u8, type: StaticType }) = .empty,
@@ -406,16 +408,31 @@ const Checker = struct {
     /// CALL that yields every column ends the query.
     fn checkCall(self: *Checker, clause: Index, last: bool) SemanticError!void {
         const call = self.ast.data(clause).call;
-        const signature = procedures.find(call.procedure) orelse return self.fail("unknown procedure '{s}'", .{call.procedure});
-        if (call.argument_count < signature.min_arguments or call.argument_count > signature.max_arguments) {
+        const signature = procedures.find(call.procedure, self.table_procedures) orelse return self.fail("unknown procedure '{s}'", .{call.procedure});
+        const children = self.ast.nodeChildren(clause);
+        if (call.implicit_arguments) {
+            // Only a CALL that is the whole query takes its arguments from the parameters.
+            if (signature.max_arguments > 0 and !(call.yield_all and last)) {
+                return self.fail("{s} needs its arguments in parentheses here: CALL {s}(...)", .{ call.procedure, call.procedure });
+            }
+        } else if (call.argument_count < signature.min_arguments or call.argument_count > signature.max_arguments) {
             return self.fail("{s}() takes {d} to {d} arguments, not {d}", .{ call.procedure, signature.min_arguments, signature.max_arguments, call.argument_count });
         }
+        for (children[0..call.argument_count]) |expression| {
+            if (containsAggregate(self.ast, expression)) return self.fail("an aggregate cannot be a procedure's argument; aggregate in a WITH first", .{});
+        }
+        for (signature.arguments[0..@min(signature.arguments.len, call.argument_count)], children[0..@min(signature.arguments.len, call.argument_count)]) |argument, expression| {
+            if (!literalFits(self.ast, expression, argument.type)) {
+                return self.fail("{s}(): the argument '{s}' must be of type {s}", .{ call.procedure, argument.name, @tagName(argument.type) });
+            }
+        }
         if (call.yield_all) {
-            if (!last) return self.fail("a CALL inside a query must YIELD the columns it uses: CALL {s}(...) YIELD ...", .{call.procedure});
+            // A procedure without columns needs no YIELD anywhere.
+            if (!last and signature.columns.len > 0) return self.fail("a CALL inside a query must YIELD the columns it uses: CALL {s}(...) YIELD ...", .{call.procedure});
             return;
         }
-        const children = self.ast.nodeChildren(clause);
-        for (children[call.argument_count .. children.len - 1]) |item| {
+        const yield_items = children[call.argument_count .. children.len - 1];
+        for (yield_items, 0..) |item, i| {
             const yield_item = self.ast.data(item).yield_;
             const column = signature.column(yield_item.column) orelse return self.fail("{s}() has no column '{s}'", .{ call.procedure, yield_item.column });
             const kind: Kind = switch (column.kind) {
@@ -423,8 +440,34 @@ const Checker = struct {
                 .relationship => .relationship,
                 .value => .value,
             };
-            try self.use(if (yield_item.alias.len > 0) yield_item.alias else yield_item.column, kind);
+            const name = yieldedName(self.ast, item);
+            for (yield_items[0..i]) |earlier| {
+                if (std.mem.eql(u8, yieldedName(self.ast, earlier), name)) return self.fail("YIELD binds '{s}' twice", .{name});
+            }
+            if (self.scope.kindOf(name) != null) return self.fail("YIELD binds '{s}', which is already bound", .{name});
+            try self.use(name, kind);
         }
+    }
+
+    fn yieldedName(ast: *const Ast, item: Index) []const u8 {
+        const yield_item = ast.data(item).yield_;
+        return if (yield_item.alias.len > 0) yield_item.alias else yield_item.column;
+    }
+
+    /// False for a literal that can never be of `declared` type (null fits
+    /// any; an integer fits FLOAT and NUMBER); other expressions are checked
+    /// when they run.
+    fn literalFits(ast: *const Ast, expression: Index, declared: procedures.ArgumentType) bool {
+        const accepted: []const procedures.ArgumentType = switch (ast.kind(expression)) {
+            .integer_literal => &.{ .integer, .float, .number },
+            .float_literal => &.{ .float, .number },
+            .string_literal => &.{.string},
+            .boolean_literal => &.{.boolean},
+            .list_literal => &.{.list},
+            .map_literal => &.{.map},
+            else => return true,
+        };
+        return declared == .any or std.mem.indexOfScalar(procedures.ArgumentType, accepted, declared) != null;
     }
 
     /// A WHERE is a condition on each row: no aggregates, and not a bare
@@ -552,8 +595,8 @@ const Checker = struct {
 
 /// Checks `query`; on a violation fills `diagnostic` and returns
 /// `error.InvalidExpression`. O(size of the query).
-pub fn check(ast: *Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagnostic) SemanticError!void {
-    var checker = Checker{ .ast = ast, .allocator = allocator, .diagnostic = diagnostic };
+pub fn check(ast: *Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagnostic, table_procedures: []const procedures.TableProcedure) SemanticError!void {
+    var checker = Checker{ .ast = ast, .allocator = allocator, .diagnostic = diagnostic, .table_procedures = table_procedures };
     defer checker.scope.names.deinit(allocator);
     defer checker.local_types.deinit(allocator);
     defer checker.stars.deinit(allocator);

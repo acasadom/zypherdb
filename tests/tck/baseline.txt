@@ -1,5 +1,55 @@
+clauses/call/Call1.feature: [10] In-query call to procedure should fail if too many explicit argument are given
+clauses/call/Call1.feature: [11] Standalone call to procedure should fail if implicit argument is missing
+clauses/call/Call1.feature: [12] In-query call to procedure that has outputs fails if no outputs are yielded
 clauses/call/Call1.feature: [13] Standalone call to unknown procedure should fail
 clauses/call/Call1.feature: [14] In-query call to unknown procedure should fail
+clauses/call/Call1.feature: [15] In-query procedure call should fail if shadowing an already bound variable
+clauses/call/Call1.feature: [16] In-query procedure call should fail if one of the argument expressions uses an aggregation function
+clauses/call/Call1.feature: [1] Standalone call to procedure that takes no arguments and yields no results
+clauses/call/Call1.feature: [2] Standalone call to procedure that takes no arguments and yields no results, called with implicit arguments
+clauses/call/Call1.feature: [3] In-query call to procedure that takes no arguments and yields no results
+clauses/call/Call1.feature: [4] In-query call to procedure that takes no arguments and yields no results and consumes no rows
+clauses/call/Call1.feature: [5] Standalone call to STRING procedure that takes no arguments
+clauses/call/Call1.feature: [6] In-query call to STRING procedure that takes no arguments
+clauses/call/Call1.feature: [7] Standalone call to procedure should fail if explicit argument is missing
+clauses/call/Call1.feature: [8] In-query call to procedure should fail if explicit argument is missing
+clauses/call/Call1.feature: [9] Standalone call to procedure should fail if too many explicit argument are given
+clauses/call/Call2.feature: [1] In-query call to procedure with explicit arguments
+clauses/call/Call2.feature: [2] Standalone call to procedure with explicit arguments
+clauses/call/Call2.feature: [3] Standalone call to procedure with implicit arguments
+clauses/call/Call2.feature: [4] In-query call to procedure that takes arguments fails when trying to pass them implicitly
+clauses/call/Call2.feature: [5] Standalone call to procedure should fail if input type is wrong
+clauses/call/Call2.feature: [6] In-query call to procedure should fail if input type is wrong
+clauses/call/Call3.feature: [1] Standalone call to procedure with argument of type NUMBER accepts value of type INTEGER
+clauses/call/Call3.feature: [2] In-query call to procedure with argument of type NUMBER accepts value of type INTEGER
+clauses/call/Call3.feature: [3] Standalone call to procedure with argument of type NUMBER accepts value of type FLOAT
+clauses/call/Call3.feature: [4] In-query call to procedure with argument of type NUMBER accepts value of type FLOAT
+clauses/call/Call3.feature: [5] Standalone call to procedure with argument of type FLOAT accepts value of type INTEGER
+clauses/call/Call3.feature: [6] In-query call to procedure with argument of type FLOAT accepts value of type INTEGER
+clauses/call/Call4.feature: [1] Standalone call to procedure with null argument
+clauses/call/Call4.feature: [2] In-query call to procedure with null argument
+clauses/call/Call5.feature: [1] Explicit procedure result projection
+clauses/call/Call5.feature: [2] Explicit procedure result projection with RETURN *
+clauses/call/Call5.feature: [3] The order of yield items is irrelevant #1
+clauses/call/Call5.feature: [3] The order of yield items is irrelevant #2
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #1
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #10
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #11
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #2
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #3
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #4
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #5
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #6
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #7
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #8
+clauses/call/Call5.feature: [4] Rename outputs to unbound variable names #9
+clauses/call/Call5.feature: [5] Fail on renaming to an already bound variable name
+clauses/call/Call5.feature: [6] Fail on renaming all outputs to the same variable name
+clauses/call/Call5.feature: [7] Fail on in-query call to procedure with YIELD *
+clauses/call/Call5.feature: [8] Allow standalone call to procedure with YIELD *
+clauses/call/Call6.feature: [1] Calling the same STRING procedure twice using the same outputs in each call
+clauses/call/Call6.feature: [2] Project procedure results between query scopes with WITH clause
+clauses/call/Call6.feature: [3] Project procedure results between query scopes with WITH clause and rename the projection
 clauses/create/Create1.feature: [10] Create a single node with two properties and return them
 clauses/create/Create1.feature: [11] Create a single node with null properties should not return those properties
 clauses/create/Create1.feature: [12] CREATE does not lose precision on large integers

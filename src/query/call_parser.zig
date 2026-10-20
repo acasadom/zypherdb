@@ -21,8 +21,9 @@ pub fn parseCallClause(self: *Parser) ParseError!Index {
 
     var children = std.ArrayList(Index).empty;
     defer children.deinit(self.ast.allocator);
-    // `CALL proc` without parentheses takes no arguments.
-    if (self.at(.left_paren)) {
+    // `CALL proc` without parentheses takes its arguments from the parameters.
+    const implicit_arguments = !self.at(.left_paren);
+    if (!implicit_arguments) {
         _ = self.advance();
         if (!self.at(.right_paren)) {
             while (true) {
@@ -56,7 +57,7 @@ pub fn parseCallClause(self: *Parser) ParseError!Index {
         }
     }
     try children.append(self.ast.allocator, try self.parseOptionalWhere());
-    return self.ast.addNode(.call_clause, .{ .call = .{ .procedure = procedure, .argument_count = argument_count, .yield_all = yield_all } }, children.items);
+    return self.ast.addNode(.call_clause, .{ .call = .{ .procedure = procedure, .argument_count = argument_count, .yield_all = yield_all, .implicit_arguments = implicit_arguments } }, children.items);
 }
 
 /// `db.index.fulltext.queryNodes`: identifiers joined by dots.
