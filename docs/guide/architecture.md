@@ -94,6 +94,7 @@ flowchart TB
 | `src/query/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, `addNode`/`nodeChildren`/`intern`, `sameExpression`. |
 | `src/query/semantics.zig` | Static checks before a query runs: each variable is used as one kind (node, relationship or value), literal operands have types their operators accept, no aggregates inside comprehensions. |
 | `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, then the clauses as a pipeline of rows. |
+| `src/execution/pipeline.zig` | Streaming execution of read-only queries: rows go through the clauses one at a time, and a `LIMIT` stops the work early. |
 | `src/execution/clauses.zig` | The pipeline's MATCH / OPTIONAL MATCH, UNWIND and write clauses: rows in, rows out. |
 | `src/execution/planner.zig` | Pattern planning: the chain of `PatternNode`s/`PatternEdge`s, predicate pushdown, anchor choice, `PlanStep`s. |
 | `src/execution/pattern_matching.zig` | Runs the steps (`scanNodes`, `scanEdgeIndex`, `expandEdge`) of one pattern. |

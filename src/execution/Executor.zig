@@ -9,7 +9,8 @@
 //! the effects of the clauses before it (see `clauses.zig`, `projection.zig`).
 //!
 //! The whole query runs in one transaction: a write transaction if any clause
-//! writes, else one consistent read snapshot.
+//! writes, else one consistent read snapshot. A read-only query streams its
+//! rows through the clauses instead (`pipeline.zig`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -37,6 +38,7 @@ const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
 const functions = @import("functions.zig");
 const projection = @import("projection.zig");
+const Pipeline = @import("pipeline.zig");
 const temporal_functions = @import("temporal_functions.zig");
 const sequence_algorithms = @import("../sequence_algorithms.zig");
 
@@ -50,6 +52,8 @@ pub const ExecutionError = StorageError || error{
     UnknownVariable,
     InvalidExpression,
     TypeMismatch,
+    /// Internal: a streamed RETURN has every row it keeps (see `pipeline.zig`).
+    LimitReached,
 };
 
 /// A projected row: one `Value` per RETURN item.
@@ -84,6 +88,12 @@ nodes: std.ArrayList(PatternNode),
 edges: std.ArrayList(PatternEdge),
 steps: std.ArrayList(PlanStep),
 matches: ?*std.ArrayList(Bindings),
+/// The streaming pipeline of a read-only query, and the stage the MATCH
+/// being run hands its matches to (when `matches` is null), with how many it
+/// handed on so far.
+pipeline: ?*Pipeline,
+pipeline_stage: usize,
+stream_emitted: usize,
 /// The path variable of the pattern being matched (`p = ...`), or empty.
 path_variable: []const u8,
 /// Relationship uniqueness: the edges bound on the current search branch of
@@ -119,6 +129,9 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .edges = .empty,
         .steps = .empty,
         .matches = null,
+        .pipeline = null,
+        .pipeline_stage = 0,
+        .stream_emitted = 0,
         .path_variable = "",
         .used_edges = .empty,
         .has_aggregates = false,
@@ -161,7 +174,7 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     var result = std.ArrayList(Row).empty;
     for (queries) |query| {
         self.reset();
-        try self.runClauses(query);
+        if (has_writes) try self.runClauses(query) else try Pipeline.run(self, query);
         for (self.rows.items) |sortable| try result.append(self.allocator, sortable.item);
     }
     // UNION (not UNION ALL) keeps one of each row.
@@ -232,6 +245,8 @@ pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) Exe
 /// run: keeps it, as a row of its own, if it passes the MATCH's WHERE.
 pub fn matchFound(self: *Executor, bindings: *Bindings) ExecutionError!void {
     if (self.where_expression != no_where and !try expressions.evaluateBool(self, self.where_expression, bindings)) return;
-    const output = self.matches orelse return;
-    try output.append(self.allocator, try clauses.copyRow(self, bindings.*));
+    if (self.matches) |output| return output.append(self.allocator, try clauses.copyRow(self, bindings.*));
+    const pipeline = self.pipeline orelse return;
+    self.stream_emitted += 1;
+    try pipeline.feed(self.pipeline_stage, bindings);
 }

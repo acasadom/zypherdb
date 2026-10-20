@@ -119,7 +119,7 @@ fn runMerge(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]
 }
 
 /// Binds every variable of `patterns` that `row` does not bind yet to null.
-fn bindNewVariablesToNull(self: *Executor, patterns: []const Index, row: *Bindings) ExecutionError!void {
+pub fn bindNewVariablesToNull(self: *Executor, patterns: []const Index, row: *Bindings) ExecutionError!void {
     for (patterns) |pattern| {
         for (self.ast.nodeChildren(pattern)) |element| {
             const name = switch (self.ast.kind(element)) {

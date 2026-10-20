@@ -184,8 +184,20 @@ for clause in query:
 
 - Each clause sees the effects of every clause before it: a `MATCH` after `CREATE … WITH` finds
   what was created. Within a writing clause, each row sees the writes made for the rows before it.
-- The rows are materialized between clauses, in the query's arena. This is simple and correct, and
-  costs memory proportional to the largest intermediate result.
+- A query that writes runs as above: each clause produces all its rows, in the query's arena,
+  before the next starts. A writing clause must see the effect of the clauses before it on every
+  row, and in this form it does.
+- A read-only query streams instead (`pipeline.zig`). Each clause is a stage, and each row goes
+  through the stages one at a time:
+  - `MATCH` hands each match on as `matchFound` finds it, without copying it;
+  - `UNWIND` binds each element in turn;
+  - a `WITH` that only projects and filters passes each row on;
+  - `RETURN` accumulates or projects each row.
+
+  A `WITH` that groups, sorts, pages or removes duplicates keeps copies of its rows, and passes
+  them on once the stages before it are done. A `RETURN` with a `LIMIT`, and no aggregate,
+  `DISTINCT` or `ORDER BY`, stops the query once it has its rows: the internal error
+  `LimitReached` unwinds the matching, and every iterator closes on the way out.
 - A `UNION` runs its parts one after the other in the same transaction, then concatenates their
   rows, removing duplicates unless it is `UNION ALL`.
 

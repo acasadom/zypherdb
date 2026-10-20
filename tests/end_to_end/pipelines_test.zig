@@ -212,3 +212,61 @@ test "clause order rules" {
     try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (n)", null));
     try testing.expectError(error.UnexpectedToken, parse(&ast, "MATCH (n) WITH n", null));
 }
+
+test "streamed read-only queries: early LIMIT, optional matches, collecting stages" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "UNWIND range(1, 5) AS i CREATE (:N {i: i})", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:N {i: 1}), (b:N {i: 2}), (c:N {i: 3}) CREATE (a)-[:R]->(b), (a)-[:R]->(c), (b)-[:R]->(c)", &.{});
+
+    // A LIMIT stops the scan as soon as it has its rows, in a chain of MATCHes too.
+    try expectQuery(&ast, &g, "MATCH (n:N) RETURN count(*) LIMIT 1", &.{&.{.{ .int = 5 }}});
+    try expectOrdered(&ast, &g, "MATCH (n:N) MATCH (m:N) WHERE m.i > n.i RETURN n.i, m.i LIMIT 3", &.{
+        &.{ .{ .int = 1 }, .{ .int = 2 } },
+        &.{ .{ .int = 1 }, .{ .int = 3 } },
+        &.{ .{ .int = 1 }, .{ .int = 4 } },
+    });
+    try expectQuery(&ast, &g, "MATCH (n:N) RETURN n.i LIMIT 0", &.{});
+    try expectOrdered(&ast, &g, "MATCH (n:N) RETURN n.i SKIP 3 LIMIT 5", &.{
+        &.{.{ .int = 4 }},
+        &.{.{ .int = 5 }},
+    });
+
+    // OPTIONAL MATCH between MATCHes keeps the rows without a match, with nulls.
+    try expectQuery(&ast, &g, "MATCH (n:N) OPTIONAL MATCH (n)-[:R]->(m) WITH n, count(m) AS out RETURN n.i, out", &.{
+        &.{ .{ .int = 1 }, .{ .int = 2 } },
+        &.{ .{ .int = 2 }, .{ .int = 1 } },
+        &.{ .{ .int = 3 }, .{ .int = 0 } },
+        &.{ .{ .int = 4 }, .{ .int = 0 } },
+        &.{ .{ .int = 5 }, .{ .int = 0 } },
+    });
+    try expectQuery(&ast, &g, "MATCH (n:N {i: 4}) OPTIONAL MATCH (n)-[:R]->(m) MATCH (k:N {i: 5}) RETURN m, k.i", &.{
+        &.{ .null, .{ .int = 5 } },
+    });
+
+    // A WITH that sorts and pages passes its rows on after every row has reached it.
+    try expectOrdered(&ast, &g, "MATCH (n:N) WITH n ORDER BY n.i DESC LIMIT 2 MATCH (m:N) WHERE m.i < n.i RETURN n.i, count(m) ORDER BY n.i", &.{
+        &.{ .{ .int = 4 }, .{ .int = 3 } },
+        &.{ .{ .int = 5 }, .{ .int = 4 } },
+    });
+    // An aggregating WITH, then a streamed MATCH over its groups.
+    try expectQuery(&ast, &g, "MATCH (n:N)-[:R]->() WITH n, count(*) AS degree MATCH (n)-[:R]->(m) RETURN n.i, degree, count(m)", &.{
+        &.{ .{ .int = 1 }, .{ .int = 2 }, .{ .int = 2 } },
+        &.{ .{ .int = 2 }, .{ .int = 1 }, .{ .int = 1 } },
+    });
+    // Nested UNWINDs restore the row they extend.
+    try expectQuery(&ast, &g, "UNWIND [1, 2] AS x UNWIND [10, 20] AS y WITH x, y WHERE y > x * 5 RETURN x, y", &.{
+        &.{ .{ .int = 1 }, .{ .int = 10 } },
+        &.{ .{ .int = 1 }, .{ .int = 20 } },
+        &.{ .{ .int = 2 }, .{ .int = 20 } },
+    });
+}

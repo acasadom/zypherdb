@@ -114,13 +114,7 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     if (aggregating.items.len == 0) {
         // No aggregates: project each row (no grouping, so no deduplication).
         for (input) |*input_row| {
-            var row = Bindings{ .entries = .empty };
-            for (items) |item| try row.put(self.allocator, item.name, try expressions.evaluate(self, item.expr, input_row));
-            // The WHERE also sees the variables from before the WITH (the
-            // projected names win): `WITH x[i] AS v WHERE i > 0`.
-            var scope = try clauses.copyRow(self, input_row.*);
-            for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
-            if (!try expressions.evaluateBool(self, info.where_expression, &scope)) continue;
+            var row = try withRow(self, info, items, input_row) orelse continue;
             const sort_key = if (info.order_by) |order_by| try orderByKey(self, order_by, &row) else &.{};
             try rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
         }
@@ -163,10 +157,34 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     return output;
 }
 
+/// One input row of a WITH without aggregates, projected into the new scope,
+/// or null if the WITH's WHERE drops it.
+pub fn withRow(self: *Executor, info: WithClauseParts, items: []const WithItem, input_row: *Bindings) ExecutionError!?Bindings {
+    var row = Bindings{ .entries = .empty };
+    for (items) |item| try row.put(self.allocator, item.name, try expressions.evaluate(self, item.expr, input_row));
+    // The WHERE also sees the variables from before the WITH (the projected
+    // names win): `WITH x[i] AS v WHERE i > 0`.
+    if (info.where_expression != Executor.no_where) {
+        var scope = try clauses.copyRow(self, input_row.*);
+        for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
+        if (!try expressions.evaluateBool(self, info.where_expression, &scope)) return null;
+    }
+    return row;
+}
+
+/// Whether a WITH can pass its rows on one at a time: it neither groups,
+/// removes duplicates, sorts nor pages.
+pub fn withStreams(self: *Executor, with_clause: Index) ExecutionError!bool {
+    const info = withClauseParts(self, with_clause);
+    if (info.distinct or info.order_by != null or info.skip != null or info.limit != null) return false;
+    for (try withItems(self, info.projection)) |item| if (item.aggregating) return false;
+    return true;
+}
+
 /// The WITH projection items: each binds `name` (its alias, or the variable it
 /// projects) to `expr`; an expression containing aggregates is computed per
 /// group.
-fn withItems(self: *Executor, projection: Index) ExecutionError![]const WithItem {
+pub fn withItems(self: *Executor, projection: Index) ExecutionError![]const WithItem {
     var items = std.ArrayList(WithItem).empty;
     for (self.ast.nodeChildren(projection)) |item| {
         const expr = self.ast.nodeChildren(item)[0];
@@ -308,28 +326,50 @@ pub fn returnClauseParts(self: *Executor, return_clause: Index) ReturnClausePart
 /// projection aggregates), then aggregates, applies DISTINCT, ORDER BY, SKIP
 /// and LIMIT. The rows go to `self.rows`.
 pub fn applyReturn(self: *Executor, return_clause: Index, input: []Bindings) ExecutionError!void {
+    const info = try beginReturn(self, return_clause);
+    for (input) |*row| try returnRow(self, info, row);
+    try endReturn(self, info);
+}
+
+/// Starts a RETURN: plans its projection and aggregation. Then each row goes
+/// to `returnRow`, and `endReturn` produces the result in `self.rows`.
+pub fn beginReturn(self: *Executor, return_clause: Index) ExecutionError!ReturnClauseParts {
     const info = returnClauseParts(self, return_clause);
     try planReturn(self, info);
-    for (input) |*row| {
-        if (self.has_aggregates) {
-            try aggregation.accumulate(self, row);
-            continue;
-        }
-        var values = std.ArrayList(Value).empty;
-        for (self.ast.nodeChildren(info.projection)) |item| {
-            try values.append(self.allocator, try expressions.evaluate(self, self.ast.nodeChildren(item)[0], row));
-        }
-        // The ORDER BY key is evaluated now, while the row's variables are
-        // still bound: it may use variables that are not projected.
-        const sort_key = try returnSortKey(self, info, values.items, row);
-        try self.rows.append(self.allocator, .{ .item = values, .sort_key = sort_key });
-    }
+    return info;
+}
 
+/// Adds one row to a RETURN: accumulated into its group, or projected. The
+/// row is not kept, so the caller may reuse it.
+pub fn returnRow(self: *Executor, info: ReturnClauseParts, row: *Bindings) ExecutionError!void {
+    if (self.has_aggregates) return aggregation.accumulate(self, row);
+    var values = std.ArrayList(Value).empty;
+    for (self.ast.nodeChildren(info.projection)) |item| {
+        try values.append(self.allocator, try expressions.evaluate(self, self.ast.nodeChildren(item)[0], row));
+    }
+    // The ORDER BY key is evaluated now, while the row's variables are
+    // still bound: it may use variables that are not projected.
+    const sort_key = try returnSortKey(self, info, values.items, row);
+    try self.rows.append(self.allocator, .{ .item = values, .sort_key = sort_key });
+}
+
+/// Ends a RETURN: aggregates, removes duplicates, sorts and pages `self.rows`.
+pub fn endReturn(self: *Executor, info: ReturnClauseParts) ExecutionError!void {
     if (self.has_aggregates) try aggregation.aggregate(self, info);
     if (info.distinct) {
         try sequence_algorithms.removeDuplicates(Sortable(Row), self.allocator, &self.rows, SortableContext(Row, RowContext){});
     }
     try orderAndPaginate(self, Row, &self.rows, info.order_by, info.skip, info.limit);
+}
+
+/// How many rows a RETURN keeps if it can stop reading early: it has a
+/// LIMIT and nothing that needs every row first (no aggregate, DISTINCT or
+/// ORDER BY). SKIP + LIMIT then, else null.
+pub fn returnRowsNeeded(self: *Executor, info: ReturnClauseParts) ExecutionError!?usize {
+    if (self.has_aggregates or info.distinct or info.order_by != null) return null;
+    const limit = info.limit orelse return null;
+    const skipped = if (info.skip) |s| try expressions.evaluateCount(self, self.ast.nodeChildren(s)[0]) else 0;
+    return skipped +| try expressions.evaluateCount(self, self.ast.nodeChildren(limit)[0]);
 }
 
 /// Splits the RETURN projection into grouping keys and aggregating

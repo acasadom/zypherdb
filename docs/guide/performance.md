@@ -6,10 +6,14 @@ happens, when it matters, and the fix being considered. Measured numbers are in
 
 ## Execution
 
-- **Rows are materialized between clauses.** Each clause produces all its rows before the next
-  starts. `MATCH … RETURN … LIMIT 10` finds every match first; memory grows with the
-  intermediate result. Fix: a pipelined (pull-based) executor, so `LIMIT` stops the work early
-  and rows stream to the caller.
+- **Queries that write materialize rows between clauses.** Read-only queries stream rows through
+  their clauses (`pipeline.zig`). A query with a writing clause still makes each clause produce
+  all its rows before the next starts, so its memory grows with the intermediate result. Fix:
+  stream the clauses before the first write, and materialize only there (an "eager" boundary).
+- **Some stages still need every row:**
+  - `RETURN` holds all the rows it returns, so the caller gets nothing until the query ends.
+    Fix: hand rows to the caller as they come (an iterator in the bindings).
+  - A `WITH` that sorts, pages or removes duplicates keeps copies of every row.
 - **`RETURN` projects every row before `ORDER BY … LIMIT`.** The partial sort keeps k rows, but
   every row's projected columns are computed first. Fix: compute the sort key first and the other
   columns only for the rows kept (late materialization).
