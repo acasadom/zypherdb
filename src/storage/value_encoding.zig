@@ -28,7 +28,9 @@
 //! `0x00` (strings, zone names; so a lookup prefix for "X" cannot also match
 //! "XY"), list elements are not length-prefixed, and numbers are canonical:
 //! an integral float is written as the integer it equals, so `{x: 1}` finds
-//! x = 1.0, as `=` says it should.
+//! x = 1.0, as `=` says it should. Integers, floats and dates are written so
+//! that their bytes sort in their order (`orderedInteger`, `orderedFloat`):
+//! a range of values is a range of keys.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -98,6 +100,20 @@ fn sameKind(a: Value, b: Value) bool {
     return std.meta.activeTag(a) == std.meta.activeTag(b);
 }
 
+/// An integer as an unsigned one whose big-endian bytes sort in the
+/// integer's order (the sign bit flipped), for index keys.
+pub fn orderedInteger(n: i64) u64 {
+    return @as(u64, @bitCast(n)) ^ (1 << 63);
+}
+
+/// A float's bits arranged so that their big-endian bytes sort in the
+/// float's order: negatives (sign set) inverted, positives with the sign set.
+/// -0.0 sorts just below 0.0, and NaNs beyond the infinities.
+pub fn orderedFloat(x: f64) u64 {
+    const bits: u64 = @bitCast(x);
+    return if (bits >> 63 == 1) ~bits else bits | (1 << 63);
+}
+
 fn appendInt(list: *std.ArrayList(u8), allocator: Allocator, comptime T: type, n: T) Allocator.Error!void {
     var buffer: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &buffer, n, .big);
@@ -139,12 +155,12 @@ fn encode(list: *std.ArrayList(u8), allocator: Allocator, value: Value, form: Fo
     switch (value) {
         .int => |n| {
             try list.append(allocator, @backingInt(Tag.int));
-            try appendInt(list, allocator, i64, n);
+            if (form == .index) try appendInt(list, allocator, u64, orderedInteger(n)) else try appendInt(list, allocator, i64, n);
         },
         .float => |x| {
             if (form == .index) if (exactInteger(x)) |n| return encode(list, allocator, .{ .int = n }, form);
             try list.append(allocator, @backingInt(Tag.float));
-            try appendInt(list, allocator, u64, @bitCast(x));
+            try appendInt(list, allocator, u64, if (form == .index) orderedFloat(x) else @bitCast(x));
         },
         .string => |s| {
             try list.append(allocator, @backingInt(Tag.string));
@@ -154,7 +170,7 @@ fn encode(list: *std.ArrayList(u8), allocator: Allocator, value: Value, form: Fo
         .boolean => |b| try list.appendSlice(allocator, &.{ @backingInt(Tag.boolean), @intFromBool(b) }),
         .date => |d| {
             try list.append(allocator, @backingInt(Tag.date));
-            try appendInt(list, allocator, i64, d.days);
+            if (form == .index) try appendInt(list, allocator, u64, orderedInteger(d.days)) else try appendInt(list, allocator, i64, d.days);
         },
         .local_time => |t| {
             try list.append(allocator, @backingInt(Tag.local_time));

@@ -83,7 +83,30 @@ any elements, and nulls. A null on its own is never stored: setting a property t
 Index keys use the same encoding except that variable-length parts (strings, zone names) end in
 `0x00`, so a lookup prefix for `"X"` can't also match `"XY"`, and list elements carry no length.
 Numbers are indexed canonically: a float that equals an integer (`2.0`) is indexed as that
-integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should.
+integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should. Integers,
+floats and dates are written so that their bytes sort in their order:
+
+- integers and dates (a day count) with the sign bit flipped;
+- floats with negatives inverted and positives with the sign bit set.
+
+A range of values is then a range of keys. `Graph.nodesInRange` reads a range of numbers as two
+key ranges, integers and floats, from which NaN is excluded. It rounds fractional bounds
+outwards, so it returns a superset of the matches, and the WHERE is still checked on each.
+
+## The storage format and upgrades
+
+The key `!format` holds the format's version, `Graph.format_version`. When the C ABI or the
+Python package opens a database, `Graph.upgrade` brings one of an earlier format up to date, in
+one write transaction:
+
+- it rebuilds the property indexes (`p`, `g`) in the current encoding;
+- it writes the neighbour labels on every edge key;
+- it counts every label.
+
+This costs O(N), once. A database already in the current format is left as it is.
+
+A change to how keys or values are written raises the version, and adds its migration to
+`upgrade`.
 
 ## The indexes, one by one
 

@@ -29,7 +29,6 @@ const AggregationPlan = @import("aggregation.zig").AggregationPlan;
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
 const EntitySnapshot = @import("entities.zig").EntitySnapshot;
 const Bindings = @import("bindings.zig").Bindings;
-const ReadCache = @import("read_cache.zig").ReadCache;
 const PlanStep = @import("planner.zig").PlanStep;
 const PatternEdge = @import("planner.zig").PatternEdge;
 const PatternNode = @import("planner.zig").PatternNode;
@@ -111,8 +110,6 @@ expression_overrides: ?*const std.AutoHashMapUnmanaged(Index, Value),
 /// The time the statement runs at (nanoseconds since the epoch), read from
 /// the clock when first asked for, so `datetime()` is the same throughout.
 statement_time: ?i128,
-/// Labels and properties read so far, in a read-only query.
-read_cache: ReadCache,
 
 pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
     return .{
@@ -140,7 +137,6 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .groups = .{},
         .expression_overrides = null,
         .statement_time = null,
-        .read_cache = .{},
     };
 }
 
@@ -169,7 +165,6 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     } else false;
     if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
     errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
-    self.read_cache = .{ .enabled = !has_writes };
 
     var result = std.ArrayList(Row).empty;
     for (queries) |query| {

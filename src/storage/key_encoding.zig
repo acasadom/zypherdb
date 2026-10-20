@@ -58,6 +58,8 @@ pub const node_id_length: usize = @sizeOf(NodeId);
 
 /// Key storing the next node id to allocate (8-byte big-endian counter).
 pub const counter_key: []const u8 = "!";
+/// The storage format's version (see `Graph.upgrade`).
+pub const format_key: []const u8 = "!format";
 
 // ---------------------------------------------------------------------------
 // Key encoding

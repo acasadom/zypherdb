@@ -12,6 +12,7 @@ const openStore = support.openStore;
 const loadMoviesGraph = support.loadMoviesGraph;
 const expectQuery = support.expectQuery;
 const expectQueryError = support.expectQueryError;
+const expectQueryWithParameters = support.expectQueryWithParameters;
 
 test "runs the vertical-slice queries end to end" {
     var tmp = testing.tmpDir(.{});
@@ -444,4 +445,44 @@ test "an expansion sees label changes made after the relationships exist" {
     try expectQuery(&ast, &g, "MATCH (a:A) SET a:B REMOVE a:A", &.{});
     try expectQuery(&ast, &g, "MATCH (b:Y)<-[:R]-(a:B) RETURN a.n", &.{&.{.{ .int = 1 }}});
     try expectQuery(&ast, &g, "MATCH (b:Y)<-[:R]-(a:A) RETURN a.n", &.{});
+}
+
+test "range comparisons use the property index and keep exactly the matching nodes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "UNWIND [-7, -1, 0, 2.5, 3, 3.0, 10, 'ten'] AS x CREATE (:P {x: x})", &.{});
+    try expectQuery(&ast, &g, "CREATE (:Q {x: 5}), (:Q {x: -100})", &.{});
+
+    // The index range is a superset; the WHERE keeps exactly the matches.
+    try expectQuery(&ast, &g, "MATCH (p:P) WHERE p.x > 0 RETURN p.x", &.{
+        &.{.{ .float = 2.5 }}, &.{.{ .int = 3 }}, &.{.{ .float = 3.0 }}, &.{.{ .int = 10 }},
+    });
+    try expectQuery(&ast, &g, "MATCH (p:P) WHERE p.x >= -1 AND p.x < 3 RETURN p.x", &.{
+        &.{.{ .int = -1 }}, &.{.{ .int = 0 }}, &.{.{ .float = 2.5 }},
+    });
+    // Reversed and chained comparisons, fractional bounds.
+    try expectQuery(&ast, &g, "MATCH (p:P) WHERE -2.5 < p.x <= 2.5 RETURN p.x", &.{
+        &.{.{ .int = -1 }}, &.{.{ .int = 0 }}, &.{.{ .float = 2.5 }},
+    });
+    try expectQuery(&ast, &g, "MATCH (p:P) WHERE 3 <= p.x RETURN count(*)", &.{&.{.{ .int = 3 }}});
+    // The index holds every label's nodes: the label is still checked.
+    try expectQuery(&ast, &g, "MATCH (q:Q) WHERE q.x < 0 RETURN q.x", &.{&.{.{ .int = -100 }}});
+    try expectQuery(&ast, &g, "MATCH (n) WHERE n.x > 4 RETURN n.x", &.{&.{.{ .int = 10 }}, &.{.{ .int = 5 }}});
+    // Parameters; a null bound matches nothing; a string bound compares strings.
+    try expectQueryWithParameters(&ast, &g, "MATCH (p:P) WHERE p.x < $high RETURN p.x", &.{.{ "high", .{ .int = -1 } }}, &.{&.{.{ .int = -7 }}});
+    try expectQueryWithParameters(&ast, &g, "MATCH (p:P) WHERE p.x > $low RETURN p.x", &.{.{ "low", .null }}, &.{});
+    try expectQuery(&ast, &g, "MATCH (p:P) WHERE p.x >= 'a' RETURN p.x", &.{&.{.{ .string = "ten" }}});
+
+    // Dates.
+    try expectQuery(&ast, &g, "UNWIND ['1969-12-31', '1970-01-01', '2025-03-11'] AS d CREATE (:E {on: date(d)})", &.{});
+    try expectQuery(&ast, &g, "MATCH (e:E) WHERE e.on < date('1970-01-01') RETURN toString(e.on)", &.{&.{.{ .string = "1969-12-31" }}});
 }

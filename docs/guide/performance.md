@@ -30,10 +30,14 @@ happens, when it matters, and the fix being considered. Measured numbers are in
 
 ## Planning
 
-- **The planner knows only equality.** `{name: 'x'}` and `n.x = $v` use the property index;
-  `n.age > 60`, `STARTS WITH` and `IN` scan every node of the label. Fix: range-ordered index
-  keys (integers are big-endian two's complement, so negatives sort after positives today) and
-  range seeks.
+- **Ranges are for numbers and dates only.** Comparisons on strings, times and date-times,
+  `STARTS WITH` and `IN` still scan every node of the label. Fix: ordered encodings for those
+  types (strings already sort by bytes), and seeks for `STARTS WITH` (a prefix range) and `IN`
+  (one seek per element).
+- **The property index is shared by every label.** A range lookup returns nodes of any label,
+  and each one's record is read to check its label, in the order of the values, not of the ids.
+  This is the largest part of a range query's time. Fix: index keys per label and property.
+- **A range's selectivity is a guess** (a quarter of the label). Fix: statistics per property.
 - **Each label change reads and writes the label's counter** (`c | label`, kept for the
   planner). Creating many labeled nodes in one transaction pays one counter update per node,
   about 2 µs. Fix: keep the transaction's counter changes in memory and write them at commit.

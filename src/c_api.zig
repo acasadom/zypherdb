@@ -94,6 +94,11 @@ pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize
         return null;
     };
     context.graph = Graph.init(&context.store, allocator);
+    context.graph.upgrade() catch {
+        context.store.deinit();
+        allocator.destroy(context);
+        return null;
+    };
     context.allocator = allocator;
     context.diagnostic = Diagnostic.init();
     context.export_json = &.{};

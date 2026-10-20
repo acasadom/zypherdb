@@ -362,6 +362,61 @@ test "edge-type cardinality tracks add and delete" {
     try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
 }
 
+fn rangeIds(g: *Graph, name: []const u8, lower: ?acmedb.Value, upper: ?acmedb.Value) ![]NodeId {
+    var iterator = (try g.nodesInRange(name, lower, upper)).?;
+    defer iterator.deinit();
+    var ids = std.ArrayList(NodeId).empty;
+    while (try iterator.next()) |id| try ids.append(testing.allocator, id);
+    std.mem.sort(NodeId, ids.items, {}, std.sort.asc(NodeId));
+    return ids.toOwnedSlice(testing.allocator);
+}
+
+fn expectRange(g: *Graph, name: []const u8, lower: ?acmedb.Value, upper: ?acmedb.Value, expected: []const NodeId) !void {
+    const ids = try rangeIds(g, name, lower, upper);
+    defer testing.allocator.free(ids);
+    try testing.expectEqualSlices(NodeId, expected, ids);
+}
+
+test "range lookups over the property index: numbers and dates in order" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    // Integers of both signs and floats, integral or not, under one property.
+    const values = [_]acmedb.Value{ .{ .int = -5 }, .{ .int = -1 }, .{ .int = 0 }, .{ .float = 0.5 }, .{ .int = 3 }, .{ .float = 3.0 }, .{ .float = -2.5 }, .{ .int = 100 }, .{ .float = std.math.nan(f64) }, .{ .string = "7" } };
+    for (values, 1..) |value, id| {
+        try g.addNode(id, "N");
+        try g.setProperty(id, "x", value);
+    }
+    // x >= -2 and x <= 3: -1, 0, 0.5, 3, 3.0.
+    try expectRange(&g, "x", .{ .int = -2 }, .{ .int = 3 }, &.{ 2, 3, 4, 5, 6 });
+    // Fractional bounds round outwards: a superset, checked again by the caller.
+    try expectRange(&g, "x", .{ .float = -2.5 }, .{ .float = 0.25 }, &.{ 2, 3, 7 });
+    // One side open; NaN and the string are never in a numeric range.
+    try expectRange(&g, "x", .{ .int = 4 }, null, &.{8});
+    try expectRange(&g, "x", null, .{ .int = -2 }, &.{ 1, 7 });
+    try expectRange(&g, "x", .{ .float = std.math.nan(f64) }, null, &.{});
+    // A string bound has no range: the caller scans instead.
+    try testing.expect((try g.nodesInRange("x", .{ .string = "a" }, null)) == null);
+
+    // Dates, before and after 1970.
+    for ([_]i64{ -400, -1, 0, 20000 }, 20..) |days, id| {
+        try g.addNode(id, "D");
+        try g.setProperty(id, "on", .{ .date = .{ .days = days } });
+    }
+    try expectRange(&g, "on", .{ .date = .{ .days = -1 } }, .{ .date = .{ .days = 0 } }, &.{ 21, 22 });
+    try expectRange(&g, "on", null, .{ .date = .{ .days = -2 } }, &.{20});
+    // A range finds what equality finds: the index stays canonical.
+    var equal = try g.nodesByProperty("x", .{ .float = 3.0 });
+    defer equal.deinit();
+    try testing.expectEqual(@as(?NodeId, 5), try equal.next());
+    try testing.expectEqual(@as(?NodeId, 6), try equal.next());
+}
+
 test "label counts track labels added, removed and deleted" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -444,4 +499,63 @@ test "labelsOf, propertiesOf, edgePropertiesOf and edgesOf enumerate a node" {
     var incoming = try g.edgesOf(2, .in);
     defer incoming.deinit();
     try testing.expectEqual(@as(NodeId, 1), (try incoming.next()).?.neighbour);
+}
+
+fn bigEndian(comptime T: type, n: T) [@sizeOf(T)]u8 {
+    var bytes: [@sizeOf(T)]u8 = undefined;
+    std.mem.writeInt(T, &bytes, n, .big);
+    return bytes;
+}
+
+test "upgrade brings a database of the earlier format up to date" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.addNode(1, "Person");
+    try g.setProperty(1, "age", .{ .int = -5 });
+    try g.addNode(2, "Team");
+    try g.addEdge(1, 2, "MEMBER_OF");
+
+    // Make it look written by the earlier format: edge keys without the
+    // neighbour's labels, no label counter, and the index key encoding a
+    // negative integer in two's complement.
+    const out_key = "e" ++ bigEndian(u64, 1) ++ "o\x00MEMBER_OF\x00" ++ bigEndian(u64, 2);
+    const in_key = "e" ++ bigEndian(u64, 2) ++ "i\x00MEMBER_OF\x00" ++ bigEndian(u64, 1);
+    try store.put(out_key, "");
+    try store.put(in_key, "");
+    try store.del("cPerson");
+    var index = try store.scanPrefix("page\x00");
+    const current_key = try testing.allocator.dupe(u8, (try index.next()).?.key);
+    index.deinit();
+    defer testing.allocator.free(current_key);
+    try store.del(current_key);
+    const old_key = "page\x00\x01" ++ bigEndian(i64, -5) ++ bigEndian(u64, 1);
+    try store.put(old_key, "");
+
+    try g.upgrade();
+
+    // The old index key is gone; equality and ranges find the node again.
+    try testing.expectEqual(@as(usize, 1), try store.countPrefix("page\x00"));
+    var equal = try g.nodesByProperty("age", .{ .int = -5 });
+    try testing.expectEqual(@as(?NodeId, 1), try equal.next());
+    equal.deinit();
+    const in_range = try rangeIds(&g, "age", .{ .int = -10 }, .{ .int = 0 });
+    defer testing.allocator.free(in_range);
+    try testing.expectEqualSlices(NodeId, &.{1}, in_range);
+    try testing.expectEqual(@as(usize, 1), try g.labelCount("Person"));
+    // Edge keys carry the neighbour's labels again.
+    var edges = try g.edgesOf(2, .in);
+    const edge = (try edges.next()).?;
+    try testing.expect(edge.neighbour_labels != null);
+    edges.deinit();
+
+    // Upgrading an up-to-date database changes nothing.
+    try store.put(old_key, "");
+    try g.upgrade();
+    try testing.expectEqual(@as(usize, 2), try store.countPrefix("page\x00"));
 }

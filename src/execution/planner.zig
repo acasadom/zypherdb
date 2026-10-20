@@ -26,6 +26,7 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
             .variable_name = node_pattern.variable_name,
             .labels = node_pattern.labels,
             .seeks = .empty,
+            .ranges = .empty,
             .bound = node_pattern.variable_name.len > 0 and bindings.getNode(node_pattern.variable_name) != null,
         };
         for (self.ast.nodeChildren(node_pattern_index)) |property_node| {
@@ -97,19 +98,35 @@ pub fn nodeIndex(self: *Executor, name: []const u8) ?usize {
 }
 
 pub fn tryAddSeek(self: *Executor, access_expression: Index, value_expression: Index) ExecutionError!bool {
-    if (self.ast.kind(access_expression) != .property_access) return false;
-    const object = self.ast.nodeChildren(access_expression)[0];
-    if (self.ast.kind(object) != .variable) return false;
-    switch (self.ast.kind(value_expression)) {
-        // Constant for the whole query, so usable as an index lookup.
-        .integer_literal, .float_literal, .string_literal, .boolean_literal, .parameter => {},
-        else => return false,
-    }
-    const variable_name = self.ast.data(object).text;
-    const node_index = nodeIndex(self, variable_name) orelse return false;
-    const property = self.ast.data(access_expression).text;
-    try self.nodes.items[node_index].seeks.append(self.allocator, .{ .property = property, .value = value_expression });
+    const target = seekTarget(self, access_expression, value_expression) orelse return false;
+    try self.nodes.items[target.node].seeks.append(self.allocator, .{ .property = target.property, .value = value_expression });
     return true;
+}
+
+/// `node.property <op> value` (or reversed) as a range on the node: `value`
+/// is a lower bound for `>`/`>=`, an upper one for `<`/`<=`.
+fn tryAddRange(self: *Executor, access_expression: Index, value_expression: Index, value_is_lower: bool) ExecutionError!void {
+    const target = seekTarget(self, access_expression, value_expression) orelse return;
+    try self.nodes.items[target.node].ranges.append(self.allocator, .{
+        .property = target.property,
+        .lower = if (value_is_lower) value_expression else null,
+        .upper = if (value_is_lower) null else value_expression,
+    });
+}
+
+/// The pattern node and property of `access_expression` (`variable.property`
+/// of a node in this pattern), if `value_expression` is constant for the
+/// whole query, so usable as an index lookup.
+fn seekTarget(self: *Executor, access_expression: Index, value_expression: Index) ?struct { node: usize, property: []const u8 } {
+    if (self.ast.kind(access_expression) != .property_access) return null;
+    const object = self.ast.nodeChildren(access_expression)[0];
+    if (self.ast.kind(object) != .variable) return null;
+    switch (self.ast.kind(value_expression)) {
+        .integer_literal, .float_literal, .string_literal, .boolean_literal, .parameter => {},
+        else => return null,
+    }
+    const node_index = nodeIndex(self, self.ast.data(object).text) orelse return null;
+    return .{ .node = node_index, .property = self.ast.data(access_expression).text };
 }
 
 pub fn collectWhereSeeks(self: *Executor, expr: Index) ExecutionError!void {
@@ -120,6 +137,15 @@ pub fn collectWhereSeeks(self: *Executor, expr: Index) ExecutionError!void {
         .equal => {
             _ = try tryAddSeek(self, children[0], children[1]);
             _ = try tryAddSeek(self, children[1], children[0]);
+        },
+        // `n.x > v` and `v < n.x` bound n.x from below; `<` from above.
+        .greater_than, .greater_or_equal => {
+            try tryAddRange(self, children[0], children[1], true);
+            try tryAddRange(self, children[1], children[0], false);
+        },
+        .less_than, .less_or_equal => {
+            try tryAddRange(self, children[0], children[1], false);
+            try tryAddRange(self, children[1], children[0], true);
         },
         .and_ => {
             try collectWhereSeeks(self, children[0]);
@@ -133,12 +159,15 @@ pub fn estimate(self: *Executor, node_index: usize) usize {
     const node = self.nodes.items[node_index];
     if (node.bound) return 0; // already known: a free start
     if (node.seeks.items.len > 0) return 1;
-    if (node.labels.len == 0) return std.math.maxInt(usize);
     var best: usize = std.math.maxInt(usize);
     for (node.labels) |label| {
         const count = self.graph.labelCount(label) catch std.math.maxInt(usize);
         if (count < best) best = count;
     }
+    // A range keeps some of the nodes: a guess, without statistics, that is
+    // enough to prefer it to a scan of the whole label.
+    if (node.ranges.items.len > 0) best = best / 4;
+    if (node.labels.len == 0 and node.ranges.items.len == 0) return best;
     // Cap by the rarest incident edge type: the number of results is bounded
     // by the number of edges of that type, not just the label size.
     if (node_index > 0) {
@@ -198,10 +227,20 @@ pub const Seek = struct {
     value: Index, // AST literal expr
 };
 
+/// A comparison `node.property > value` (or `<`, `>=`, `<=`) pushed down to a
+/// node: a bound for a range lookup (`Graph.nodesInRange`). The WHERE is still
+/// evaluated on every match, so the bound need only include what it keeps.
+pub const RangeSeek = struct {
+    property: []const u8,
+    lower: ?Index,
+    upper: ?Index,
+};
+
 pub const PatternNode = struct {
     variable_name: []const u8,
     labels: []const []const u8,
     seeks: std.ArrayList(Seek),
+    ranges: std.ArrayList(RangeSeek),
     bound: bool, // already bound by an earlier pattern in this query
     /// The node this position is matched to on the current search branch
     /// (set by the step that binds it; read by later expansions, so anonymous

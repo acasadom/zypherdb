@@ -369,12 +369,12 @@ pub const KeyValueStore = struct {
     /// Iterates every node id, in ascending order (the keys yielded are the
     /// ids in native byte order).
     pub fn scanNodes(self: *KeyValueStore) StorageError!PrefixIterator {
-        if (self.active_write_transaction) |transaction| return self.scanIn(transaction, self.node_database, "", false);
-        if (self.active_read_transaction) |transaction| return self.scanIn(transaction, self.node_database, "", false);
+        if (self.active_write_transaction) |transaction| return self.scanIn(transaction, self.node_database, "", "", null, false);
+        if (self.active_read_transaction) |transaction| return self.scanIn(transaction, self.node_database, "", "", null, false);
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.IteratorFailed;
         errdefer _ = c.mdb_txn_abort(transaction.?);
-        return self.scanIn(transaction.?, self.node_database, "", true);
+        return self.scanIn(transaction.?, self.node_database, "", "", null, true);
     }
 
     pub fn inTransaction(self: *const KeyValueStore) bool {
@@ -406,12 +406,18 @@ pub const KeyValueStore = struct {
     /// Iterator over all key/value pairs whose key starts with `prefix`, in
     /// lexicographic order (LMDB's natural order).
     pub fn scanPrefix(self: *KeyValueStore, prefix: []const u8) StorageError!PrefixIterator {
-        if (self.active_write_transaction) |transaction| return self.scanPrefixIn(transaction, prefix, false);
-        if (self.active_read_transaction) |transaction| return self.scanPrefixIn(transaction, prefix, false);
+        return self.scanRange(prefix, prefix, null);
+    }
+
+    /// The keys with `prefix` from `start` (the first at or after it) to
+    /// `upper` (inclusive; null: to the end of the prefix), in key order.
+    pub fn scanRange(self: *KeyValueStore, prefix: []const u8, start: []const u8, upper: ?[]const u8) StorageError!PrefixIterator {
+        if (self.active_write_transaction) |transaction| return self.scanIn(transaction, self.database, prefix, start, upper, false);
+        if (self.active_read_transaction) |transaction| return self.scanIn(transaction, self.database, prefix, start, upper, false);
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.IteratorFailed;
         errdefer _ = c.mdb_txn_abort(transaction.?);
-        return self.scanPrefixIn(transaction.?, prefix, true);
+        return self.scanIn(transaction.?, self.database, prefix, start, upper, true);
     }
 
     pub fn countPrefix(self: *KeyValueStore, prefix: []const u8) StorageError!usize {
@@ -454,11 +460,7 @@ pub const KeyValueStore = struct {
         if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
     }
 
-    fn scanPrefixIn(self: *KeyValueStore, transaction: *c.MDB_txn, prefix: []const u8, owns_txn: bool) StorageError!PrefixIterator {
-        return self.scanIn(transaction, self.database, prefix, owns_txn);
-    }
-
-    fn scanIn(self: *KeyValueStore, transaction: *c.MDB_txn, database: c.MDB_dbi, prefix: []const u8, owns_txn: bool) StorageError!PrefixIterator {
+    fn scanIn(self: *KeyValueStore, transaction: *c.MDB_txn, database: c.MDB_dbi, prefix: []const u8, start: []const u8, upper: ?[]const u8, owns_txn: bool) StorageError!PrefixIterator {
         // Only main-table cursors are pooled.
         const reusable = !owns_txn and transaction == self.active_read_transaction and database == self.database;
         var cursor: ?*c.MDB_cursor = null;
@@ -476,10 +478,12 @@ pub const KeyValueStore = struct {
             iterator_prefix.heap = self.allocator.dupe(u8, prefix) catch return error.OutOfMemory;
         }
         errdefer if (iterator_prefix.heap) |bytes| self.allocator.free(bytes);
+        const owned_upper = if (upper) |bytes| self.allocator.dupe(u8, bytes) catch return error.OutOfMemory else null;
+        errdefer if (owned_upper) |bytes| self.allocator.free(bytes);
 
-        var key_val = makeVal(prefix);
+        var key_val = makeVal(start);
         var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_cursor_get(cursor.?, &key_val, &data_val, if (prefix.len == 0) c.MDB_FIRST else c.MDB_SET_RANGE);
+        const rc = c.mdb_cursor_get(cursor.?, &key_val, &data_val, if (start.len == 0) c.MDB_FIRST else c.MDB_SET_RANGE);
         const finished = rc == c.MDB_NOTFOUND;
         if (rc != 0 and rc != c.MDB_NOTFOUND) return error.IteratorFailed;
 
@@ -489,6 +493,7 @@ pub const KeyValueStore = struct {
             .pool_transaction = if (reusable) transaction else null,
             .cursor = cursor.?,
             .prefix_storage = iterator_prefix,
+            .upper = owned_upper,
             .key = key_val,
             .data = data_val,
             .finished = finished,
@@ -506,6 +511,8 @@ pub const PrefixIterator = struct {
     pool_transaction: ?*c.MDB_txn,
     cursor: *c.MDB_cursor,
     prefix_storage: Prefix,
+    /// The last key in range (inclusive), owned; null: the prefix's end.
+    upper: ?[]u8 = null,
     key: c.MDB_val,
     data: c.MDB_val,
     finished: bool,
@@ -522,6 +529,7 @@ pub const PrefixIterator = struct {
         } else c.mdb_cursor_close(self.cursor);
         if (self.transaction) |t| _ = c.mdb_txn_abort(t);
         if (self.prefix_storage.heap) |bytes| store.allocator.free(bytes);
+        if (self.upper) |bytes| store.allocator.free(bytes);
     }
 
     fn inRange(self: *const PrefixIterator) bool {
@@ -529,7 +537,9 @@ pub const PrefixIterator = struct {
         const prefix = self.prefix_storage.bytes();
         const k: [*]const u8 = @ptrCast(self.key.mv_data.?);
         if (self.key.mv_size < prefix.len) return false;
-        return std.mem.eql(u8, k[0..prefix.len], prefix);
+        if (!std.mem.eql(u8, k[0..prefix.len], prefix)) return false;
+        if (self.upper) |upper| return std.mem.order(u8, k[0..self.key.mv_size], upper) != .gt;
+        return true;
     }
 
     /// Returns the next key/value pair, or `null` at the end. The returned

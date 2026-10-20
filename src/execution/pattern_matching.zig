@@ -32,7 +32,7 @@ pub fn seedNodes(self: *Executor, labels: []const []const u8) StorageError!NodeI
 /// True if `id` carries every label in `labels` (empty = always true).
 pub fn hasAllLabels(self: *Executor, id: NodeId, labels: []const []const u8) StorageError!bool {
     for (labels) |l| {
-        if (!(try self.read_cache.hasLabel(self.graph, self.allocator, id, l))) return false;
+        if (!(try self.graph.hasLabel(id, l))) return false;
     }
     return true;
 }
@@ -83,17 +83,22 @@ pub fn runStep(self: *Executor, step_index: usize, pattern_index: usize, binding
 }
 
 /// Binds the pattern's anchor node from its candidates (an index lookup on
-/// its first equality predicate, else its first label, else every node),
-/// keeping those that carry every label and satisfy every predicate.
+/// its first equality predicate, else a range lookup on its first range,
+/// else its first label, else every node), keeping those that carry every
+/// label and satisfy every equality (the WHERE checks the ranges).
 fn scanNodes(self: *Executor, node_index: usize, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
     const node = self.nodes.items[node_index];
+    var from_label_index = false;
     var iterator = if (node.seeks.items.len > 0) seek: {
         const seek = node.seeks.items[0];
         break :seek try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
-    } else try seedNodes(self, node.labels);
+    } else if (try rangeCandidates(self, node, bindings)) |in_range| in_range else label: {
+        from_label_index = node.labels.len > 0;
+        break :label try seedNodes(self, node.labels);
+    };
     defer iterator.deinit();
     // Nodes from the label index of the first label carry it: check only the others.
-    const unchecked_labels = if (node.seeks.items.len == 0 and node.labels.len > 0) node.labels[1..] else node.labels;
+    const unchecked_labels = if (from_label_index) node.labels[1..] else node.labels;
 
     while (try iterator.next()) |id| {
         if (!(try hasAllLabels(self, id, unchecked_labels))) continue;
@@ -104,6 +109,27 @@ fn scanNodes(self: *Executor, node_index: usize, next_step: usize, pattern_index
         if (!try nodeSeeksMatch(self, node_index, id, bindings)) continue;
         try runStep(self, next_step, pattern_index, bindings);
     }
+}
+
+/// The nodes in range of the node's first range seek on a property, with the
+/// bounds of every range seek on that property, or null when the bounds do
+/// not allow a range lookup (strings, booleans, a null): scan instead.
+fn rangeCandidates(self: *Executor, node: planner.PatternNode, bindings: *Bindings) ExecutionError!?NodeIdIterator {
+    if (node.ranges.items.len == 0) return null;
+    const property = node.ranges.items[0].property;
+    var lower: ?Value = null;
+    var upper: ?Value = null;
+    for (node.ranges.items) |range| {
+        if (!std.mem.eql(u8, range.property, property)) continue;
+        // Any one bound of each side keeps a superset of the matches.
+        if (lower == null) if (range.lower) |expression| {
+            lower = try expressions.evaluate(self, expression, bindings);
+        };
+        if (upper == null) if (range.upper) |expression| {
+            upper = try expressions.evaluate(self, expression, bindings);
+        };
+    }
+    return self.graph.nodesInRange(property, lower, upper);
 }
 
 /// Binds both endpoints of a single-edge pattern from the edge-property index.

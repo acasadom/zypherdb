@@ -108,7 +108,6 @@ flowchart TB
 | `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE. |
 | `src/execution/bindings.zig` | `Binding`/`Bindings`: what each query variable is bound to (regular types). |
 | `src/execution/entities.zig` | `EntitySnapshot`: the labels and properties of every node and relationship a result mentions, read before the transaction ends. |
-| `src/execution/read_cache.zig` | A per-query cache of label tests, for read-only queries that reach the same nodes many times. |
 | `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. Declared in `include/acmedb.h`. |
 | `python/native/module.zig` | The Python extension module, on the limited C API: converts parameters and rows directly, runs queries with the GIL released. See [the Python reference](python.md#under-the-hood). |
 | `python/native/temporals.zig` | Converts temporal values to and from Python's `datetime` types. |

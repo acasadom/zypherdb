@@ -51,6 +51,108 @@ pub const Graph = struct {
         return .{ .store = store, .allocator = allocator };
     }
 
+    /// The storage format this code writes. 2 (October 2026): index keys
+    /// order numbers and dates (range lookups), edge keys carry the
+    /// neighbour's labels, labels have counters. Databases without a format
+    /// key were written before.
+    pub const format_version: u32 = 2;
+
+    /// Brings a database written by an earlier format up to this one, in one
+    /// write transaction: rebuilds the property indexes in the ordered
+    /// encoding, fills in neighbour labels on edge keys, and counts labels.
+    /// O(N) once; a database in this format is left as it is. Call it after
+    /// opening, before anything else.
+    pub fn upgrade(self: *Graph) StorageError!void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const arena = scratch.allocator();
+        if (try self.store.get(key_encoding.format_key)) |raw| {
+            defer self.store.allocator.free(raw);
+            if (raw.len == 4 and std.mem.readInt(u32, raw[0..4], .big) >= format_version) return;
+        }
+        try self.beginWrite();
+        errdefer self.abortWrite();
+
+        // The old index keys go: collect first, so no scan is open across the deletes.
+        var stale = std.ArrayList([]const u8).empty;
+        for ([_]u8{ key_encoding.index_marker, key_encoding.edge_index_marker, key_encoding.label_count_marker }) |marker| {
+            var keys = try self.store.scanPrefix(&.{marker});
+            defer keys.deinit();
+            while (try keys.next()) |entry| try stale.append(arena, try arena.dupe(u8, entry.key));
+        }
+        for (stale.items) |key| try self.store.del(key);
+
+        // Node properties and labels, from the records.
+        const Node = struct { id: NodeId, record: NodeRecord };
+        var nodes = std.ArrayList(Node).empty;
+        {
+            var all = try self.allNodes();
+            defer all.deinit();
+            while (try all.next()) |id| {
+                const record = try self.readRecord(id, arena) orelse continue;
+                try nodes.append(arena, .{ .id = id, .record = .{ .bytes = try arena.dupe(u8, record.bytes) } });
+            }
+        }
+        var label_counts = std.StringHashMapUnmanaged(u64).empty;
+        for (nodes.items) |node| {
+            var properties = node.record.properties();
+            while (properties.next()) |property| {
+                try self.putIndexEntry(node.id, property.name, try value_encoding.decodeValue(property.encoded_value, arena));
+            }
+            var labels = node.record.labels();
+            while (labels.next()) |label| {
+                const entry = try label_counts.getOrPut(arena, label);
+                entry.value_ptr.* = if (entry.found_existing) entry.value_ptr.* + 1 else 1;
+            }
+        }
+        var counts = label_counts.iterator();
+        while (counts.next()) |entry| {
+            var key = std.ArrayList(u8).empty;
+            try appendLabelCountKey(&key, arena, entry.key_ptr.*);
+            var buffer: [8]u8 = undefined;
+            std.mem.writeInt(u64, &buffer, entry.value_ptr.*, .big);
+            try self.store.put(key.items, &buffer);
+        }
+
+        // Edge properties: `f | src | dst | 0x00 | type | 0x00 | property`.
+        const EdgeProperty = struct { src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value };
+        var edge_properties = std.ArrayList(EdgeProperty).empty;
+        {
+            var keys = try self.store.scanPrefix(&.{key_encoding.edge_property_marker});
+            defer keys.deinit();
+            while (try keys.next()) |entry| {
+                const rest = entry.key[1 + 2 * key_encoding.node_id_length + 1 ..];
+                const end = std.mem.indexOfScalar(u8, rest, key_encoding.separator) orelse continue;
+                try edge_properties.append(arena, .{
+                    .src = key_encoding.readNodeId(entry.key[1..][0..key_encoding.node_id_length]),
+                    .dst = key_encoding.readNodeId(entry.key[1 + key_encoding.node_id_length ..][0..key_encoding.node_id_length]),
+                    .edge_type = try arena.dupe(u8, rest[0..end]),
+                    .name = try arena.dupe(u8, rest[end + 1 ..]),
+                    .value = try value_encoding.decodeValue(try arena.dupe(u8, entry.value), arena),
+                });
+            }
+        }
+        for (edge_properties.items) |p| try self.putEdgeIndexEntry(p.name, p.value, p.src, p.dst, p.edge_type);
+
+        // Edge keys: the neighbour's labels as their value.
+        const EdgeKeyCopy = struct { key: []const u8, neighbour: NodeId };
+        var edge_keys = std.ArrayList(EdgeKeyCopy).empty;
+        {
+            var keys = try self.store.scanPrefix(&.{key_encoding.edge_marker});
+            defer keys.deinit();
+            while (try keys.next()) |entry| {
+                const decoded = key_encoding.decodeEdgeKey(entry.key);
+                try edge_keys.append(arena, .{ .key = try arena.dupe(u8, entry.key), .neighbour = decoded.neighbour });
+            }
+        }
+        for (edge_keys.items) |edge| try self.store.put(edge.key, try self.neighbourLabels(edge.neighbour, arena));
+
+        var version: [4]u8 = undefined;
+        std.mem.writeInt(u32, &version, format_version, .big);
+        try self.store.put(key_encoding.format_key, &version);
+        try self.commitWrite();
+    }
+
     /// Begins an atomic write transaction; see `commitWrite`/`abortWrite`. All
     /// mutations until then are batched into one transaction.
     pub fn beginWrite(self: *Graph) StorageError!void {
@@ -338,6 +440,105 @@ pub const Graph = struct {
         try key_encoding.appendIndexPrefix(&prefix, self.allocator, name, value);
         const iterator = try self.store.scanPrefix(prefix.items);
         return .{ .inner = iterator };
+    }
+
+    /// The nodes whose property `name` may lie between `lower` and `upper`
+    /// (either may be null: unbounded), from the property index: a superset
+    /// of the nodes where the comparison holds, so callers still check it.
+    /// Numbers (integers and floats, which compare with each other) and dates
+    /// have ranges; for other values this is null (scan instead).
+    /// O(log N + the nodes in range).
+    pub fn nodesInRange(self: *Graph, name: []const u8, lower: ?Value, upper: ?Value) StorageError!?NodeIdIterator {
+        const bound = lower orelse upper orelse return null;
+        switch (bound) {
+            .int, .float => {
+                for ([_]?Value{ lower, upper }) |b| if (b) |v| switch (v) {
+                    .int => {},
+                    .float => |x| if (std.math.isNan(x)) return try self.emptyRange(name),
+                    else => return null,
+                };
+                // Integral floats are indexed as integers: integers and the
+                // other floats are two key ranges.
+                const low_int: i64 = if (lower) |v| floorInteger(v) else std.math.minInt(i64);
+                const high_int: i64 = if (upper) |v| ceilInteger(v) else std.math.maxInt(i64);
+                var iterator = try self.indexRange(name, .int, value_encoding.orderedInteger(low_int), value_encoding.orderedInteger(high_int));
+                errdefer iterator.deinit();
+                const low_float = value_encoding.orderedFloat(if (lower) |v| asFloat(v) else -std.math.inf(f64));
+                const high_float = value_encoding.orderedFloat(if (upper) |v| asFloat(v) else std.math.inf(f64));
+                iterator.second = (try self.indexRange(name, .float, low_float, high_float)).inner;
+                return iterator;
+            },
+            .date => {
+                for ([_]?Value{ lower, upper }) |b| if (b) |v| if (v != .date) return null;
+                const low: i64 = if (lower) |v| v.date.days else std.math.minInt(i64);
+                const high: i64 = if (upper) |v| v.date.days else std.math.maxInt(i64);
+                return try self.indexRange(name, .date, value_encoding.orderedInteger(low), value_encoding.orderedInteger(high));
+            },
+            else => return null,
+        }
+    }
+
+    /// The index keys of property `name` holding a `tag` value whose ordered
+    /// 8-byte encoding is between `low` and `high`, inclusive.
+    fn indexRange(self: *Graph, name: []const u8, tag: value_encoding.Tag, low: u64, high: u64) StorageError!NodeIdIterator {
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try prefix.append(self.allocator, key_encoding.index_marker);
+        try prefix.appendSlice(self.allocator, name);
+        try prefix.append(self.allocator, key_encoding.separator);
+        try prefix.append(self.allocator, @backingInt(tag));
+        var start = std.ArrayList(u8).empty;
+        defer start.deinit(self.allocator);
+        try start.appendSlice(self.allocator, prefix.items);
+        try appendBig(&start, self.allocator, low);
+        var upper = std.ArrayList(u8).empty;
+        defer upper.deinit(self.allocator);
+        try upper.appendSlice(self.allocator, prefix.items);
+        try appendBig(&upper, self.allocator, high);
+        try upper.appendNTimes(self.allocator, 0xff, key_encoding.node_id_length); // every node id
+        return .{ .inner = try self.store.scanRange(prefix.items, start.items, upper.items) };
+    }
+
+    /// An iterator over nothing (a range no value is in, as with a NaN bound).
+    fn emptyRange(self: *Graph, name: []const u8) StorageError!NodeIdIterator {
+        return self.indexRange(name, .int, 1, 0);
+    }
+
+    fn appendBig(list: *std.ArrayList(u8), allocator: Allocator, n: u64) Allocator.Error!void {
+        var buffer: [8]u8 = undefined;
+        std.mem.writeInt(u64, &buffer, n, .big);
+        try list.appendSlice(allocator, &buffer);
+    }
+
+    fn asFloat(value: Value) f64 {
+        return switch (value) {
+            .int => |n| @floatFromInt(n),
+            .float => |x| x,
+            else => unreachable,
+        };
+    }
+
+    /// The largest integer at most `value` (saturating), and the smallest at least it.
+    fn floorInteger(value: Value) i64 {
+        return switch (value) {
+            .int => |n| n,
+            .float => |x| saturatingInteger(@floor(x)),
+            else => unreachable,
+        };
+    }
+
+    fn ceilInteger(value: Value) i64 {
+        return switch (value) {
+            .int => |n| n,
+            .float => |x| saturatingInteger(@ceil(x)),
+            else => unreachable,
+        };
+    }
+
+    fn saturatingInteger(x: f64) i64 {
+        if (x <= -9.223372036854775808e18) return std.math.minInt(i64);
+        if (x >= 9.223372036854775807e18) return std.math.maxInt(i64);
+        return @intFromFloat(x);
     }
 
     fn putIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
@@ -682,6 +883,8 @@ pub const Graph = struct {
 /// transaction/cursor; `deinit` releases them.
 pub const NodeIdIterator = struct {
     inner: PrefixIterator,
+    /// A second key range, scanned after `inner` (see `Graph.nodesInRange`).
+    second: ?PrefixIterator = null,
     /// When set, only keys of exactly this length are yielded (others skipped).
     key_length: ?usize = null,
     /// The keys are node ids in native byte order (the node table's).
@@ -689,18 +892,24 @@ pub const NodeIdIterator = struct {
 
     pub fn deinit(self: *NodeIdIterator) void {
         self.inner.deinit();
+        if (self.second) |*second| second.deinit();
     }
 
     /// Returns the next node id, or `null` at the end.
     pub fn next(self: *NodeIdIterator) StorageError!?NodeId {
-        while (try self.inner.next()) |entry| {
-            if (self.key_length) |len| {
-                if (entry.key.len != len) continue;
+        while (true) {
+            while (try self.inner.next()) |entry| {
+                if (self.key_length) |len| {
+                    if (entry.key.len != len) continue;
+                }
+                if (self.native_keys) return std.mem.readInt(NodeId, entry.key[0..8], .native);
+                return key_encoding.readNodeId(entry.key[entry.key.len - key_encoding.node_id_length ..]);
             }
-            if (self.native_keys) return std.mem.readInt(NodeId, entry.key[0..8], .native);
-            return key_encoding.readNodeId(entry.key[entry.key.len - key_encoding.node_id_length ..]);
+            const second = self.second orelse return null;
+            self.inner.deinit();
+            self.inner = second;
+            self.second = null;
         }
-        return null;
     }
 };
 

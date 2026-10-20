@@ -84,8 +84,13 @@ The seeks come from two places:
   `variable.property = value` whose value is a literal or a parameter, which is constant for the
   whole query.
 
-A pushed-down seek is still checked against each candidate, and the whole `WHERE` is still
-evaluated at the end, so pushdown never changes a result: it only narrows the candidates.
+The `WHERE` also gives ranges. Each `variable.property <op> value`, with `<`, `<=`, `>` or `>=` in
+either order, bounds the property from one side (`PatternNode.ranges`). When a node has no
+equality seek, the scan of an anchor with a range reads the property index's key range for it
+(`Graph.nodesInRange`): numbers and dates, the other types fall back to a scan.
+
+A pushed-down seek or range is still checked against each candidate, and the whole `WHERE` is
+still evaluated at the end. So pushdown never changes a result: it only narrows the candidates.
 
 A node is `bound` when an earlier pattern, or an earlier clause through `WITH`, already gave it a
 value. This is how comma-separated patterns and clauses join: a bound node needs no scan, and is
@@ -206,11 +211,9 @@ for clause in query:
 `Executor.run` opens one transaction for the whole query: a write transaction if any clause writes,
 otherwise a read transaction, which is a consistent snapshot.
 
-- **The read cache** (`read_cache.zig`). In a read-only query a node's labels cannot change, so
-  `ReadCache` keeps the answer to each label test made while matching. A pattern in which many
-  rows reach the same few nodes (every member reaches their department) tests each node once.
-  Queries that write run with the cache off. Properties are not cached; see
-  [performance](performance).
+- **Repeated reads.** A pattern in which many rows reach the same few nodes (every member reaches
+  their department) reads each node's record from storage once: the store's record cache keeps
+  the records a read transaction found (see [storage](storage)).
 - **The entity snapshot** (`entities.zig`). Rows hold references to nodes and relationships.
   Before the transaction ends, `EntitySnapshot.capture` reads the labels and properties of every
   entity the result mentions, so the caller can present whole entities as the query left them.
