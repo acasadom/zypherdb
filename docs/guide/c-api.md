@@ -27,6 +27,10 @@ typedef struct Context Context;   // opaque
 typedef struct Result Result;     // opaque
 
 Context* acmedb_open(const char* path, size_t path_len);   // NULL on failure
+// durability: 0 full (default: each commit on disk when it returns), 1 relaxed (a power
+// failure can lose the last commit, never corrupt), 2 deferred (the OS or acmedb_sync writes)
+Context* acmedb_open_with_durability(const char* path, size_t path_len, int durability);
+int      acmedb_sync(Context*);                             // write every commit so far to disk
 void     acmedb_close(Context*);
 const char* acmedb_last_error(Context*, size_t* out_len);  // last error message
 int      acmedb_error_code(Context*);                       // last error code (0 = none)

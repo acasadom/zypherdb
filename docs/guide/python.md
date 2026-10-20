@@ -28,7 +28,12 @@ with Database(tempfile.mkdtemp()) as db:
 
 ## The `Database` object
 
-- `Database(path)` opens (or creates) the database; use it as a context manager, or call `close()`.
+- `Database(path, durability="full")` opens (or creates) the database in directory `path`; use it
+  as a context manager, or call `close()`. `durability` is how much a commit waits for the disk:
+  `"full"` (each commit is on disk when it returns, about 8 ms), `"relaxed"` (a power failure can
+  lose the last commit, never corrupt the database) or `"deferred"` (commits are written by the
+  operating system or `sync()`; a power failure can lose the recent ones; tens of microseconds per
+  commit). `sync()` writes every commit so far to disk.
 - `query(text, parameters=None, /, **named) -> list[list]` runs one query, with its `$name`
   parameters from a dict and/or keyword arguments (`db.query("... {id: $card} ...", card=123)`;
   values: `int`, finite `float`, `str`, `bool`, `None`, lists, `str`-keyed dicts, and temporal
