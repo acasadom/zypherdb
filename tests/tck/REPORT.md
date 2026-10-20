@@ -6,16 +6,16 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 3151/3202 (98.4%)** · Negative: 679/694 (97.8%)
+**Positive: 3159/3202 (98.7%)** · Negative: 679/694 (97.8%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
 | clauses/call | 0/36 (0.0%) | 2/16 (12.5%) | 50 | 0 |
 | clauses/create | 61/63 (96.8%) | 14/15 (93.3%) | 0 | 0 |
-| clauses/delete | 35/36 (97.2%) | 5/5 (100.0%) | 0 | 0 |
-| clauses/match | 135/141 (95.7%) | 241/241 (100.0%) | 5 | 0 |
+| clauses/delete | 36/36 (100.0%) | 5/5 (100.0%) | 0 | 0 |
+| clauses/match | 140/141 (99.3%) | 241/241 (100.0%) | 0 | 0 |
 | clauses/match-where | 32/32 (100.0%) | 2/2 (100.0%) | 0 | 0 |
-| clauses/merge | 57/62 (91.9%) | 13/13 (100.0%) | 0 | 0 |
+| clauses/merge | 59/62 (95.2%) | 13/13 (100.0%) | 0 | 0 |
 | clauses/remove | 33/33 (100.0%) | – | 0 | 0 |
 | clauses/return | 52/52 (100.0%) | 11/11 (100.0%) | 0 | 0 |
 | clauses/return-orderby | 31/31 (100.0%) | 4/4 (100.0%) | 0 | 0 |
@@ -53,12 +53,9 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | Scenarios | Reason |
 | --- | --- |
 | 50 | unsupported: procedures |
-| 5 | unsupported: then: having executed: |
 | 3 | fail: side effects: expected other side effects |
 | 3 | fail: rows differ: expected other rows |
-| 2 | fail: unexpected error: unknown variable '…' |
 | 1 | fail: expected SyntaxError, but the query succeeded |
-| 1 | fail: unexpected error: a node to delete still has relationships (use DETACH DELETE) |
 | 1 | fail: unexpected error: expected '}', found WITH |
 
 1 scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.

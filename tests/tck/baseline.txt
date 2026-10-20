@@ -99,6 +99,7 @@ clauses/delete/Delete5.feature: [3] Delete nodes from a map
 clauses/delete/Delete5.feature: [4] Delete relationships from a map
 clauses/delete/Delete5.feature: [5] Detach delete nodes from nested map/list
 clauses/delete/Delete5.feature: [6] Delete relationships from nested map/list
+clauses/delete/Delete5.feature: [7] Delete paths from nested map/list
 clauses/delete/Delete5.feature: [8] Failing when using undefined variable in DELETE
 clauses/delete/Delete5.feature: [9] Failing when deleting an integer expression
 clauses/delete/Delete6.feature: [10] Skipping and limiting to a few results after deleting relationships affects the result set but not the side effects
@@ -378,6 +379,11 @@ clauses/match/Match5.feature: [21] Handling a variable length relationship and a
 clauses/match/Match5.feature: [22] Handling a variable length relationship and a standard relationship in chain, single length 2
 clauses/match/Match5.feature: [23] Handling a variable length relationship and a standard relationship in chain, longer 1
 clauses/match/Match5.feature: [24] Handling a variable length relationship and a standard relationship in chain, longer 2
+clauses/match/Match5.feature: [25] Handling a variable length relationship and a standard relationship in chain, longer 3
+clauses/match/Match5.feature: [26] Handling mixed relationship patterns and directions 1
+clauses/match/Match5.feature: [27] Handling mixed relationship patterns and directions 2
+clauses/match/Match5.feature: [28] Handling mixed relationship patterns 1
+clauses/match/Match5.feature: [29] Handling mixed relationship patterns 2
 clauses/match/Match5.feature: [2] Handling explicitly unbounded variable length match
 clauses/match/Match5.feature: [3] Handling single bounded variable length match 1
 clauses/match/Match5.feature: [4] Handling single bounded variable length match 2
@@ -528,6 +534,7 @@ clauses/match/Match9.feature: [9] Optionally matching named paths with variable 
 clauses/merge/Merge1.feature: [10] Merge must properly handle multiple labels
 clauses/merge/Merge1.feature: [11] Merge should be able to merge using property of bound node
 clauses/merge/Merge1.feature: [12] Merge should be able to merge using property of freshly created node
+clauses/merge/Merge1.feature: [13] Merge should bind a path
 clauses/merge/Merge1.feature: [14] Merges should not be able to match on deleted nodes
 clauses/merge/Merge1.feature: [15] Fail when merge a node that is already bound
 clauses/merge/Merge1.feature: [16] Fail when using parameter as node predicate in MERGE
@@ -554,6 +561,7 @@ clauses/merge/Merge3.feature: [4] Merge should be able to use properties of boun
 clauses/merge/Merge3.feature: [5] Fail when using undefined variable in ON MATCH
 clauses/merge/Merge4.feature: [1] Merge should be able to set labels on match and on create
 clauses/merge/Merge4.feature: [2] Merge should be able to use properties of bound node in ON MATCH and ON CREATE
+clauses/merge/Merge5.feature: [10] Merge should bind a path
 clauses/merge/Merge5.feature: [11] Use outgoing direction when unspecified
 clauses/merge/Merge5.feature: [12] Match outgoing relationship when direction unspecified
 clauses/merge/Merge5.feature: [13] Match both incoming and outgoing relationships when direction unspecified

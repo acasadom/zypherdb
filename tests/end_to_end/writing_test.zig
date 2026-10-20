@@ -470,3 +470,25 @@ test "write targets are expressions; nulls are ignored; MERGE takes its ON claus
     try expectQueryError(&ast, &g, "MATCH (a) DELETE a:A", error.InvalidExpression);
     try expectQueryError(&ast, &g, "MATCH (a) DELETE 1 + 1", error.InvalidExpression);
 }
+
+test "CREATE and MERGE bind their path variables; one DELETE removes relationships before nodes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE p = (:A)-[:R]->(:B) RETURN length(p), size(nodes(p))", &.{&.{ .{ .int = 1 }, .{ .int = 2 } }});
+    try expectQuery(&ast, &g, "MERGE p = (:A)<-[:S]-(:C) RETURN length(p)", &.{&.{.{ .int = 1 }}});
+    try expectQuery(&ast, &g, "MERGE p = (:A)<-[:S]-(:C) RETURN length(p)", &.{&.{.{ .int = 1 }}});
+    // The two paths share their nodes: deleting the first one's nodes waits
+    // for the second one's relationship to go.
+    try expectQuery(&ast, &g, "MATCH (a:A)-[:R]->(b:B) CREATE (b)-[:R]->(a)", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:A)-[r:S]-() DELETE r", &.{});
+    try expectQuery(&ast, &g, "MATCH p = (:A)-[:R]->(:B), q = (:B)-[:R]->(:A) DELETE p, q", &.{});
+    // Left: the :A and :C the first MERGE created.
+    try expectQuery(&ast, &g, "MATCH (n) RETURN count(n)", &.{&.{.{ .int = 2 }}});
+}

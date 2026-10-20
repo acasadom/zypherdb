@@ -5,6 +5,7 @@ const Index = @import("../query/ast.zig").Index;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
+const Relationship = @import("../value.zig").Relationship;
 const GraphError = @import("../storage/graph.zig").GraphError;
 
 const Executor = @import("Executor.zig");
@@ -41,6 +42,21 @@ pub fn createPattern(self: *Executor, pattern: Index, bindings: *Bindings, creat
         if (variable_name.len > 0) try bindings.put(self.allocator, variable_name, .{ .node = id.* });
     }
     try applyEdges(self, chain, node_ids, bindings, creator);
+    const path_variable = self.ast.data(pattern).text;
+    if (path_variable.len > 0) try bindings.put(self.allocator, path_variable, try writtenPath(self, chain, node_ids));
+}
+
+/// The path a CREATE or MERGE pattern wrote, for its path variable
+/// (`CREATE p = (a)-[:R]->(b)`): its nodes and, between them, the
+/// relationships as `applyEdges` stored them.
+fn writtenPath(self: *Executor, chain: []const Index, node_ids: []const NodeId) ExecutionError!Value {
+    const relationships = try self.allocator.alloc(Relationship, node_ids.len - 1);
+    for (relationships, node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |*relationship, left_id, right_id, i| {
+        const edge_pattern = self.ast.data(chain[i * 2 + 1]).edge_pattern;
+        const reversed = edge_pattern.direction == .right_to_left;
+        relationship.* = .{ .src = if (reversed) right_id else left_id, .dst = if (reversed) left_id else right_id, .edge_type = edge_pattern.singleType().? };
+    }
+    return .{ .path = .{ .nodes = node_ids, .relationships = relationships } };
 }
 
 /// CREATE may reuse a bound node only as a relationship endpoint, as it is:
@@ -248,26 +264,30 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
 
 pub fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) ExecutionError!void {
     const detach = self.ast.data(delete_clause).delete.detach;
-    for (self.ast.nodeChildren(delete_clause)) |item| {
-        const expression = self.ast.nodeChildren(item)[0];
-        const value = try expressions.evaluate(self, expression, bindings);
-        // How a refusal names the node: by its variable, when it has one.
-        const name = if (self.ast.kind(expression) == .variable) self.ast.data(expression).text else "";
-        switch (value) {
-            .node => |id| try deleteNode(self, id, detach, name),
-            .relationship => |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
-            // A path: its relationships, then its nodes.
-            .path => |path| {
-                for (path.relationships) |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type);
-                for (path.nodes) |id| try deleteNode(self, id, detach, "");
-            },
-            .null => {}, // e.g. from an OPTIONAL MATCH that found nothing
-            else => {
-                self.fail(.type_mismatch, "DELETE needs a node, a relationship or a path, not a {s}", .{value.typeName()});
-                return error.TypeMismatch;
-            },
-        }
-    }
+    const items = self.ast.nodeChildren(delete_clause);
+    const values = try self.allocator.alloc(Value, items.len);
+    for (values, items) |*value, item| value.* = try expressions.evaluate(self, self.ast.nodeChildren(item)[0], bindings);
+    // Every relationship first, then the nodes: a node is refused only if
+    // something this DELETE does not remove still connects it.
+    for (values) |value| switch (value) {
+        .relationship => |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
+        .path => |path| for (path.relationships) |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
+        .node, .null => {}, // null: e.g. from an OPTIONAL MATCH that found nothing
+        else => {
+            self.fail(.type_mismatch, "DELETE needs a node, a relationship or a path, not a {s}", .{value.typeName()});
+            return error.TypeMismatch;
+        },
+    };
+    for (values, items) |value, item| switch (value) {
+        .node => |id| {
+            // How a refusal names the node: by its variable, when it has one.
+            const expression = self.ast.nodeChildren(item)[0];
+            const name = if (self.ast.kind(expression) == .variable) self.ast.data(expression).text else "";
+            try deleteNode(self, id, detach, name);
+        },
+        .path => |path| for (path.nodes) |id| try deleteNode(self, id, detach, ""),
+        else => {},
+    };
 }
 
 fn deleteNode(self: *Executor, id: NodeId, detach: bool, name: []const u8) ExecutionError!void {

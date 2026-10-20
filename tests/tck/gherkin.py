@@ -135,6 +135,9 @@ def parse_feature(path: Path, features_root: Path) -> list[Scenario]:
             current = _Outline(stripped.split(":", 1)[1].strip(), pending_tags, [])
             pending_tags = set()
             in_examples = False
+            # A scenario's first "And" continues the background, not the
+            # previous scenario.
+            last_keyword = background[-1].keyword if background else "Given"
             continue
         if stripped.startswith("Examples:"):
             in_examples = True
