@@ -12,8 +12,7 @@ leaves out a few features; both are listed below. This page is the complete refe
 - **Strings** use single quotes, with backslash escapes (`'it\'s'`, `'\n'`).
 - **Numbers**:
   - integers in decimal, hexadecimal (`0x1F`) or octal (`0o17`);
-  - floats (`1.5`, `1e3`, `2.5e-3`). A float needs a digit before the point: write `0.5`, not
-    `.5`.
+  - floats (`1.5`, `.5`, `1e3`, `2.5e-3`).
 - **Comments**: `// to the end of the line` and `/* … */`.
 - **Parameters**: `$name` is a value passed with the query (in Python,
   `db.query(text, name=value)`). A parameter is always a value; it cannot stand for a label, a type
@@ -42,7 +41,9 @@ its own rows on; the first clause receives one empty row.
   - after a writing clause, a `WITH` must come before reading again (`MATCH`, `UNWIND`);
   - `RETURN` comes last;
   - a query ends with `RETURN` or with a writing clause.
-- When a `WITH` does not aggregate, its `WHERE` can also use the variables from before the `WITH`.
+- The `WHERE` of a `WITH` filters the projected rows before `DISTINCT`, `ORDER BY`, `SKIP` and
+  `LIMIT` apply. When the `WITH` does not aggregate, its `WHERE` can also use the variables from
+  before the `WITH`.
 - `ORDER BY x [ASC | DESC], …` sorts the rows, ascending by default. Ascending order puts `null`s
   last. `SKIP` and `LIMIT` take an integer expression or a parameter.
 - A whole query is one transaction, `UNION` included: either all of its writes are kept or none

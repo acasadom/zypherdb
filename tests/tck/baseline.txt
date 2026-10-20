@@ -1599,7 +1599,10 @@ expressions/literals/Literals5.feature: [11] Return a very long negative float
 expressions/literals/Literals5.feature: [12] Return a very long negative float without integer digits
 expressions/literals/Literals5.feature: [13] Return a positive float with positive lower case exponent
 expressions/literals/Literals5.feature: [14] Return a positive float with positive upper case exponent
+expressions/literals/Literals5.feature: [15] Return a positive float with positive lower case exponent without integer digits
 expressions/literals/Literals5.feature: [16] Return a positive float with negative lower case exponent
+expressions/literals/Literals5.feature: [17] Return a positive float with negative lower case exponent without integer digits
+expressions/literals/Literals5.feature: [18] Return a positive float with negative upper case exponent without integer digits
 expressions/literals/Literals5.feature: [19] Return a negative float in with positive lower case exponent
 expressions/literals/Literals5.feature: [1] Return a short positive float
 expressions/literals/Literals5.feature: [20] Return a negative float in with positive upper case exponent
@@ -1610,9 +1613,13 @@ expressions/literals/Literals5.feature: [24] Return a negative float with negati
 expressions/literals/Literals5.feature: [25] Return a positive float with one integer digit and maximum positive exponent
 expressions/literals/Literals5.feature: [26] Return a positive float with nine integer digit and maximum positive exponent
 expressions/literals/Literals5.feature: [27] Fail when float value is too large
+expressions/literals/Literals5.feature: [2] Return a short positive float without integer digits
 expressions/literals/Literals5.feature: [3] Return a long positive float
+expressions/literals/Literals5.feature: [4] Return a long positive float without integer digits
 expressions/literals/Literals5.feature: [5] Return a very long positive float
+expressions/literals/Literals5.feature: [6] Return a very long positive float without integer digits
 expressions/literals/Literals5.feature: [7] Return a positive zero float
+expressions/literals/Literals5.feature: [8] Return a positive zero float without integer digits
 expressions/literals/Literals5.feature: [9] Return a negative zero float
 expressions/literals/Literals6.feature: [1] Return a single-quoted empty string
 expressions/literals/Literals6.feature: [2] Return a single-quoted string with one character

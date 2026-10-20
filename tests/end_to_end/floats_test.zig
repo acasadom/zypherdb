@@ -46,6 +46,10 @@ test "float literals and arithmetic" {
     try expectQuery(&ast, &g, "RETURN 1.5, .5, 1e3, 1.5e-3, -2.25, 1E2", &.{
         &.{ float(1.5), float(0.5), float(1000), float(0.0015), float(-2.25), float(100) },
     });
+    // A float may start with its dot right after a keyword, too.
+    try expectQuery(&ast, &g, "UNWIND [.25, 1] AS x WITH x WHERE x > .5 RETURN .5, CASE WHEN x < 1 THEN .1 ELSE .9 END", &.{
+        &.{ float(0.5), float(0.9) },
+    });
     // An integer with a float gives a float; two integers stay integers.
     try expectQuery(&ast, &g, "RETURN 1 + 0.5, 3 * 1.5, 7 / 2.0, 7 / 2, 7.5 % 2, -1.5 - 1", &.{
         &.{ float(1.5), float(4.5), float(3.5), int(3), float(1.5), float(-2.5) },

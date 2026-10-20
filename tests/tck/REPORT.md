@@ -6,7 +6,7 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 2990/3202 (93.4%)** · Negative: 659/694 (95.0%)
+**Positive: 2997/3202 (93.6%)** · Negative: 659/694 (95.0%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
@@ -34,7 +34,7 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | expressions/existentialSubqueries | 8/9 (88.9%) | 1/1 (100.0%) | 0 | 0 |
 | expressions/graph | 35/43 (81.4%) | 17/17 (100.0%) | 0 | 0 |
 | expressions/list | 121/126 (96.0%) | 59/59 (100.0%) | 0 | 0 |
-| expressions/literals | 94/106 (88.7%) | 24/25 (96.0%) | 0 | 0 |
+| expressions/literals | 101/106 (95.3%) | 24/25 (96.0%) | 0 | 0 |
 | expressions/map | 35/35 (100.0%) | 9/9 (100.0%) | 0 | 0 |
 | expressions/mathematical | 5/5 (100.0%) | 1/1 (100.0%) | 0 | 0 |
 | expressions/null | 44/44 (100.0%) | – | 0 | 0 |
@@ -60,7 +60,6 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 16 | fail: unexpected error: unknown variable '…' |
 | 13 | fail: rows differ: expected other rows |
 | 12 | fail: unexpected error: unexpected ':' (unsupported syntax or missing clause) |
-| 7 | fail: unexpected error: expected an expression, found '.' |
 | 5 | fail: unexpected error: unexpected '.' (unsupported syntax or missing clause) |
 | 5 | unsupported: then: having executed: |
 | 4 | fail: unexpected error: unexpected character '"' |

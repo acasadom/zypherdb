@@ -136,6 +136,19 @@ fn add(tokens: *std.ArrayList(Token), allocator: Allocator, kind: TokenKind, tex
     try tokens.append(allocator, .{ .kind = kind, .text = text, .pos = pos });
 }
 
+/// Keywords an expression can follow (`RETURN .5`): after one of these, a
+/// dot and a digit start a float, not a property access.
+fn startsExpression(word: []const u8) bool {
+    const keywords = [_][]const u8{
+        "RETURN", "WITH", "WHERE", "AND", "OR", "XOR", "NOT", "IN", "CONTAINS", "CASE", "WHEN",
+        "THEN", "ELSE", "UNWIND", "SKIP", "LIMIT", "BY", "DISTINCT",
+    };
+    for (keywords) |keyword| {
+        if (std.ascii.eqlIgnoreCase(word, keyword)) return true;
+    }
+    return false;
+}
+
 pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic) LexError!std.ArrayList(Token) {
     var tokens = std.ArrayList(Token).empty;
     errdefer tokens.deinit(allocator);
@@ -213,7 +226,8 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 // `.5` is a float, unless the dot follows something it can
                 // be a property access on (`n.5` is not a number).
                 const after_operand = tokens.items.len > 0 and switch (tokens.items[tokens.items.len - 1].kind) {
-                    .identifier, .parameter, .right_paren, .right_bracket, .right_brace => true,
+                    .identifier => tokens.items[tokens.items.len - 1].quoted or !startsExpression(tokens.items[tokens.items.len - 1].text),
+                    .parameter, .right_paren, .right_bracket, .right_brace => true,
                     else => false,
                 };
                 if (!after_operand and i + 1 < src.len and std.ascii.isDigit(src[i + 1])) {
