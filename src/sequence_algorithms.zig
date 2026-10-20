@@ -114,6 +114,109 @@ const Tagged = struct {
     }
 };
 
+/// Rearranges `items` so its first `min(count, len)` elements are the
+/// smallest under `lessThan`, in stable sorted order (as a stable sort would
+/// put them; the rest are left in an unspecified order). For `ORDER BY ...
+/// LIMIT k`: O(n log k) instead of sorting all n. `lessThan` is a strict weak
+/// order (`fn (context, T, T) bool`); ties are broken by position.
+pub fn partialSortStable(
+    comptime T: type,
+    allocator: Allocator,
+    items: []T,
+    count: usize,
+    context: anytype,
+    comptime lessThan: fn (@TypeOf(context), T, T) bool,
+) Allocator.Error!void {
+    const k = @min(count, items.len);
+    if (k == 0) return;
+    // A max-heap of the positions of the k smallest seen so far, ordered by
+    // (value, position): its top is the one to evict.
+    const Order = struct {
+        items: []const T,
+        context: @TypeOf(context),
+        fn before(self: @This(), a: usize, b: usize) bool {
+            if (lessThan(self.context, self.items[a], self.items[b])) return true;
+            if (lessThan(self.context, self.items[b], self.items[a])) return false;
+            return a < b;
+        }
+    };
+    const order = Order{ .items = items, .context = context };
+    const heap = try allocator.alloc(usize, k);
+    defer allocator.free(heap);
+    for (heap, 0..) |*slot, i| slot.* = i;
+    var i = k / 2;
+    while (i > 0) {
+        i -= 1;
+        siftDown(heap, i, order);
+    }
+    for (k..items.len) |position| {
+        if (order.before(position, heap[0])) {
+            heap[0] = position;
+            siftDown(heap, 0, order);
+        }
+    }
+    std.sort.pdq(usize, heap, order, Order.before);
+    const chosen = try allocator.alloc(T, k);
+    defer allocator.free(chosen);
+    for (chosen, heap) |*element, position| element.* = items[position];
+    // Put the chosen first; the displaced elements go where the chosen were.
+    var displaced = std.ArrayList(T).empty;
+    defer displaced.deinit(allocator);
+    const taken = try allocator.alloc(bool, items.len);
+    defer allocator.free(taken);
+    @memset(taken, false);
+    for (heap) |position| taken[position] = true;
+    for (items[0..k], 0..) |element, position| {
+        if (!taken[position]) try displaced.append(allocator, element);
+    }
+    var next: usize = 0;
+    for (heap) |position| {
+        if (position >= k) {
+            items[position] = displaced.items[next];
+            next += 1;
+        }
+    }
+    @memcpy(items[0..k], chosen);
+}
+
+fn siftDown(heap: []usize, start: usize, order: anytype) void {
+    var parent = start;
+    while (true) {
+        var largest = parent;
+        const left = 2 * parent + 1;
+        const right = left + 1;
+        if (left < heap.len and order.before(heap[largest], heap[left])) largest = left;
+        if (right < heap.len and order.before(heap[largest], heap[right])) largest = right;
+        if (largest == parent) return;
+        std.mem.swap(usize, &heap[parent], &heap[largest]);
+        parent = largest;
+    }
+}
+
+test "partialSortStable gives the k smallest in stable order" {
+    const Pair = struct { key: u8, tag: u8 };
+    const less = struct {
+        fn lessThan(_: void, a: Pair, b: Pair) bool {
+            return a.key < b.key;
+        }
+    }.lessThan;
+    var prng = std.Random.DefaultPrng.init(1);
+    const random = prng.random();
+    for (0..200) |_| {
+        var items: [40]Pair = undefined;
+        for (&items, 0..) |*item, i| item.* = .{ .key = random.uintLessThan(u8, 6), .tag = @intCast(i) };
+        var expected = items;
+        std.sort.block(Pair, &expected, {}, less);
+        const k = random.uintLessThan(usize, 45);
+        try partialSortStable(Pair, std.testing.allocator, &items, k, {}, less);
+        try std.testing.expectEqualSlices(Pair, expected[0..@min(k, 40)], items[0..@min(k, 40)]);
+        // The rest is a permutation of what is left.
+        var tags: [40]bool = @splat(false);
+        for (items) |item| tags[item.tag] = true;
+        try std.testing.expect(std.mem.allEqual(bool, &tags, true));
+    }
+}
+
 test "removeDuplicates keeps first occurrences in order" {
     var items = std.ArrayList(Tagged).empty;
     defer items.deinit(testing.allocator);

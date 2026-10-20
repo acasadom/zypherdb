@@ -156,8 +156,7 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     if (info.distinct) {
         try sequence_algorithms.removeDuplicates(Sortable(Bindings), self.allocator, &rows, SortableContext(Bindings, ElementContext(Bindings)){});
     }
-    if (info.order_by) |order_by| sortByKey(Bindings, rows.items, try orderByDirections(self, order_by));
-    try paginate(self, Sortable(Bindings), &rows, info.skip, info.limit);
+    try orderAndPaginate(self, Bindings, &rows, info.order_by, info.skip, info.limit);
 
     const output = try self.allocator.alloc(Bindings, rows.items.len);
     for (output, rows.items) |*row, sortable| row.* = sortable.item;
@@ -254,6 +253,24 @@ fn orderByDirections(self: *Executor, order_by: Index) ExecutionError![]const bo
 }
 
 /// Applies SKIP then LIMIT to any row list.
+/// ORDER BY, then SKIP and LIMIT. With a LIMIT only the rows that can be
+/// kept are put in order (a partial sort: O(n log k), not O(n log n)).
+fn orderAndPaginate(self: *Executor, comptime T: type, rows: *std.ArrayList(Sortable(T)), order_by: ?Index, skip: ?Index, limit: ?Index) ExecutionError!void {
+    if (order_by) |order| {
+        const directions = try orderByDirections(self, order);
+        if (limit) |l| {
+            const skipped = if (skip) |s| try expressions.evaluateCount(self, self.ast.nodeChildren(s)[0]) else 0;
+            const kept = try expressions.evaluateCount(self, self.ast.nodeChildren(l)[0]);
+            try sequence_algorithms.partialSortStable(Sortable(T), self.allocator, rows.items, skipped +| kept, directions, struct {
+                fn lessThan(ascending: []const bool, a: Sortable(T), b: Sortable(T)) bool {
+                    return keyLessThan(ascending, a.sort_key, b.sort_key);
+                }
+            }.lessThan);
+        } else sortByKey(T, rows.items, directions);
+    }
+    try paginate(self, Sortable(T), rows, skip, limit);
+}
+
 fn paginate(self: *Executor, comptime T: type, rows: *std.ArrayList(T), skip: ?Index, limit: ?Index) ExecutionError!void {
     if (skip) |s| sequence_algorithms.dropFirst(T, rows, try expressions.evaluateCount(self, self.ast.nodeChildren(s)[0]));
     if (limit) |l| sequence_algorithms.truncate(T, rows, try expressions.evaluateCount(self, self.ast.nodeChildren(l)[0]));
@@ -312,8 +329,7 @@ pub fn applyReturn(self: *Executor, return_clause: Index, input: []Bindings) Exe
     if (info.distinct) {
         try sequence_algorithms.removeDuplicates(Sortable(Row), self.allocator, &self.rows, SortableContext(Row, RowContext){});
     }
-    if (info.order_by) |order_by| sortByKey(Row, self.rows.items, try orderByDirections(self, order_by));
-    try paginate(self, Sortable(Row), &self.rows, info.skip, info.limit);
+    try orderAndPaginate(self, Row, &self.rows, info.order_by, info.skip, info.limit);
 }
 
 /// Splits the RETURN projection into grouping keys and aggregating

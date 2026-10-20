@@ -31,7 +31,7 @@ pub fn seedNodes(self: *Executor, labels: []const []const u8) StorageError!NodeI
 /// True if `id` carries every label in `labels` (empty = always true).
 pub fn hasAllLabels(self: *Executor, id: NodeId, labels: []const []const u8) StorageError!bool {
     for (labels) |l| {
-        if (!(try self.graph.hasLabel(id, l))) return false;
+        if (!(try self.read_cache.hasLabel(self.graph, self.allocator, id, l))) return false;
     }
     return true;
 }
@@ -91,9 +91,11 @@ fn scanNodes(self: *Executor, node_index: usize, next_step: usize, pattern_index
         break :seek try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
     } else try seedNodes(self, node.labels);
     defer iterator.deinit();
+    // Nodes from the label index of the first label carry it: check only the others.
+    const unchecked_labels = if (node.seeks.items.len == 0 and node.labels.len > 0) node.labels[1..] else node.labels;
 
     while (try iterator.next()) |id| {
-        if (!(try hasAllLabels(self, id, node.labels))) continue;
+        if (!(try hasAllLabels(self, id, unchecked_labels))) continue;
         const saved = bindings.mark();
         defer bindings.restore(saved);
         if (!try bindings.bindNode(self.allocator, node.variable_name, id)) continue;

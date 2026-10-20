@@ -187,7 +187,7 @@ test "parses lists: collect, size and UNWIND" {
         const return_children = r.ast.nodeChildren(r.ast.nodeChildren(r.root)[1]);
         const item = r.ast.nodeChildren(return_children[0])[0];
         try testing.expectEqual(NodeKind.aggregate, r.ast.kind(r.ast.nodeChildren(item)[0]));
-        try testing.expectEqual(AggregateKind.collect, r.ast.data(r.ast.nodeChildren(item)[0]).aggregate);
+        try testing.expectEqual(AggregateKind.collect, r.ast.data(r.ast.nodeChildren(item)[0]).aggregate.kind);
     }
     {
         var r = try parseString("RETURN size([1, 2, 3])");

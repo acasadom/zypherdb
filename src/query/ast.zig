@@ -94,6 +94,10 @@ pub const UnaryOperator = enum {
 
 /// Aggregation functions (`count`, `sum`, `avg`, `min`, `max`, `collect`,
 /// `stDev`, `stDevP`).
+/// An aggregate call: which aggregate, and whether over distinct values
+/// (`count(DISTINCT x)`).
+pub const AggregateCall = struct { kind: AggregateKind, distinct: bool = false };
+
 pub const AggregateKind = enum {
     count,
     sum,
@@ -178,7 +182,7 @@ pub const Data = union(enum) {
     edge_pattern: EdgePatternData,
     binary_operator: BinaryOperator,
     unary_operator: UnaryOperator,
-    aggregate: AggregateKind,
+    aggregate: AggregateCall,
     return_: struct { distinct: bool },
     with_: struct { distinct: bool },
     unwind: struct { variable_name: []const u8 },
@@ -314,7 +318,7 @@ fn sameExpressionData(a: Data, b: Data) bool {
         .text => |x| std.mem.eql(u8, x, b.text),
         .binary_operator => |x| x == b.binary_operator,
         .unary_operator => |x| x == b.unary_operator,
-        .aggregate => |x| x == b.aggregate,
+        .aggregate => |x| x.kind == b.aggregate.kind and x.distinct == b.aggregate.distinct,
         else => false,
     };
 }

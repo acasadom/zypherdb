@@ -295,9 +295,12 @@ pub const Graph = struct {
     }
 
     pub fn hasLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!bool {
+        var key_buffer: [128]u8 = undefined;
+        var key_memory = std.heap.BufferFirstAllocator.init(&key_buffer, self.allocator);
+        const key_allocator = key_memory.allocator();
         var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendLabelKey(&key, self.allocator, label, id);
+        defer key.deinit(key_allocator);
+        try key_encoding.appendLabelKey(&key, key_allocator, label, id);
         return self.store.exists(key.items);
     }
 
@@ -363,10 +366,23 @@ pub const Graph = struct {
     /// Reads a typed property `name` of node `id`, or `null` if absent. A
     /// `string` value is an owned copy allocated with `allocator`. O(log N).
     pub fn getProperty(self: *Graph, id: NodeId, name: []const u8, allocator: Allocator) StorageError!?Value {
+        var key_buffer: [128]u8 = undefined;
+        var key_memory = std.heap.BufferFirstAllocator.init(&key_buffer, self.allocator);
+        const key_allocator = key_memory.allocator();
         var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendNodePropertyKey(&key, self.allocator, id, name);
-        const raw = (try self.store.get(key.items)) orelse return null;
+        defer key.deinit(key_allocator);
+        try key_encoding.appendNodePropertyKey(&key, key_allocator, id, name);
+        return self.readValue(key.items, allocator);
+    }
+
+    /// The stored value at `key`, decoded with `allocator`: read in place
+    /// inside a transaction, copied out of a one-off one otherwise.
+    fn readValue(self: *Graph, key: []const u8, allocator: Allocator) StorageError!?Value {
+        if (self.store.inTransaction()) {
+            const raw = (try self.store.view(key)) orelse return null;
+            return try value_encoding.decodeValue(raw, allocator);
+        }
+        const raw = (try self.store.get(key)) orelse return null;
         defer self.store.allocator.free(raw);
         return try value_encoding.decodeValue(raw, allocator);
     }
@@ -491,12 +507,13 @@ pub const Graph = struct {
     /// Reads a typed property of the directed edge `src -> dst` of type
     /// `edge_type`, or `null` if absent.
     pub fn getEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, allocator: Allocator) StorageError!?Value {
+        var key_buffer: [256]u8 = undefined;
+        var key_memory = std.heap.BufferFirstAllocator.init(&key_buffer, self.allocator);
+        const key_allocator = key_memory.allocator();
         var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, name);
-        const raw = (try self.store.get(key.items)) orelse return null;
-        defer self.store.allocator.free(raw);
-        return try value_encoding.decodeValue(raw, allocator);
+        defer key.deinit(key_allocator);
+        try key_encoding.appendEdgePropertyKey(&key, key_allocator, src, dst, edge_type, name);
+        return self.readValue(key.items, allocator);
     }
 
     /// Iterates the neighbours of `id` in the given `direction` and `edge_type`,

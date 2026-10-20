@@ -6,9 +6,11 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Index = @import("../query/ast.zig").Index;
 const AggregateKind = @import("../query/ast.zig").AggregateKind;
+const AggregateCall = @import("../query/ast.zig").AggregateCall;
 const Value = @import("../value.zig").Value;
 
 const SequenceContext = @import("../sequence_algorithms.zig").SequenceContext;
+const ElementContext = @import("../sequence_algorithms.zig").ElementContext;
 
 const Executor = @import("Executor.zig");
 const expressions = @import("expressions.zig");
@@ -23,7 +25,7 @@ const asFloat = @import("expressions.zig").asFloat;
 pub const AggregationPlan = struct {
     keys: []const Index,
     aggregates: []const Index,
-    kinds: []const AggregateKind,
+    kinds: []const AggregateCall,
 };
 
 /// True if `expr` contains an aggregate call anywhere.
@@ -44,7 +46,7 @@ pub fn containsAggregate(self: *const Executor, expr: Index) bool {
 /// (in ORDER BY: `RETURN n.x AS x, count(*) ORDER BY x + count(*)`).
 pub fn plan(self: *Executor, keys: []const Index, aggregating: []const Index, aliases: []const []const u8) ExecutionError!AggregationPlan {
     var aggregates = std.ArrayList(Index).empty;
-    var kinds = std.ArrayList(AggregateKind).empty;
+    var kinds = std.ArrayList(AggregateCall).empty;
     for (aggregating) |expr| {
         try checkAggregating(self, expr, keys, aliases);
         try collectAggregates(self, expr, &aggregates, &kinds);
@@ -52,7 +54,7 @@ pub fn plan(self: *Executor, keys: []const Index, aggregating: []const Index, al
     return .{ .keys = keys, .aggregates = aggregates.items, .kinds = kinds.items };
 }
 
-fn collectAggregates(self: *Executor, expr: Index, aggregates: *std.ArrayList(Index), kinds: *std.ArrayList(AggregateKind)) ExecutionError!void {
+fn collectAggregates(self: *Executor, expr: Index, aggregates: *std.ArrayList(Index), kinds: *std.ArrayList(AggregateCall)) ExecutionError!void {
     if (self.ast.kind(expr) == .aggregate) {
         for (self.ast.nodeChildren(expr)) |argument| {
             if (containsAggregate(self, argument)) {
@@ -173,7 +175,7 @@ pub fn ensureGroupWithoutKeys(self: *Executor, grouping: *ValueGrouping, aggrega
 pub fn evaluateAggregating(self: *Executor, expr: Index, aggregation: AggregationPlan, key_values: []const Value, states: []const AggregateState, scope: *Bindings) ExecutionError!Value {
     var overrides = std.AutoHashMapUnmanaged(Index, Value).empty;
     for (aggregation.aggregates, states) |call, state| {
-        try overrides.put(self.allocator, call, aggregateResult(self.ast.data(call).aggregate, state));
+        try overrides.put(self.allocator, call, aggregateResult(self.ast.data(call).aggregate.kind, state));
     }
     try overrideKeys(self, expr, aggregation, key_values, &overrides);
 
@@ -205,6 +207,9 @@ pub fn evaluateAggregateArgument(self: *Executor, arg: ?Index, bindings: *Bindin
 }
 
 pub fn updateAggregate(self: *Executor, state: *AggregateState, arg: Value) ExecutionError!void {
+    if (state.distinct and arg != .null) {
+        if ((try state.seen.getOrPutContext(self.allocator, arg, .{})).found_existing) return;
+    }
     switch (state.kind) {
         .count => {
             if (!Value.isNull(arg)) state.count += 1;
@@ -246,9 +251,8 @@ pub fn updateAggregate(self: *Executor, state: *AggregateState, arg: Value) Exec
                 if (Value.order(arg, m) == .gt) state.max = arg;
             } else state.max = arg;
         },
-        .collect => {
-            try state.list.append(self.allocator, arg);
-        },
+        // Like every aggregate, collect skips nulls.
+        .collect => if (arg != .null) try state.list.append(self.allocator, arg),
     }
 }
 
@@ -295,6 +299,9 @@ pub const ProjectionItem = union(enum) {
 
 pub const AggregateState = struct {
     kind: AggregateKind,
+    /// `count(DISTINCT x)`: each value counts once; `seen` holds those met.
+    distinct: bool = false,
+    seen: std.HashMapUnmanaged(Value, void, ElementContext(Value), std.hash_map.default_max_load_percentage) = .empty,
     count: usize = 0,
     /// sum: the integers' total, and the floats' (when there are any).
     sum: i64 = 0,
@@ -323,11 +330,11 @@ pub fn Grouping(comptime Key: type, comptime KeyContext: type) type {
 
         /// The aggregation states of `key`'s group, created (one per entry of
         /// `kinds`) the first time the key is seen. `key` must outlive `self`.
-        pub fn statesFor(self: *Self, allocator: Allocator, key: Key, kinds: []const AggregateKind) Allocator.Error![]AggregateState {
+        pub fn statesFor(self: *Self, allocator: Allocator, key: Key, kinds: []const AggregateCall) Allocator.Error![]AggregateState {
             const entry = try self.index.getOrPutContext(allocator, key, .{});
             if (!entry.found_existing) {
                 const states = try allocator.alloc(AggregateState, kinds.len);
-                for (states, kinds) |*state, kind| state.* = .{ .kind = kind };
+                for (states, kinds) |*state, call| state.* = .{ .kind = call.kind, .distinct = call.distinct };
                 entry.value_ptr.* = self.keys.items.len;
                 try self.keys.append(allocator, key);
                 try self.states.append(allocator, states);

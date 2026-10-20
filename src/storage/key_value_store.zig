@@ -140,6 +140,23 @@ pub const KeyValueStore = struct {
         return self.getIn(transaction.?, key);
     }
 
+    /// The value of `key` without copying it, inside the active transaction
+    /// (null without one, or if the key is absent: callers then use `get`).
+    /// The bytes are LMDB's own: valid until the transaction ends or writes.
+    pub fn view(self: *KeyValueStore, key: []const u8) StorageError!?[]const u8 {
+        const transaction = self.active_write_transaction orelse self.active_read_transaction orelse return null;
+        var key_val = makeVal(key);
+        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
+        const rc = c.mdb_get(transaction, self.database, &key_val, &data_val);
+        if (rc == c.MDB_NOTFOUND) return null;
+        if (rc != 0) return error.ReadFailed;
+        return valSlice(data_val);
+    }
+
+    pub fn inTransaction(self: *const KeyValueStore) bool {
+        return self.active_write_transaction != null or self.active_read_transaction != null;
+    }
+
     pub fn exists(self: *KeyValueStore, key: []const u8) StorageError!bool {
         if (self.active_write_transaction) |transaction| return self.existsIn(transaction, key);
         if (self.active_read_transaction) |transaction| return self.existsIn(transaction, key);

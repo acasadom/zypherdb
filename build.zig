@@ -51,4 +51,18 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_step.dependOn(&b.addRunArtifact(suite).step);
+
+    // Benchmark: `zig build bench -Doptimize=ReleaseFast -- --people 100000`.
+    const bench = b.addExecutable(.{
+        .name = "bench-access-control",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/access_control.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+        }),
+    });
+    const run_bench = b.addRunArtifact(bench);
+    run_bench.addPassthruArgs();
+    b.step("bench", "Run the access-control benchmark").dependOn(&run_bench.step);
 }

@@ -493,11 +493,13 @@ pub fn parseAggregateCall(self: *Parser, kind: AggregateKind) ParseError!Index {
     if (kind == .count and self.at(.star)) {
         _ = self.advance();
         try self.expect(.right_paren);
-        return self.ast.addNode(.aggregate, .{ .aggregate = kind }, &.{});
+        return self.ast.addNode(.aggregate, .{ .aggregate = .{ .kind = kind } }, &.{});
     }
+    const distinct = self.atKeyword("DISTINCT");
+    if (distinct) _ = self.advance();
     const arg = try parseExpression(self);
     try self.expect(.right_paren);
-    return self.ast.addNode(.aggregate, .{ .aggregate = kind }, &.{arg});
+    return self.ast.addNode(.aggregate, .{ .aggregate = .{ .kind = kind, .distinct = distinct } }, &.{arg});
 }
 
 fn aggregateKindFromName(name: []const u8) ?AggregateKind {
