@@ -153,3 +153,21 @@ test "label predicates are expressions: nodes, relationships, null" {
     try expectQuery(&ast, &g, "MATCH (p {n: 2}) RETURN {admin: p:Admin}", &.{&.{.{ .map = &.{.{ .key = "admin", .value = .{ .boolean = false } }} }}});
     try expectQueryError(&ast, &g, "RETURN 1:Person", error.TypeMismatch);
 }
+
+test "RETURN * and WITH * project every variable in scope, sorted by name" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "UNWIND [1, 2] AS b WITH b, b * 10 AS a RETURN *", &.{
+        &.{ .{ .int = 10 }, .{ .int = 1 } },
+        &.{ .{ .int = 20 }, .{ .int = 2 } },
+    });
+    try expectQuery(&ast, &g, "WITH 1 AS x WITH *, x + 1 AS y RETURN *, y * 2 AS z", &.{&.{ .{ .int = 1 }, .{ .int = 2 }, .{ .int = 4 } }});
+    try expectQueryError(&ast, &g, "MATCH () RETURN *", error.InvalidExpression);
+}

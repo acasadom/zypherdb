@@ -705,16 +705,25 @@ pub const Parser = struct {
         } }, details.properties.items);
     }
 
+    /// `items` or `*[, items]`; data.boolean says whether `*` came first
+    /// (every variable in scope; the semantic checks expand it).
     fn parseProjection(self: *Parser) ParseError!Index {
         var items = std.ArrayList(Index).empty;
         defer items.deinit(self.ast.allocator);
+        var star = false;
+        if (self.at(.star)) {
+            _ = self.advance();
+            star = true;
+            if (!self.at(.comma)) return self.ast.addNode(.projection, .{ .boolean = true }, &.{});
+            _ = self.advance();
+        }
         while (true) {
             try items.append(self.ast.allocator, try self.parseProjectionItem());
             if (self.at(.comma)) {
                 _ = self.advance();
             } else break;
         }
-        return self.ast.addNode(.projection, .{ .none = {} }, items.items);
+        return self.ast.addNode(.projection, .{ .boolean = star }, items.items);
     }
 
     fn parseProjectionItem(self: *Parser) ParseError!Index {

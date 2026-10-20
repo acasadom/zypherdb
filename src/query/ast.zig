@@ -311,6 +311,14 @@ pub const Ast = struct {
     }
 
     /// The child indices of `index`, in order.
+    /// Makes `parent`'s child `old` be `new` instead (if it has it).
+    pub fn replaceChild(self: *Ast, parent: Index, old: Index, new: Index) void {
+        const n = self.nodes.items[parent];
+        for (self.children.items[n.first_child .. n.first_child + n.child_count]) |*child| {
+            if (child.* == old) child.* = new;
+        }
+    }
+
     pub fn nodeChildren(self: *const Ast, index: Index) []const Index {
         const n = self.nodes.items[index];
         return self.children.items[n.first_child .. n.first_child + n.child_count];

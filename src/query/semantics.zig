@@ -29,6 +29,8 @@ pub const SemanticError = Allocator.Error || error{InvalidExpression};
 
 const Kind = enum { node, relationship, path, value };
 
+const Star = struct { projection: Index, names: []const []const u8 };
+
 const Scope = struct {
     names: std.StringHashMapUnmanaged(Kind) = .empty,
 
@@ -47,6 +49,8 @@ const Checker = struct {
     scope: Scope = .{},
     /// Comprehension and quantifier variables in scope with a known type.
     local_types: std.ArrayList(struct { name: []const u8, type: StaticType }) = .empty,
+    /// The `*` projections met, each with the variables in scope there.
+    stars: std.ArrayList(Star) = .empty,
     /// Nesting depth of comprehensions and quantifiers being checked.
     iteration_depth: usize = 0,
     /// Variables local to the expression being checked: of comprehensions,
@@ -102,8 +106,35 @@ const Checker = struct {
 
     /// WITH replaces the scope by its projected names: a projected variable
     /// keeps its kind, anything else is a value.
+    /// True if `projection` starts with `*`.
+    fn hasStar(self: *const Checker, projection: Index) bool {
+        const data = self.ast.data(projection);
+        return data == .boolean and data.boolean;
+    }
+
+    /// Records the variables a `*` projection stands for: those in scope,
+    /// sorted (as Neo4j orders its columns).
+    fn recordStar(self: *Checker, projection: Index) SemanticError!void {
+        if (!self.hasStar(projection)) return;
+        var names = std.ArrayList([]const u8).empty;
+        var iterator = self.scope.names.keyIterator();
+        while (iterator.next()) |name| try names.append(self.allocator, name.*);
+        if (names.items.len == 0) return self.fail("RETURN * and WITH * need a variable in scope", .{});
+        std.mem.sort([]const u8, names.items, {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.order(u8, a, b) == .lt;
+            }
+        }.lessThan);
+        try self.stars.append(self.allocator, .{ .projection = projection, .names = names.items });
+    }
+
     fn projectScope(self: *Checker, projection: Index) SemanticError!void {
         var next = Scope{};
+        // `WITH *` keeps every variable in scope.
+        if (self.hasStar(projection)) {
+            var entries = self.scope.names.iterator();
+            while (entries.next()) |entry| try next.names.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
         for (self.ast.nodeChildren(projection)) |item| {
             const expression = self.ast.nodeChildren(item)[0];
             const alias = self.ast.data(item).text;
@@ -369,10 +400,12 @@ const Checker = struct {
                     continue;
                 },
                 .with_clause => {
+                    try self.recordStar(children[0]);
                     try self.checkExpressions(clause);
                     try self.projectScope(children[0]);
                     continue;
                 },
+                .return_clause => try self.recordStar(children[0]),
                 else => {},
             }
             try self.checkExpressions(clause);
@@ -382,9 +415,26 @@ const Checker = struct {
 
 /// Checks `query`; on a violation fills `diagnostic` and returns
 /// `error.InvalidExpression`. O(size of the query).
-pub fn check(ast: *const Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagnostic) SemanticError!void {
+pub fn check(ast: *Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagnostic) SemanticError!void {
     var checker = Checker{ .ast = ast, .allocator = allocator, .diagnostic = diagnostic };
     defer checker.scope.names.deinit(allocator);
     defer checker.local_types.deinit(allocator);
+    defer checker.stars.deinit(allocator);
     try checker.checkQuery(query);
+    // `*` becomes the variables it stands for, so execution sees plain items.
+    for (checker.stars.items) |star| try expandStar(ast, query, star);
+}
+
+/// Replaces a `*` projection with one that lists `star.names` (as variables)
+/// and then the projection's own items.
+fn expandStar(ast: *Ast, query: Index, star: Star) Allocator.Error!void {
+    var items = std.ArrayList(Index).empty;
+    defer items.deinit(ast.allocator);
+    for (star.names) |name| {
+        const variable = try ast.addNode(.variable, .{ .text = try ast.intern(name) }, &.{});
+        try items.append(ast.allocator, try ast.addNode(.projection_item, .{ .text = "" }, &.{variable}));
+    }
+    try items.appendSlice(ast.allocator, ast.nodeChildren(star.projection));
+    const expanded = try ast.addNode(.projection, .{ .none = {} }, items.items);
+    for (ast.nodeChildren(query)) |clause| ast.replaceChild(clause, star.projection, expanded);
 }

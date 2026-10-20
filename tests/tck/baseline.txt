@@ -48,11 +48,13 @@ clauses/create/Create3.feature: [4] MATCH-CREATE: Newly-created nodes not visibl
 clauses/create/Create3.feature: [5] WITH-CREATE: Nodes are not created when aliases are applied to variable names
 clauses/create/Create3.feature: [6] WITH-CREATE: Only a single node is created when an alias is applied to a variable name
 clauses/create/Create3.feature: [8] WITH-CREATE: Only a single node is created when an alias is applied to a variable name multiple times
+clauses/create/Create3.feature: [9] WITH-CREATE: A bound node should be recognized after projection with WITH + WITH
 clauses/create/Create4.feature: [1] Generate the movie graph
 clauses/create/Create5.feature: [1] Create a pattern with multiple hops
 clauses/create/Create5.feature: [2] Create a pattern with multiple hops in the reverse direction
 clauses/create/Create5.feature: [3] Create a pattern with multiple hops in varying directions
 clauses/create/Create5.feature: [4] Create a pattern with multiple hops with multiple types and varying directions
+clauses/create/Create5.feature: [5] Create a pattern with multiple hops and varying directions
 clauses/create/Create6.feature: [10] Skipping and limiting to a few results after creating relationships does not affect the result set nor the side effects
 clauses/create/Create6.feature: [11] Skipping zero result and limiting to all results after creating relationships does not affect the result set nor the side effects
 clauses/create/Create6.feature: [12] Filtering after creating relationships affects the result set but not the side effects
@@ -337,6 +339,7 @@ clauses/match/Match4.feature: [10] Fail on negative bound
 clauses/match/Match4.feature: [1] Handling fixed-length variable length pattern
 clauses/match/Match4.feature: [2] Simple variable length pattern
 clauses/match/Match4.feature: [3] Zero-length variable length pattern in the middle of the pattern
+clauses/match/Match4.feature: [5] Matching variable length pattern with property predicate
 clauses/match/Match4.feature: [6] Matching variable length patterns from a bound node
 clauses/match/Match4.feature: [7] Matching variable length patterns including a bound relationship
 clauses/match/Match4.feature: [8] Matching relationships into a list and matching variable length using the list
@@ -488,6 +491,7 @@ clauses/match/Match7.feature: [7] MATCH with OPTIONAL MATCH in longer pattern
 clauses/match/Match7.feature: [8] Longer pattern with bound nodes without matches
 clauses/match/Match7.feature: [9] Longer pattern with bound nodes
 clauses/match/Match8.feature: [1] Pattern independent of bound variables results in cross product
+clauses/match/Match8.feature: [2] Counting rows after MATCH, MERGE, OPTIONAL MATCH
 clauses/match/Match8.feature: [3] Matching and disregarding output, then matching again
 clauses/match/Match9.feature: [1] Variable length relationship variables are lists of relationships
 clauses/match/Match9.feature: [2] Return relationships by collecting them as a list - directed, one way
@@ -612,6 +616,7 @@ clauses/return-orderby/ReturnOrderBy2.feature: [4] Support sort and distinct
 clauses/return-orderby/ReturnOrderBy2.feature: [5] Support ordering by a property after being distinct-ified
 clauses/return-orderby/ReturnOrderBy2.feature: [6] Count star should count everything in scope
 clauses/return-orderby/ReturnOrderBy2.feature: [7] Ordering with aggregation
+clauses/return-orderby/ReturnOrderBy2.feature: [8] Returning all variables with ordering
 clauses/return-orderby/ReturnOrderBy2.feature: [9] Using aliased DISTINCT expression in ORDER BY
 clauses/return-orderby/ReturnOrderBy3.feature: [1] Sort on aggregate function and normal property
 clauses/return-orderby/ReturnOrderBy4.feature: [1] ORDER BY of a column introduced in RETURN should return salient results in ascending order
@@ -710,6 +715,7 @@ clauses/return/Return6.feature: [6] Handle aggregates inside non-aggregate expre
 clauses/return/Return6.feature: [7] Aggregate on property
 clauses/return/Return6.feature: [8] Handle aggregation on functions
 clauses/return/Return6.feature: [9] Aggregates with arithmetics
+clauses/return/Return7.feature: [1] Return all variables
 clauses/return/Return7.feature: [2] Fail when using RETURN * without variables in scope
 clauses/return/Return8.feature: [1] Return aggregation after With filtering
 clauses/set/Set1.feature: [11] Set multiple node properties
@@ -773,6 +779,8 @@ clauses/union/Union2.feature: [5] Failing when UNION ALL has different columns
 clauses/union/Union3.feature: [1] Failing when mixing UNION and UNION ALL
 clauses/union/Union3.feature: [2] Failing when mixing UNION ALL and UNION
 clauses/unwind/Unwind1.feature: [10] Unwinding list with duplicates
+clauses/unwind/Unwind1.feature: [11] Unwind does not prune context
+clauses/unwind/Unwind1.feature: [13] Multiple unwinds after each other
 clauses/unwind/Unwind1.feature: [14] Unwind with merge
 clauses/unwind/Unwind1.feature: [1] Unwinding a list
 clauses/unwind/Unwind1.feature: [2] Unwinding a range
@@ -1072,10 +1080,12 @@ clauses/with-skip-limit/WithSkipLimit1.feature: [1] Handle dependencies across W
 clauses/with-skip-limit/WithSkipLimit1.feature: [2] Ordering and skipping on aggregate
 clauses/with-skip-limit/WithSkipLimit2.feature: [1] ORDER BY and LIMIT can be used
 clauses/with-skip-limit/WithSkipLimit2.feature: [2] Handle dependencies across WITH with LIMIT
+clauses/with-skip-limit/WithSkipLimit2.feature: [3] Connected components succeeding WITH with LIMIT
 clauses/with-skip-limit/WithSkipLimit2.feature: [4] Ordering and limiting on aggregate
 clauses/with-skip-limit/WithSkipLimit3.feature: [1] Get rows in the middle
 clauses/with-skip-limit/WithSkipLimit3.feature: [2] Get rows in the middle by param
 clauses/with-where/WithWhere1.feature: [1] Filter node with property predicate on a single variable with multiple bindings
+clauses/with-where/WithWhere1.feature: [2] Filter node with property predicate on a single variable with multiple distinct bindings
 clauses/with-where/WithWhere1.feature: [3] Filter for an unbound relationship variable
 clauses/with-where/WithWhere1.feature: [4] Filter for an unbound node variable
 clauses/with-where/WithWhere2.feature: [1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
@@ -1090,8 +1100,14 @@ clauses/with-where/WithWhere5.feature: [2] Filter out on null if the AND'd predi
 clauses/with-where/WithWhere5.feature: [3] Filter out on null if the AND'd predicate evaluates to true
 clauses/with-where/WithWhere5.feature: [4] Do not filter out on null if the OR'd predicate evaluates to true
 clauses/with-where/WithWhere6.feature: [1] Filter a single aggregate
+clauses/with-where/WithWhere7.feature: [1] WHERE sees a variable bound before but not after WITH
+clauses/with-where/WithWhere7.feature: [2] WHERE sees a variable bound after but not before WITH
+clauses/with-where/WithWhere7.feature: [3] WHERE sees both, variable bound before but not after WITH and variable bound after but not before WITH
+clauses/with/With1.feature: [1] Forwarind a node variable 1
+clauses/with/With1.feature: [2] Forwarind a node variable 2
 clauses/with/With1.feature: [3] Forwarding a relationship variable
 clauses/with/With1.feature: [4] Forwarding a path variable
+clauses/with/With1.feature: [5] Forwarding null
 clauses/with/With1.feature: [6] Forwarding a node variable possibly null
 clauses/with/With2.feature: [1] Forwarding a property to express a join
 clauses/with/With2.feature: [2] Forwarding a nested map literal
@@ -1107,6 +1123,9 @@ clauses/with/With6.feature: [1] Implicit grouping with single expression as grou
 clauses/with/With6.feature: [2] Implicit grouping with single relationship variable as grouping key and single aggregation
 clauses/with/With6.feature: [3] Implicit grouping with multiple node and relationship variables as grouping key and single aggregation
 clauses/with/With6.feature: [4] Implicit grouping with single path variable as grouping key and single aggregation
+clauses/with/With6.feature: [5] Handle constants and parameters inside an expression which contains an aggregation expression
+clauses/with/With6.feature: [6] Handle projected variables inside an expression which contains an aggregation expression
+clauses/with/With6.feature: [7] Handle projected property accesses inside an expression which contains an aggregation expression
 clauses/with/With6.feature: [8] Fail if not projected variables are used inside an expression which contains an aggregation expression
 clauses/with/With6.feature: [9] Fail if more complex expression, even if projected, are used inside expression which contains an aggregation expression
 clauses/with/With7.feature: [1] A simple pattern with one bound endpoint
@@ -3677,6 +3696,7 @@ expressions/typeConversion/TypeConversion2.feature: [3] `toInteger()` handling m
 expressions/typeConversion/TypeConversion2.feature: [4] `toInteger()` handling Any type
 expressions/typeConversion/TypeConversion2.feature: [5] `toInteger()` on a list of strings
 expressions/typeConversion/TypeConversion2.feature: [6] `toInteger()` on a complex-typed expression
+expressions/typeConversion/TypeConversion2.feature: [7] `toInteger()` on node property
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #1
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #2
 expressions/typeConversion/TypeConversion2.feature: [8] Fail `toInteger()` on invalid types #Example: <exampleName> #3
@@ -3686,6 +3706,7 @@ expressions/typeConversion/TypeConversion3.feature: [1] `toFloat()` on mixed num
 expressions/typeConversion/TypeConversion3.feature: [2] `toFloat()` returning null on non-numerical string
 expressions/typeConversion/TypeConversion3.feature: [3] `toFloat()` handling Any type
 expressions/typeConversion/TypeConversion3.feature: [4] `toFloat()` on a list of strings
+expressions/typeConversion/TypeConversion3.feature: [5] `toFloat()` on node property
 expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #1
 expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #2
 expressions/typeConversion/TypeConversion3.feature: [6] Fail `toFloat()` on invalid types #Example: <exampleName> #3
@@ -3703,6 +3724,7 @@ expressions/typeConversion/TypeConversion4.feature: [3] `toString()` handling in
 expressions/typeConversion/TypeConversion4.feature: [4] `toString()` handling boolean properties
 expressions/typeConversion/TypeConversion4.feature: [5] `toString()` should work on Any type
 expressions/typeConversion/TypeConversion4.feature: [6] `toString()` on a list of integers
+expressions/typeConversion/TypeConversion4.feature: [7] `toString()` on node property
 expressions/typeConversion/TypeConversion4.feature: [8] `toString()` should accept potentially correct types 1
 expressions/typeConversion/TypeConversion4.feature: [9] `toString()` should accept potentially correct types 2
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [10] Mixing directed and undirected pattern parts with self-relationship, count
