@@ -28,6 +28,11 @@ MATCH …  [OPTIONAL MATCH …]  [UNWIND …]  [WITH …]  [MATCH …]  [writes 
 Clauses chain in any number and order, as in openCypher: each sees the rows and effects of the
 ones before it. After an updating clause, reading again (`MATCH`, `UNWIND`) needs a `WITH` in
 between; `RETURN`, if present, comes last; a query ends with `RETURN` or an updating clause.
+The `WHERE` of a `WITH` that does not aggregate also sees the variables from before the `WITH`.
+
+Queries ending in `RETURN` combine with `UNION` (their rows, without duplicates) or `UNION ALL`
+(all rows). The parts return the same column names; one union does not mix the two forms. The
+parts run in order, in one transaction.
 
 ## Patterns
 
@@ -64,13 +69,17 @@ property or entry reads as `null`.
 | `+`, `-`, `*`, `/`, `%`, unary `-` | arithmetic. Two integers give an integer (overflow and division by zero are errors; `/` truncates); a float operand gives a float (IEEE 754: `1.0 / 0` is `Infinity`). `+` also joins strings and lists |
 | `^` | power, always a float; binds tighter than `*` and after a sign (`-2 ^ 2` is `4.0`) |
 | `=`, `<>` | equality: numbers by value (`1 = 1.0`), NaN equals nothing, lists and maps element by element; values of different types are not equal |
-| `<`, `>`, `<=`, `>=` | ordering of numbers, strings, booleans (`false < true`) and lists (lexicographic); other pairs give `null` |
-| `AND`, `OR`, `NOT` | boolean logic (three-valued with null) |
+| `<`, `>`, `<=`, `>=` | ordering of numbers, strings, booleans (`false < true`), lists (lexicographic) and temporal values; other pairs give `null`. Comparisons chain: `1 < x <= 5` is `1 < x AND x <= 5` |
+| `AND`, `OR`, `XOR`, `NOT` | boolean logic (three-valued with null); `XOR` binds between `OR` and `AND` |
 | `x IS NULL`, `x IS NOT NULL` | null tests (always true or false, unlike `x = null`) |
 | `STARTS WITH`, `ENDS WITH`, `CONTAINS` | string predicates |
 | `IN` | list membership, with any list expression on the right (`x IN $allowed`); null-aware |
 | `$name` | a query parameter, passed with the query (see the Python and C ABI guides) |
 | `CASE WHEN cond THEN v … [ELSE v] END` | conditional expression (no `ELSE` → `null`) |
+| `CASE x WHEN value THEN v … [ELSE v] END` | the first branch whose value equals `x` |
+| `(a)-[:T]->(b)` in a `WHERE` | a pattern predicate: true if the pattern has a match (it may not introduce variables) |
+| `[p = (a)-->(b) WHERE pred \| expr]` | a pattern comprehension: `expr` for each match |
+| `EXISTS { (a)-->(b) WHERE pred }`, `EXISTS { MATCH … }` | true if the patterns have a match; they may introduce variables of their own |
 | `[x IN list WHERE pred \| expr]` | list comprehension (the `WHERE` and the `\| expr` are optional) |
 | `any` / `all` / `none` / `single(x IN list WHERE pred)` | quantifiers, three-valued with null |
 | `name(arguments…)` | a function call (below); names are case-insensitive |

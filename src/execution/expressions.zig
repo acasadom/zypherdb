@@ -11,6 +11,7 @@ const mapOf = @import("../value.zig").mapOf;
 const formatFloat = @import("../value.zig").formatFloat;
 const comparison = @import("comparison.zig");
 const temporal_functions = @import("temporal_functions.zig");
+const clauses = @import("clauses.zig");
 
 const Executor = @import("Executor.zig");
 const functions = @import("functions.zig");
@@ -101,6 +102,30 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             if (else_present) {
                 break :blk try evaluate(self, children[children.len - 1], bindings);
             }
+            break :blk .{ .null = {} };
+        },
+        .pattern_predicate => blk: {
+            const children = self.ast.nodeChildren(expr);
+            break :blk .{ .boolean = (try clauses.nestedMatches(self, children[0..1], children[1], bindings.*)).len > 0 };
+        },
+        .exists_subquery => .{ .boolean = (try clauses.nestedMatchClauses(self, self.ast.nodeChildren(expr), bindings.*)).len > 0 },
+        .pattern_comprehension => blk: {
+            const children = self.ast.nodeChildren(expr);
+            const matches = try clauses.nestedMatches(self, children[0..1], children[1], bindings.*);
+            const items = try self.allocator.alloc(Value, matches.len);
+            for (items, matches) |*item, *match| item.* = try evaluate(self, children[2], match);
+            break :blk .{ .list = items };
+        },
+        .simple_case_expression => blk: {
+            const children = self.ast.nodeChildren(expr);
+            const subject = try evaluate(self, children[0], bindings);
+            const branches = children[1..];
+            var p: usize = 0;
+            while (p + 1 < branches.len) : (p += 2) {
+                const candidate = try evaluate(self, branches[p], bindings);
+                if (comparison.equals(subject, candidate) orelse false) break :blk try evaluate(self, branches[p + 1], bindings);
+            }
+            if (branches.len % 2 == 1) break :blk try evaluate(self, branches[branches.len - 1], bindings);
             break :blk .{ .null = {} };
         },
         .variable => blk: {
@@ -324,6 +349,11 @@ pub fn applyBinaryOperator(self: *Executor, operator: BinaryOperator, left: Valu
             if (left_bool == true or right_bool == true) break :blk .{ .boolean = true };
             if (left_bool == null or right_bool == null) break :blk .{ .null = {} };
             break :blk .{ .boolean = false };
+        },
+        .xor => blk: {
+            const left_bool = try asOptionalBool(left) orelse break :blk .{ .null = {} };
+            const right_bool = try asOptionalBool(right) orelse break :blk .{ .null = {} };
+            break :blk .{ .boolean = left_bool != right_bool };
         },
         .in_ => inList(left, right),
     };

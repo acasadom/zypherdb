@@ -105,6 +105,7 @@ clauses/match-where/MatchWhere3.feature: [1] Join between node identities
 clauses/match-where/MatchWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/match-where/MatchWhere3.feature: [3] Join between node properties of adjacent nodes
 clauses/match-where/MatchWhere4.feature: [1] Join nodes on inequality
+clauses/match-where/MatchWhere4.feature: [2] Join with disjunctive multi-part predicates including patterns
 clauses/match-where/MatchWhere5.feature: [1] Filter out on null
 clauses/match-where/MatchWhere5.feature: [3] Filter out on null if the AND'd predicate evaluates to true
 clauses/match-where/MatchWhere5.feature: [4] Do not filter out on null if the OR'd predicate evaluates to true
@@ -719,7 +720,15 @@ clauses/set/Set6.feature: [6] Aggregating in `RETURN` after setting a property o
 clauses/set/Set6.feature: [7] Aggregating in `WITH` after setting a property on nodes affects the result set but not the side effects
 clauses/set/Set6.feature: [8] Limiting to zero results after adding a label on nodes affects the result set but not the side effects
 clauses/set/Set6.feature: [9] Skipping all results after adding a label on nodes affects the result set but not the side effects
+clauses/union/Union1.feature: [1] Two elements, both unique, distinct
+clauses/union/Union1.feature: [2] Three elements, two unique, distinct
+clauses/union/Union1.feature: [3] Two single-column inputs, one with duplicates, distinct
+clauses/union/Union1.feature: [4] Should be able to create text output from union queries
 clauses/union/Union1.feature: [5] Failing when UNION has different columns
+clauses/union/Union2.feature: [1] Two elements, both unique, not distinct
+clauses/union/Union2.feature: [2] Three elements, two unique, not distinct
+clauses/union/Union2.feature: [3] Two single-column inputs, one with duplicates, not distinct
+clauses/union/Union2.feature: [4] Should be able to create text output from union all queries
 clauses/union/Union2.feature: [5] Failing when UNION ALL has different columns
 clauses/union/Union3.feature: [1] Failing when mixing UNION and UNION ALL
 clauses/union/Union3.feature: [2] Failing when mixing UNION ALL and UNION
@@ -971,12 +980,15 @@ clauses/with-skip-limit/WithSkipLimit2.feature: [4] Ordering and limiting on agg
 clauses/with-skip-limit/WithSkipLimit3.feature: [1] Get rows in the middle
 clauses/with-skip-limit/WithSkipLimit3.feature: [2] Get rows in the middle by param
 clauses/with-where/WithWhere1.feature: [1] Filter node with property predicate on a single variable with multiple bindings
+clauses/with-where/WithWhere1.feature: [3] Filter for an unbound relationship variable
+clauses/with-where/WithWhere1.feature: [4] Filter for an unbound node variable
 clauses/with-where/WithWhere2.feature: [1] Filter nodes with conjunctive two-part property predicate on multi variables with multiple bindings
 clauses/with-where/WithWhere2.feature: [2] Filter node with conjunctive multi-part property predicates on multi variables with multiple bindings
 clauses/with-where/WithWhere3.feature: [1] Join between node identities
 clauses/with-where/WithWhere3.feature: [2] Join between node properties of disconnected nodes
 clauses/with-where/WithWhere3.feature: [3] Join between node properties of adjacent nodes
 clauses/with-where/WithWhere4.feature: [1] Join nodes on inequality
+clauses/with-where/WithWhere4.feature: [2] Join with disjunctive multi-part predicates including patterns
 clauses/with-where/WithWhere5.feature: [1] Filter out on null
 clauses/with-where/WithWhere5.feature: [3] Filter out on null if the AND'd predicate evaluates to true
 clauses/with-where/WithWhere5.feature: [4] Do not filter out on null if the OR'd predicate evaluates to true
@@ -1029,7 +1041,9 @@ expressions/boolean/Boolean1.feature: [1] Conjunction of two truth values
 expressions/boolean/Boolean1.feature: [2] Conjunction of three truth values
 expressions/boolean/Boolean1.feature: [3] Conjunction of many truth values
 expressions/boolean/Boolean1.feature: [4] Conjunction is commutative on non-null
+expressions/boolean/Boolean1.feature: [5] Conjunction is commutative on null
 expressions/boolean/Boolean1.feature: [6] Conjunction is associative on non-null
+expressions/boolean/Boolean1.feature: [7] Conjunction is associative on null
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #1
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #10
 expressions/boolean/Boolean1.feature: [8] Fail on conjunction of at least one non-booleans #11
@@ -1057,7 +1071,9 @@ expressions/boolean/Boolean2.feature: [1] Disjunction of two truth values
 expressions/boolean/Boolean2.feature: [2] Disjunction of three truth values
 expressions/boolean/Boolean2.feature: [3] Disjunction of many truth values
 expressions/boolean/Boolean2.feature: [4] Disjunction is commutative on non-null
+expressions/boolean/Boolean2.feature: [5] Disjunction is commutative on null
 expressions/boolean/Boolean2.feature: [6] Disjunction is associative on non-null
+expressions/boolean/Boolean2.feature: [7] Disjunction is associative on null
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #1
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #10
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #11
@@ -1081,6 +1097,13 @@ expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one no
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #7
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #8
 expressions/boolean/Boolean2.feature: [8] Fail on disjunction of at least one non-booleans #9
+expressions/boolean/Boolean3.feature: [1] Exclusive disjunction of two truth values
+expressions/boolean/Boolean3.feature: [2] Exclusive disjunction of three truth values
+expressions/boolean/Boolean3.feature: [3] Exclusive disjunction of many truth values
+expressions/boolean/Boolean3.feature: [4] Exclusive disjunction is commutative on non-null
+expressions/boolean/Boolean3.feature: [5] Exclusive disjunction is commutative on null
+expressions/boolean/Boolean3.feature: [6] Exclusive disjunction is associative on non-null
+expressions/boolean/Boolean3.feature: [7] Exclusive disjunction is associative on null
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #1
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #10
 expressions/boolean/Boolean3.feature: [8] Fail on exclusive disjunction of at least one non-booleans #11
@@ -1157,7 +1180,11 @@ expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean l
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #8
 expressions/boolean/Boolean4.feature: [4] Fail when using NOT on a non-boolean literal #9
 expressions/boolean/Boolean5.feature: [1] Disjunction is distributive over conjunction on non-null
+expressions/boolean/Boolean5.feature: [2] Disjunction is distributive over conjunction on null
 expressions/boolean/Boolean5.feature: [3] Conjunction is distributive over disjunction on non-null
+expressions/boolean/Boolean5.feature: [4] Conjunction is distributive over disjunction on null
+expressions/boolean/Boolean5.feature: [5] Conjunction is distributive over exclusive disjunction on non-null
+expressions/boolean/Boolean5.feature: [6] Conjunction is not distributive over exclusive disjunction on null
 expressions/boolean/Boolean5.feature: [7] De Morgan's law on non-null: the negation of a disjunction is the conjunction of the negations
 expressions/boolean/Boolean5.feature: [8] De Morgan's law on non-null: the negation of a conjunction is the disjunction of the negations
 expressions/comparison/Comparison1.feature: [10] Handling inlined equality of large integer
@@ -1204,6 +1231,10 @@ expressions/comparison/Comparison1.feature: [9] Equality between strings and num
 expressions/comparison/Comparison1.feature: [9] Equality between strings and numbers #4
 expressions/comparison/Comparison2.feature: [1] Comparing strings and integers using > in an AND'd predicate
 expressions/comparison/Comparison2.feature: [2] Comparing strings and integers using > in a OR'd predicate
+expressions/comparison/Comparison2.feature: [3] Comparing across types yields null, except numbers #1
+expressions/comparison/Comparison2.feature: [3] Comparing across types yields null, except numbers #2
+expressions/comparison/Comparison2.feature: [3] Comparing across types yields null, except numbers #3
+expressions/comparison/Comparison2.feature: [3] Comparing across types yields null, except numbers #4
 expressions/comparison/Comparison2.feature: [4] Comparing lists #1
 expressions/comparison/Comparison2.feature: [4] Comparing lists #2
 expressions/comparison/Comparison2.feature: [4] Comparing lists #3
@@ -1217,8 +1248,38 @@ expressions/comparison/Comparison2.feature: [6] Comparability between numbers an
 expressions/comparison/Comparison2.feature: [6] Comparability between numbers and strings #2
 expressions/comparison/Comparison2.feature: [6] Comparability between numbers and strings #3
 expressions/comparison/Comparison2.feature: [6] Comparability between numbers and strings #4
+expressions/comparison/Comparison3.feature: [1] Handling numerical ranges 1
+expressions/comparison/Comparison3.feature: [2] Handling numerical ranges 2
+expressions/comparison/Comparison3.feature: [3] Handling numerical ranges 3
+expressions/comparison/Comparison3.feature: [4] Handling numerical ranges 4
+expressions/comparison/Comparison3.feature: [5] Handling string ranges 1
+expressions/comparison/Comparison3.feature: [6] Handling string ranges 2
+expressions/comparison/Comparison3.feature: [7] Handling string ranges 3
+expressions/comparison/Comparison3.feature: [8] Handling string ranges 4
+expressions/comparison/Comparison3.feature: [9] Handling empty range
+expressions/comparison/Comparison4.feature: [1] Handling long chains of operators
 expressions/conditional/Conditional1.feature: [1] Run coalesce
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #1
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #10
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #11
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #12
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #2
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #3
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #4
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #5
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #6
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #7
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #8
+expressions/conditional/Conditional2.feature: [1] Simple cases over integers #9
+expressions/existentialSubqueries/ExistentialSubquery1.feature: [1] Simple subquery without WHERE clause
+expressions/existentialSubqueries/ExistentialSubquery1.feature: [2] Simple subquery with WHERE clause
+expressions/existentialSubqueries/ExistentialSubquery1.feature: [3] Simple subquery without WHERE clause, not existing pattern
+expressions/existentialSubqueries/ExistentialSubquery1.feature: [4] Simple subquery with WHERE clause, not existing pattern
+expressions/existentialSubqueries/ExistentialSubquery2.feature: [1] Full existential subquery
 expressions/existentialSubqueries/ExistentialSubquery2.feature: [3] Full existential subquery with update clause should fail
+expressions/existentialSubqueries/ExistentialSubquery3.feature: [1] Nested simple existential subquery
+expressions/existentialSubqueries/ExistentialSubquery3.feature: [2] Nested full existential subquery
+expressions/existentialSubqueries/ExistentialSubquery3.feature: [3] Nested full existential subquery with pattern predicate
 expressions/graph/Graph3.feature: [1] Creating node without label
 expressions/graph/Graph3.feature: [2] Creating node with two labels
 expressions/graph/Graph3.feature: [3] Ignore space when creating node with labels
@@ -1433,6 +1494,7 @@ expressions/list/List5.feature: [6] IN should return false when matching a numbe
 expressions/list/List5.feature: [7] IN should return false when types of LHS and RHS don't match - singleton list
 expressions/list/List5.feature: [8] IN should return false when types of LHS and RHS don't match - list
 expressions/list/List5.feature: [9] IN should return true when types of LHS and RHS match - singleton list
+expressions/list/List6.feature: [10] Get node degree via size of pattern comprehension that specifies multiple relationship types
 expressions/list/List6.feature: [1] Return list size
 expressions/list/List6.feature: [2] Setting and returning the size of a list property
 expressions/list/List6.feature: [3] Concatenating and returning the size of literal lists
@@ -1446,6 +1508,9 @@ expressions/list/List6.feature: [6] Fail for `size()` on pattern predicates #5
 expressions/list/List6.feature: [6] Fail for `size()` on pattern predicates #6
 expressions/list/List6.feature: [6] Fail for `size()` on pattern predicates #7
 expressions/list/List6.feature: [6] Fail for `size()` on pattern predicates #8
+expressions/list/List6.feature: [7] Using size of pattern comprehension to test existence
+expressions/list/List6.feature: [8] Get node degree via size of pattern comprehension
+expressions/list/List6.feature: [9] Get node degree via size of pattern comprehension that specifies a relationship type
 expressions/list/List9.feature: [1] Returning nested expressions based on list property
 expressions/literals/Literals1.feature: [1] Return a boolean true lower case
 expressions/literals/Literals1.feature: [2] Return a boolean true upper case
@@ -1678,19 +1743,54 @@ expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variabl
 expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variables in pattern #7
 expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variables in pattern #8
 expressions/pattern/Pattern1.feature: [10] Fail on introducing unbounded variables in pattern #9
+expressions/pattern/Pattern1.feature: [10] Matching on a specific type of undirected connection with length 2
+expressions/pattern/Pattern1.feature: [12] Matching two nodes on a single directed connection between them
+expressions/pattern/Pattern1.feature: [13] Fail on matching two nodes on a single undirected connection between them
+expressions/pattern/Pattern1.feature: [14] Matching two nodes on a specific type of single outgoing directed connection
+expressions/pattern/Pattern1.feature: [15] Matching two nodes on a specific type of single undirected connection
+expressions/pattern/Pattern1.feature: [16] Matching two nodes on a specific type of a variable length outgoing directed connection
+expressions/pattern/Pattern1.feature: [17] Matching two nodes on a specific type of variable length undirected connection
+expressions/pattern/Pattern1.feature: [18] Matching two nodes on a specific type of undirected connection with length 2
+expressions/pattern/Pattern1.feature: [19] Using a negated existential pattern predicate
+expressions/pattern/Pattern1.feature: [1] Matching on any single outgoing directed connection
+expressions/pattern/Pattern1.feature: [20] Using two existential pattern predicates in a conjunction
+expressions/pattern/Pattern1.feature: [21] Using two existential pattern predicates in a disjunction
 expressions/pattern/Pattern1.feature: [22] Fail on using pattern in RETURN projection
 expressions/pattern/Pattern1.feature: [23] Fail on using pattern in WITH projection
 expressions/pattern/Pattern1.feature: [24] Fail on using pattern in right-hand side of SET
+expressions/pattern/Pattern1.feature: [2] Matching on a single undirected connection
+expressions/pattern/Pattern1.feature: [3] Matching on any single incoming directed connection
+expressions/pattern/Pattern1.feature: [4] Matching on a specific type of single outgoing directed connection
+expressions/pattern/Pattern1.feature: [5] Matching on a specific type of single undirected connection
+expressions/pattern/Pattern1.feature: [6] Matching on a specific type of single incoming directed connection
+expressions/pattern/Pattern1.feature: [7] Matching on a specific type of a variable length outgoing directed connection
+expressions/pattern/Pattern1.feature: [8] Matching on a specific type of variable length undirected connection
+expressions/pattern/Pattern1.feature: [9] Matching on a specific type of variable length incoming directed connection
+expressions/pattern/Pattern2.feature: [10] Use a pattern comprehension in RETURN
+expressions/pattern/Pattern2.feature: [11] Use a pattern comprehension and ORDER BY
+expressions/pattern/Pattern2.feature: [1] Return a pattern comprehension
+expressions/pattern/Pattern2.feature: [2] Return a pattern comprehension with label predicate
+expressions/pattern/Pattern2.feature: [3] Return a pattern comprehension with bound nodes
+expressions/pattern/Pattern2.feature: [4] Introduce a new node variable in pattern comprehension
+expressions/pattern/Pattern2.feature: [5] Introduce a new relationship variable in pattern comprehension
+expressions/pattern/Pattern2.feature: [6] Aggregate on a pattern comprehension
+expressions/pattern/Pattern2.feature: [7] Use a pattern comprehension inside a list comprehension
+expressions/pattern/Pattern2.feature: [8] Use a pattern comprehension in WITH
+expressions/pattern/Pattern2.feature: [9] Use a variable-length pattern comprehension in WITH
 expressions/precedence/Precedence1.feature: [10] Null predicate takes precedence over boolean operator
+expressions/precedence/Precedence1.feature: [11] List predicate takes precedence over comparison operator
 expressions/precedence/Precedence1.feature: [12] List predicate takes precedence over negation
 expressions/precedence/Precedence1.feature: [13] List predicate takes precedence over boolean operator
+expressions/precedence/Precedence1.feature: [1] Exclusive disjunction takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [24] Null predicates take precedence over boolean negation on every truth values #1
 expressions/precedence/Precedence1.feature: [24] Null predicates take precedence over boolean negation on every truth values #2
+expressions/precedence/Precedence1.feature: [2] Conjunction disjunction takes precedence over exclusive disjunction
 expressions/precedence/Precedence1.feature: [3] Conjunction disjunction takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [4] Negation takes precedence over conjunction
 expressions/precedence/Precedence1.feature: [5] Negation takes precedence over inclusive disjunction
 expressions/precedence/Precedence1.feature: [6] Comparison operator takes precedence over boolean negation
 expressions/precedence/Precedence1.feature: [7] Comparison operator takes precedence over binary boolean operator
+expressions/precedence/Precedence1.feature: [8] Null predicate takes precedence over comparison operator
 expressions/precedence/Precedence1.feature: [9] Null predicate takes precedence over negation
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #1
 expressions/precedence/Precedence2.feature: [1] Numeric multiplicative operations takes precedence over numeric additive operations #10
@@ -1723,12 +1823,23 @@ expressions/precedence/Precedence3.feature: [2] List element access takes preced
 expressions/precedence/Precedence3.feature: [3] List slicing takes precedence over list concatenation
 expressions/precedence/Precedence3.feature: [4] List appending takes precedence over list element containment
 expressions/precedence/Precedence3.feature: [5] List concatenation takes precedence over list element containment
+expressions/precedence/Precedence3.feature: [6] List element containment takes precedence over comparison operator #1
+expressions/precedence/Precedence3.feature: [6] List element containment takes precedence over comparison operator #2
+expressions/precedence/Precedence3.feature: [6] List element containment takes precedence over comparison operator #3
+expressions/precedence/Precedence3.feature: [6] List element containment takes precedence over comparison operator #4
+expressions/precedence/Precedence3.feature: [6] List element containment takes precedence over comparison operator #5
+expressions/precedence/Precedence3.feature: [6] List element containment takes precedence over comparison operator #6
+expressions/precedence/Precedence4.feature: [1] Null predicate takes precedence over comparison operator #1
+expressions/precedence/Precedence4.feature: [1] Null predicate takes precedence over comparison operator #2
+expressions/precedence/Precedence4.feature: [1] Null predicate takes precedence over comparison operator #3
 expressions/precedence/Precedence4.feature: [2] Null predicate takes precedence over boolean negation
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #1
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #2
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #3
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #4
 expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #5
+expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #6
+expressions/precedence/Precedence4.feature: [3] Null predicate takes precedence over binary boolean operator #7
 expressions/precedence/Precedence4.feature: [4] String predicate takes precedence over binary boolean operator
 expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #1
 expressions/quantifier/Quantifier1.feature: [10] None quantifier on lists containing nulls #2
@@ -3421,4 +3532,22 @@ useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [5] Directed 
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [6] Counting undirected self-relationships in self-relationship graph
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [8] Directed match of a simple relationship, count
 useCases/countingSubgraphMatches/CountingSubgraphMatches1.feature: [9] Counting directed self-relationships
+useCases/triadicSelection/TriadicSelection1.feature: [10] Handling triadic friend of a friend that is not a friend with implicit superset of labels
+useCases/triadicSelection/TriadicSelection1.feature: [11] Handling triadic friend of a friend that is a friend
+useCases/triadicSelection/TriadicSelection1.feature: [12] Handling triadic friend of a friend that is a friend with different relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [13] Handling triadic friend of a friend that is a friend with superset of relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [14] Handling triadic friend of a friend that is a friend with implicit subset of relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [15] Handling triadic friend of a friend that is a friend with explicit subset of relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [16] Handling triadic friend of a friend that is a friend with same labels
+useCases/triadicSelection/TriadicSelection1.feature: [17] Handling triadic friend of a friend that is a friend with different labels
+useCases/triadicSelection/TriadicSelection1.feature: [18] Handling triadic friend of a friend that is a friend with implicit subset of labels
+useCases/triadicSelection/TriadicSelection1.feature: [19] Handling triadic friend of a friend that is a friend with implicit superset of labels
 useCases/triadicSelection/TriadicSelection1.feature: [1] Handling triadic friend of a friend
+useCases/triadicSelection/TriadicSelection1.feature: [2] Handling triadic friend of a friend that is not a friend
+useCases/triadicSelection/TriadicSelection1.feature: [3] Handling triadic friend of a friend that is not a friend with different relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [4] Handling triadic friend of a friend that is not a friend with superset of relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [5] Handling triadic friend of a friend that is not a friend with implicit subset of relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [6] Handling triadic friend of a friend that is not a friend with explicit subset of relationship type
+useCases/triadicSelection/TriadicSelection1.feature: [7] Handling triadic friend of a friend that is not a friend with same labels
+useCases/triadicSelection/TriadicSelection1.feature: [8] Handling triadic friend of a friend that is not a friend with different labels
+useCases/triadicSelection/TriadicSelection1.feature: [9] Handling triadic friend of a friend that is not a friend with implicit subset of labels

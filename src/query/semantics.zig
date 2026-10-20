@@ -48,6 +48,9 @@ const Checker = struct {
     local_types: std.ArrayList(struct { name: []const u8, type: StaticType }) = .empty,
     /// Nesting depth of comprehensions and quantifiers being checked.
     iteration_depth: usize = 0,
+    /// Variables local to the expression being checked: of comprehensions,
+    /// quantifiers, pattern comprehensions and EXISTS subqueries.
+    local_names: std.ArrayList([]const u8) = .empty,
 
     fn fail(self: *Checker, comptime fmt: []const u8, args: anytype) SemanticError {
         if (self.diagnostic) |d| d.set(.invalid_expression, 0, fmt, args);
@@ -123,6 +126,23 @@ const Checker = struct {
         const children = self.ast.nodeChildren(index);
         switch (self.ast.kind(index)) {
             .list_comprehension, .quantifier => return self.checkIteration(index),
+            // A pattern predicate only tests variables already bound.
+            .pattern_predicate => for (self.ast.nodeChildren(children[0])) |element| {
+                const name = elementName(self.ast, element);
+                if (name.len > 0 and self.scope.kindOf(name) == null and !self.isLocal(name)) {
+                    return self.fail("variable '{s}' is not defined: a pattern in a predicate cannot introduce variables", .{name});
+                }
+            },
+            .pattern_comprehension => return self.checkWithLocals(&.{children[0]}, children),
+            .exists_subquery => {
+                var patterns = std.ArrayList(Index).empty;
+                defer patterns.deinit(self.allocator);
+                for (children) |clause| {
+                    const parts = self.ast.nodeChildren(clause);
+                    try patterns.appendSlice(self.allocator, parts[0 .. parts.len - 1]);
+                }
+                return self.checkWithLocals(patterns.items, children);
+            },
             .aggregate => {
                 if (self.iteration_depth > 0) return self.fail("an aggregate cannot be used inside a list comprehension or quantifier", .{});
                 // Aggregating values that change from call to call is meaningless.
@@ -133,7 +153,7 @@ const Checker = struct {
                 .in_ => if (isLiteralOf(self.ast, children[1], &.{ .integer_literal, .float_literal, .string_literal, .boolean_literal, .map_literal })) {
                     return self.fail("the right side of IN must be a list", .{});
                 },
-                .and_, .or_ => for (children) |operand| {
+                .and_, .or_, .xor => for (children) |operand| {
                     if (isLiteralOf(self.ast, operand, &non_boolean_literals)) return self.fail("AND and OR need boolean operands", .{});
                 },
                 else => {},
@@ -157,6 +177,36 @@ const Checker = struct {
         for (self.ast.nodeChildren(index)) |child| try self.checkExpressions(child);
     }
 
+    fn isLocal(self: *const Checker, name: []const u8) bool {
+        for (self.local_names.items) |local| {
+            if (std.mem.eql(u8, local, name)) return true;
+        }
+        return false;
+    }
+
+    /// Checks `children` with the variables of `patterns` local to them.
+    fn checkWithLocals(self: *Checker, patterns: []const Index, children: []const Index) SemanticError!void {
+        const mark = self.local_names.items.len;
+        defer self.local_names.shrinkRetainingCapacity(mark);
+        for (patterns) |pattern| {
+            if (self.ast.data(pattern).text.len > 0) try self.local_names.append(self.allocator, self.ast.data(pattern).text);
+            for (self.ast.nodeChildren(pattern)) |element| {
+                const name = elementName(self.ast, element);
+                if (name.len > 0) try self.local_names.append(self.allocator, name);
+            }
+        }
+        for (children) |child| try self.checkExpressions(child);
+    }
+
+    /// The variable of a node or relationship pattern (empty if anonymous).
+    fn elementName(ast: *const Ast, element: Index) []const u8 {
+        return switch (ast.kind(element)) {
+            .node_pattern => ast.data(element).node_pattern.variable_name,
+            .edge_pattern => ast.data(element).edge_pattern.variable_name,
+            else => "",
+        };
+    }
+
     /// A comprehension or quantifier: its list in the enclosing scope, the
     /// rest with its variable typed when the list is a literal of one type.
     fn checkIteration(self: *Checker, index: Index) SemanticError!void {
@@ -170,6 +220,8 @@ const Checker = struct {
         };
         self.iteration_depth += 1;
         defer self.iteration_depth -= 1;
+        try self.local_names.append(self.allocator, variable_name);
+        defer _ = self.local_names.pop();
         for (children[1..]) |child| try self.checkExpressions(child);
     }
 

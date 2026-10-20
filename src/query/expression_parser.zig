@@ -13,17 +13,29 @@ const describeToken = @import("lexer.zig").describeToken;
 
 const Parser = @import("parser.zig").Parser;
 const ParseError = @import("parser.zig").ParseError;
+const TokenKind = @import("lexer.zig").TokenKind;
 
 pub fn parseExpression(self: *Parser) ParseError!Index {
     return parseOr(self);
 }
 
 pub fn parseOr(self: *Parser) ParseError!Index {
-    var lhs = try parseAnd(self);
+    var lhs = try parseXor(self);
     while (self.atKeyword("OR")) {
         _ = self.advance();
-        const rhs = try parseAnd(self);
+        const rhs = try parseXor(self);
         lhs = try self.ast.addNode(.binary_operation, .{ .binary_operator = .or_ }, &.{ lhs, rhs });
+    }
+    return lhs;
+}
+
+/// `XOR` binds between `OR` and `AND`.
+fn parseXor(self: *Parser) ParseError!Index {
+    var lhs = try parseAnd(self);
+    while (self.atKeyword("XOR")) {
+        _ = self.advance();
+        const rhs = try parseAnd(self);
+        lhs = try self.ast.addNode(.binary_operation, .{ .binary_operator = .xor }, &.{ lhs, rhs });
     }
     return lhs;
 }
@@ -48,43 +60,22 @@ pub fn parseNot(self: *Parser) ParseError!Index {
 }
 
 pub fn parseComparison(self: *Parser) ParseError!Index {
-    const lhs = try parseAdditive(self);
+    const first = try parsePredicate(self);
+    var previous = first;
+    var result: ?Index = null;
+    // `a < b <= c` is `a < b AND b <= c` (b evaluated for each comparison).
+    while (comparisonOperator(self.peek().kind)) |operator| {
+        _ = self.advance();
+        const next = try parsePredicate(self);
+        const comparison = try self.ast.addNode(.binary_operation, .{ .binary_operator = operator }, &.{ previous, next });
+        result = if (result) |chain| try self.ast.addNode(.binary_operation, .{ .binary_operator = .and_ }, &.{ chain, comparison }) else comparison;
+        previous = next;
+    }
+    return result orelse first;
+}
 
-    // `x IS NULL` / `x IS NOT NULL`.
-    if (self.atKeyword("IS")) {
-        _ = self.advance();
-        const negated = self.atKeyword("NOT");
-        if (negated) _ = self.advance();
-        try self.expectKeyword("NULL");
-        return self.ast.addNode(.unary_operation, .{ .unary_operator = if (negated) .is_not_null else .is_null }, &.{lhs});
-    }
-
-    // Multi-word string predicates (checked before the single-token ops,
-    // since `STARTS`/`ENDS`/`CONTAINS`/`IN` lex as plain identifiers).
-    if (self.atKeyword("STARTS")) {
-        _ = self.advance();
-        try self.expectKeyword("WITH");
-        const rhs = try parseAdditive(self);
-        return self.ast.addNode(.binary_operation, .{ .binary_operator = .starts_with }, &.{ lhs, rhs });
-    }
-    if (self.atKeyword("ENDS")) {
-        _ = self.advance();
-        try self.expectKeyword("WITH");
-        const rhs = try parseAdditive(self);
-        return self.ast.addNode(.binary_operation, .{ .binary_operator = .ends_with }, &.{ lhs, rhs });
-    }
-    if (self.atKeyword("CONTAINS")) {
-        _ = self.advance();
-        const rhs = try parseAdditive(self);
-        return self.ast.addNode(.binary_operation, .{ .binary_operator = .contains }, &.{ lhs, rhs });
-    }
-    if (self.atKeyword("IN")) {
-        _ = self.advance();
-        const list = try parseAdditive(self); // any expression yielding a list
-        return self.ast.addNode(.binary_operation, .{ .binary_operator = .in_ }, &.{ lhs, list });
-    }
-
-    const operator: ?BinaryOperator = switch (self.peek().kind) {
+fn comparisonOperator(kind: TokenKind) ?BinaryOperator {
+    return switch (kind) {
         .equal => .equal,
         .not_equal => .not_equal,
         .less_than => .less_than,
@@ -93,12 +84,38 @@ pub fn parseComparison(self: *Parser) ParseError!Index {
         .greater_or_equal => .greater_or_equal,
         else => null,
     };
-    if (operator) |o| {
+}
+
+/// An additive expression followed by any number of `IS [NOT] NULL`,
+/// `STARTS WITH`, `ENDS WITH`, `CONTAINS` and `IN` tests, which bind tighter
+/// than comparisons: `x IS NULL = y IS NULL` compares two booleans.
+fn parsePredicate(self: *Parser) ParseError!Index {
+    var lhs = try parseAdditive(self);
+    while (true) {
+        if (self.atKeyword("IS")) {
+            _ = self.advance();
+            const negated = self.atKeyword("NOT");
+            if (negated) _ = self.advance();
+            try self.expectKeyword("NULL");
+            lhs = try self.ast.addNode(.unary_operation, .{ .unary_operator = if (negated) .is_not_null else .is_null }, &.{lhs});
+            continue;
+        }
+        // `STARTS`/`ENDS`/`CONTAINS`/`IN` lex as plain identifiers.
+        const operator: BinaryOperator = if (self.atKeyword("STARTS") and self.atKeywordAhead(1, "WITH"))
+            .starts_with
+        else if (self.atKeyword("ENDS") and self.atKeywordAhead(1, "WITH"))
+            .ends_with
+        else if (self.atKeyword("CONTAINS"))
+            .contains
+        else if (self.atKeyword("IN"))
+            .in_
+        else
+            return lhs;
         _ = self.advance();
+        if (operator == .starts_with or operator == .ends_with) _ = self.advance(); // WITH
         const rhs = try parseAdditive(self);
-        return self.ast.addNode(.binary_operation, .{ .binary_operator = o }, &.{ lhs, rhs });
+        lhs = try self.ast.addNode(.binary_operation, .{ .binary_operator = operator }, &.{ lhs, rhs });
     }
-    return lhs;
 }
 
 /// `+` and `-`, left-associative, over multiplicative operands.
@@ -200,8 +217,49 @@ fn parseFloatLiteral(self: *Parser, negative: bool) ParseError!Index {
     return self.ast.addNode(.float_literal, .{ .float = if (negative) -magnitude else magnitude }, &.{});
 }
 
+/// `EXISTS { pattern [WHERE predicate] }` or `EXISTS { MATCH ... [RETURN ...] }`:
+/// true if the patterns have a match for the current row. The patterns may
+/// introduce variables of their own; a RETURN is accepted and ignored (it
+/// cannot change whether there is a row).
+fn parseExistsSubquery(self: *Parser) ParseError!Index {
+    try self.expect(.left_brace);
+    var clauses = std.ArrayList(Index).empty;
+    defer clauses.deinit(self.ast.allocator);
+    if (self.atKeyword("MATCH")) {
+        while (self.atKeyword("MATCH")) {
+            _ = self.advance();
+            try clauses.append(self.ast.allocator, try self.parseMatchBody(.match_clause));
+        }
+        if (self.atKeyword("RETURN")) {
+            _ = self.advance();
+            _ = try self.parseReturnClause();
+        }
+    } else {
+        try clauses.append(self.ast.allocator, try self.parseMatchBody(.match_clause));
+    }
+    try self.expect(.right_brace);
+    return self.ast.addNode(.exists_subquery, .{ .none = {} }, clauses.items);
+}
+
+/// `[p = (a)-->(b) WHERE predicate | projection]`: the projection for each
+/// match of the pattern (the path variable and WHERE are optional).
+fn parsePatternComprehension(self: *Parser) ParseError!Index {
+    try self.expect(.left_bracket);
+    const pattern = try self.parsePattern();
+    const predicate = try self.parseOptionalWhere();
+    try self.expect(.pipe);
+    const projection = try parseExpression(self);
+    try self.expect(.right_bracket);
+    return self.ast.addNode(.pattern_comprehension, .{ .none = {} }, &.{ pattern, predicate, projection });
+}
+
 /// Parses a list literal `[e0, e1, ...]` (the empty list is allowed).
 pub fn parseListLiteral(self: *Parser) ParseError!Index {
+    if (self.atRelationshipPattern(1) or
+        (self.peekAhead(1).kind == .identifier and self.peekAhead(2).kind == .equal and self.atRelationshipPattern(3)))
+    {
+        return parsePatternComprehension(self);
+    }
     // `[x IN list ...]` is a comprehension, not a list holding `x IN list`.
     if (self.peekAhead(1).kind == .identifier and self.atKeywordAhead(2, "IN")) return parseListComprehension(self);
     try self.expect(.left_bracket);
@@ -340,6 +398,7 @@ fn parseAtom(self: *Parser) ParseError!Index {
                 }
                 return parseFunctionCall(self, t.text);
             }
+            if (std.ascii.eqlIgnoreCase(t.text, "exists") and self.at(.left_brace)) return parseExistsSubquery(self);
             // `date.truncate(...)`: a namespaced function.
             if (self.at(.dot) and self.peekAhead(1).kind == .identifier and isNamespacedCall(self)) {
                 var name = std.ArrayList(u8).empty;
@@ -356,7 +415,12 @@ fn parseAtom(self: *Parser) ParseError!Index {
         },
         .left_bracket => return parseListLiteral(self),
         .left_brace => return parseMapLiteral(self),
-        .left_paren => {
+        .left_paren => if (self.in_where and self.atRelationshipPattern(0)) {
+            // `WHERE (a)-[:KNOWS]->(b)`: true if the pattern has a match.
+            const pattern = try self.parsePattern();
+            const always = try self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
+            return self.ast.addNode(.pattern_predicate, .{ .none = {} }, &.{ pattern, always });
+        } else {
             _ = self.advance();
             const e = try parseExpression(self);
             try self.expect(.right_paren);
@@ -400,10 +464,14 @@ pub fn parseVariableRef(self: *Parser, text: []const u8) ParseError!Index {
     return self.ast.addNode(.variable, .{ .text = try self.ast.intern(text) }, &.{});
 }
 
+/// `CASE WHEN condition THEN result ... [ELSE result] END`, or the simple
+/// form `CASE subject WHEN value THEN result ... [ELSE result] END`.
 pub fn parseCaseExpression(self: *Parser) ParseError!Index {
     _ = self.advance(); // CASE
     var children = std.ArrayList(Index).empty;
     defer children.deinit(self.ast.allocator);
+    const simple = !self.atKeyword("WHEN");
+    if (simple) try children.append(self.ast.allocator, try parseExpression(self));
     while (self.atKeyword("WHEN")) {
         _ = self.advance();
         const cond = try parseExpression(self);
@@ -417,7 +485,7 @@ pub fn parseCaseExpression(self: *Parser) ParseError!Index {
         try children.append(self.ast.allocator, try parseExpression(self));
     }
     try self.expectKeyword("END");
-    return self.ast.addNode(.case_expression, .{ .none = {} }, children.items);
+    return self.ast.addNode(if (simple) .simple_case_expression else .case_expression, .{ .none = {} }, children.items);
 }
 
 pub fn parseAggregateCall(self: *Parser, kind: AggregateKind) ParseError!Index {

@@ -37,6 +37,7 @@ const expressions = @import("expressions.zig");
 const functions = @import("functions.zig");
 const projection = @import("projection.zig");
 const temporal_functions = @import("temporal_functions.zig");
+const sequence_algorithms = @import("../sequence_algorithms.zig");
 
 const Executor = @This();
 
@@ -127,21 +128,48 @@ pub fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: an
     if (self.diagnostic) |d| d.set(code, 0, fmt, args);
 }
 
-/// Runs a parsed query and returns its RETURN rows (none without RETURN).
-/// All writes of the query commit or abort together; a read-only query reads
-/// one consistent snapshot.
-pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
-    try semantics.check(self.ast, query, self.allocator, self.diagnostic);
-    try functions.checkCalls(self.ast, query, self.diagnostic);
+/// Runs a parsed query (or a UNION of queries, one after the other) and
+/// returns its RETURN rows (none without RETURN). All writes of the query
+/// commit or abort together; a read-only query reads one consistent snapshot.
+pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
+    const is_union = self.ast.kind(root) == .union_query;
+    const queries: []const Index = if (is_union) self.ast.nodeChildren(root) else &.{root};
+    for (queries) |query| {
+        try semantics.check(self.ast, query, self.allocator, self.diagnostic);
+        try functions.checkCalls(self.ast, query, self.diagnostic);
+    }
     self.reset();
+    self.entities = .{};
+    self.statement_time = null;
 
-    const query_clauses = self.ast.nodeChildren(query);
-    const has_writes = for (query_clauses) |clause| {
-        if (clauses.isWrite(self.ast.kind(clause))) break true;
+    const has_writes = writes: for (queries) |query| {
+        for (self.ast.nodeChildren(query)) |clause| {
+            if (clauses.isWrite(self.ast.kind(clause))) break :writes true;
+        }
     } else false;
     if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
     errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
 
+    var result = std.ArrayList(Row).empty;
+    for (queries) |query| {
+        self.reset();
+        try self.runClauses(query);
+        for (self.rows.items) |sortable| try result.append(self.allocator, sortable.item);
+    }
+    // UNION (not UNION ALL) keeps one of each row.
+    if (is_union and !self.ast.data(root).boolean) {
+        try sequence_algorithms.removeDuplicates(Row, self.allocator, &result, projection.RowContext{});
+    }
+    // Read the entities the rows refer to while the transaction still holds.
+    for (result.items) |row| try self.entities.capture(self.graph, self.allocator, row.items);
+
+    if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
+    return result.items;
+}
+
+/// Runs one query's clauses as a pipeline; its RETURN rows go to `self.rows`.
+fn runClauses(self: *Executor, query: Index) ExecutionError!void {
+    const query_clauses = self.ast.nodeChildren(query);
     var rows: []Bindings = try self.allocator.alloc(Bindings, 1);
     rows[0] = .{ .entries = .empty };
     for (query_clauses) |clause| {
@@ -157,26 +185,17 @@ pub fn run(self: *Executor, query: Index) ExecutionError![]const Row {
             else => try clauses.runWrite(self, clause, rows),
         };
     }
-    // Read the entities the rows refer to while the transaction still holds.
-    for (self.rows.items) |row| try self.entities.capture(self.graph, self.allocator, row.item.items);
-
-    if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
-
-    const result = try self.allocator.alloc(Row, self.rows.items.len);
-    for (result, self.rows.items) |*row, sortable| row.* = sortable.item;
-    return result;
 }
 
+/// Clears the state of the query part last run.
 fn reset(self: *Executor) void {
     self.rows = .empty;
-    self.entities = .{};
     self.used_edges = .empty;
     self.has_aggregates = false;
     self.projection_items = .empty;
     self.return_aggregation = no_aggregation;
     self.groups = .{};
     self.expression_overrides = null;
-    self.statement_time = null;
 }
 
 /// The statement's time, in nanoseconds since the epoch.

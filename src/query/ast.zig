@@ -72,6 +72,7 @@ pub const BinaryOperator = enum {
     greater_or_equal,
     and_,
     or_,
+    xor,
     starts_with,
     ends_with,
     contains,
@@ -113,6 +114,7 @@ pub const EdgeDirection = enum {
 
 pub const NodeKind = enum {
     query,
+    union_query, // children: the queries; data.boolean: UNION ALL (keep duplicates)
     pattern,
     node_pattern,
     edge_pattern,
@@ -132,7 +134,11 @@ pub const NodeKind = enum {
     list_comprehension, // `[x IN list WHERE predicate | projection]`: data.text is x; children [list, predicate, projection]
     quantifier, // `any(x IN list WHERE predicate)`: data.quantifier; children [list, predicate]
     function_call, // `name(args...)`; data.text is the name as written, children the arguments
-    case_expression,
+    pattern_predicate, // `(a)-->(b)` in a WHERE: children [pattern, true literal]
+    pattern_comprehension, // `[p = (a)-->(b) WHERE w | e]`: children [pattern, w, e]
+    exists_subquery, // `EXISTS { ... }`: children are match clauses
+    case_expression, // children [condition, result]..., optional else
+    simple_case_expression, // children [subject, (value, result)..., optional else]
     binary_operation,
     unary_operation,
     aggregate,

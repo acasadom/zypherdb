@@ -52,6 +52,45 @@ pub fn runMatch(self: *Executor, clause: Index, input: []Bindings, optional: boo
     return output.items;
 }
 
+/// The matches of `patterns` passing `where_expression`, each extending
+/// `row`: a MATCH nested in an expression (a pattern predicate, a pattern
+/// comprehension, EXISTS). The state of the MATCH being run around it is put
+/// back afterwards, and the nested patterns have their own relationship
+/// uniqueness.
+pub fn nestedMatches(self: *Executor, patterns: []const Index, where_expression: Index, row: Bindings) ExecutionError![]Bindings {
+    const saved_patterns = self.patterns;
+    const saved_where = self.where_expression;
+    const saved_matches = self.matches;
+    const saved_used_edges = self.used_edges;
+    defer {
+        self.patterns = saved_patterns;
+        self.where_expression = saved_where;
+        self.matches = saved_matches;
+        self.used_edges = saved_used_edges;
+    }
+    self.patterns = patterns;
+    self.where_expression = where_expression;
+    self.used_edges = .empty;
+    var output = std.ArrayList(Bindings).empty;
+    self.matches = &output;
+    var bindings = try copyRow(self, row);
+    try pattern_matching.matchPatterns(self, 0, &bindings);
+    return output.items;
+}
+
+/// The rows of a chain of MATCH clauses (as in `EXISTS { MATCH ... MATCH
+/// ... }`) starting from `row`.
+pub fn nestedMatchClauses(self: *Executor, match_clauses: []const Index, row: Bindings) ExecutionError![]Bindings {
+    var rows = try self.allocator.dupe(Bindings, &.{row});
+    for (match_clauses) |clause| {
+        const children = self.ast.nodeChildren(clause);
+        var next = std.ArrayList(Bindings).empty;
+        for (rows) |input| try next.appendSlice(self.allocator, try nestedMatches(self, children[0 .. children.len - 1], children[children.len - 1], input));
+        rows = next.items;
+    }
+    return rows;
+}
+
 /// Binds every variable of `patterns` that `row` does not bind yet to null.
 fn bindNewVariablesToNull(self: *Executor, patterns: []const Index, row: *Bindings) ExecutionError!void {
     for (patterns) |pattern| {

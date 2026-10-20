@@ -39,7 +39,7 @@ pub fn parse(ast: *Ast, src: []const u8, diagnostic: ?*Diagnostic) ParseError!In
         .pos = 0,
         .diagnostic = diagnostic,
     };
-    return parser.parseQuery();
+    return parser.parseUnion();
 }
 
 pub const Parser = struct {
@@ -47,6 +47,9 @@ pub const Parser = struct {
     tokens: []const Token,
     pos: usize,
     diagnostic: ?*Diagnostic,
+    /// Parsing a WHERE predicate, where a pattern is an expression
+    /// (`WHERE (a)-->(b)`).
+    in_where: bool = false,
 
     pub fn peek(self: *const Parser) Token {
         return self.tokens[self.pos];
@@ -146,13 +149,80 @@ pub const Parser = struct {
     /// (MATCH, OPTIONAL MATCH, UNWIND), WITH, updating clauses (CREATE, MERGE,
     /// SET, DELETE, REMOVE) and a final RETURN. After an update, reading again
     /// needs a WITH in between; the query ends with RETURN or an update.
+    /// Queries joined by `UNION` (rows from all, without duplicates) or
+    /// `UNION ALL` (all rows); one query alone is just that query. The parts
+    /// return the same columns, and a union does not mix the two forms.
+    fn parseUnion(self: *Parser) ParseError!Index {
+        const first = try self.parseQuery();
+        if (!self.atKeyword("UNION")) return first;
+        var parts = std.ArrayList(Index).empty;
+        defer parts.deinit(self.ast.allocator);
+        try parts.append(self.ast.allocator, first);
+        var all: ?bool = null;
+        while (self.atKeyword("UNION")) {
+            _ = self.advance();
+            const this_all = self.atKeyword("ALL");
+            if (this_all) _ = self.advance();
+            if (all != null and all.? != this_all) {
+                self.fail("UNION and UNION ALL cannot be mixed", .{});
+                return error.UnexpectedToken;
+            }
+            all = this_all;
+            const part = try self.parseQuery();
+            try self.checkSameColumns(first, part);
+            try parts.append(self.ast.allocator, part);
+        }
+        return self.ast.addNode(.union_query, .{ .boolean = all.? }, parts.items);
+    }
+
+    /// The parts of a union must end in RETURN with the same column names.
+    fn checkSameColumns(self: *Parser, a: Index, b: Index) ParseError!void {
+        const a_items = self.returnItems(a) orelse return self.failUnion("each part of a UNION must end with RETURN");
+        const b_items = self.returnItems(b) orelse return self.failUnion("each part of a UNION must end with RETURN");
+        if (a_items.len != b_items.len) return self.failUnion("the parts of a UNION must return the same columns");
+        for (a_items, b_items) |x, y| {
+            const x_name = self.columnName(x);
+            const y_name = self.columnName(y);
+            const same = if (x_name != null and y_name != null)
+                std.mem.eql(u8, x_name.?, y_name.?)
+            else
+                x_name == null and y_name == null and self.ast.sameExpression(self.ast.nodeChildren(x)[0], self.ast.nodeChildren(y)[0]);
+            if (!same) return self.failUnion("the parts of a UNION must return the same columns");
+        }
+    }
+
+    fn failUnion(self: *Parser, comptime message: []const u8) ParseError {
+        self.fail(message, .{});
+        return error.UnexpectedToken;
+    }
+
+    /// The projection items of a query's final RETURN, if it ends with one.
+    fn returnItems(self: *Parser, query: Index) ?[]const Index {
+        const clauses = self.ast.nodeChildren(query);
+        const last = clauses[clauses.len - 1];
+        if (self.ast.kind(last) != .return_clause) return null;
+        for (self.ast.nodeChildren(last)) |child| {
+            if (self.ast.kind(child) == .projection) return self.ast.nodeChildren(child);
+        }
+        return null;
+    }
+
+    /// A column's name: its alias, or the variable it projects.
+    fn columnName(self: *Parser, item: Index) ?[]const u8 {
+        const alias = self.ast.data(item).text;
+        if (alias.len > 0) return alias;
+        const expression = self.ast.nodeChildren(item)[0];
+        if (self.ast.kind(expression) == .variable) return self.ast.data(expression).text;
+        return null;
+    }
+
     fn parseQuery(self: *Parser) ParseError!Index {
         var clauses = std.ArrayList(Index).empty;
         defer clauses.deinit(self.ast.allocator);
 
         var after_update = false;
         var last_reads = false; // the last clause reads (it cannot end the query)
-        while (self.peek().kind != .end_of_input) {
+        while (self.peek().kind != .end_of_input and !self.atKeyword("UNION")) {
             if (self.atKeyword("MATCH") or self.atKeyword("OPTIONAL") or self.atKeyword("UNWIND")) {
                 if (after_update) {
                     self.fail("a WITH is needed between an updating clause and {s}", .{describeToken(self.peek())});
@@ -173,7 +243,7 @@ pub const Parser = struct {
             } else if (self.atKeyword("RETURN")) {
                 _ = self.advance();
                 try clauses.append(self.ast.allocator, try self.parseReturnClause());
-                if (self.peek().kind != .end_of_input) {
+                if (self.peek().kind != .end_of_input and !self.atKeyword("UNION")) {
                     self.fail("RETURN must be the last clause, found {s} after it", .{describeToken(self.peek())});
                     return error.UnexpectedToken;
                 }
@@ -242,7 +312,7 @@ pub const Parser = struct {
         return self.ast.addNode(.unwind_clause, .{ .unwind = .{ .variable_name = variable_name } }, &.{expr});
     }
 
-    fn parseMatchBody(self: *Parser, kind: NodeKind) ParseError!Index {
+    pub fn parseMatchBody(self: *Parser, kind: NodeKind) ParseError!Index {
         var match_kids = std.ArrayList(Index).empty;
         defer match_kids.deinit(self.ast.allocator);
         while (true) {
@@ -252,15 +322,60 @@ pub const Parser = struct {
                 _ = self.advance();
             } else break;
         }
-        var where_expression: Index = undefined;
-        if (self.atKeyword("WHERE")) {
-            _ = self.advance();
-            where_expression = try expression_parser.parseExpression(self);
-        } else {
-            where_expression = try self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
-        }
-        try match_kids.append(self.ast.allocator, where_expression);
+        try match_kids.append(self.ast.allocator, try self.parseOptionalWhere());
         return self.ast.addNode(kind, .{ .none = {} }, match_kids.items);
+    }
+
+    /// `WHERE predicate`, or `true` when there is none.
+    pub fn parseOptionalWhere(self: *Parser) ParseError!Index {
+        if (!self.atKeyword("WHERE")) return self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
+        _ = self.advance();
+        const saved = self.in_where;
+        self.in_where = true;
+        defer self.in_where = saved;
+        return expression_parser.parseExpression(self);
+    }
+
+    /// If a node pattern `(name:Label {...})` starts `offset` tokens ahead,
+    /// the offset just past its `)`.
+    pub fn nodePatternEnd(self: *const Parser, offset: usize) ?usize {
+        var i = offset;
+        if (self.peekAhead(i).kind != .left_paren) return null;
+        i += 1;
+        if (self.peekAhead(i).kind == .identifier) i += 1;
+        while (self.peekAhead(i).kind == .colon and self.peekAhead(i + 1).kind == .identifier) i += 2;
+        if (self.peekAhead(i).kind == .left_brace) {
+            var depth: usize = 0;
+            while (true) : (i += 1) {
+                switch (self.peekAhead(i).kind) {
+                    .left_brace => depth += 1,
+                    .right_brace => {
+                        depth -= 1;
+                        if (depth == 0) break;
+                    },
+                    .end_of_input => return null,
+                    else => {},
+                }
+            }
+            i += 1;
+        }
+        if (self.peekAhead(i).kind != .right_paren) return null;
+        return i + 1;
+    }
+
+    /// True if a relationship pattern (`(a)-->`, `(a)<-`, `(a)-[`, `(a)--(`)
+    /// starts `offset` tokens ahead.
+    pub fn atRelationshipPattern(self: *const Parser, offset: usize) bool {
+        const end = self.nodePatternEnd(offset) orelse return false;
+        return switch (self.peekAhead(end).kind) {
+            .arrow_left => true,
+            .minus => switch (self.peekAhead(end + 1).kind) {
+                .left_bracket, .arrow_right => true,
+                .minus => self.peekAhead(end + 2).kind == .left_paren,
+                else => false,
+            },
+            else => false,
+        };
     }
 
     fn parseWithClause(self: *Parser) ParseError!Index {
@@ -291,12 +406,7 @@ pub const Parser = struct {
             const expr = try expression_parser.parseExpression(self);
             try children.append(self.ast.allocator, try self.ast.addNode(.limit, .{ .none = {} }, &.{expr}));
         }
-        if (self.atKeyword("WHERE")) {
-            _ = self.advance();
-            try children.append(self.ast.allocator, try expression_parser.parseExpression(self));
-        } else {
-            try children.append(self.ast.allocator, try self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{}));
-        }
+        try children.append(self.ast.allocator, try self.parseOptionalWhere());
 
         return self.ast.addNode(.with_clause, .{ .with_ = .{ .distinct = distinct } }, children.items);
     }
@@ -416,7 +526,7 @@ pub const Parser = struct {
 
     /// A chain `(a)-[r]->(b)...`, optionally named as a path: `p = (a)-->(b)`
     /// (the pattern's data.text is the path variable, empty if none).
-    fn parsePattern(self: *Parser) ParseError!Index {
+    pub fn parsePattern(self: *Parser) ParseError!Index {
         var children = std.ArrayList(Index).empty;
         defer children.deinit(self.ast.allocator);
 
@@ -587,7 +697,7 @@ pub const Parser = struct {
         return self.ast.addNode(.projection_item, .{ .text = alias }, &.{expr});
     }
 
-    fn parseReturnClause(self: *Parser) ParseError!Index {
+    pub fn parseReturnClause(self: *Parser) ParseError!Index {
         var distinct = false;
         if (self.atKeyword("DISTINCT")) {
             _ = self.advance();

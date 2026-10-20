@@ -17,6 +17,7 @@ const SequenceContext = sequence_algorithms.SequenceContext;
 
 const Executor = @import("Executor.zig");
 const expressions = @import("expressions.zig");
+const clauses = @import("clauses.zig");
 const aggregation = @import("aggregation.zig");
 const ExecutionError = Executor.ExecutionError;
 const Row = Executor.Row;
@@ -65,7 +66,7 @@ fn SortableContext(comptime T: type, comptime Inner: type) type {
 }
 
 /// RETURN rows are distinct by their projected values.
-const RowContext = struct {
+pub const RowContext = struct {
     pub fn hash(_: RowContext, row: Row) u64 {
         return SequenceContext(Value).hash(.{}, row.items);
     }
@@ -115,7 +116,11 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
         for (input) |*input_row| {
             var row = Bindings{ .entries = .empty };
             for (items) |item| try row.put(self.allocator, item.name, try expressions.evaluate(self, item.expr, input_row));
-            if (!try expressions.evaluateBool(self, info.where_expression, &row)) continue;
+            // The WHERE also sees the variables from before the WITH (the
+            // projected names win): `WITH x[i] AS v WHERE i > 0`.
+            var scope = try clauses.copyRow(self, input_row.*);
+            for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
+            if (!try expressions.evaluateBool(self, info.where_expression, &scope)) continue;
             const sort_key = if (info.order_by) |order_by| try orderByKey(self, order_by, &row) else &.{};
             try rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
         }
