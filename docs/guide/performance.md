@@ -70,6 +70,20 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   database, but it makes the first queries after a start slow. Fix if needed: an optional warm-up
   (read the file, or `madvise`), documented for latency-sensitive uses.
 
+## Full-text search
+
+- **A full-text query reads an entity's length for every posting it scores**, one B-tree search
+  each. Common words in a large index pay that for every entity that has them. Fix: keep the
+  length in the posting.
+- **Phrases check each candidate with one posting read per word.** Fix: walk the words' postings
+  together, in entity order.
+- **Fuzzy terms compare the query word with the index's whole vocabulary** (Levenshtein,
+  bounded). Fix: a Levenshtein automaton over the sorted vocabulary, or a trigram index.
+- **Writes to indexed entities re-analyze the changed property** and read and write one posting
+  per distinct term of its old and new text. Large texts updated often pay for every word.
+- **Scoring is per index, not per property.** A field clause (`title:x`) uses the property's length
+  against the whole index's average length.
+
 ## Python bindings
 
 - **A returned node costs about 1 µs in Python** (its labels tuple and properties dict, with a new

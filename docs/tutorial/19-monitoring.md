@@ -170,18 +170,4 @@ a consistent snapshot, and its few writes take their turn with the controllers' 
 What happens with an alarm — a page, a siren, a message to the security desk — is up to the
 program: `check` knows exactly which alarms are new (raised in this run) and which cleared.
 
-## What you have built
-
-Over nineteen steps, Helix Biolabs got:
-
-- a graph of its people, teams, buildings, rooms and doors ([1](01-getting-started)–[3](03-relationships));
-- the queries to explore it, report on it and keep it current ([4](04-filtering)–[10](10-optional));
-- access rules as data — team grants with hours, management reach, personal exceptions, bans,
-  training — and the one query that applies them all ([11](11-hierarchies)–[14](14-time));
-- an event log at volume, used safely from many threads and processes ([15](15-loading)–[17](17-performance));
-- a door controller that decides, records and tracks in one transaction ([18](18-door-controller)),
-  and a monitor for the rules no door can enforce.
-
-From here, the [Cypher reference](../guide/cypher) lists everything the language can do, the
-[Python reference](../guide/python) every method, and the technical guides explain how acmedb
-works inside.
+Next, the lab's safety manual, searchable by what it says: [full-text search](20-searching).

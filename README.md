@@ -75,7 +75,7 @@ underneath.
 
 Read the docs at [`docs/`](docs/) — two tracks:
 
-- **Using acmedb** — a step-by-step [tutorial](docs/tutorial/01-getting-started.md) (nineteen
+- **Using acmedb** — a step-by-step [tutorial](docs/tutorial/01-getting-started.md) (twenty
   steps building the access-control system of a biomedical lab, every example run by the tests)
   plus references for the
   [openCypher subset](docs/guide/cypher.md), the [C ABI](docs/guide/c-api.md), and

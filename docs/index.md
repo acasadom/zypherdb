@@ -47,6 +47,7 @@ tutorial/16-concurrency
 tutorial/17-performance
 tutorial/18-door-controller
 tutorial/19-monitoring
+tutorial/20-searching
 ```
 
 ## Examples

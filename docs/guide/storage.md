@@ -143,6 +143,37 @@ A change to how keys or values are written raises the version, and adds its migr
 - **Edge-type counter (`t`).** A per-type cardinality, bumped by `addEdge` and decremented on
   delete, used by the planner to cap a node's cost estimate by the rarest incident edge type.
 
+## Full-text indexes
+
+A full-text index's definition lives under `i | name`: whether it indexes nodes or
+relationships, its analyzer, its labels or types, and its properties. `!schema` counts the changes
+to the definitions. Every mutation asks for it, to know whether any index must follow the change,
+so inside a write transaction it is read once (`KeyValueStore.write_transaction_memo`): only that
+transaction could change it, and when it does it updates the memo too. A database without
+full-text indexes pays one read per write transaction.
+
+The postings live in four key spaces of their own, each after a marker byte, the index's name and a
+`0x00`. An entity is a node's id (8 bytes) or a relationship's `src | dst | type`.
+
+| Key | Value |
+| --- | --- |
+| `w \| name \| term \| 0x00 \| entity` | the term's occurrences in the entity, per property: its ordinal (u8), a count (u16), the positions (u32 each) |
+| `W \| name \| entity` | the entity's length in terms, per property (u32 each) |
+| `v \| name \| term` | how many entities have the term (u64): BM25's document frequency, and the vocabulary that prefix and fuzzy queries expand over |
+| `V \| name` | the index's entities and terms (u64 each): BM25's N and average length |
+
+Each property is analyzed on its own. A change to one property touches only the postings of the
+terms of its old and new text, and their counts. The changes come from three places:
+
+- **Nodes.** The graph's mutators (`setProperty`, `removeProperty`, `addLabel`, `removeLabel`,
+  `deleteNode`) hand `fulltext_postings.nodeChanged` the record before and after. The old record
+  is copied first, since a write may move the page its view points into. The node enters or
+  leaves an index as its labels do.
+- **Relationships.** `setEdgeProperty`, `removeEdgeProperty` and `deleteEdge` report each
+  property's old and new value.
+- **Schema commands.** `CREATE FULLTEXT INDEX` indexes what exists (`populate`), and `DROP INDEX`
+  removes every key of the index (`clear`).
+
 ## The id counter
 
 `allocateNodeId` does a read-modify-write on the `!` key (8-byte counter): read, increment, write.

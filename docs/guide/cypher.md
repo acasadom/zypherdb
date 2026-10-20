@@ -28,6 +28,7 @@ its own rows on; the first clause receives one empty row.
 | `MATCH pattern, … [WHERE condition]` | extends each row with every match of the patterns that passes the condition; comma-separated patterns are matched together |
 | `OPTIONAL MATCH …` | like `MATCH`, but keeps a row that has no match, with its new variables set to `null` (an outer join) |
 | `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
+| `CALL procedure(arguments) [YIELD column [AS name], … \| *] [WHERE condition]` | runs a [procedure](#procedures) for each row; each row it returns extends the row with the yielded columns |
 | `WITH items [ORDER BY …] [SKIP n] [LIMIT n] [WHERE condition]` | projects the rows like `RETURN` (aggregating, sorting, paging) and continues; only the projected names remain |
 | `CREATE pattern, …` | creates the nodes and relationships of the pattern; a node already bound is reused as it is |
 | `MERGE pattern [ON CREATE SET …] [ON MATCH SET …]` | matches the whole pattern, and each match becomes a row (with `ON MATCH SET` applied); if nothing matches, creates the whole pattern (with `ON CREATE SET` applied) |
@@ -37,10 +38,13 @@ its own rows on; the first clause receives one empty row.
 | `RETURN [DISTINCT] items [ORDER BY …] [SKIP n] [LIMIT n]` | produces the result of the query |
 | `query UNION query`, `query UNION ALL query` | combines the rows of both parts (`UNION` drops duplicates, `UNION ALL` keeps them); both parts return the same column names |
 
-- Clauses chain in any number and order, with three rules:
-  - after a writing clause, a `WITH` must come before reading again (`MATCH`, `UNWIND`);
+- Clauses chain in any number and order, with these rules:
+  - after a writing clause, a `WITH` must come before reading again (`MATCH`, `UNWIND`, `CALL`);
   - `RETURN` comes last;
-  - a query ends with `RETURN` or with a writing clause.
+  - a query ends with `RETURN` or with a writing clause;
+  - a `CALL` without `YIELD` (or with `YIELD *`) ends the query, and its rows are the result. So
+    does a `CALL … YIELD` that is the whole query. Inside a longer query, a `CALL` names the
+    columns it uses with `YIELD`.
 - The `WHERE` of a `WITH` filters the projected rows before `DISTINCT`, `ORDER BY`, `SKIP` and
   `LIMIT` apply. When the `WITH` does not aggregate, its `WHERE` can also use the variables from
   before the `WITH`.
@@ -269,11 +273,104 @@ The **maps** a constructor accepts:
 Precision is the nanosecond, and years range over ±999,999,999. The default time zone is UTC. Named
 zones come from the system's time zone database.
 
+## Procedures
+
+| Procedure | Yields | What it returns |
+| --- | --- | --- |
+| `db.labels()` | `label` | the labels some node carries |
+| `db.relationshipTypes()` | `relationshipType` | the types some relationship has |
+| `db.index.fulltext.queryNodes(index, query[, options])` | `node`, `score` | the nodes of a [full-text index](#full-text-search) that match `query`, best first |
+| `db.index.fulltext.queryRelationships(index, query[, options])` | `relationship`, `score` | the same, for an index of relationships |
+| `db.index.fulltext.listAvailableAnalyzers()` | `analyzer`, `description` | the full-text analyzers |
+
+Procedure names are case-sensitive, as in Neo4j. The `options` of a full-text query are a map with
+`skip` and `limit`, non-negative integers.
+
+## Schema commands
+
+Every property is indexed for equality and ranges without being asked. The one kind of index a
+command creates is a full-text index. Each schema command is a statement of its own:
+
+```text
+CREATE FULLTEXT INDEX name [IF NOT EXISTS]
+  FOR (n:Label1|Label2) ON EACH [n.property1, n.property2]
+  [OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}]
+
+CREATE FULLTEXT INDEX name [IF NOT EXISTS]
+  FOR ()-[r:TYPE1|TYPE2]-() ON EACH [r.property]
+  [OPTIONS {...}]
+
+DROP INDEX name [IF EXISTS]
+
+SHOW [FULLTEXT] INDEXES
+```
+
+- A node index covers the nodes with any of the labels. A relationship index covers the
+  relationships of any of the types.
+- `CREATE` indexes what the graph holds already. From then on, every change keeps the index
+  current, in the transaction that makes it.
+- `IF NOT EXISTS` makes `CREATE` do nothing when the name is taken. Otherwise a taken name is an
+  error. `IF EXISTS` does the same for `DROP`.
+- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT`), `entityType` (`NODE` or
+  `RELATIONSHIP`), `labelsOrTypes`, `properties`, `options`.
+- `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since acmedb's
+  indexes are always current.
+
+## Full-text search
+
+A full-text index keeps the words of a node's or relationship's text properties. A property is
+indexed when it holds a string or a list of strings; other values are skipped.
+
+**Analyzers** decide what the words are:
+
+| Analyzer | Words |
+| --- | --- |
+| `standard` (the default) | split at anything not a letter, digit or mark; case-folded; accents and compatibility forms removed (`Contención` → `contencion`, `ﬁ` → `fi`, `ß` → `ss`) |
+| `spanish` | as `standard`, without Spanish stop words (`de`, `la`, `los`…), each word reduced to its stem (`contenciones` → `contencion`) |
+| `english` | as `standard`, without English stop words (`the`, `of`…), each word reduced to its stem (`running` → `run`) |
+
+- An apostrophe between letters stays inside a word (`O'Neill`).
+- The stemmers are Snowball's: Porter2 for English, and Snowball's Spanish algorithm.
+- A query is analyzed with its index's analyzer.
+
+**Query syntax** is the part of Lucene's that Neo4j accepts:
+
+| Query | Matches |
+| --- | --- |
+| `contención biológica` | either word: clauses are optional by default |
+| `"nivel 3"` | the phrase, its words in a row in one property (a stop word in it leaves its gap) |
+| `conten*` | words that start with `conten` |
+| `contencion~`, `contencion~1` | words up to 2 (or 1) edits away; compared stem to stem in a language index |
+| `+bsl -animal` | `bsl` required, `animal` excluded |
+| `a AND b`, `a OR b`, `NOT a` (also `&&`, `\|\|`, `!`) | the same with words |
+| `title:contención` | in the property `title` only |
+| `(a OR b) AND c` | a group |
+| `contención^2` | the clause's score doubled |
+| `\:`, `\"`, `\(`… | a special character as itself |
+
+- Clauses combine as in Lucene's boolean queries. When the query has required clauses, a match
+  has all of them, and the optional ones only add to its score. Otherwise a match has at least
+  one optional clause. An excluded clause removes what it matches.
+- A word the analyzer splits in two (`nivel-3`) is a phrase.
+- `?` wildcards and wildcards inside a word are not supported. A query that does not parse fails
+  with a message saying why.
+
+**Scores** are BM25, with Lucene's parameters (k1 = 1.2, b = 0.75):
+
+- a word counts more the rarer it is in the index, and the more often it occurs in the entity;
+- a short entity scores higher than a long one with the same occurrences;
+- a phrase scores as a word whose idf is the sum of its words';
+- a prefix or fuzzy clause scores an entity by its best expansion, and a fuzzy one loses a share
+  for each edit.
+
+Results come best first.
+
 ## Not supported
 
 acmedb does not implement these parts of openCypher (and of common Neo4j extensions):
 
-- `CALL` (procedures and subqueries), `LOAD CSV` and `FOREACH`;
+- `CALL { … }` subqueries and procedures other than those [listed](#procedures); `LOAD CSV` and
+  `FOREACH`;
 - `shortestPath` and `allShortestPaths`;
 - label tests as expressions (`WHERE n:Label`); use `'Label' IN labels(n)` instead;
 - `RETURN *` and `WITH *`;
@@ -283,8 +380,8 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
 - `percentileCont` and `percentileDisc`;
 - the function `exists(n.property)`; use `n.property IS NOT NULL` instead;
 - the long sort keywords `ASCENDING` and `DESCENDING`; use `ASC` and `DESC` instead;
-- schema commands (`CREATE INDEX`, constraints), because every property is already indexed for
-  equality;
+- schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
+  already indexed for equality and ranges;
 - parallel relationships of the same type between the same two nodes.
 
 The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`

@@ -196,6 +196,8 @@ for clause in query:
   through the stages one at a time:
   - `MATCH` hands each match on as `matchFound` finds it, without copying it;
   - `UNWIND` binds each element in turn;
+  - `CALL` runs its procedure for the row, and each row the procedure yields goes on (or, when
+    the `CALL` ends the query, becomes a result row);
   - a `WITH` that only projects and filters passes each row on;
   - `RETURN` accumulates or projects each row.
 

@@ -275,6 +275,8 @@ test "Spanish and English indexes match a word's other forms and skip stop words
         .{ "protocolos", "\"normas de contención\"", &.{1} },
         .{ "protocolos", "\"normas contención\"", &.{} },
         .{ "protocols", "\"running the containment\"", &.{3} },
+        // A fuzzy term is stemmed too, so a typo compares stem to stem.
+        .{ "protocolos", "contensión~1", &.{1} },
     };
     for (cases) |case| {
         var expected = std.ArrayList([]const Value).empty;

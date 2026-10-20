@@ -129,9 +129,14 @@ const Searcher = struct {
 
     /// Every term of the index's vocabulary that `text` is a prefix of (no
     /// `max_edits`), or within `max_edits` edits of: each entity keeps its
-    /// best expansion's score.
+    /// best expansion's score. A prefix is only folded (a part of a word has
+    /// no stem); a fuzzy term goes through the index's analyzer, so a typo is
+    /// compared stem to stem.
     fn expansions(self: *Searcher, text: []const u8, field: ?u8, max_edits: ?u8) Error!Scores {
-        const normalized = try analyzer.normalize(self.arena, text);
+        const normalized = if (max_edits == null) try analyzer.normalize(self.arena, text) else fuzzy: {
+            const terms = try analyzer.analyze(self.arena, self.analysis, text);
+            break :fuzzy if (terms.len > 0) terms[0].text else "";
+        };
         if (normalized.len == 0) return .empty;
         const vocabulary_prefix = try postings.termKey(self.arena, self.definition.name, if (max_edits == null) normalized else "");
         var candidates = std.ArrayList(struct { term: []const u8, weight: f64 }).empty;

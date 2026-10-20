@@ -132,6 +132,22 @@ parseExpression → parseOr → parseXor → parseAnd → parseNot
 Functions are not resolved here: the parser stores the name as written, and
 `functions.checkCalls` resolves it before the query runs.
 
+### CALL and schema commands
+
+`call_parser.zig` reads `CALL name.space.procedure(arguments) [YIELD ...] [WHERE ...]`:
+
+- the dotted name;
+- the arguments, as expressions (no parentheses: no arguments);
+- the yield items, each a column and an optional alias, or `*`;
+- the `WHERE`, as in `MATCH` (a `true` literal when there is none).
+
+`parseQuery` lets a `CALL` without `YIELD`, or a `CALL` that is the whole query, end it.
+
+Schema commands are statements of their own. `parse` checks for one first (`schema_parser.zig`:
+`CREATE FULLTEXT INDEX`, `DROP INDEX`, `SHOW [FULLTEXT] INDEXES`) and parses no query after it.
+The labels or types and properties of an index are kept in the node's data; the `OPTIONS` map is
+its one child, evaluated by the executor.
+
 ## The AST
 
 The AST (`src/query/ast.zig`) is an **arena**: a flat `std.ArrayList` of `Node`s, plus a separate
@@ -187,6 +203,14 @@ Before the executor touches storage, `Executor.run` passes the AST through two s
   - a literal operand of the wrong type (`1 IN true`, `NOT {}`);
   - an aggregate inside a comprehension.
 - **`functions.checkCalls`** rejects an unknown function or a wrong number of arguments.
+- **For a CALL**, `semantics.checkCall` looks the procedure up in `procedures.zig` and rejects:
+  - an unknown name;
+  - a wrong number of arguments;
+  - a yield of a column the procedure does not have;
+  - a CALL without YIELD inside a longer query.
+
+  It declares each yielded variable with its column's kind, so `YIELD node` is a node that a
+  later pattern can use.
 
 Both checks report through the same `Diagnostic` as the parser. They depend only on the text, so
 they fail on an empty database too, as the openCypher TCK requires.

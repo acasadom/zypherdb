@@ -87,13 +87,21 @@ flowchart TB
 | `src/storage/key_encoding.zig` | The byte layout of every key (markers, node ids, edge keys, index keys). The only place that knows the key layout. |
 | `src/storage/value_encoding.zig` | How a property value is stored, and written in index keys. |
 | `src/storage/node_record.zig` | The node record: a node's labels and properties in one stored value, read with one B-tree search. |
+| `src/storage/fulltext.zig` | Full-text index definitions (`i \| name`) and the schema version that says when they changed. |
+| `src/storage/fulltext_postings.zig` | Full-text postings, entity lengths, term counts and index totals, and how graph mutations keep them current. |
+| `src/storage/fulltext_search.zig` | A full-text query against the postings: boolean clauses, phrases, prefix and fuzzy expansions, BM25. |
+| `src/text/` | Text for full-text search: Unicode tables generated from the Unicode Character Database (`unicode_tables.zig`, by `tools/unicode_tables.py`), the analyzers (`analyzer.zig`), stop words, the Snowball stemmers (`snowball.zig`, `stem_english.zig`, `stem_spanish.zig`) and the query syntax (`query.zig`). |
 | `src/storage/graph.zig` | `Graph`: nodes, labels, typed edges, properties and their indexes, built on the key encoding. Each operation documents its cost. |
 | `src/query/lexer.zig` | `tokenize`: query text to tokens (UTF-8 and backtick-quoted identifiers). |
 | `src/query/parser.zig` | The `Parser` and the clause/pattern grammar. |
 | `src/query/expression_parser.zig` | The expression grammar, by precedence. |
 | `src/query/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, `addNode`/`nodeChildren`/`intern`, `sameExpression`. |
+| `src/query/call_parser.zig`, `src/query/schema_parser.zig` | The CALL clause, and the schema commands (`CREATE FULLTEXT INDEX`, `DROP INDEX`, `SHOW INDEXES`). |
+| `src/query/procedures.zig` | The procedures' signatures (arguments, columns and their kinds), shared by the semantic checks and the executor. |
 | `src/query/semantics.zig` | Static checks before a query runs: each variable is used as one kind (node, relationship or value), literal operands have types their operators accept, no aggregates inside comprehensions. |
 | `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, then the clauses as a pipeline of rows. |
+| `src/execution/procedures.zig` | The procedures CALL runs, and how their rows extend the query's (YIELD, WHERE). |
+| `src/execution/schema.zig` | The schema commands, each a statement of its own. |
 | `src/execution/pipeline.zig` | Streaming execution of read-only queries: rows go through the clauses one at a time, and a `LIMIT` stops the work early. |
 | `src/execution/clauses.zig` | The pipeline's MATCH / OPTIONAL MATCH, UNWIND and write clauses: rows in, rows out. |
 | `src/execution/planner.zig` | Pattern planning: the chain of `PatternNode`s/`PatternEdge`s, predicate pushdown, anchor choice, `PlanStep`s. |
