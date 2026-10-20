@@ -124,9 +124,7 @@ const Searcher = struct {
         const terms = try analyzer.analyze(self.arena, self.analysis, text);
         if (terms.len == 0) return .empty;
         if (terms.len == 1) return self.termScores(terms[0].text, field, 1);
-        const texts = try self.arena.alloc([]const u8, terms.len);
-        for (texts, terms) |*t, term| t.* = term.text;
-        return self.phrase(texts, field);
+        return self.phrase(terms, field);
     }
 
     /// Every term of the index's vocabulary that `text` is a prefix of (no
@@ -190,19 +188,20 @@ const Searcher = struct {
         return scores;
     }
 
-    /// The entities with `terms` one after another, in one property.
-    fn phrase(self: *Searcher, terms: []const []const u8, field: ?u8) Error!Scores {
+    /// The entities with `terms` at their relative positions (one after
+    /// another, or with the gaps stop words left), in one property.
+    fn phrase(self: *Searcher, terms: []const analyzer.Term, field: ?u8) Error!Scores {
         var scores = Scores.empty;
         var idf: f64 = 0;
         for (terms) |t| {
-            const term_idf = try self.inverseFrequency(t);
+            const term_idf = try self.inverseFrequency(t.text);
             if (term_idf == 0) return scores; // a term nothing has
             idf += term_idf;
         }
         // Candidates: the entities with the first term; each is checked against the others.
         var candidates = std.ArrayList([]const u8).empty;
         {
-            const prefix = try postings.postingPrefix(self.arena, self.definition.name, terms[0]);
+            const prefix = try postings.postingPrefix(self.arena, self.definition.name, terms[0].text);
             var keys = try self.graph.store.scanPrefix(prefix);
             defer keys.deinit();
             while (try keys.next()) |entry| try candidates.append(self.arena, try self.arena.dupe(u8, entry.key[prefix.len..]));
@@ -210,11 +209,13 @@ const Searcher = struct {
         candidate: for (candidates.items) |entity| {
             const sections = try self.arena.alloc([]const u8, terms.len);
             for (terms, sections) |t, *section| {
-                const raw = (try self.graph.store.get(try postings.postingKey(self.arena, self.definition.name, t, entity))) orelse continue :candidate;
+                const raw = (try self.graph.store.get(try postings.postingKey(self.arena, self.definition.name, t.text, entity))) orelse continue :candidate;
                 defer self.graph.store.allocator.free(raw);
                 section.* = try self.arena.dupe(u8, raw);
             }
-            const frequency = phraseOccurrences(sections, field);
+            const offsets = try self.arena.alloc(u32, terms.len);
+            for (offsets, terms) |*offset, t| offset.* = t.position - terms[0].position;
+            const frequency = phraseOccurrences(sections, offsets, field);
             if (frequency == 0) continue;
             try scores.put(self.arena, entity, try self.bm25(idf, frequency, entity, field));
         }
@@ -263,7 +264,7 @@ fn add(arena: Allocator, total: *Scores, more: Scores) Allocator.Error!void {
 
 /// How many times the phrase occurs: the property sections (one posting per
 /// term, in phrase order) where the terms sit at consecutive positions.
-fn phraseOccurrences(term_postings: []const []const u8, field: ?u8) usize {
+fn phraseOccurrences(term_postings: []const []const u8, offsets: []const u32, field: ?u8) usize {
     var occurrences: usize = 0;
     var first = postings.SectionReader{ .bytes = term_postings[0] };
     while (first.next()) |section| {
@@ -271,8 +272,8 @@ fn phraseOccurrences(term_postings: []const []const u8, field: ?u8) usize {
         var i: usize = 0;
         start: while (i + 4 <= section.positions_bytes.len) : (i += 4) {
             const start = std.mem.readInt(u32, section.positions_bytes[i..][0..4], .big);
-            for (term_postings[1..], 1..) |posting, offset| {
-                if (!hasPosition(posting, section.ordinal, start + @as(u32, @intCast(offset)))) continue :start;
+            for (term_postings[1..], offsets[1..]) |posting, offset| {
+                if (!hasPosition(posting, section.ordinal, start + offset)) continue :start;
             }
             occurrences += 1;
         }

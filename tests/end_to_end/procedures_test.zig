@@ -241,3 +241,51 @@ test "full-text query syntax: phrases, prefixes, fuzzy terms, boolean operators,
     try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', '\"open') YIELD node RETURN node", error.InvalidExpression);
     try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'author:x') YIELD node RETURN node", error.InvalidExpression);
 }
+
+test "Spanish and English indexes match a word's other forms and skip stop words" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g,
+        \\CREATE (:Protocolo {id: 1, texto: 'Normas de contención para los laboratorios'}),
+        \\       (:Protocolo {id: 2, texto: 'El laboratorio de genómica'}),
+        \\       (:Protocol {id: 3, text: 'Running the containment checks'}),
+        \\       (:Protocol {id: 4, text: 'A checked run'})
+    , &.{});
+    try expectQuery(&ast, &g, "CREATE FULLTEXT INDEX protocolos FOR (p:Protocolo) ON EACH [p.texto] OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}", &.{});
+    try expectQuery(&ast, &g, "CREATE FULLTEXT INDEX protocols FOR (p:Protocol) ON EACH [p.text] OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}", &.{});
+
+    const Case = struct { []const u8, []const u8, []const i64 };
+    const cases = [_]Case{
+        // Other forms of a word share its stem.
+        .{ "protocolos", "contenciones", &.{1} },
+        .{ "protocolos", "laboratorio", &.{ 1, 2 } },
+        .{ "protocols", "run", &.{ 3, 4 } },
+        .{ "protocols", "checking", &.{ 3, 4 } },
+        // Stop words match nothing.
+        .{ "protocolos", "de los", &.{} },
+        .{ "protocols", "the", &.{} },
+        // A phrase keeps the gap its stop word left.
+        .{ "protocolos", "\"normas de contención\"", &.{1} },
+        .{ "protocolos", "\"normas contención\"", &.{} },
+        .{ "protocols", "\"running the containment\"", &.{3} },
+    };
+    for (cases) |case| {
+        var expected = std.ArrayList([]const Value).empty;
+        defer {
+            for (expected.items) |row| testing.allocator.free(row);
+            expected.deinit(testing.allocator);
+        }
+        for (case[2]) |id| try expected.append(testing.allocator, try testing.allocator.dupe(Value, &.{.{ .int = id }}));
+        support.expectQueryWithParameters(&ast, &g, "CALL db.index.fulltext.queryNodes($index, $q) YIELD node RETURN node.id", &.{ .{ "index", string(case[0]) }, .{ "q", string(case[1]) } }, expected.items) catch |err| {
+            std.debug.print("{s}: {s}\n", .{ case[0], case[1] });
+            return err;
+        };
+    }
+}

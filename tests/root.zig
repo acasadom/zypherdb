@@ -7,6 +7,7 @@ test {
     _ = @import("query/ast_test.zig");
     _ = @import("text/analyzer_test.zig");
     _ = @import("text/query_test.zig");
+    _ = @import("text/stemmer_test.zig");
     _ = @import("query/parser_test.zig");
     _ = @import("end_to_end/matching_test.zig");
     _ = @import("end_to_end/writing_test.zig");

@@ -6,7 +6,7 @@ UCD_DIR holds UnicodeData.txt and CaseFolding.txt of one Unicode version
 (https://www.unicode.org/Public/<version>/ucd/). The tables are data under
 the Unicode License v3 (https://www.unicode.org/license.txt).
 
-Two tables, for full-text search:
+Three tables, for full-text search:
 
 - word_ranges: the code points that make up words: letters (L*), numbers
   (N*) and marks (M*), as sorted inclusive ranges.
@@ -14,6 +14,8 @@ Two tables, for full-text search:
   full case folding (C + F), compatibility decomposition (NFKD), marks
   removed, and case folding again. So "Contención" and "CONTENCION" fold
   alike, "Straße" folds to "strasse", "ﬁ" to "fi". A mark folds to nothing.
+- case_fold: full case folding alone (C + F), accents kept: what stemmers
+  work on, since their rules know accented letters.
 """
 
 import sys
@@ -120,5 +122,25 @@ out.write("};\n\n")
 out.write("pub const fold_data = [_]u21{\n")
 for i in range(0, len(data), 12):
     out.write("    " + " ".join(f"0x{c:X}," for c in data[i:i + 12]) + "\n")
+out.write("};\n\n")
+cases = sorted((c, m) for c, m in case_folding.items() if m != [c])
+out.write("/// Full case folding (C + F), accents kept: the form of `case_keys[i]` is\n")
+out.write("/// `case_data[case_starts[i]..case_starts[i + 1]]`.\n")
+out.write("pub const case_keys = [_]u21{\n")
+for i in range(0, len(cases), 12):
+    out.write("    " + " ".join(f"0x{c:X}," for c, _ in cases[i:i + 12]) + "\n")
+out.write("};\n\n")
+case_starts = [0]
+case_data = []
+for _, mapping in cases:
+    case_data.extend(mapping)
+    case_starts.append(len(case_data))
+out.write("pub const case_starts = [_]u32{\n")
+for i in range(0, len(case_starts), 16):
+    out.write("    " + " ".join(f"{s}," for s in case_starts[i:i + 16]) + "\n")
+out.write("};\n\n")
+out.write("pub const case_data = [_]u21{\n")
+for i in range(0, len(case_data), 12):
+    out.write("    " + " ".join(f"0x{c:X}," for c in case_data[i:i + 12]) + "\n")
 out.write("};\n")
 print(f"{len(ranges)} word ranges, {len(folds)} folds, {len(data)} folded code points", file=sys.stderr)

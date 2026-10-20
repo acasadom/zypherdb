@@ -29,6 +29,17 @@ pub fn searchForm(code: u21) ?[]const u21 {
     return tables.fold_data[tables.fold_starts[position]..tables.fold_starts[position + 1]];
 }
 
+/// The full case folding of `code` (accents kept): itself (null) or other
+/// code points ("ß" folds to "ss").
+pub fn caseFold(code: u21) ?[]const u21 {
+    const position = std.sort.binarySearch(u21, &tables.case_keys, code, struct {
+        fn order(key: u21, item: u21) std.math.Order {
+            return std.math.order(key, item);
+        }
+    }.order) orelse return null;
+    return tables.case_data[tables.case_starts[position]..tables.case_starts[position + 1]];
+}
+
 /// Iterates the code points of UTF-8 text; an invalid byte is U+FFFD.
 pub const CodePoints = struct {
     bytes: []const u8,

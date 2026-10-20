@@ -38,6 +38,8 @@ pub const text = struct {
     pub const analyzer = @import("text/analyzer.zig");
     pub const unicode = @import("text/unicode.zig");
     pub const query = @import("text/query.zig");
+    pub const stem_english = @import("text/stem_english.zig");
+    pub const stem_spanish = @import("text/stem_spanish.zig");
 };
 
 pub const ast = @import("query/ast.zig");
