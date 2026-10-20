@@ -34,8 +34,8 @@ zig build         # build the static + shared libraries into zig-out/
 ```
 
 The LMDB C sources under `vendor/lmdb/` are vendored and compiled by the build. `zig build` also
-produces `libacmedb.dylib` (`.so` on Linux) — the shared library that exposes the C ABI for
-embedding.
+produces `libacmedb.dylib` (`.so` on Linux) and the header `zig-out/include/acmedb.h`, for embedding
+acmedb from C, C++ or any language with a C FFI (see `docs/guide/c-api.md`).
 
 ## Quickstart (Python)
 
