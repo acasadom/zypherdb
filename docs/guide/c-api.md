@@ -130,6 +130,7 @@ straight from storage; the buffer belongs to the context until the next export o
 The `examples/demo.py` file is the working reference. In short:
 
 ```python
+# docs-test: skip
 import ctypes, tempfile
 
 lib = ctypes.CDLL("zig-out/lib/libacmedb.dylib")   # or libacmedb.so
