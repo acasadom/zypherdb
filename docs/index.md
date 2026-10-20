@@ -2,32 +2,54 @@
 
 *An embedded graph database in Zig, speaking openCypher, on LMDB.*
 
-acmedb is a small, embeddable graph database: link it into your process (or load the shared
-library from Python), write data and run queries in a subset of **openCypher**, over an
-**index-free adjacency** graph stored in **LMDB**. No server, no configuration, one binary
-toolchain.
+acmedb is a graph database you embed in your program: no server, no configuration. You store
+nodes and relationships, and you query them with **openCypher**, the language of graph databases —
+from Python (`pip install acmedb`), or from any language through its C ABI. Under the hood it is a
+compact engine written in Zig, with storage on **LMDB**: transactions, crash safety, readers that
+never wait.
 
-The documentation has two tracks, like the codebase has two audiences:
+## Is a graph database the right tool?
 
-- the **tutorial and references** — how to *use* the database: the language, the C ABI, Python;
-- the **technical guides** — how it *works inside*, for reading and maintaining the code: the
-  design, the storage encoding, the parser, and the planner/executor.
+Use one when the questions are about **connections**: who reports to whom however deep, which
+rules apply to this person through their teams, what is reachable from here, what links these
+two things. In a relational database those are recursive joins; in a graph they are a pattern.
+If your data is a set of independent records queried by their fields, a relational or document
+store is the simpler choice.
 
-## Using it
+## The tutorial, step by step
+
+The tutorial builds one application from an empty directory: the access-control system of a
+biomedical research lab, where who may enter which room, when, with which training — and who is
+where right now — is not optional. Each step adds one capability and grows the same database.
+Every Python block on every page is run by the test suite, so you can copy, paste and run it as
+it is.
 
 ```{toctree}
 :maxdepth: 1
-:caption: Using acmedb
+:caption: Tutorial
 
 tutorial/01-getting-started
-tutorial/02-matching
-tutorial/03-writing
-tutorial/04-returning
-tutorial/05-aggregating
-tutorial/06-pipelines
-tutorial/07-optional-nulls
-tutorial/08-lists-strings
+tutorial/02-nodes
+tutorial/03-relationships
+tutorial/04-filtering
+tutorial/05-parameters
+tutorial/06-returning
+tutorial/07-aggregating
+tutorial/08-updating
+tutorial/09-pipelines
+tutorial/10-optional
+tutorial/11-hierarchies
+tutorial/12-exists
+tutorial/13-documents
+tutorial/14-time
+tutorial/15-loading
+tutorial/16-concurrency
+tutorial/17-performance
+tutorial/18-door-controller
+tutorial/19-monitoring
 ```
+
+## References
 
 ```{toctree}
 :maxdepth: 1
@@ -39,6 +61,9 @@ guide/python
 ```
 
 ## How it works inside
+
+For reading and changing the engine: its design, how data is stored, how a query is parsed,
+planned and run, and how it is tested.
 
 ```{toctree}
 :maxdepth: 1

@@ -29,17 +29,21 @@ others; `SET n = {…}` replaces all of them.
 
 ```python
 db.query("MATCH (r:Room {name: 'BSL-3 Lab'}) SET r += {min_occupancy: 2, max_occupancy: 4}")
-db.query("MATCH (r:Room {name: 'Vivarium Control'}) SET r += {min_occupancy: 1}")
-print(db.query("MATCH (r:Room) WHERE r.min_occupancy IS NOT NULL RETURN r.name, r.min_occupancy, r.max_occupancy ORDER BY r.name"))
+db.query("MATCH (r:Room {name: 'Vivarium Control'}) SET r.staffed = true")
+print(db.query("""
+    MATCH (r:Room) WHERE r.min_occupancy IS NOT NULL OR r.staffed
+    RETURN r.name, r.min_occupancy, r.max_occupancy, r.staffed ORDER BY r.name
+"""))
 ```
 
 ```text
-[['BSL-3 Lab', 2, 4], ['Vivarium Control', 1, None]]
+[['BSL-3 Lab', 2, 4, None], ['Vivarium Control', None, None, True]]
 ```
 
-These are two of the lab's hard rules, now data: nobody works alone in the BSL-3 lab, and never
-more than four people at once; the vivarium's control room must never be empty, for the animals'
-sake. [Step 19](19-monitoring) checks them.
+These are three of the lab's hard rules, now data: nobody works alone in the BSL-3 lab — when it
+is in use, at least two people are in it — and never more than four at once; and the vivarium's
+control room is *staffed*: it must never be empty, for the animals' sake. [Step
+19](19-monitoring) checks them.
 
 ## Labels: SET and REMOVE
 
