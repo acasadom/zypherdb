@@ -48,5 +48,6 @@ guide/architecture
 guide/storage
 guide/language
 guide/planning-execution
+guide/performance
 guide/contributing
 ```

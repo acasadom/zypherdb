@@ -38,3 +38,24 @@ neighbour's properties (the access check, 266 → 29 µs). Durability modes: `fu
 
 Where the time goes now: random lookups of node records (checking the label of each node an
 expansion reaches), and edge properties, still one key each.
+
+## The Python bindings (ctypes and JSON)
+
+`python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read
+first so it is in the OS page cache (as in a process that has been running a while; with
+`--cold` the first reads of each page go to disk, about 200 µs per query until the pages a
+query needs are cached). Medians:
+
+| Query | Total | Parameters (`json.dumps`) | Native call (engine + JSON out) | Copy | Decode (`json.loads`) | Python's share |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| card lookup | 13.2 µs | 2.5 µs | 7.3 µs | 1.0 µs | 2.5 µs | 45% |
+| person's groups (1 hop) | 15.8 µs | 2.3 µs | 10.0 µs | 1.0 µs | 2.5 µs | 37% |
+| colleagues | 80 µs | 2.5 µs | 73 µs | 1.2 µs | 2.5 µs | 8% |
+| may this card open this door? | 53 µs | 3.5 µs | 45 µs | 1.3 µs | 3.0 µs | 15% |
+| people over 60 (scan) | 17 ms | – | 17 ms | – | – | 0% |
+| return 100k rows (3 columns) | 65 ms | – | 43 ms | 0.2 ms | 22 ms | 34% |
+| return 10k whole nodes | 37 ms | – | 17 ms | 0.1 ms | 19 ms | 53% |
+
+The engine alone (`zig build bench`) takes 6 µs for the card lookup, 33 ms to produce the 100k
+rows and 13 ms for the 10k nodes: writing the JSON costs about 10 ms of the native call for 100k
+rows, and parsing it in Python twice that.

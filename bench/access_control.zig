@@ -258,6 +258,8 @@ const queries = [_]Query{
     .{ .name = "oldest 10 (ORDER BY + LIMIT)", .text = "MATCH (p:Person) RETURN p.name ORDER BY p.age DESC, p.id LIMIT 10", .heavy = true },
     .{ .name = "group sizes (aggregate)", .text = "MATCH (p:Person)-[:MEMBER_OF]->(g:Group) RETURN g.name, count(*) AS n ORDER BY n DESC LIMIT 10", .heavy = true },
     .{ .name = "department counts", .text = "MATCH (p:Person) RETURN p.department, count(*)", .heavy = true },
+    .{ .name = "return 100k rows (3 columns)", .text = "MATCH (p:Person) RETURN p.id, p.name, p.age", .heavy = true },
+    .{ .name = "return 10k whole nodes", .text = "MATCH (p:Person) RETURN p LIMIT 10000", .heavy = true },
     .{ .name = "create one node (commit)", .text = "CREATE (:Event {at: datetime(), card: $card})", .parameters = &.{.card} },
     .{ .name = "create 1000 nodes (UNWIND)", .text = "UNWIND range(1, 1000) AS i CREATE (:Event {n: i})", .heavy = true },
 };
