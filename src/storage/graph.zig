@@ -830,6 +830,31 @@ pub const Graph = struct {
         return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
     }
 
+    /// The labels some node carries, in byte order, from the label counters
+    /// (copies made with `allocator`). O(labels ever used).
+    pub fn labelNames(self: *Graph, allocator: Allocator) StorageError![]const []const u8 {
+        return self.countedNames(key_encoding.label_count_marker, allocator);
+    }
+
+    /// The types some relationship has, in byte order (copies made with
+    /// `allocator`). O(types ever used).
+    pub fn relationshipTypeNames(self: *Graph, allocator: Allocator) StorageError![]const []const u8 {
+        return self.countedNames(key_encoding.edge_type_marker, allocator);
+    }
+
+    /// The names under counter keys `marker | name` whose count is not zero.
+    fn countedNames(self: *Graph, marker: u8, allocator: Allocator) StorageError![]const []const u8 {
+        var names = std.ArrayList([]const u8).empty;
+        var keys = try self.store.scanPrefix(&.{marker});
+        defer keys.deinit();
+        while (try keys.next()) |entry| {
+            if (entry.value.len != key_encoding.node_id_length) continue;
+            if (std.mem.readInt(u64, entry.value[0..8], .big) == 0) continue;
+            try names.append(allocator, try allocator.dupe(u8, entry.key[1..]));
+        }
+        return names.items;
+    }
+
     /// Number of nodes carrying `label`, from a maintained counter: O(log N).
     /// A database written before the counters existed has none for a label
     /// until its next change: then the label index is counted instead.

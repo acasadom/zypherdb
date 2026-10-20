@@ -38,6 +38,8 @@ const expressions = @import("expressions.zig");
 const functions = @import("functions.zig");
 const projection = @import("projection.zig");
 const Pipeline = @import("pipeline.zig");
+const procedures = @import("procedures.zig");
+const schema = @import("schema.zig");
 const temporal_functions = @import("temporal_functions.zig");
 const sequence_algorithms = @import("../sequence_algorithms.zig");
 
@@ -148,6 +150,7 @@ pub fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: an
 /// returns its RETURN rows (none without RETURN). All writes of the query
 /// commit or abort together; a read-only query reads one consistent snapshot.
 pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
+    if (schema.isSchemaCommand(self, root)) return schema.run(self, root);
     const is_union = self.ast.kind(root) == .union_query;
     const queries: []const Index = if (is_union) self.ast.nodeChildren(root) else &.{root};
     for (queries) |query| {
@@ -188,12 +191,13 @@ fn runClauses(self: *Executor, query: Index) ExecutionError!void {
     const query_clauses = self.ast.nodeChildren(query);
     var rows: []Bindings = try self.allocator.alloc(Bindings, 1);
     rows[0] = .{ .entries = .empty };
-    for (query_clauses) |clause| {
+    for (query_clauses, 0..) |clause, position| {
         rows = switch (self.ast.kind(clause)) {
             .match_clause => try clauses.runMatch(self, clause, rows, false),
             .optional_match_clause => try clauses.runMatch(self, clause, rows, true),
             .unwind_clause => try clauses.runUnwind(self, clause, rows),
             .with_clause => try projection.applyWith(self, clause, rows),
+            .call_clause => try procedures.runCall(self, clause, rows, position + 1 == query_clauses.len),
             .return_clause => {
                 try projection.applyReturn(self, clause, rows);
                 break;

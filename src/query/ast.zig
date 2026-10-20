@@ -166,6 +166,19 @@ pub const NodeKind = enum {
     order_item,
     limit,
     skip,
+    /// `CALL proc(args) [YIELD ...] [WHERE ...]`: data.call; children are the
+    /// arguments, then the `yield_item`s, then the WHERE (a `true` literal
+    /// when there is none).
+    call_clause,
+    /// One `YIELD column [AS alias]`: data.yield_.
+    yield_item,
+    /// `CREATE FULLTEXT INDEX name FOR (n:L) ON EACH [n.p, ...] [OPTIONS {...}]`:
+    /// data.fulltext_index; children: the OPTIONS map, if any.
+    create_fulltext_index,
+    /// `DROP INDEX name [IF EXISTS]`: data.drop_index.
+    drop_index,
+    /// `SHOW [FULLTEXT] INDEXES`: data.boolean is true for FULLTEXT only.
+    show_indexes,
 };
 
 /// Node payload. The active variant is determined by the node's `kind`; kinds
@@ -189,6 +202,22 @@ pub const Data = union(enum) {
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
     quantifier: struct { kind: QuantifierKind, variable_name: []const u8 },
+    call: struct {
+        procedure: []const u8,
+        argument_count: u32,
+        /// No YIELD: every column of the procedure, as the query's result.
+        yield_all: bool,
+    },
+    yield_: struct { column: []const u8, alias: []const u8 },
+    fulltext_index: struct {
+        name: []const u8,
+        /// Indexes relationships of these types, not nodes with these labels.
+        relationships: bool,
+        labels_or_types: []const []const u8,
+        properties: []const []const u8,
+        if_not_exists: bool,
+    },
+    drop_index: struct { name: []const u8, if_exists: bool },
 };
 
 pub const QuantifierKind = enum { any, all, none, single };

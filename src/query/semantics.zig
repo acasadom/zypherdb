@@ -23,6 +23,7 @@ const Index = @import("ast.zig").Index;
 const NodeKind = @import("ast.zig").NodeKind;
 const BinaryOperator = @import("ast.zig").BinaryOperator;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
+const procedures = @import("procedures.zig");
 
 pub const SemanticError = Allocator.Error || error{InvalidExpression};
 
@@ -320,13 +321,45 @@ const Checker = struct {
         }
     }
 
+    /// A CALL names a known procedure, with as many arguments as it takes, and
+    /// yields columns it has: they become variables, of the column's kind. A
+    /// CALL that yields every column ends the query.
+    fn checkCall(self: *Checker, clause: Index, last: bool) SemanticError!void {
+        const call = self.ast.data(clause).call;
+        const signature = procedures.find(call.procedure) orelse return self.fail("unknown procedure '{s}'", .{call.procedure});
+        if (call.argument_count < signature.min_arguments or call.argument_count > signature.max_arguments) {
+            return self.fail("{s}() takes {d} to {d} arguments, not {d}", .{ call.procedure, signature.min_arguments, signature.max_arguments, call.argument_count });
+        }
+        if (call.yield_all) {
+            if (!last) return self.fail("a CALL inside a query must YIELD the columns it uses: CALL {s}(...) YIELD ...", .{call.procedure});
+            return;
+        }
+        const children = self.ast.nodeChildren(clause);
+        for (children[call.argument_count .. children.len - 1]) |item| {
+            const yield_item = self.ast.data(item).yield_;
+            const column = signature.column(yield_item.column) orelse return self.fail("{s}() has no column '{s}'", .{ call.procedure, yield_item.column });
+            const kind: Kind = switch (column.kind) {
+                .node => .node,
+                .relationship => .relationship,
+                .value => .value,
+            };
+            try self.use(if (yield_item.alias.len > 0) yield_item.alias else yield_item.column, kind);
+        }
+    }
+
     /// Clause by clause: declare what the clause binds, then check its
     /// expressions with those variables in scope (WITH and RETURN expressions
     /// see the scope before their projection).
     fn checkQuery(self: *Checker, query: Index) SemanticError!void {
-        for (self.ast.nodeChildren(query)) |clause| {
+        const query_clauses = self.ast.nodeChildren(query);
+        for (query_clauses, 0..) |clause, position| {
             const children = self.ast.nodeChildren(clause);
             switch (self.ast.kind(clause)) {
+                .call_clause => {
+                    try self.checkCall(clause, position + 1 == query_clauses.len);
+                    try self.checkExpressions(clause);
+                    continue;
+                },
                 .match_clause, .optional_match_clause => try self.checkPatterns(children[0 .. children.len - 1], true),
                 .create_clause => try self.checkPatterns(children, false),
                 .merge_clause => try self.checkPatterns(children[0..1], false),

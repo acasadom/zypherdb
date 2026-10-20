@@ -14,6 +14,8 @@ const NodeKind = @import("ast.zig").NodeKind;
 const EdgeDirection = @import("ast.zig").EdgeDirection;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const lexer = @import("lexer.zig");
+const call_parser = @import("call_parser.zig");
+const schema_parser = @import("schema_parser.zig");
 const Token = lexer.Token;
 const TokenKind = lexer.TokenKind;
 const tokenize = lexer.tokenize;
@@ -35,6 +37,7 @@ pub fn parse(ast: *Ast, src: []const u8, diagnostic: ?*Diagnostic) ParseError!In
         .pos = 0,
         .diagnostic = diagnostic,
     };
+    if (schema_parser.atSchemaCommand(&parser)) return schema_parser.parseSchemaCommand(&parser);
     return parser.parseUnion();
 }
 
@@ -232,6 +235,16 @@ pub const Parser = struct {
                     try self.parseUnwindClause();
                 try clauses.append(self.ast.allocator, clause);
                 last_reads = true;
+            } else if (self.atKeyword("CALL")) {
+                if (after_update) {
+                    self.fail("a WITH is needed between an updating clause and CALL", .{});
+                    return error.UnexpectedToken;
+                }
+                const clause = try call_parser.parseCallClause(self);
+                try clauses.append(self.ast.allocator, clause);
+                // A CALL may end the query (its rows are the result) only without YIELD
+                // or as its only clause; otherwise it reads, like MATCH.
+                last_reads = !(self.ast.data(clause).call.yield_all or clauses.items.len == 1);
             } else if (self.atKeyword("WITH")) {
                 try clauses.append(self.ast.allocator, try self.parseWithClause());
                 after_update = false;

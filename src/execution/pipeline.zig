@@ -30,6 +30,8 @@ const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
 const pattern_matching = @import("pattern_matching.zig");
 const projection = @import("projection.zig");
+const procedures = @import("procedures.zig");
+const Value = @import("../value.zig").Value;
 
 const Pipeline = @This();
 
@@ -42,6 +44,7 @@ rows_needed: ?usize,
 const Stage = union(enum) {
     match: struct { optional: bool },
     unwind,
+    call,
     with_streaming: struct { info: projection.WithClauseParts, items: []const projection.WithItem },
     with_collecting: std.ArrayList(Bindings),
     return_: projection.ReturnClauseParts,
@@ -62,6 +65,7 @@ pub fn run(executor: *Executor, query: Index) ExecutionError!void {
             .match_clause => .{ .match = .{ .optional = false } },
             .optional_match_clause => .{ .match = .{ .optional = true } },
             .unwind_clause => .unwind,
+            .call_clause => .call,
             .with_clause => if (try projection.withStreams(executor, clause)) with: {
                 const info = projection.withClauseParts(executor, clause);
                 break :with .{ .with_streaming = .{ .info = info, .items = try projection.withItems(executor, info.projection) } };
@@ -123,6 +127,24 @@ pub fn feed(self: *Pipeline, index: usize, row: *Bindings) ExecutionError!void {
                 try row.put(executor.allocator, variable_name, item);
                 try self.feed(index + 1, row);
             }
+        },
+        .call => {
+            const Next = struct {
+                pipeline: *Pipeline,
+                index: usize,
+
+                fn extended(context: *anyopaque, extended_row: *Bindings) ExecutionError!void {
+                    const next: *@This() = @ptrCast(@alignCast(context));
+                    try next.pipeline.feed(next.index, extended_row);
+                }
+
+                fn result(context: *anyopaque, values: []const Value) ExecutionError!void {
+                    const next: *@This() = @ptrCast(@alignCast(context));
+                    try procedures.appendResult(next.pipeline.executor, values);
+                }
+            };
+            var next = Next{ .pipeline = self, .index = index + 1 };
+            try procedures.callRow(executor, clause, row, index + 1 == self.query_clauses.len, .{ .context = &next, .extended = Next.extended, .result = Next.result });
         },
         .with_streaming => |with| {
             var projected = try projection.withRow(executor, with.info, with.items, row) orelse return;
