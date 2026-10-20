@@ -246,7 +246,9 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 try add(&tokens, allocator, .star, src[i .. i + 1], i);
                 i += 1;
             },
-            '\'' => {
+            '\'', '"' => {
+                // A string, in single or double quotes.
+                const quote = src[i];
                 const start = i;
                 i += 1; // opening quote
                 const content_start = i;
@@ -255,7 +257,7 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                         i += 2; // skip escaped char
                         continue;
                     }
-                    if (src[i] == '\'') break;
+                    if (src[i] == quote) break;
                     i += 1;
                 }
                 if (i >= src.len) {

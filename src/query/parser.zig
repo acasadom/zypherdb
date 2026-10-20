@@ -117,7 +117,9 @@ pub const Parser = struct {
         return self.ast.intern(t.text);
     }
 
-    /// Unescapes `\'` and `\\` and interns the result into the AST arena.
+    /// Unescapes a string literal's content (Cypher's escapes: `\\` `\'` `\"`
+    /// `\b` `\f` `\n` `\r` `\t`, `\uXXXX` and `\UXXXXXXXX`) and interns it
+    /// into the AST arena. Any other backslash stays as it is.
     pub fn internString(self: *Parser, raw: []const u8) ParseError![]const u8 {
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) {
             return self.ast.intern(raw);
@@ -126,16 +128,35 @@ pub const Parser = struct {
         defer buffer.deinit(self.ast.allocator);
         var i: usize = 0;
         while (i < raw.len) : (i += 1) {
-            if (raw[i] == '\\' and i + 1 < raw.len) {
-                i += 1;
-                switch (raw[i]) {
-                    '\\', '\'' => try buffer.append(self.ast.allocator, raw[i]),
-                    else => {
-                        try buffer.append(self.ast.allocator, '\\');
-                        try buffer.append(self.ast.allocator, raw[i]);
-                    },
+            if (raw[i] != '\\' or i + 1 >= raw.len) {
+                try buffer.append(self.ast.allocator, raw[i]);
+                continue;
+            }
+            i += 1;
+            const escaped: ?u8 = switch (raw[i]) {
+                '\\', '\'', '"' => raw[i],
+                'b' => 0x08,
+                'f' => 0x0c,
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                else => null,
+            };
+            if (escaped) |byte| {
+                try buffer.append(self.ast.allocator, byte);
+            } else if (raw[i] == 'u' or raw[i] == 'U') {
+                const digits: usize = if (raw[i] == 'u') 4 else 8;
+                const code = if (i + digits < raw.len) std.fmt.parseInt(u21, raw[i + 1 ..][0..digits], 16) catch null else null;
+                var bytes: [4]u8 = undefined;
+                const length = if (code) |c| std.unicode.utf8Encode(c, &bytes) catch null else null;
+                if (length == null) {
+                    self.fail("invalid Unicode escape in a string: \\{c} takes {d} hexadecimal digits of a code point", .{ raw[i], digits });
+                    return error.UnexpectedToken;
                 }
+                try buffer.appendSlice(self.ast.allocator, bytes[0..length.?]);
+                i += digits;
             } else {
+                try buffer.append(self.ast.allocator, '\\');
                 try buffer.append(self.ast.allocator, raw[i]);
             }
         }
@@ -748,10 +769,10 @@ pub const Parser = struct {
         while (true) {
             const expr = try expression_parser.parseExpression(self);
             var ascending = true;
-            if (self.atKeyword("DESC")) {
+            if (self.atKeyword("DESC") or self.atKeyword("DESCENDING")) {
                 _ = self.advance();
                 ascending = false;
-            } else if (self.atKeyword("ASC")) {
+            } else if (self.atKeyword("ASC") or self.atKeyword("ASCENDING")) {
                 _ = self.advance();
             }
             const item = try self.ast.addNode(.order_item, .{ .order_item = .{ .ascending = ascending } }, &.{expr});

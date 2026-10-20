@@ -48,6 +48,7 @@ clauses/create/Create3.feature: [4] MATCH-CREATE: Newly-created nodes not visibl
 clauses/create/Create3.feature: [5] WITH-CREATE: Nodes are not created when aliases are applied to variable names
 clauses/create/Create3.feature: [6] WITH-CREATE: Only a single node is created when an alias is applied to a variable name
 clauses/create/Create3.feature: [8] WITH-CREATE: Only a single node is created when an alias is applied to a variable name multiple times
+clauses/create/Create4.feature: [1] Generate the movie graph
 clauses/create/Create5.feature: [1] Create a pattern with multiple hops
 clauses/create/Create5.feature: [2] Create a pattern with multiple hops in the reverse direction
 clauses/create/Create5.feature: [3] Create a pattern with multiple hops in varying directions
@@ -791,36 +792,56 @@ clauses/with-orderBy/WithOrderBy1.feature: [21] Sort distinct types in ascending
 clauses/with-orderBy/WithOrderBy1.feature: [22] Sort distinct types in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [23] Sort by a boolean variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [23] Sort by a boolean variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [23] Sort by a boolean variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [24] Sort by a boolean variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [24] Sort by a boolean variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [25] Sort by an integer variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [25] Sort by an integer variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [25] Sort by an integer variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [26] Sort by an integer variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [26] Sort by an integer variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [27] Sort by a float variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [27] Sort by a float variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [27] Sort by a float variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [28] Sort by a float variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [28] Sort by a float variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [29] Sort by a string variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [29] Sort by a string variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [29] Sort by a string variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [2] Sort booleans in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [30] Sort by a string variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [30] Sort by a string variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [31] Sort by a list variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [31] Sort by a list variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [31] Sort by a list variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [32] Sort by a list variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [32] Sort by a list variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [33] Sort by a date variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [33] Sort by a date variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [33] Sort by a date variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [34] Sort by a date variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [34] Sort by a date variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [35] Sort by a local time variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [35] Sort by a local time variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [35] Sort by a local time variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [36] Sort by a local time variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [36] Sort by a local time variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [37] Sort by a time variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [37] Sort by a time variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [37] Sort by a time variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [38] Sort by a time variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [38] Sort by a time variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [39] Sort by a local date time variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [39] Sort by a local date time variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [39] Sort by a local date time variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [3] Sort integers in ascending order
 clauses/with-orderBy/WithOrderBy1.feature: [40] Sort by a local date time variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [40] Sort by a local date time variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [41] Sort by a date time variable projected from a node property in ascending order #1
 clauses/with-orderBy/WithOrderBy1.feature: [41] Sort by a date time variable projected from a node property in ascending order #2
+clauses/with-orderBy/WithOrderBy1.feature: [41] Sort by a date time variable projected from a node property in ascending order #3
 clauses/with-orderBy/WithOrderBy1.feature: [42] Sort by a date time variable projected from a node property in descending order #1
+clauses/with-orderBy/WithOrderBy1.feature: [42] Sort by a date time variable projected from a node property in descending order #2
 clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only partially orderable on a non-distinct binding table #1
 clauses/with-orderBy/WithOrderBy1.feature: [43] Sort by a variable that is only partially orderable on a non-distinct binding table #2
 clauses/with-orderBy/WithOrderBy1.feature: [44] Sort by a variable that is only partially orderable on a non-distinct binding table, but made distinct #1
@@ -852,23 +873,35 @@ clauses/with-orderBy/WithOrderBy1.feature: [7] Sort strings in ascending order
 clauses/with-orderBy/WithOrderBy1.feature: [8] Sort strings in descending order
 clauses/with-orderBy/WithOrderBy1.feature: [9] Sort lists in ascending order
 clauses/with-orderBy/WithOrderBy2.feature: [10] Sort by a list expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [10] Sort by a list expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [11] Sort by a date expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [11] Sort by a date expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [11] Sort by a date expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [12] Sort by a date expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [12] Sort by a date expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [13] Sort by a local time expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [13] Sort by a local time expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [13] Sort by a local time expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [14] Sort by a local time expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [14] Sort by a local time expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [15] Sort by a time expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [15] Sort by a time expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [15] Sort by a time expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [16] Sort by a time expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [16] Sort by a time expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [17] Sort by a local date time expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [17] Sort by a local date time expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [17] Sort by a local date time expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [18] Sort by a local date time expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [18] Sort by a local date time expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [19] Sort by a date time expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [19] Sort by a date time expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [19] Sort by a date time expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [1] Sort by a boolean expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [20] Sort by a date time expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [20] Sort by a date time expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key #1
 clauses/with-orderBy/WithOrderBy2.feature: [22] Sort by an expression that is only partially orderable on a non-distinct binding table, but used as a grouping key #2
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #1
@@ -897,26 +930,50 @@ clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregatio
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #8
 clauses/with-orderBy/WithOrderBy2.feature: [25] Fail on sorting by an aggregation #9
 clauses/with-orderBy/WithOrderBy2.feature: [2] Sort by a boolean expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [2] Sort by a boolean expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [3] Sort by an integer expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [4] Sort by an integer expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [4] Sort by an integer expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [5] Sort by a float expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [5] Sort by a float expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [5] Sort by a float expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [6] Sort by a float expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [6] Sort by a float expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [7] Sort by a string expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [7] Sort by a string expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [7] Sort by a string expression in ascending order #3
 clauses/with-orderBy/WithOrderBy2.feature: [8] Sort by a string expression in descending order #1
+clauses/with-orderBy/WithOrderBy2.feature: [8] Sort by a string expression in descending order #2
 clauses/with-orderBy/WithOrderBy2.feature: [9] Sort by a list expression in ascending order #1
 clauses/with-orderBy/WithOrderBy2.feature: [9] Sort by a list expression in ascending order #2
+clauses/with-orderBy/WithOrderBy2.feature: [9] Sort by a list expression in ascending order #3
 clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #1
 clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #2
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #3
 clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #4
 clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #5
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #6
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #7
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #8
+clauses/with-orderBy/WithOrderBy3.feature: [1] Sort by two expressions, both in ascending order #9
 clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #2
 clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #3
+clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #4
+clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #5
+clauses/with-orderBy/WithOrderBy3.feature: [2] Sort by two expressions, first in ascending order, second in descending order #6
 clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #1
 clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #2
+clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #3
+clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #4
+clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #5
+clauses/with-orderBy/WithOrderBy3.feature: [3] Sort by two expressions, first in descending order, second in ascending order #6
 clauses/with-orderBy/WithOrderBy3.feature: [4] Sort by two expressions, both in descending order #1
+clauses/with-orderBy/WithOrderBy3.feature: [4] Sort by two expressions, both in descending order #2
+clauses/with-orderBy/WithOrderBy3.feature: [4] Sort by two expressions, both in descending order #3
+clauses/with-orderBy/WithOrderBy3.feature: [4] Sort by two expressions, both in descending order #4
 clauses/with-orderBy/WithOrderBy3.feature: [5] An expression without explicit sort direction is sorted in ascending order #1
 clauses/with-orderBy/WithOrderBy3.feature: [5] An expression without explicit sort direction is sorted in ascending order #2
 clauses/with-orderBy/WithOrderBy3.feature: [5] An expression without explicit sort direction is sorted in ascending order #3
@@ -1621,6 +1678,10 @@ expressions/literals/Literals5.feature: [6] Return a very long positive float wi
 expressions/literals/Literals5.feature: [7] Return a positive zero float
 expressions/literals/Literals5.feature: [8] Return a positive zero float without integer digits
 expressions/literals/Literals5.feature: [9] Return a negative zero float
+expressions/literals/Literals6.feature: [10] Accept valid Unicode literal
+expressions/literals/Literals6.feature: [11] Return a double-quoted string with one character
+expressions/literals/Literals6.feature: [12] Return a double-quoted string with uft-8 characters
+expressions/literals/Literals6.feature: [13] Failing on incorrect unicode literal
 expressions/literals/Literals6.feature: [1] Return a single-quoted empty string
 expressions/literals/Literals6.feature: [2] Return a single-quoted string with one character
 expressions/literals/Literals6.feature: [3] Return a single-quoted string with uft-8 characters
@@ -1628,6 +1689,7 @@ expressions/literals/Literals6.feature: [4] Return a single-quoted string with e
 expressions/literals/Literals6.feature: [6] Return a single-quoted string with 100 characters
 expressions/literals/Literals6.feature: [7] Return a single-quoted string with 1000 characters
 expressions/literals/Literals6.feature: [8] Return a single-quoted string with 10000 characters
+expressions/literals/Literals6.feature: [9] Return a double-quoted empty string
 expressions/literals/Literals7.feature: [10] Return seven-deep nested empty lists
 expressions/literals/Literals7.feature: [11] Return 20-deep nested empty lists
 expressions/literals/Literals7.feature: [12] Return 40-deep nested empty lists
@@ -2552,6 +2614,7 @@ expressions/string/String10.feature: [1] Finding exact matches with non-proper s
 expressions/string/String10.feature: [2] Finding substring of string
 expressions/string/String10.feature: [3] Finding the empty substring
 expressions/string/String10.feature: [4] Finding strings containing whitespace
+expressions/string/String10.feature: [5] Finding strings containing newline
 expressions/string/String10.feature: [6] No string contains null
 expressions/string/String10.feature: [7] No string does not contain null
 expressions/string/String10.feature: [8] Handling non-string operands for CONTAINS
@@ -2564,6 +2627,7 @@ expressions/string/String8.feature: [1] Finding exact matches with non-proper pr
 expressions/string/String8.feature: [2] Finding beginning of string
 expressions/string/String8.feature: [3] Finding the empty prefix
 expressions/string/String8.feature: [4] Finding strings starting with whitespace
+expressions/string/String8.feature: [5] Finding strings starting with newline
 expressions/string/String8.feature: [6] No string starts with null
 expressions/string/String8.feature: [7] No string does not start with null
 expressions/string/String8.feature: [8] Handling non-string operands for STARTS WITH
@@ -2572,6 +2636,7 @@ expressions/string/String9.feature: [1] Finding exact matches with non-proper su
 expressions/string/String9.feature: [2] Finding end of string
 expressions/string/String9.feature: [3] Finding the empty suffix
 expressions/string/String9.feature: [4] Finding strings ending with whitespace
+expressions/string/String9.feature: [5] Finding strings ending with newline
 expressions/string/String9.feature: [6] No string ends with null
 expressions/string/String9.feature: [7] No string does not end with null
 expressions/string/String9.feature: [8] Handling non-string operands for ENDS WITH

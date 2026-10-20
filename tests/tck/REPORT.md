@@ -6,12 +6,12 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 2997/3202 (93.6%)** · Negative: 659/694 (95.0%)
+**Positive: 3061/3202 (95.6%)** · Negative: 660/694 (95.1%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
 | clauses/call | 0/36 (0.0%) | 2/16 (12.5%) | 50 | 0 |
-| clauses/create | 56/63 (88.9%) | 10/15 (66.7%) | 0 | 0 |
+| clauses/create | 57/63 (90.5%) | 10/15 (66.7%) | 0 | 0 |
 | clauses/delete | 27/36 (75.0%) | 4/5 (80.0%) | 0 | 0 |
 | clauses/match | 124/141 (87.9%) | 241/241 (100.0%) | 5 | 0 |
 | clauses/match-where | 27/32 (84.4%) | 1/2 (50.0%) | 0 | 0 |
@@ -24,7 +24,7 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | clauses/union | 8/8 (100.0%) | 4/4 (100.0%) | 0 | 0 |
 | clauses/unwind | 11/14 (78.6%) | – | 0 | 0 |
 | clauses/with | 18/25 (72.0%) | 3/4 (75.0%) | 0 | 0 |
-| clauses/with-orderBy | 160/223 (71.7%) | 69/69 (100.0%) | 0 | 0 |
+| clauses/with-orderBy | 216/223 (96.9%) | 69/69 (100.0%) | 0 | 0 |
 | clauses/with-skip-limit | 7/9 (77.8%) | – | 0 | 0 |
 | clauses/with-where | 14/19 (73.7%) | – | 0 | 0 |
 | expressions/aggregation | 22/28 (78.6%) | 7/7 (100.0%) | 0 | 0 |
@@ -34,7 +34,7 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | expressions/existentialSubqueries | 8/9 (88.9%) | 1/1 (100.0%) | 0 | 0 |
 | expressions/graph | 35/43 (81.4%) | 17/17 (100.0%) | 0 | 0 |
 | expressions/list | 121/126 (96.0%) | 59/59 (100.0%) | 0 | 0 |
-| expressions/literals | 101/106 (95.3%) | 24/25 (96.0%) | 0 | 0 |
+| expressions/literals | 105/106 (99.1%) | 25/25 (100.0%) | 0 | 0 |
 | expressions/map | 35/35 (100.0%) | 9/9 (100.0%) | 0 | 0 |
 | expressions/mathematical | 5/5 (100.0%) | 1/1 (100.0%) | 0 | 0 |
 | expressions/null | 44/44 (100.0%) | – | 0 | 0 |
@@ -42,7 +42,7 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | expressions/pattern | 31/31 (100.0%) | 17/19 (89.5%) | 0 | 0 |
 | expressions/precedence | 121/121 (100.0%) | – | 0 | 0 |
 | expressions/quantifier | 592/592 (100.0%) | 12/12 (100.0%) | 0 | 0 |
-| expressions/string | 29/32 (90.6%) | – | 0 | 0 |
+| expressions/string | 32/32 (100.0%) | – | 0 | 0 |
 | expressions/temporal | 1004/1004 (100.0%) | – | 0 | 0 |
 | expressions/typeConversion | 22/25 (88.0%) | 22/22 (100.0%) | 0 | 0 |
 | useCases/countingSubgraphMatches | 11/11 (100.0%) | – | 0 | 0 |
@@ -53,16 +53,13 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | Scenarios | Reason |
 | --- | --- |
 | 50 | unsupported: procedures |
-| 28 | fail: unexpected error: unexpected ASCENDING (unsupported syntax or missing clause) |
-| 28 | fail: unexpected error: unexpected DESCENDING (unsupported syntax or missing clause) |
 | 26 | fail: unexpected error: expected an expression, found '*' |
-| 21 | fail: expected SyntaxError, but the query succeeded |
+| 20 | fail: expected SyntaxError, but the query succeeded |
 | 16 | fail: unexpected error: unknown variable '…' |
-| 13 | fail: rows differ: expected other rows |
 | 12 | fail: unexpected error: unexpected ':' (unsupported syntax or missing clause) |
+| 9 | fail: rows differ: expected other rows |
 | 5 | fail: unexpected error: unexpected '.' (unsupported syntax or missing clause) |
 | 5 | unsupported: then: having executed: |
-| 4 | fail: unexpected error: unexpected character '"' |
 | 4 | fail: unexpected error: variable '…' is a value; it cannot be used as a node |
 | 3 | fail: side effects: expected other side effects |
 | 3 | fail: unexpected error: query failed: TypeMismatch |
