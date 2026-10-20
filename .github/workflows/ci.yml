@@ -28,7 +28,7 @@ jobs:
           version: 0.17.0
 
       - name: Formatting
-        run: zig fmt --check src tests build.zig
+        run: zig fmt --check src tests bench python/native build.zig
 
       - name: Zig tests
         run: zig build test --summary all
@@ -39,6 +39,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Build the Python extension module
+        run: make python PYTHON=python
 
       - name: Python tests
         run: |

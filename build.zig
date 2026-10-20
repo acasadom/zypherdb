@@ -52,6 +52,28 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(suite).step);
 
+    // The Python extension module (python/native/module.zig), built against
+    // the headers of a Python 3.10+ install: `zig build python
+    // -Dpython-include=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['include'])")`.
+    // It uses the limited API (abi3), so one build serves every Python version.
+    if (b.option([]const u8, "python-include", "Python.h directory, to build the Python extension module")) |include| {
+        const native_module = b.createModule(.{
+            .root_source_file = b.path("python/native/module.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+        });
+        const python_api = b.addTranslateC(.{ .root_source_file = b.path("python/native/python.h"), .target = target, .optimize = optimize });
+        python_api.addIncludePath(.{ .cwd_relative = include });
+        native_module.addImport("python", python_api.createModule());
+        const native = b.addLibrary(.{ .name = "_native", .root_module = native_module, .linkage = .dynamic });
+        // Python's symbols come from the interpreter that loads the module.
+        native.linker_allow_shlib_undefined = true;
+        const install_native = b.addInstallFileWithDir(native.getEmittedBin(), .{ .custom = "python" }, "_native.abi3.so");
+        b.step("python", "Build the Python extension module into zig-out/python").dependOn(&install_native.step);
+    }
+
     // Benchmark: `zig build bench -Doptimize=ReleaseFast -- --people 100000`.
     const bench = b.addExecutable(.{
         .name = "bench-access-control",

@@ -39,11 +39,12 @@ embedding.
 
 ## Quickstart (Python)
 
-There is a thin Python package in `python/` over the C ABI. Point `PYTHONPATH` at it (or
-`pip install -e python/`) and use the `Database` object:
+The Python package in `python/` runs the engine through a native extension module written in Zig
+(`python/native/`). Build it, point `PYTHONPATH` at the package (or `pip install -e python/`) and
+use the `Database` object:
 
 ```bash
-zig build
+make python
 PYTHONPATH=python python3 - <<'PY'
 from acmedb import Database
 import tempfile
@@ -123,8 +124,9 @@ See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 - **An executor that plans**: anchor selection (label counts, equality seeks, edge-type
   cardinality) with predicate pushdown, one read transaction per read query, one write transaction
   per writing query.
-- **A C ABI** for embedding from any language with an FFI (the reference client is Python via
-  `ctypes`).
+- **A Python package** whose engine is a native extension module written in Zig on the Python
+  limited API (one build per platform for every Python from 3.10), and **a C ABI** for embedding
+  from any language with an FFI.
 
 ## Status
 

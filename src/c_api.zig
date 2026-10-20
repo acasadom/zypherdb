@@ -738,16 +738,7 @@ pub export fn acmedb_result_list_item_string(result: *const Result, row: usize, 
 
 /// Sets a generic message + code for a runtime error that never set one.
 fn noteError(diagnostic: *Diagnostic, err: anyerror) void {
-    const code: ErrorCode = switch (err) {
-        error.UnknownVariable => .unknown_variable,
-        error.TypeMismatch, error.UnsupportedPropertyType => .type_mismatch,
-        error.ParameterMissing => .parameter_missing,
-        error.IntegerOverflow, error.DivisionByZero => .arithmetic,
-        error.InvalidExpression => .invalid_expression,
-        error.NodeStillConnected => .node_still_connected,
-        else => .storage,
-    };
-    diagnostic.set(code, 0, "query failed: {s}", .{@errorName(err)});
+    diagnostic.set(@import("diagnostics.zig").codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
 }
 
 // Force the export functions to be analyzed/emitted even when the test blocks

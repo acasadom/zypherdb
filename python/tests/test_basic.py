@@ -124,9 +124,15 @@ def test_int_range_is_enforced(db):
         db.add_node(2**64, "P")
 
 
-def test_unsupported_property_types(db):
+def test_property_types(db):
     db.add_node(1, "P")
-    for bad in (True, None, [1]):
+    db.set_property(1, "flag", True)
+    db.set_property(1, "tags", ["a", "b"])
+    db.set_property(1, "doc", {"city": "Madrid", "floors": [1, None]})
+    assert db.query("MATCH (p:P) RETURN p.flag, p.tags, p.doc.city") == [[True, ["a", "b"], "Madrid"]]
+    db.set_property(1, "flag", None)  # removes it
+    assert db.query("MATCH (p:P) RETURN p.flag") == [[None]]
+    for bad in ([1, "a"], object()):
         with pytest.raises(TypeError):
             db.set_property(1, "x", bad)
 
@@ -249,8 +255,9 @@ def test_query_parameters(db):
     with pytest.raises(ParameterMissingError):
         db.query("RETURN $absent")
     assert db.query("RETURN $x, $x * 2", x=1.5) == [[1.5, 3.0]]
-    with pytest.raises(ValueError):
-        db.query("RETURN $x", x=float("nan"))
+    # No JSON in between: NaN and infinities travel as they are.
+    nan, inf = db.query("RETURN $nan, $inf", nan=float("nan"), inf=float("inf"))[0]
+    assert math.isnan(nan) and inf == math.inf
     with pytest.raises(OverflowError):
         db.query("RETURN $x", x=[2**64])
 

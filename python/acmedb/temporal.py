@@ -181,6 +181,15 @@ def decode(tag: str, text: str) -> Temporal:
     return _TYPES[tag](text)
 
 
+def tag_and_text(value) -> tuple[str, str] | None:
+    """A temporal parameter as (tag, ISO 8601 text), or None if `value` is not one."""
+    encoded = encode(value)
+    if encoded is None:
+        return None
+    (tag, text), = encoded.items()
+    return tag[1:], text
+
+
 def encode(value) -> dict | None:
     """The tagged JSON form of a temporal parameter, or None if `value` is not one."""
     if isinstance(value, Temporal):

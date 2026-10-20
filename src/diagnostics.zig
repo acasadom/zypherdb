@@ -70,3 +70,16 @@ test "messages too long for the buffer are truncated, not dropped" {
     try std.testing.expect(std.mem.startsWith(u8, d.message(), "unknown variable 'xxx"));
     try std.testing.expect(std.mem.endsWith(u8, d.message(), "..."));
 }
+
+/// The error code of an engine error, for one that set no diagnostic.
+pub fn codeOf(err: anyerror) ErrorCode {
+    return switch (err) {
+        error.UnknownVariable => .unknown_variable,
+        error.TypeMismatch, error.UnsupportedPropertyType => .type_mismatch,
+        error.ParameterMissing => .parameter_missing,
+        error.IntegerOverflow, error.DivisionByZero => .arithmetic,
+        error.InvalidExpression => .invalid_expression,
+        error.NodeStillConnected => .node_still_connected,
+        else => .storage,
+    };
+}

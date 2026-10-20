@@ -79,12 +79,12 @@ def _graph_state(db) -> dict[str, set]:
         state["nodes"].add(node["id"])
         state["labels"].update(node["labels"])
         for key, value in node["properties"].items():
-            state["properties"].add(("node", node["id"], key, json.dumps(value)))
+            state["properties"].add(("node", node["id"], key, repr(cypher_values.from_python(value))))
     for rel in graph["relationships"]:
         identity = (rel["source"], rel["target"], rel["type"])
         state["relationships"].add(identity)
         for key, value in rel["properties"].items():
-            state["properties"].add(("relationship", identity, key, json.dumps(value)))
+            state["properties"].add(("relationship", identity, key, repr(cypher_values.from_python(value))))
     return state
 
 

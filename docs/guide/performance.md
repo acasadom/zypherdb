@@ -63,8 +63,9 @@ happens, when it matters, and the fix being considered. Measured numbers are in
 
 ## Python bindings
 
-- **Results and parameters go through JSON.** Measured (`bench/RESULTS.md`): a point query costs
-  13 µs from Python, 6 µs of it in Python (encoding parameters, copying and parsing the result);
-  returning 100k rows spends about 30 of its 65 ms writing and parsing JSON. One `ctypes` call per
-  write in the mutator API. The plan is a native extension module written in Zig on the Python C
-  API that converts values directly.
+- **A returned node costs about 1 µs in Python** (its labels tuple and properties dict, with a new
+  key string per property). Fix if it matters: reuse the key strings of a result (property names
+  repeat across rows).
+- **Results are built whole.** A query returns a list of every row; a large result is all in
+  memory at once. Fix: return an iterator that converts rows as they are read (needs the pipelined
+  executor above to pay off fully).

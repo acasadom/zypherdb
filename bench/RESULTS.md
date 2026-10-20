@@ -59,3 +59,22 @@ query needs are cached). Medians:
 The engine alone (`zig build bench`) takes 6 µs for the card lookup, 33 ms to produce the 100k
 rows and 13 ms for the 10k nodes: writing the JSON costs about 10 ms of the native call for 100k
 rows, and parsing it in Python twice that.
+
+## The native extension module
+
+The same benchmark (`python bench/python_overhead.py`) after the package moved to
+`acmedb._native` (Zig on the Python limited API, no JSON). Medians, page cache warm:
+
+| Query | Engine alone | ctypes + JSON | Native module |
+| --- | ---: | ---: | ---: |
+| card lookup | 6.0 µs | 13.2 µs | 7.4 µs |
+| person's groups (1 hop) | 9.3 µs | 15.8 µs | 10.2 µs |
+| colleagues | 87 µs | 80 µs | 77 µs |
+| may this card open this door? | 28 µs | 53 µs | 30 µs |
+| people over 60 (scan) | 16 ms | 17 ms | 16 ms |
+| return 100k rows (3 columns) | 31 ms | 65 ms | 41 ms |
+| return 10k whole nodes | 13 ms | 37 ms | 23 ms |
+
+What Python adds now: about 1.4 µs per query, and about 35 ns per returned cell; a whole node
+about 1 µs (its labels tuple and properties dict). The cycle collector is paused while a result is
+built, and entities are built without running their `__init__`.

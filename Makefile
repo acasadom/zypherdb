@@ -1,19 +1,25 @@
 # acmedb — usual development targets. Zig is a single-binary toolchain, so the
 # only real command is `zig`; these are thin conveniences.
 
-.PHONY: build test test-py tck docs clean
+.PHONY: build python test test-py tck docs clean
+
+PYTHON ?= python3
+PYTHON_INCLUDE = $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_paths()['include'])")
 
 build: ## Compile the static + shared libraries (into zig-out/)
 	zig build
 
+python: ## Compile the Python extension module (into zig-out/python/)
+	zig build python -Dpython-include="$(PYTHON_INCLUDE)"
+
 test: ## Build and run the test suite
 	zig build test
 
-test-py: build ## Run the Python binding tests (pip install -e "python[dev]")
-	python -m pytest python/tests -q
+test-py: python ## Run the Python binding tests (pip install -e "python[dev]")
+	$(PYTHON) -m pytest python/tests -q
 
-tck: build ## Run the openCypher TCK, write its report, fail on regressions
-	python -I tests/tck/runner.py --report tests/tck/REPORT.md --check-baseline
+tck: python ## Run the openCypher TCK, write its report, fail on regressions
+	$(PYTHON) -I tests/tck/runner.py --report tests/tck/REPORT.md --check-baseline
 
 docs: ## Build the HTML documentation (Sphinx + MyST; pip install -r docs/requirements.txt)
 	sphinx-build -b html docs docs/_build/html

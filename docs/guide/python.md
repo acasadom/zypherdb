@@ -1,12 +1,15 @@
 # Embedding from Python
 
-There is a thin, pure-Python package in `python/` over the C ABI. It needs no build — just the
-compiled shared library.
+The `acmedb` package in `python/` runs the engine through a native extension module,
+`acmedb._native`, written in Zig on the Python limited C API (`python/native/module.zig`). Values
+cross between Python and the engine by direct conversion, without serializing them, and a query
+runs with the GIL released. The module uses only the stable ABI of Python 3.10, so one build works
+with every Python version from 3.10 on.
 
 ## Install and use
 
 ```bash
-zig build                                    # produces zig-out/lib/libacmedb.{dylib,so}
+make python                                  # zig build python -Dpython-include=<Python.h dir>
 pip install -e python/                       # or: export PYTHONPATH=python
 ```
 
@@ -78,8 +81,11 @@ is read replication (a writer → N replicas), which is future work.
 
 ## Under the hood
 
-The package is a thin `ctypes` wrapper (`acmedb/_ffi.py` declares the signatures once;
-`acmedb/db.py` decodes results and maps error codes to exceptions). `query` reads the whole result
-in **one** call via `acmedb_result_to_json` (a JSON serialization of the rows), so a large result
-costs one FFI call plus a `json.loads` — not one call per cell. If you need the raw layer — or want
-to embed from another language — see the [C ABI reference](c-api).
+`acmedb._native` (`python/native/module.zig`) opens the database, runs queries and writes, and
+converts values directly: a query's parameters into engine values, its rows into Python objects
+(nodes, relationships and paths are built without running `__init__`; temporal values through the
+classes in `acmedb/temporal.py`). It runs the engine with the GIL released and pauses Python's
+cycle collector while it builds a large result. `acmedb/db.py` adds the `Database` class:
+locking, `write()` blocks, argument checks. `acmedb/_engine.py` loads the module and registers the
+classes and exceptions it builds. Measured costs are in `bench/RESULTS.md`. To embed from another
+language, see the [C ABI reference](c-api).
