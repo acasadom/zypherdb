@@ -12,6 +12,7 @@ from .errors import AcmedbError, ClosedError
 _U64_MAX = 2**64 - 1
 
 _DURABILITY = {"full": 0, "relaxed": 1, "deferred": 2}
+_TEMPORALS = {"python": 0, "iso": 1}
 
 
 def _check_node_id(id: int) -> int:
@@ -31,7 +32,7 @@ class Database:
             db.query("CREATE (n:Movie {title: 'The Matrix'})")
     """
 
-    def __init__(self, path: str, durability: str = "full"):
+    def __init__(self, path: str, durability: str = "full", temporals: str = "python"):
         """Opens (or creates) the database in directory `path`.
 
         `durability` is how much a commit waits for the disk: "full" (each
@@ -39,12 +40,18 @@ class Database:
         the last commit, never corrupt the database) or "deferred" (commits are
         written by the operating system or by `sync()`; a power failure can lose
         the recent ones, hundreds of times faster for many small writes).
+
+        `temporals` is how query results return dates, times and durations:
+        "python" as `datetime`-module values (microsecond precision, years
+        1-9999), or "iso" as their exact ISO 8601 text.
         """
         if durability not in _DURABILITY:
             raise ValueError(f"durability must be one of {', '.join(_DURABILITY)}, not {durability!r}")
         self.path = path
         os.makedirs(path, exist_ok=True)
-        self._db = native.open(path, _DURABILITY[durability])
+        if temporals not in _TEMPORALS:
+            raise ValueError(f"temporals must be one of {', '.join(_TEMPORALS)}, not {temporals!r}")
+        self._db = native.open(path, _DURABILITY[durability], _TEMPORALS[temporals])
         # The native context holds per-handle transaction state, so every call
         # into it is serialized. Reentrant, so a `write()` block can call the
         # mutators that themselves take the lock.

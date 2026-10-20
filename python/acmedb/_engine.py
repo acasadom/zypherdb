@@ -3,8 +3,10 @@ registers with it the Python classes results are built with."""
 
 from __future__ import annotations
 
+import datetime
 import importlib.machinery
 import importlib.util
+import zoneinfo
 from pathlib import Path
 
 from . import entities, errors, temporal
@@ -38,13 +40,13 @@ native.configure(
         "node": entities.Node,
         "relationship": entities.Relationship,
         "path": entities.Path,
-        "date": temporal.Date,
-        "local_time": temporal.LocalTime,
-        "time": temporal.Time,
-        "local_date_time": temporal.LocalDateTime,
-        "date_time": temporal.DateTime,
+        "date": datetime.date,
+        "time": datetime.time,
+        "datetime": datetime.datetime,
+        "timedelta": datetime.timedelta,
+        "timezone": datetime.timezone,
+        "zone_info": zoneinfo.ZoneInfo,
         "duration": temporal.Duration,
-        "encode_temporal": temporal.tag_and_text,
         "query_error": errors.error_from_code,
         "storage_error": errors.StorageError,
         "node_not_found_error": errors.NodeNotFoundError,

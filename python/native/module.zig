@@ -21,6 +21,7 @@ const std = @import("std");
 const acmedb = @import("acmedb");
 
 const py = @import("python"); // python.h, translated by the build
+const temporals = @import("temporals.zig");
 
 const Value = acmedb.Value;
 const MapEntry = acmedb.value.MapEntry;
@@ -37,6 +38,15 @@ const Database = struct {
     store: KeyValueStore,
     graph: Graph,
     diagnostic: Diagnostic,
+    /// Return temporal values as their ISO 8601 text, not `datetime` objects.
+    iso_temporals: bool,
+};
+
+/// How result values become Python objects: the entities the rows refer to,
+/// and how temporal values are returned.
+const Output = struct {
+    entities: ?*const EntitySnapshot,
+    iso_temporals: bool,
 };
 
 const capsule_name = "acmedb.Database";
@@ -49,15 +59,6 @@ const Classes = struct {
     node: ?*py.PyObject = null,
     relationship: ?*py.PyObject = null,
     path: ?*py.PyObject = null,
-    date: ?*py.PyObject = null,
-    local_time: ?*py.PyObject = null,
-    time: ?*py.PyObject = null,
-    local_date_time: ?*py.PyObject = null,
-    date_time: ?*py.PyObject = null,
-    duration: ?*py.PyObject = null,
-    /// `encode_temporal(value) -> (tag, iso) | None`: a datetime-module or
-    /// acmedb temporal value as its tag and ISO 8601 text.
-    encode_temporal: ?*py.PyObject = null,
     /// `query_error(code, message) -> exception`.
     query_error: ?*py.PyObject = null,
     storage_error: ?*py.PyObject = null,
@@ -74,6 +75,7 @@ fn configure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
         py.Py_IncRef(entry);
         @field(classes, name) = entry;
     }
+    if (!temporals.configure(table)) return null;
     object_new = py.PyObject_GetAttrString(@ptrCast(@alignCast(&py.PyBaseObject_Type)), "__new__") orelse return null;
     if (!internFields(&node_fields, &.{ "id", "labels", "properties" }) or
         !internFields(&relationship_fields, &.{ "source", "target", "type", "properties" }) or
@@ -197,7 +199,11 @@ fn valueOf(object: *py.PyObject, arena: std.mem.Allocator, inside_map: bool) ?Va
         }
         return acmedb.value.mapOf(entries);
     }
-    return temporalValueOf(object, arena);
+    return switch (temporals.fromPython(object)) {
+        .value => |v| v,
+        .failed => null,
+        .not_temporal => unsupported(object),
+    };
 }
 
 fn noMemory(comptime T: type) ?T {
@@ -205,44 +211,25 @@ fn noMemory(comptime T: type) ?T {
     return null;
 }
 
-/// A temporal value, through the registered `encode_temporal`.
-fn temporalValueOf(object: *py.PyObject, arena: std.mem.Allocator) ?Value {
-    const encoded = py.PyObject_CallFunctionObjArgs(classes.encode_temporal, object, @as(?*py.PyObject, null)) orelse return null;
-    defer py.Py_DecRef(encoded);
-    if (encoded == @as(*py.PyObject, @ptrCast(&py._Py_NoneStruct))) {
-        const type_object = py.PyObject_Type(object);
-        defer py.Py_DecRef(type_object);
-        const type_name = py.PyObject_GetAttrString(type_object, "__name__");
-        defer py.Py_DecRef(type_name);
-        const name = if (type_name) |n| stringOf(n, arena) orelse "?" else "?";
-        _ = raise(py.PyExc_TypeError, "{s} values are not supported", .{name});
-        return null;
-    }
-    const tag = stringOf(py.PyTuple_GetItem(encoded, 0) orelse return null, arena) orelse return null;
-    const text = stringOf(py.PyTuple_GetItem(encoded, 1) orelse return null, arena) orelse return null;
-    const parse = acmedb.temporal.parse;
-    const parsed: anyerror!Value = if (std.mem.eql(u8, tag, "date"))
-        if (parse.date(text)) |v| Value{ .date = v } else |e| e
-    else if (std.mem.eql(u8, tag, "localtime"))
-        if (parse.localTime(text)) |v| Value{ .local_time = v } else |e| e
-    else if (std.mem.eql(u8, tag, "time"))
-        if (parse.time(text)) |v| Value{ .time = v } else |e| e
-    else if (std.mem.eql(u8, tag, "localdatetime"))
-        if (parse.localDateTime(text)) |v| Value{ .local_date_time = v } else |e| e
-    else if (std.mem.eql(u8, tag, "datetime"))
-        if (parse.dateTime(text)) |v| Value{ .date_time = v } else |e| e
-    else if (parse.duration(text)) |v| Value{ .duration = v } else |e| e;
-    return parsed catch {
-        _ = raise(py.PyExc_ValueError, "not a valid {s}: {s}", .{ tag, text });
-        return null;
-    };
+fn unsupported(object: *py.PyObject) ?Value {
+    const type_object = py.PyObject_Type(object) orelse return null;
+    defer py.Py_DecRef(type_object);
+    const type_name = py.PyObject_GetAttrString(type_object, "__name__") orelse return null;
+    defer py.Py_DecRef(type_name);
+    const bytes = py.PyUnicode_AsUTF8String(type_name) orelse return null;
+    defer py.Py_DecRef(bytes);
+    var pointer: [*c]u8 = undefined;
+    var length: py.Py_ssize_t = 0;
+    if (py.PyBytes_AsStringAndSize(bytes, &pointer, &length) != 0) return null;
+    _ = raise(py.PyExc_TypeError, "{s} values are not supported", .{pointer[0..@intCast(length)]});
+    return null;
 }
 
 // --- Value -> Python ---------------------------------------------------------------
 
 /// A new reference to the Python value of `value`; null with an exception set
-/// on failure. Entities take their labels and properties from `entities`.
-fn objectOf(value: Value, entities: ?*const EntitySnapshot) ?*py.PyObject {
+/// on failure. Entities take their labels and properties from `out.entities`.
+fn objectOf(value: Value, out: Output) ?*py.PyObject {
     return switch (value) {
         .null => none(),
         .int => |n| py.PyLong_FromLongLong(n),
@@ -252,7 +239,7 @@ fn objectOf(value: Value, entities: ?*const EntitySnapshot) ?*py.PyObject {
         .list => |items| list: {
             const result = py.PyList_New(@intCast(items.len)) orelse break :list null;
             for (items, 0..) |item, i| {
-                const element = objectOf(item, entities) orelse {
+                const element = objectOf(item, out) orelse {
                     py.Py_DecRef(result);
                     break :list null;
                 };
@@ -260,9 +247,9 @@ fn objectOf(value: Value, entities: ?*const EntitySnapshot) ?*py.PyObject {
             }
             break :list result;
         },
-        .map => |entries| mapObject(entries, entities),
+        .map => |entries| mapObject(entries, out),
         .node => |id| node: {
-            const data = if (entities) |snapshot| snapshot.nodes.get(id) else null;
+            const data = if (out.entities) |snapshot| snapshot.nodes.get(id) else null;
             const labels = py.PyTuple_New(@intCast(if (data) |d| d.labels.len else 0)) orelse break :node null;
             if (data) |d| for (d.labels, 0..) |label, i| {
                 _ = py.PyTuple_SetItem(labels, @intCast(i), string(label) orelse {
@@ -270,21 +257,21 @@ fn objectOf(value: Value, entities: ?*const EntitySnapshot) ?*py.PyObject {
                     break :node null;
                 });
             };
-            const properties = propertiesObject(if (data) |d| d.properties else &.{}, entities) orelse {
+            const properties = propertiesObject(if (data) |d| d.properties else &.{}, out) orelse {
                 py.Py_DecRef(labels);
                 break :node null;
             };
             break :node newEntity(classes.node, &node_fields, &.{ py.PyLong_FromUnsignedLongLong(id), labels, properties });
         },
         .relationship => |r| relationship: {
-            const stored = if (entities) |snapshot| snapshot.relationships.getContext(r, .{}) else null;
-            const properties = propertiesObject(stored orelse &.{}, entities) orelse break :relationship null;
+            const stored = if (out.entities) |snapshot| snapshot.relationships.getContext(r, .{}) else null;
+            const properties = propertiesObject(stored orelse &.{}, out) orelse break :relationship null;
             break :relationship newEntity(classes.relationship, &relationship_fields, &.{ py.PyLong_FromUnsignedLongLong(r.src), py.PyLong_FromUnsignedLongLong(r.dst), string(r.edge_type), properties });
         },
         .path => |p| path: {
             const nodes = py.PyTuple_New(@intCast(p.nodes.len)) orelse break :path null;
             for (p.nodes, 0..) |id, i| {
-                _ = py.PyTuple_SetItem(nodes, @intCast(i), objectOf(.{ .node = id }, entities) orelse {
+                _ = py.PyTuple_SetItem(nodes, @intCast(i), objectOf(.{ .node = id }, out) orelse {
                     py.Py_DecRef(nodes);
                     break :path null;
                 });
@@ -294,7 +281,7 @@ fn objectOf(value: Value, entities: ?*const EntitySnapshot) ?*py.PyObject {
                 break :path null;
             };
             for (p.relationships, 0..) |r, i| {
-                _ = py.PyTuple_SetItem(relationships, @intCast(i), objectOf(.{ .relationship = r }, entities) orelse {
+                _ = py.PyTuple_SetItem(relationships, @intCast(i), objectOf(.{ .relationship = r }, out) orelse {
                     py.Py_DecRef(nodes);
                     py.Py_DecRef(relationships);
                     break :path null;
@@ -302,28 +289,14 @@ fn objectOf(value: Value, entities: ?*const EntitySnapshot) ?*py.PyObject {
             }
             break :path newEntity(classes.path, &path_fields, &.{ nodes, relationships });
         },
-        inline .date, .local_time, .time, .local_date_time, .date_time, .duration => |t, tag| temporal: {
-            var buffer: [128]u8 = undefined;
-            var writer = std.Io.Writer.fixed(&buffer);
-            t.format(&writer) catch break :temporal raise(py.PyExc_ValueError, "temporal value too long", .{});
-            const class = switch (tag) {
-                .date => classes.date,
-                .local_time => classes.local_time,
-                .time => classes.time,
-                .local_date_time => classes.local_date_time,
-                .date_time => classes.date_time,
-                .duration => classes.duration,
-                else => unreachable,
-            };
-            break :temporal callClass(class, &.{string(writer.buffered())});
-        },
+        .date, .local_time, .time, .local_date_time, .date_time, .duration => temporals.toPython(value, out.iso_temporals),
     };
 }
 
-fn mapObject(entries: []const MapEntry, entities: ?*const EntitySnapshot) ?*py.PyObject {
+fn mapObject(entries: []const MapEntry, out: Output) ?*py.PyObject {
     const result = py.PyDict_New() orelse return null;
     for (entries) |entry| {
-        if (!setItem(result, entry.key, objectOf(entry.value, entities))) {
+        if (!setItem(result, entry.key, objectOf(entry.value, out))) {
             py.Py_DecRef(result);
             return null;
         }
@@ -331,10 +304,10 @@ fn mapObject(entries: []const MapEntry, entities: ?*const EntitySnapshot) ?*py.P
     return result;
 }
 
-fn propertiesObject(properties: anytype, entities: ?*const EntitySnapshot) ?*py.PyObject {
+fn propertiesObject(properties: anytype, out: Output) ?*py.PyObject {
     const result = py.PyDict_New() orelse return null;
     for (properties) |property| {
-        if (!setItem(result, property.name, objectOf(property.value, entities))) {
+        if (!setItem(result, property.name, objectOf(property.value, out))) {
             py.Py_DecRef(result);
             return null;
         }
@@ -418,7 +391,8 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var path_pointer: [*c]const u8 = undefined;
     var path_length: py.Py_ssize_t = 0;
     var durability: c_int = 0;
-    if (py.PyArg_ParseTuple(args, "s#i", &path_pointer, &path_length, &durability) == 0) return null;
+    var iso_temporals: c_int = 0;
+    if (py.PyArg_ParseTuple(args, "s#ii", &path_pointer, &path_length, &durability, &iso_temporals) == 0) return null;
     const mode: KeyValueStore.Durability = switch (durability) {
         0 => .full,
         1 => .relaxed,
@@ -432,6 +406,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     };
     database.graph = Graph.init(&database.store, allocator);
     database.diagnostic = Diagnostic.init();
+    database.iso_temporals = iso_temporals != 0;
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
         database.store.deinit();
         allocator.destroy(database);
@@ -510,7 +485,7 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
         };
         _ = py.PyList_SetItem(result, @intCast(i), cells);
         for (row.items, 0..) |cell, j| {
-            const object = objectOf(cell, &executor.entities) orelse {
+            const object = objectOf(cell, .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals }) orelse {
                 py.Py_DecRef(result);
                 return null;
             };
@@ -650,13 +625,13 @@ fn exportGraph(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     const own_transaction = !graph.inWriteTransaction();
     if (own_transaction) graph.beginRead() catch return storageFailure();
     defer if (own_transaction) graph.commitRead();
-    return exportIn(graph) catch |err| switch (err) {
+    return exportIn(graph, database.iso_temporals) catch |err| switch (err) {
         error.PythonError => null,
         else => storageFailure(),
     };
 }
 
-fn exportIn(graph: *Graph) !*py.PyObject {
+fn exportIn(graph: *Graph, iso_temporals: bool) !*py.PyObject {
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -684,7 +659,7 @@ fn exportIn(graph: *Graph) !*py.PyObject {
         }
         var properties = try graph.propertiesOf(id);
         defer properties.deinit();
-        if (!setItem(node, "properties", try propertiesFrom(&properties, arena))) return error.PythonError;
+        if (!setItem(node, "properties", try propertiesFrom(&properties, arena, iso_temporals))) return error.PythonError;
         if (py.PyList_Append(nodes, node) != 0) return error.PythonError;
 
         var edges = try graph.edgesOf(id, .out);
@@ -697,20 +672,29 @@ fn exportIn(graph: *Graph) !*py.PyObject {
             if (!setItem(relationship, "type", string(edge.edge_type))) return error.PythonError;
             var edge_properties = try graph.edgePropertiesOf(id, edge.neighbour, edge.edge_type);
             defer edge_properties.deinit();
-            if (!setItem(relationship, "properties", try propertiesFrom(&edge_properties, arena))) return error.PythonError;
+            if (!setItem(relationship, "properties", try propertiesFrom(&edge_properties, arena, iso_temporals))) return error.PythonError;
             if (py.PyList_Append(relationships, relationship) != 0) return error.PythonError;
         }
     }
     return result;
 }
 
-fn propertiesFrom(properties: *acmedb.graph.PropertyIterator, arena: std.mem.Allocator) !*py.PyObject {
+fn propertiesFrom(properties: *acmedb.graph.PropertyIterator, arena: std.mem.Allocator, iso_temporals: bool) !*py.PyObject {
     const result = py.PyDict_New() orelse return error.PythonError;
     errdefer py.Py_DecRef(result);
     while (try properties.next()) |property| {
-        if (!setItem(result, property.name, objectOf(try property.value(arena), null))) return error.PythonError;
+        if (!setItem(result, property.name, objectOf(try property.value(arena), .{ .entities = null, .iso_temporals = iso_temporals }))) return error.PythonError;
     }
     return result;
+}
+
+fn durationText(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var months: c_longlong = 0;
+    var days: c_longlong = 0;
+    var seconds: c_longlong = 0;
+    var nanoseconds: c_uint = 0;
+    if (py.PyArg_ParseTuple(args, "LLLI", &months, &days, &seconds, &nanoseconds) == 0) return null;
+    return temporals.durationText(months, days, seconds, nanoseconds);
 }
 
 // --- The module --------------------------------------------------------------------
@@ -733,6 +717,7 @@ var methods = [_]py.PyMethodDef{
     method("add_edge", addEdge),
     method("set_property", setProperty),
     method("export_graph", exportGraph),
+    method("duration_text", durationText),
     .{ .ml_name = null, .ml_meth = null, .ml_flags = 0, .ml_doc = null },
 };
 

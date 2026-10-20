@@ -13,7 +13,6 @@ from acmedb import (
     ArithmeticQueryError,
     ClosedError,
     Database,
-    Date,
     Duration,
     NodeNotFoundError,
     Node,
@@ -165,30 +164,47 @@ def test_temporal_values(db):
     import datetime as dt
     from zoneinfo import ZoneInfo
 
-    (d, t, ldt, zoned, dur), = db.query(
+    (d, t, ldt, zoned, offset, short, long), = db.query(
         "RETURN date('2024-07-02'), time('09:30:00.123456789+02:00'), localdatetime('2024-07-02T09:30'),"
-        " datetime('2024-07-02T09:30[Europe/Madrid]'), duration('P1DT2H')"
+        " datetime('2024-07-02T09:30[Europe/Madrid]'), datetime('2024-07-02T09:30-03:00'),"
+        " duration('P1DT2H'), duration('P1M2D')"
     )
-    assert isinstance(d, Date) and str(d) == "2024-07-02" and d == dt.date(2024, 7, 2)
-    assert str(t) == "09:30:00.123456789+02:00"  # nanoseconds kept
-    assert t.to_native() == dt.time(9, 30, 0, 123456, tzinfo=dt.timezone(dt.timedelta(hours=2)))
-    assert ldt == dt.datetime(2024, 7, 2, 9, 30)
-    assert zoned.zone == "Europe/Madrid"
-    assert zoned.to_native() == dt.datetime(2024, 7, 2, 9, 30, tzinfo=ZoneInfo("Europe/Madrid"))
-    assert isinstance(dur, Duration) and (dur.months, dur.days, dur.seconds) == (0, 1, 7200)
-    assert dur.to_native() == dt.timedelta(days=1, hours=2)
+    assert d == dt.date(2024, 7, 2) and type(d) is dt.date
+    # Microseconds: the nanoseconds are truncated.
+    assert t == dt.time(9, 30, 0, 123456, tzinfo=dt.timezone(dt.timedelta(hours=2)))
+    assert ldt == dt.datetime(2024, 7, 2, 9, 30) and ldt.tzinfo is None
+    assert zoned == dt.datetime(2024, 7, 2, 9, 30, tzinfo=ZoneInfo("Europe/Madrid"))
+    assert zoned.tzinfo == ZoneInfo("Europe/Madrid")
+    assert offset.utcoffset() == dt.timedelta(hours=-3)
+    assert short == dt.timedelta(days=1, hours=2)
+    assert long == Duration(months=1, days=2) and str(long) == "P1M2D"
 
-    # datetime-module values and acmedb's own go in as parameters.
+    # datetime-module values go in as parameters, keeping their zone.
     madrid = dt.datetime(2024, 7, 2, 7, 30, tzinfo=dt.timezone.utc).astimezone(ZoneInfo("Europe/Madrid"))
     rows = db.query(
-        "RETURN $d + duration('P1D'), $at.hour, $at.timezone, $wait * 2, $same = date('2024-07-02')",
-        d=dt.date(2024, 7, 2), at=madrid, wait=dt.timedelta(minutes=90), same=d,
+        "RETURN $d + duration('P1D'), $at.hour, $at.timezone, $wait * 2, $month + $month, $local",
+        d=dt.date(2024, 7, 2), at=madrid, wait=dt.timedelta(minutes=90), month=Duration(months=1),
+        local=dt.time(8, 15),
     )
-    assert rows == [[dt.date(2024, 7, 3), 9, "Europe/Madrid", Duration("PT3H"), True]]
+    assert rows == [[dt.date(2024, 7, 3), 9, "Europe/Madrid", dt.timedelta(hours=3), Duration(months=2), dt.time(8, 15)]]
+    # An ambiguous wall-clock time keeps the instant (fold) across the round trip.
+    later = dt.datetime(2024, 10, 27, 2, 30, fold=1, tzinfo=ZoneInfo("Europe/Madrid"))
+    (back,), = db.query("RETURN $t", t=later)
+    assert back.utcoffset() == dt.timedelta(hours=1) and back == later
     # Temporal values are stored as properties.
     db.query("CREATE (:Badge {issued: date('2024-03-01'), shifts: [localtime('09:00'), localtime('18:00')]})")
     (issued, shifts), = db.query("MATCH (b:Badge) RETURN b.issued, b.shifts")
-    assert issued == dt.date(2024, 3, 1) and [str(s) for s in shifts] == ["09:00", "18:00"]
+    assert issued == dt.date(2024, 3, 1) and shifts == [dt.time(9), dt.time(18)]
+    # Years Python cannot represent are an error; the exact text is available.
+    with pytest.raises(ValueError):
+        db.query("RETURN date('+20000-01-01')")
+
+
+def test_iso_temporals(tmp_path):
+    with Database(str(tmp_path), temporals="iso") as db:
+        assert db.query("RETURN time('09:30:00.123456789+02:00'), date('+20000-01-01')") == [
+            ["09:30:00.123456789+02:00", "+20000-01-01"]
+        ]
 
 
 def test_non_ascii_names_use_byte_lengths(db):

@@ -31,7 +31,7 @@ with Database(tempfile.mkdtemp()) as db:
 
 ## The `Database` object
 
-- `Database(path, durability="full")` opens (or creates) the database in directory `path`; use it
+- `Database(path, durability="full", temporals="python")` opens (or creates) the database in directory `path`; use it
   as a context manager, or call `close()`. `durability` is how much a commit waits for the disk:
   `"full"` (each commit is on disk when it returns, about 8 ms), `"relaxed"` (a power failure can
   lose the last commit, never corrupt the database) or `"deferred"` (commits are written by the
@@ -43,15 +43,18 @@ with Database(tempfile.mkdtemp()) as db:
   values, below); maps come back as dicts; cells become `int`, `float`, `str`, `bool`, `None` (null), a
   `list`, a `dict`, a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
   properties)`, a `Path(nodes, relationships)`, or a temporal value.
-- Temporal results are `Date`, `LocalTime`, `Time`, `LocalDateTime`, `DateTime` and `Duration`:
-  each keeps acmedb's exact value (nanoseconds, any year, the zone name) as its ISO 8601 text
-  (`str(value)`), compares equal to the `datetime`-module value it represents, and converts to
-  one with `to_native()` (truncating to microseconds). As parameters these and the `datetime`
-  module's types are accepted: `date`, `time` and `datetime` (naive ones as local values; an
-  aware `datetime` in a `zoneinfo.ZoneInfo` zone keeps the zone), and `timedelta`.
+- Temporal results are the `datetime` module's types: `date`; `time` (naive for a local time,
+  with a fixed-offset `timezone` for a time); `datetime` (naive for a local date-time, in its
+  `zoneinfo.ZoneInfo` zone or at its fixed offset for a date-time); `timedelta` for a duration, or
+  `acmedb.Duration(months, days, seconds, nanoseconds)` when it has months (a month is not a fixed
+  number of days). They hold microseconds, so nanoseconds are truncated, and years 1 to 9999, so a
+  year outside raises `ValueError`. `Database(path, temporals="iso")` returns every temporal value
+  as its exact ISO 8601 text instead. As parameters the same types are accepted (naive values as
+  local ones; an aware `datetime` in a `ZoneInfo` zone keeps the zone).
 - `export_graph() -> dict` returns the whole graph, read straight from storage.
 - `allocate_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_property(id, name, value)`
-  write data. `set_property` accepts `int`, `float` or `str` values.
+  write data. `set_property` accepts any value a query can store: numbers, `str`, `bool`, temporal
+  values, lists of one type, and dicts as documents; `None` removes the property.
 - `write()` is a context manager that batches mutators into **one** write transaction (one fsync):
   the bulk-ingestion path. An exception inside the block aborts it.
 
@@ -83,8 +86,8 @@ is read replication (a writer → N replicas), which is future work.
 
 `acmedb._native` (`python/native/module.zig`) opens the database, runs queries and writes, and
 converts values directly: a query's parameters into engine values, its rows into Python objects
-(nodes, relationships and paths are built without running `__init__`; temporal values through the
-classes in `acmedb/temporal.py`). It runs the engine with the GIL released and pauses Python's
+(nodes, relationships and paths are built without running `__init__`; temporal values field by
+field, in `python/native/temporals.zig`). It runs the engine with the GIL released and pauses Python's
 cycle collector while it builds a large result. `acmedb/db.py` adds the `Database` class:
 locking, `write()` blocks, argument checks. `acmedb/_engine.py` loads the module and registers the
 classes and exceptions it builds. Measured costs are in `bench/RESULTS.md`. To embed from another

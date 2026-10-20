@@ -30,6 +30,8 @@ pub const sequence_algorithms = @import("sequence_algorithms.zig");
 pub const temporal = struct {
     pub const types = @import("temporal/types.zig");
     pub const parse = @import("temporal/parse.zig");
+    pub const calendar = @import("temporal/calendar.zig");
+    pub const zones = @import("temporal/zones.zig");
 };
 
 pub const ast = @import("query/ast.zig");

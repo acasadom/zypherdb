@@ -184,7 +184,9 @@ def run_scenario(scenario: Scenario) -> dict:
     from acmedb import Database
 
     negative = any(s.keyword == "Then" and "should be raised" in s.text for s in scenario.steps)
-    with tempfile.TemporaryDirectory(prefix="acmedb-tck-") as path, Database(path) as db:
+    # Temporal values as their exact ISO text: the TCK writes them that way,
+    # with nanoseconds the datetime module cannot hold.
+    with tempfile.TemporaryDirectory(prefix="acmedb-tck-") as path, Database(path, temporals="iso") as db:
         outcome = None
         parameters = {}
         try:
