@@ -8,7 +8,7 @@ import json
 import math
 import threading
 
-from . import _ffi, entities
+from . import _ffi, entities, temporal
 from .errors import AcmedbError, ClosedError, NodeNotFoundError, StorageError, error_from_code
 
 # Value ranges the C ABI accepts; ctypes would silently truncate anything wider.
@@ -24,7 +24,7 @@ _RETURN_NODE_NOT_FOUND = 2
 
 def _check_parameter(name: str, value):
     """Rejects values the engine cannot take, before they cross into C."""
-    if value is None or isinstance(value, (bool, str)):
+    if value is None or isinstance(value, (bool, str)) or temporal.encode(value) is not None:
         return
     if isinstance(value, int):
         if not _I64_MIN <= value <= _I64_MAX:
@@ -51,7 +51,7 @@ def _check_parameter(name: str, value):
 def _encode_parameters(values: dict) -> bytes:
     for name, value in values.items():
         _check_parameter(name, value)
-    return json.dumps(values).encode()
+    return json.dumps(values, default=temporal.encode).encode()
 
 
 def _check_node_id(id: int) -> int:

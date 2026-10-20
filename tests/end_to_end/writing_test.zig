@@ -244,7 +244,7 @@ test "CREATE and MERGE write anonymous nodes" {
     });
 }
 
-test "boolean properties are stored, null removes, lists are refused cleanly" {
+test "boolean and list properties are stored, null removes, mixed lists are refused" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -272,8 +272,14 @@ test "boolean properties are stored, null removes, lists are refused cleanly" {
         &.{.{ .int = 0 }},
     });
 
-    // A list is refused with an error instead of aborting the process.
-    try expectQueryError(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = [1, 2]", error.UnsupportedPropertyType);
+    // A list of one type is stored (and indexed); a mixed list or a map is
+    // refused with an error instead of aborting the process.
+    try expectQuery(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = [1, 2.5], c.names = ['a', 'b']", &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card {tags: [1, 2.5]}) RETURN c.tags, c.names", &.{
+        &.{ .{ .list = &.{ .{ .int = 1 }, .{ .float = 2.5 } } }, .{ .list = &.{ .{ .string = "a" }, .{ .string = "b" } } } },
+    });
+    try expectQueryError(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = [1, 'a']", error.UnsupportedPropertyType);
+    try expectQueryError(&ast, &g, "MATCH (c:Card {code: 2}) SET c.tags = {a: 1}", error.UnsupportedPropertyType);
 }
 
 test "null property values: MATCH finds nothing, MERGE is refused" {

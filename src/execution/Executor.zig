@@ -36,6 +36,7 @@ const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
 const functions = @import("functions.zig");
 const projection = @import("projection.zig");
+const temporal_functions = @import("temporal_functions.zig");
 
 const Executor = @This();
 
@@ -92,6 +93,9 @@ groups: ValueGrouping,
 /// While evaluating an aggregating expression for one group: the values that
 /// replace its aggregate calls and grouping-key sub-expressions.
 expression_overrides: ?*const std.AutoHashMapUnmanaged(Index, Value),
+/// The time the statement runs at (nanoseconds since the epoch), read from
+/// the clock when first asked for, so `datetime()` is the same throughout.
+statement_time: ?i128,
 
 pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
     return .{
@@ -115,6 +119,7 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .return_aggregation = no_aggregation,
         .groups = .{},
         .expression_overrides = null,
+        .statement_time = null,
     };
 }
 
@@ -171,6 +176,13 @@ fn reset(self: *Executor) void {
     self.return_aggregation = no_aggregation;
     self.groups = .{};
     self.expression_overrides = null;
+    self.statement_time = null;
+}
+
+/// The statement's time, in nanoseconds since the epoch.
+pub fn statementTime(self: *Executor) i128 {
+    if (self.statement_time == null) self.statement_time = temporal_functions.clockNow();
+    return self.statement_time.?;
 }
 
 /// The expression of each projection item.

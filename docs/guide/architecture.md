@@ -58,7 +58,7 @@ flowchart TB
     KV["key_value_store.zig — transactions, prefix scans"]
     LMDB["lmdb_bindings.zig — C bindings"]
   end
-  Shared["value.zig · sequence_algorithms.zig · diagnostics.zig"]
+  Shared["value.zig · temporal/ · sequence_algorithms.zig · diagnostics.zig"]
 
   CAPI --> Executor
   CAPI --> Graph
@@ -79,7 +79,8 @@ flowchart TB
 | `src/diagnostics.zig` | `Diagnostic`: an error code, a message and a byte offset — the error-reporting seam. |
 | `src/storage/lmdb_bindings.zig` | Hand-written C bindings: `opaque {}` handles for `MDB_env`/`MDB_txn`/`MDB_cursor`, `extern struct MDB_val`, the `extern "c" fn`s and constants. |
 | `src/storage/key_value_store.zig` | `KeyValueStore`, a RAII wrapper over LMDB: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix` and explicit write/read transactions. `scanPrefix` returns an **iterator**, not a callback. |
-| `src/storage/key_encoding.zig` | The byte layout of every key (markers, node ids, edge keys, index keys) and of stored values. The only place that knows the layout. |
+| `src/storage/key_encoding.zig` | The byte layout of every key (markers, node ids, edge keys, index keys). The only place that knows the key layout. |
+| `src/storage/value_encoding.zig` | How a property value is stored, and written in index keys. |
 | `src/storage/graph.zig` | `Graph`: nodes, labels, typed edges, properties and their indexes, built on the key encoding. Each operation documents its cost. |
 | `src/query/lexer.zig` | `tokenize`: query text to tokens (UTF-8 and backtick-quoted identifiers). |
 | `src/query/parser.zig` | The `Parser` and the clause/pattern grammar. |
@@ -93,6 +94,9 @@ flowchart TB
 | `src/execution/aggregation.zig` | Aggregate states and the generic `Grouping(Key, KeyContext)`. |
 | `src/execution/projection.zig` | WITH and RETURN: projection, DISTINCT, ORDER BY, SKIP, LIMIT (`Sortable(T)`, `sortByKey`). |
 | `src/execution/functions.zig` | The built-in functions, as one table. |
+| `src/execution/comparison.zig` | `=` and the ordering operators: three-valued comparability, as opposed to `Value.order`. |
+| `src/execution/temporal_functions.zig` | The temporal functions, components and arithmetic, on `Value`s. |
+| `src/temporal/` | The calendar (`calendar.zig`), time zones (`zones.zig`), the temporal types (`types.zig`), ISO 8601 parsing (`parse.zig`), durations (`durations.zig`) and building values from fields (`selection.zig`). |
 | `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE. |
 | `src/execution/bindings.zig` | `Binding`/`Bindings`: what each query variable is bound to (regular types). |
 | `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. |

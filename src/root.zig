@@ -26,6 +26,12 @@ pub const orderSequences = value.orderSequences;
 
 pub const sequence_algorithms = @import("sequence_algorithms.zig");
 
+/// Dates, times, date-times and durations (see src/temporal/).
+pub const temporal = struct {
+    pub const types = @import("temporal/types.zig");
+    pub const parse = @import("temporal/parse.zig");
+};
+
 pub const ast = @import("query/ast.zig");
 
 pub const Ast = ast.Ast;
@@ -64,4 +70,12 @@ comptime {
 
 test {
     @import("std").testing.refAllDecls(@This());
+    // Modules with unit tests that no declaration above reaches yet.
+    _ = @import("storage/value_encoding.zig");
+    _ = @import("temporal/calendar.zig");
+    _ = @import("temporal/zones.zig");
+    _ = @import("temporal/types.zig");
+    _ = @import("temporal/parse.zig");
+    _ = @import("temporal/durations.zig");
+    _ = @import("temporal/selection.zig");
 }

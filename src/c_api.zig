@@ -59,6 +59,12 @@ pub const TYPE_MAP: c_int = 7;
 /// A path cell: read it through `acmedb_result_to_json`.
 pub const TYPE_PATH: c_int = 8;
 pub const TYPE_FLOAT64: c_int = 9;
+pub const TYPE_DATE: c_int = 10;
+pub const TYPE_LOCAL_TIME: c_int = 11;
+pub const TYPE_TIME: c_int = 12;
+pub const TYPE_LOCAL_DATE_TIME: c_int = 13;
+pub const TYPE_DATE_TIME: c_int = 14;
+pub const TYPE_DURATION: c_int = 15;
 
 pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     const path = path_ptr[0..path_len];
@@ -243,6 +249,7 @@ fn parseParameters(arena: Allocator, json: []const u8, diagnostic: *Diagnostic) 
         const value = parameterValue(arena, entry.value_ptr.*) catch |err| {
             diagnostic.set(.type_mismatch, 0, "parameter '{s}': {s}", .{ entry.key_ptr.*, switch (err) {
                 error.UnsupportedNumber => "integers must fit in 64 bits",
+                error.InvalidTemporal => "not a valid temporal value",
                 error.OutOfMemory => "out of memory",
             } });
             return error.InvalidParameters;
@@ -252,7 +259,7 @@ fn parseParameters(arena: Allocator, json: []const u8, diagnostic: *Diagnostic) 
     return parameters;
 }
 
-fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumber, OutOfMemory }!Value {
+fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumber, InvalidTemporal, OutOfMemory }!Value {
     return switch (json) {
         .null => .{ .null = {} },
         .bool => |b| .{ .boolean = b },
@@ -267,6 +274,7 @@ fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumb
             break :blk .{ .list = values };
         },
         .object => |object| blk: {
+            if (try temporalParameter(object)) |value| break :blk value;
             const entries = try arena.alloc(MapEntry, object.count());
             var iterator = object.iterator();
             var i: usize = 0;
@@ -276,6 +284,36 @@ fn parameterValue(arena: Allocator, json: std.json.Value) error{ UnsupportedNumb
             break :blk mapOf(entries);
         },
     };
+}
+
+/// A temporal parameter: an object with one key, the temporal tag of the
+/// JSON results (`{"~date": "2024-05-01"}`), holding ISO 8601 text.
+fn temporalParameter(object: std.json.ObjectMap) error{InvalidTemporal}!?Value {
+    if (object.count() != 1) return null;
+    var iterator = object.iterator();
+    const entry = iterator.next().?;
+    const tag = entry.key_ptr.*;
+    if (tag.len < 2 or tag[0] != '~') return null;
+    const text = switch (entry.value_ptr.*) {
+        .string => |t| t,
+        else => return error.InvalidTemporal,
+    };
+    const parse = @import("temporal/parse.zig");
+    const kinds = .{ "date", "localtime", "time", "localdatetime", "datetime", "duration" };
+    inline for (kinds) |kind| {
+        if (std.mem.eql(u8, tag[1..], kind)) {
+            const err = error.InvalidTemporal;
+            return switch (comptime std.meta.stringToEnum(enum { date, localtime, time, localdatetime, datetime, duration }, kind).?) {
+                .date => .{ .date = parse.date(text) catch return err },
+                .localtime => .{ .local_time = parse.localTime(text) catch return err },
+                .time => .{ .time = parse.time(text) catch return err },
+                .localdatetime => .{ .local_date_time = parse.localDateTime(text) catch return err },
+                .datetime => .{ .date_time = parse.dateTime(text) catch return err },
+                .duration => .{ .duration = parse.duration(text) catch return err },
+            };
+        }
+    }
+    return null;
 }
 
 /// Serializes the whole result to a JSON array of arrays (`[[…], […]]`), so a
@@ -374,7 +412,9 @@ fn appendPropertiesJson(properties: *PropertyIterator, buffer: *std.ArrayList(u8
         first = false;
         try appendJsonString(buffer, allocator, property.name);
         try buffer.append(allocator, ':');
-        try appendJsonValue(buffer, allocator, property.value, null);
+        var scratch = std.heap.ArenaAllocator.init(allocator);
+        defer scratch.deinit();
+        try appendJsonValue(buffer, allocator, try property.value(scratch.allocator()), null);
     }
     try buffer.append(allocator, '}');
 }
@@ -397,6 +437,16 @@ fn appendJsonString(buffer: *std.ArrayList(u8), result_allocator: Allocator, s: 
         }
     }
     try buffer.append(result_allocator, '"');
+}
+
+/// The JSON tag of a temporal value: `~date`, `~localtime`, ...
+fn temporalTag(comptime tag: std.meta.Tag(Value)) []const u8 {
+    return switch (tag) {
+        .local_time => "localtime",
+        .local_date_time => "localdatetime",
+        .date_time => "datetime",
+        else => @tagName(tag),
+    };
 }
 
 /// Appends `v` as JSON. Nodes and relationships become objects tagged
@@ -455,6 +505,10 @@ fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: V
                 try appendJsonValue(buffer, result_allocator, entry.value, entities);
             }
             try buffer.append(result_allocator, '}');
+        },
+        // Temporal values: tagged ISO 8601 text, `{"~date":"2024-05-01"}`.
+        inline .date, .local_time, .time, .local_date_time, .date_time, .duration => |t, tag| {
+            try buffer.print(result_allocator, "{{\"~{s}\":\"{f}\"}}", .{ temporalTag(tag), t });
         },
         .relationship => |r| {
             const properties: []const SnapshotProperty = if (entities) |snapshot| snapshot.relationships.getContext(r, .{}) orelse &.{} else &.{};
@@ -534,6 +588,12 @@ pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) 
         .relationship => TYPE_RELATIONSHIP,
         .map => TYPE_MAP,
         .path => TYPE_PATH,
+        .date => TYPE_DATE,
+        .local_time => TYPE_LOCAL_TIME,
+        .time => TYPE_TIME,
+        .local_date_time => TYPE_LOCAL_DATE_TIME,
+        .date_time => TYPE_DATE_TIME,
+        .duration => TYPE_DURATION,
     };
 }
 
@@ -608,6 +668,12 @@ pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, co
         .relationship => TYPE_RELATIONSHIP,
         .map => TYPE_MAP,
         .path => TYPE_PATH,
+        .date => TYPE_DATE,
+        .local_time => TYPE_LOCAL_TIME,
+        .time => TYPE_TIME,
+        .local_date_time => TYPE_LOCAL_DATE_TIME,
+        .date_time => TYPE_DATE_TIME,
+        .duration => TYPE_DURATION,
     };
 }
 

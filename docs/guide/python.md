@@ -31,9 +31,16 @@ with Database(tempfile.mkdtemp()) as db:
 - `Database(path)` opens (or creates) the database; use it as a context manager, or call `close()`.
 - `query(text, parameters=None, /, **named) -> list[list]` runs one query, with its `$name`
   parameters from a dict and/or keyword arguments (`db.query("... {id: $card} ...", card=123)`;
-  values: `int`, finite `float`, `str`, `bool`, `None`, lists and `str`-keyed dicts); maps come back as dicts; cells become `int`, `float`, `str`, `bool`, `None` (null), a
+  values: `int`, finite `float`, `str`, `bool`, `None`, lists, `str`-keyed dicts, and temporal
+  values, below); maps come back as dicts; cells become `int`, `float`, `str`, `bool`, `None` (null), a
   `list`, a `dict`, a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
-  properties)`, or a `Path(nodes, relationships)`.
+  properties)`, a `Path(nodes, relationships)`, or a temporal value.
+- Temporal results are `Date`, `LocalTime`, `Time`, `LocalDateTime`, `DateTime` and `Duration`:
+  each keeps acmedb's exact value (nanoseconds, any year, the zone name) as its ISO 8601 text
+  (`str(value)`), compares equal to the `datetime`-module value it represents, and converts to
+  one with `to_native()` (truncating to microseconds). As parameters these and the `datetime`
+  module's types are accepted: `date`, `time` and `datetime` (naive ones as local values; an
+  aware `datetime` in a `zoneinfo.ZoneInfo` zone keeps the zone), and `timedelta`.
 - `export_graph() -> dict` returns the whole graph, read straight from storage.
 - `allocate_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_property(id, name, value)`
   write data. `set_property` accepts `int`, `float` or `str` values.

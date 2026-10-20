@@ -391,7 +391,7 @@ test "labelsOf, propertiesOf, edgePropertiesOf and edgesOf enumerate a node" {
     defer properties.deinit();
     const age = (try properties.next()).?;
     try testing.expectEqualStrings("age", age.name);
-    try testing.expectEqual(@as(i64, 40), age.value.int);
+    try testing.expectEqual(@as(i64, 40), (try age.value(testing.allocator)).int);
     try testing.expectEqualStrings("name", (try properties.next()).?.name);
     try testing.expect((try properties.next()) == null);
 

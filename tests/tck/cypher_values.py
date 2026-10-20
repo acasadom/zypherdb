@@ -46,7 +46,11 @@ def from_python(value):
         return ("list", tuple(from_python(v) for v in value))
     if isinstance(value, dict):
         return canonical_map({k: from_python(v) for k, v in value.items()})
-    from acmedb import Node, Path, Relationship
+    from acmedb import Node, Path, Relationship, Temporal
+
+    # The TCK writes temporal values as their ISO 8601 strings.
+    if isinstance(value, Temporal):
+        return ("string", value.iso)
 
     if isinstance(value, Node):
         properties = {k: from_python(v) for k, v in value.properties.items()}

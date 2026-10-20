@@ -24,14 +24,15 @@ const PrefixIterator = @import("key_value_store.zig").PrefixIterator;
 const Allocator = std.mem.Allocator;
 
 const key_encoding = @import("key_encoding.zig");
+const value_encoding = @import("value_encoding.zig");
 
 pub const NodeId = key_encoding.NodeId;
 pub const Direction = key_encoding.Direction;
 pub const EdgeKey = key_encoding.EdgeKey;
-pub const Value = key_encoding.Value;
+pub const Value = @import("../value.zig").Value;
 
 /// Errors of graph writes: storage failures, or a value that cannot be stored
-/// as a property (see `key_encoding.isStorable`).
+/// as a property (see `value_encoding.isStorable`).
 pub const GraphError = StorageError || error{UnsupportedPropertyType};
 
 // ---------------------------------------------------------------------------
@@ -193,9 +194,11 @@ pub const Graph = struct {
         try key_encoding.appendNodePropertyKey(&pprefix, self.allocator, id, "");
         var pit = try self.store.scanPrefix(pprefix.items);
         defer pit.deinit();
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
         while (try pit.next()) |entry| {
             const property_name = entry.key[1 + key_encoding.node_id_length + 1 ..];
-            try self.deleteIndexEntry(id, property_name, key_encoding.decodeValue(entry.value));
+            try self.deleteIndexEntry(id, property_name, try value_encoding.decodeValue(entry.value, scratch.allocator()));
         }
 
         try self.deleteKeysUnder(nprefix.items);
@@ -256,8 +259,10 @@ pub const Graph = struct {
         }
         scan.deinit();
 
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
         for (properties.items) |p| {
-            try self.deleteEdgeIndexEntry(p.name, key_encoding.decodeValue(p.value), src, dst, edge_type);
+            try self.deleteEdgeIndexEntry(p.name, try value_encoding.decodeValue(p.value, scratch.allocator()), src, dst, edge_type);
             key.clearRetainingCapacity();
             try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, p.name);
             try self.store.del(key.items);
@@ -301,15 +306,11 @@ pub const Graph = struct {
     /// list fails with `UnsupportedPropertyType`. O(log N).
     pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeProperty(id, name);
-        if (!key_encoding.isStorable(value)) return error.UnsupportedPropertyType;
+        if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
         // Remove the previous index entry, if any.
-        if (try self.getProperty(id, name, self.allocator)) |old| {
-            defer switch (old) {
-                .string => |s| self.allocator.free(s),
-                else => {},
-            };
-            try self.deleteIndexEntry(id, name, old);
-        }
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        if (try self.getProperty(id, name, scratch.allocator())) |old| try self.deleteIndexEntry(id, name, old);
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -317,7 +318,7 @@ pub const Graph = struct {
 
         var encoded = std.ArrayList(u8).empty;
         defer encoded.deinit(self.allocator);
-        try key_encoding.encodeValue(&encoded, self.allocator, value);
+        try value_encoding.encodeValue(&encoded, self.allocator, value);
         try self.store.put(key.items, encoded.items);
 
         try self.putIndexEntry(id, name, value);
@@ -326,13 +327,9 @@ pub const Graph = struct {
     /// Removes a typed property `name` from node `id` (and its index entry).
     /// Idempotent.
     pub fn removeProperty(self: *Graph, id: NodeId, name: []const u8) StorageError!void {
-        if (try self.getProperty(id, name, self.allocator)) |old| {
-            defer switch (old) {
-                .string => |s| self.allocator.free(s),
-                else => {},
-            };
-            try self.deleteIndexEntry(id, name, old);
-        }
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        if (try self.getProperty(id, name, scratch.allocator())) |old| try self.deleteIndexEntry(id, name, old);
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try key_encoding.appendNodePropertyKey(&key, self.allocator, id, name);
@@ -371,7 +368,7 @@ pub const Graph = struct {
         try key_encoding.appendNodePropertyKey(&key, self.allocator, id, name);
         const raw = (try self.store.get(key.items)) orelse return null;
         defer self.store.allocator.free(raw);
-        return try key_encoding.decodeOwnedValue(raw, allocator);
+        return try value_encoding.decodeValue(raw, allocator);
     }
 
     /// Adds a directed, typed edge, storing both directions. Idempotent. Also
@@ -437,14 +434,10 @@ pub const Graph = struct {
     /// `UnsupportedPropertyType`. O(log N).
     pub fn setEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeEdgeProperty(src, dst, edge_type, name);
-        if (!key_encoding.isStorable(value)) return error.UnsupportedPropertyType;
-        if (try self.getEdgeProperty(src, dst, edge_type, name, self.allocator)) |old| {
-            defer switch (old) {
-                .string => |s| self.allocator.free(s),
-                else => {},
-            };
-            try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
-        }
+        if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        if (try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator())) |old| try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -452,7 +445,7 @@ pub const Graph = struct {
 
         var encoded = std.ArrayList(u8).empty;
         defer encoded.deinit(self.allocator);
-        try key_encoding.encodeValue(&encoded, self.allocator, value);
+        try value_encoding.encodeValue(&encoded, self.allocator, value);
         try self.store.put(key.items, encoded.items);
 
         try self.putEdgeIndexEntry(name, value, src, dst, edge_type);
@@ -461,13 +454,9 @@ pub const Graph = struct {
     /// Removes a typed property from the directed edge `src -> dst` of type
     /// `edge_type`. Idempotent.
     pub fn removeEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8) StorageError!void {
-        if (try self.getEdgeProperty(src, dst, edge_type, name, self.allocator)) |old| {
-            defer switch (old) {
-                .string => |s| self.allocator.free(s),
-                else => {},
-            };
-            try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
-        }
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        if (try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator())) |old| try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, name);
@@ -507,7 +496,7 @@ pub const Graph = struct {
         try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, name);
         const raw = (try self.store.get(key.items)) orelse return null;
         defer self.store.allocator.free(raw);
-        return try key_encoding.decodeOwnedValue(raw, allocator);
+        return try value_encoding.decodeValue(raw, allocator);
     }
 
     /// Iterates the neighbours of `id` in the given `direction` and `edge_type`,
@@ -650,8 +639,16 @@ fn KeyRangeIterator(comptime Item: type, comptime decode: fn (PrefixIterator.Ent
     };
 }
 
-/// A stored property: its name and value (views into the store).
-pub const Property = struct { name: []const u8, value: Value };
+/// A stored property: its name and encoded value (views into the store).
+pub const Property = struct {
+    name: []const u8,
+    encoded_value: []const u8,
+
+    /// The value, with its strings and lists allocated with `allocator`.
+    pub fn value(self: Property, allocator: Allocator) Allocator.Error!Value {
+        return value_encoding.decodeValue(self.encoded_value, allocator);
+    }
+};
 
 pub const LabelIterator = KeyRangeIterator([]const u8, struct {
     fn decode(entry: PrefixIterator.Entry, prefix_length: usize) []const u8 {
@@ -661,7 +658,7 @@ pub const LabelIterator = KeyRangeIterator([]const u8, struct {
 
 pub const PropertyIterator = KeyRangeIterator(Property, struct {
     fn decode(entry: PrefixIterator.Entry, prefix_length: usize) Property {
-        return .{ .name = entry.key[prefix_length..], .value = key_encoding.decodeValue(entry.value) };
+        return .{ .name = entry.key[prefix_length..], .encoded_value = entry.value };
     }
 }.decode);
 

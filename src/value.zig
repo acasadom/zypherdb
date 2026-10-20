@@ -6,6 +6,7 @@
 //! grouping rely on those laws; the tests below check them over random values.
 
 const std = @import("std");
+const temporal = @import("temporal/types.zig");
 
 /// A reference to a stored relationship: its endpoints and type identify it
 /// (acmedb keeps one relationship per source, target and type). A regular type.
@@ -79,6 +80,12 @@ pub const Value = union(enum) {
     /// hold the same entries are equal whatever order they were written in.
     map: []const MapEntry,
     path: Path,
+    date: temporal.Date,
+    local_time: temporal.LocalTime,
+    time: temporal.Time,
+    local_date_time: temporal.LocalDateTime,
+    date_time: temporal.DateTime,
+    duration: temporal.Duration,
 
     pub fn isNull(self: Value) bool {
         return self == .null;
@@ -91,7 +98,8 @@ pub const Value = union(enum) {
     }
 
     /// The openCypher global sort order, ascending: map < node <
-    /// relationship < list < path < string < boolean < number < null. Within a type,
+    /// relationship < list < path < datetime < localdatetime < date < time <
+    /// localtime < duration < string < boolean < number < null. Within a type,
     /// numbers (integers and floats together) by value with NaN after every
     /// other number, maps entry by entry (key, then value), nodes by id,
     /// relationships by (source, target, type), lists lexicographically,
@@ -109,6 +117,12 @@ pub const Value = union(enum) {
             .relationship => |x| x.order(b.relationship),
             .map => |x| orderMaps(x, b.map),
             .path => |x| x.order(b.path),
+            .date => |x| x.order(b.date),
+            .local_time => |x| x.order(b.local_time),
+            .time => |x| x.order(b.time),
+            .local_date_time => |x| x.order(b.local_date_time),
+            .date_time => |x| x.order(b.date_time),
+            .duration => |x| x.order(b.duration),
         };
     }
 
@@ -123,7 +137,8 @@ pub const Value = union(enum) {
     /// A deep copy whose strings and lists are allocated with `allocator`.
     pub fn clone(self: Value, allocator: std.mem.Allocator) std.mem.Allocator.Error!Value {
         return switch (self) {
-            .int, .float, .boolean, .null, .node => self,
+            .int, .float, .boolean, .null, .node, .date, .local_time, .time, .local_date_time, .duration => self,
+            .date_time => |d| .{ .date_time = .{ .seconds = d.seconds, .nanoseconds = d.nanoseconds, .offset = d.offset, .zone = try allocator.dupe(u8, d.zone) } },
             .string => |s| .{ .string = try allocator.dupe(u8, s) },
             .relationship => |r| .{ .relationship = .{ .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) } },
             .list => |items| blk: {
@@ -164,6 +179,28 @@ pub const Value = union(enum) {
             .node => |id| hasher.update(std.mem.asBytes(&id)),
             .relationship => |relationship| relationship.hash(hasher),
             .path => |p| p.hash(hasher),
+            .date => |d| hasher.update(std.mem.asBytes(&d.days)),
+            .local_time => |t| hasher.update(std.mem.asBytes(&t.nanoseconds)),
+            .time => |t| {
+                hasher.update(std.mem.asBytes(&t.nanoseconds));
+                hasher.update(std.mem.asBytes(&t.offset));
+            },
+            .local_date_time => |t| {
+                hasher.update(std.mem.asBytes(&t.seconds));
+                hasher.update(std.mem.asBytes(&t.nanoseconds));
+            },
+            .date_time => |t| {
+                hasher.update(std.mem.asBytes(&t.seconds));
+                hasher.update(std.mem.asBytes(&t.nanoseconds));
+                hasher.update(std.mem.asBytes(&t.offset));
+                hasher.update(t.zone);
+            },
+            .duration => |d| {
+                hasher.update(std.mem.asBytes(&d.months));
+                hasher.update(std.mem.asBytes(&d.days));
+                hasher.update(std.mem.asBytes(&d.seconds));
+                hasher.update(std.mem.asBytes(&d.nanoseconds));
+            },
             .map => |entries| {
                 hasher.update(std.mem.asBytes(&entries.len));
                 for (entries) |entry| {
@@ -183,10 +220,16 @@ pub const Value = union(enum) {
             .relationship => 2,
             .list => 3,
             .path => 4,
-            .string => 5,
-            .boolean => 6,
-            .int, .float => 7,
-            .null => 8,
+            .date_time => 5,
+            .local_date_time => 6,
+            .date => 7,
+            .time => 8,
+            .local_time => 9,
+            .duration => 10,
+            .string => 11,
+            .boolean => 12,
+            .int, .float => 13,
+            .null => 14,
         };
     }
 };
@@ -297,7 +340,14 @@ fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
         0 => .{ .null = {} },
         1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },
         2 => .{ .string = strings[random.uintLessThan(usize, strings.len)] },
-        3 => .{ .boolean = random.boolean() },
+        3 => switch (random.uintLessThan(u8, 5)) {
+            0 => .{ .boolean = random.boolean() },
+            1 => .{ .date = .{ .days = random.intRangeAtMost(i64, -1, 1) } },
+            // The same instant at different offsets: ordered, but not equal.
+            2 => .{ .time = .{ .nanoseconds = 3600_000_000_000 * random.intRangeAtMost(i64, 1, 2), .offset = 3600 * random.intRangeAtMost(i32, 0, 1) } },
+            3 => .{ .date_time = .{ .seconds = random.intRangeAtMost(i64, 0, 1), .nanoseconds = 0, .offset = 0, .zone = strings[random.uintLessThan(usize, 2)] } },
+            else => .{ .duration = .{ .months = random.intRangeAtMost(i64, 0, 1), .days = 0, .seconds = random.intRangeAtMost(i64, -1, 1), .nanoseconds = 0 } },
+        },
         7 => blk: {
             const entries = try arena.alloc(MapEntry, random.uintLessThan(usize, 3));
             for (entries) |*entry| entry.* = .{ .key = strings[random.uintLessThan(usize, 3)], .value = try randomValue(random, arena, depth - 1) };

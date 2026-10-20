@@ -75,7 +75,7 @@ fn copyProperties(properties: *PropertyIterator, allocator: Allocator) (StorageE
     while (try properties.next()) |property| {
         try copies.append(allocator, .{
             .name = try allocator.dupe(u8, property.name),
-            .value = try property.value.clone(allocator),
+            .value = try property.value(allocator),
         });
     }
     return copies.items;

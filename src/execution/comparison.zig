@@ -74,7 +74,8 @@ pub const Comparison = union(enum) {
 };
 
 /// Numbers with numbers, strings with strings, booleans with booleans
-/// (`false < true`) and lists lexicographically; anything else is unknown.
+/// (`false < true`), lists lexicographically and temporal values of one type
+/// in time; anything else is unknown.
 pub fn compare(a: Value, b: Value) Comparison {
     if (a == .null or b == .null) return .unknown;
     if (isNumber(a) and isNumber(b)) {
@@ -86,6 +87,13 @@ pub fn compare(a: Value, b: Value) Comparison {
         .string => |x| .{ .ordered = std.mem.order(u8, x, b.string) },
         .boolean => |x| .{ .ordered = std.math.order(@intFromBool(x), @intFromBool(b.boolean)) },
         .list => |x| compareSequences(x, b.list),
+        .date => |x| .{ .ordered = x.order(b.date) },
+        .local_time => |x| .{ .ordered = x.order(b.local_time) },
+        .local_date_time => |x| .{ .ordered = x.order(b.local_date_time) },
+        // Times and date-times compare by the instant, whatever the zone.
+        .time => |x| .{ .ordered = std.math.order(x.utcNanoseconds(), b.time.utcNanoseconds()) },
+        .date_time => |x| .{ .ordered = x.instantOrder(b.date_time) },
+        // Durations have no order (a month is not a fixed number of days).
         else => .unknown,
     };
 }

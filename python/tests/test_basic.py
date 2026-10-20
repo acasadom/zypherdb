@@ -13,6 +13,8 @@ from acmedb import (
     ArithmeticQueryError,
     ClosedError,
     Database,
+    Date,
+    Duration,
     NodeNotFoundError,
     Node,
     ParameterMissingError,
@@ -140,6 +142,36 @@ def test_floats(db):
     assert db.query("MATCH (s:Sensor {offset: 2}) RETURN s.reading") == [[21.5]]
     nan, inf = db.query("RETURN 0.0 / 0.0, 1.0 / 0")[0]
     assert math.isnan(nan) and inf == math.inf
+
+
+def test_temporal_values(db):
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    (d, t, ldt, zoned, dur), = db.query(
+        "RETURN date('2024-07-02'), time('09:30:00.123456789+02:00'), localdatetime('2024-07-02T09:30'),"
+        " datetime('2024-07-02T09:30[Europe/Madrid]'), duration('P1DT2H')"
+    )
+    assert isinstance(d, Date) and str(d) == "2024-07-02" and d == dt.date(2024, 7, 2)
+    assert str(t) == "09:30:00.123456789+02:00"  # nanoseconds kept
+    assert t.to_native() == dt.time(9, 30, 0, 123456, tzinfo=dt.timezone(dt.timedelta(hours=2)))
+    assert ldt == dt.datetime(2024, 7, 2, 9, 30)
+    assert zoned.zone == "Europe/Madrid"
+    assert zoned.to_native() == dt.datetime(2024, 7, 2, 9, 30, tzinfo=ZoneInfo("Europe/Madrid"))
+    assert isinstance(dur, Duration) and (dur.months, dur.days, dur.seconds) == (0, 1, 7200)
+    assert dur.to_native() == dt.timedelta(days=1, hours=2)
+
+    # datetime-module values and acmedb's own go in as parameters.
+    madrid = dt.datetime(2024, 7, 2, 7, 30, tzinfo=dt.timezone.utc).astimezone(ZoneInfo("Europe/Madrid"))
+    rows = db.query(
+        "RETURN $d + duration('P1D'), $at.hour, $at.timezone, $wait * 2, $same = date('2024-07-02')",
+        d=dt.date(2024, 7, 2), at=madrid, wait=dt.timedelta(minutes=90), same=d,
+    )
+    assert rows == [[dt.date(2024, 7, 3), 9, "Europe/Madrid", Duration("PT3H"), True]]
+    # Temporal values are stored as properties.
+    db.query("CREATE (:Badge {issued: date('2024-03-01'), shifts: [localtime('09:00'), localtime('18:00')]})")
+    (issued, shifts), = db.query("MATCH (b:Badge) RETURN b.issued, b.shifts")
+    assert issued == dt.date(2024, 3, 1) and [str(s) for s in shifts] == ["09:00", "18:00"]
 
 
 def test_non_ascii_names_use_byte_lengths(db):

@@ -22,6 +22,7 @@ const formatFloat = @import("../value.zig").formatFloat;
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const expressions = @import("expressions.zig");
+const temporal_functions = @import("temporal_functions.zig");
 const Bindings = @import("bindings.zig").Bindings;
 
 const Function = struct {
@@ -36,7 +37,11 @@ fn fixed(comptime count: usize, comptime implementation: anytype) Function {
     return .{ .min_arguments = count, .max_arguments = count, .implementation = implementation };
 }
 
-const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsciiIgnoreCase).initComptime(.{
+const Entry = struct { []const u8, Function };
+
+const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsciiIgnoreCase).initComptime(builtin_entries ++ temporal_table);
+
+const builtin_entries = [_]Entry{
     // Lists and strings.
     .{ "size", fixed(1, size) },
     .{ "head", fixed(1, head) },
@@ -95,7 +100,61 @@ const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsci
     .{ "pi", fixed(0, constant(std.math.pi)) },
     .{ "e", fixed(0, constant(std.math.e)) },
     .{ "rand", fixed(0, random) },
-});
+};
+
+/// `date`, `localtime`, `time`, `localdatetime`, `datetime` (with their
+/// `.statement`, `.transaction`, `.realtime` and `.truncate` variants) and
+/// `duration` (with `.between`, `.inMonths`, `.inDays`, `.inSeconds`).
+const temporal_table = blk: {
+    const kinds = [_]struct { []const u8, temporal_functions.Kind }{
+        .{ "date", .date },                     .{ "localtime", .local_time }, .{ "time", .time },
+        .{ "localdatetime", .local_date_time }, .{ "datetime", .date_time },
+    };
+    var entries: [kinds.len * 5 + 7]Entry = undefined;
+    var count: usize = 0;
+    for (kinds) |kind| {
+        const optional_argument = Function{ .min_arguments = 0, .max_arguments = 1, .implementation = constructor(kind[1], false) };
+        for ([_][]const u8{ "", ".statement", ".transaction" }) |suffix| {
+            entries[count] = .{ kind[0] ++ suffix, optional_argument };
+            count += 1;
+        }
+        entries[count] = .{ kind[0] ++ ".realtime", .{ .min_arguments = 0, .max_arguments = 1, .implementation = constructor(kind[1], true) } };
+        entries[count + 1] = .{ kind[0] ++ ".truncate", .{ .min_arguments = 2, .max_arguments = 3, .implementation = truncation(kind[1]) } };
+        count += 2;
+    }
+    entries[count] = .{ "datetime.fromepoch", fixed(2, temporal_functions.fromEpoch) };
+    entries[count + 1] = .{ "datetime.fromepochmillis", fixed(1, temporal_functions.fromEpochMillis) };
+    entries[count + 2] = .{ "duration", fixed(1, temporal_functions.duration) };
+    entries[count + 3] = .{ "duration.between", fixed(2, durationBetween(.full)) };
+    entries[count + 4] = .{ "duration.inMonths", fixed(2, durationBetween(.months)) };
+    entries[count + 5] = .{ "duration.inDays", fixed(2, durationBetween(.days)) };
+    entries[count + 6] = .{ "duration.inSeconds", fixed(2, durationBetween(.seconds)) };
+    break :blk entries;
+};
+
+fn constructor(comptime kind: temporal_functions.Kind, comptime realtime: bool) fn (*Executor, []const Value) ExecutionError!Value {
+    return struct {
+        fn apply(self: *Executor, arguments: []const Value) ExecutionError!Value {
+            return temporal_functions.construct(self, kind, arguments, realtime);
+        }
+    }.apply;
+}
+
+fn truncation(comptime kind: temporal_functions.Kind) fn (*Executor, []const Value) ExecutionError!Value {
+    return struct {
+        fn apply(self: *Executor, arguments: []const Value) ExecutionError!Value {
+            return temporal_functions.truncate(self, kind, arguments);
+        }
+    }.apply;
+}
+
+fn durationBetween(comptime precision: @import("../temporal/durations.zig").Precision) fn (*Executor, []const Value) ExecutionError!Value {
+    return struct {
+        fn apply(self: *Executor, arguments: []const Value) ExecutionError!Value {
+            return temporal_functions.between(self, precision, arguments);
+        }
+    }.apply;
+}
 
 /// Checks every function call under `index`: the function exists and gets
 /// a number of arguments it accepts. O(size of the query).
@@ -288,7 +347,7 @@ pub fn propertiesOf(self: *Executor, entity: Value) ExecutionError!Value {
     defer iterator.deinit();
     var entries = std.ArrayList(MapEntry).empty;
     while (try iterator.next()) |property| {
-        try entries.append(self.allocator, .{ .key = try self.allocator.dupe(u8, property.name), .value = try property.value.clone(self.allocator) });
+        try entries.append(self.allocator, .{ .key = try self.allocator.dupe(u8, property.name), .value = try property.value(self.allocator) });
     }
     return .{ .map = entries.items }; // stored in name order: already sorted
 }
@@ -363,7 +422,8 @@ fn toString(self: *Executor, arguments: []const Value) ExecutionError!Value {
         .int => |n| .{ .string = try std.fmt.allocPrint(self.allocator, "{d}", .{n}) },
         .float => |x| .{ .string = try formatFloat(self.allocator, x) },
         .boolean => |b| .{ .string = if (b) "true" else "false" },
-        else => typeError(self, "toString", "a number, a string or a boolean"),
+        inline .date, .local_time, .time, .local_date_time, .date_time, .duration => |t| .{ .string = try std.fmt.allocPrint(self.allocator, "{f}", .{t}) },
+        else => typeError(self, "toString", "a number, a string, a boolean or a temporal value"),
     };
 }
 

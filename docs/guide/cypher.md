@@ -110,10 +110,39 @@ the projection's names with aggregates the projection computes (`ORDER BY age + 
 ## Types
 
 The runtime values are `int` (64-bit), `float` (64-bit IEEE 754), `str`, `boolean`, `null`, `list`, `map`, whole nodes and
-relationships (`RETURN n`), and paths. Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
+relationships (`RETURN n`), paths, and the temporal types (below). Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
 `ELSE`; they propagate: a comparison or string predicate with a null operand is null, a null
 `WHERE` filters the row out, and aggregations skip nulls. Properties stored in the graph are
-`int`, `float`, `str` or `boolean` (not lists or maps); setting a property to `null` removes it.
+`int`, `float`, `str`, `boolean`, temporal values, and lists of one of those types (`[1, 2.5]`,
+`['a', 'b']`; not mixed lists or maps); setting a property to `null` removes it.
 
-## Notes on the subset
+## Temporal values
+
+| Type | Example | Built by |
+| --- | --- | --- |
+| `Date` | `2024-07-02` | `date(…)` |
+| `LocalTime` | `09:30:00.5` | `localtime(…)` |
+| `Time` | `09:30+02:00` | `time(…)` |
+| `LocalDateTime` | `2024-07-02T09:30` | `localdatetime(…)` |
+| `DateTime` | `2024-07-02T09:30+02:00[Europe/Madrid]` | `datetime(…)` |
+| `Duration` | `P1M2DT3H` | `duration(…)` |
+
+Each constructor takes an ISO 8601 string (`date('2015-W30-2')`, `time('214032-0100')`), a map of
+fields (`date({year: 1984, week: 10, dayOfWeek: 3})`, `datetime({date: d, hour: 12, timezone:
+'Europe/Stockholm'})`), another temporal value, or nothing (the current time, fixed for the
+statement; `.realtime()` reads the clock). Precision is the nanosecond; years range over
+±999,999,999. The default time zone is UTC. Named zones (`Europe/Madrid`) come from the system's
+time zone database (`/usr/share/zoneinfo`).
+
+- Components: `d.year`, `d.month`, `d.week`, `d.dayOfWeek`, `d.hour`, `d.nanosecond`,
+  `d.timezone`, `d.offsetMinutes`, `d.epochSeconds`, …; on a duration `dur.days`, `dur.hours`,
+  `dur.minutesOfHour`, ….
+- Arithmetic: a temporal value `±` a duration (months and days on the calendar, the time part on
+  the clock: `date('2020-01-31') + duration('P1M')` is `2020-02-29`); durations add, subtract,
+  and scale by numbers.
+- `duration.between(a, b)` (and `duration.inMonths`, `inDays`, `inSeconds`);
+  `date.truncate('month', d)` and the other `.truncate` functions; `datetime.fromepoch(s, ns)`,
+  `datetime.fromepochmillis(ms)`.
+- Comparison: values of one type compare in time (date-times and times by instant); durations
+  compare only for equality.
 

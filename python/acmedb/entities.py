@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from . import temporal
+
 
 @dataclass(frozen=True)
 class Node:
@@ -46,4 +48,8 @@ def decode(obj: dict):
     if "~path" in obj:
         path = obj["~path"]
         return Path(tuple(path["nodes"]), tuple(path["relationships"]))
+    if len(obj) == 1:
+        (key, value), = obj.items()
+        if key.startswith("~") and key[1:] in temporal._TYPES:
+            return temporal.decode(key[1:], value)
     return obj

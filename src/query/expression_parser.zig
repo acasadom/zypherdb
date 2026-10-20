@@ -340,6 +340,18 @@ fn parseAtom(self: *Parser) ParseError!Index {
                 }
                 return parseFunctionCall(self, t.text);
             }
+            // `date.truncate(...)`: a namespaced function.
+            if (self.at(.dot) and self.peekAhead(1).kind == .identifier and isNamespacedCall(self)) {
+                var name = std.ArrayList(u8).empty;
+                defer name.deinit(self.ast.allocator);
+                try name.appendSlice(self.ast.allocator, t.text);
+                while (self.at(.dot)) {
+                    _ = self.advance();
+                    try name.append(self.ast.allocator, '.');
+                    try name.appendSlice(self.ast.allocator, self.advance().text);
+                }
+                return parseFunctionCall(self, name.items);
+            }
             return parseVariableRef(self, t.text);
         },
         .left_bracket => return parseListLiteral(self),
@@ -355,6 +367,14 @@ fn parseAtom(self: *Parser) ParseError!Index {
             return error.UnexpectedToken;
         },
     }
+}
+
+/// True at `.name(` or `.name.name(` (after an identifier): a namespaced
+/// function call rather than property accesses.
+fn isNamespacedCall(self: *Parser) bool {
+    var ahead: usize = 0;
+    while (self.peekAhead(ahead).kind == .dot and self.peekAhead(ahead + 1).kind == .identifier) ahead += 2;
+    return ahead > 0 and self.peekAhead(ahead).kind == .left_paren;
 }
 
 /// A function call `name(argument, ...)` (the name is already consumed).

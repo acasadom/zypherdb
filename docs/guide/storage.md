@@ -54,20 +54,30 @@ A traversal `(a)-[:ACTED_IN]->(b)` is literally: scan the range
 
 ## Value encoding
 
-A property `Value` is a one-byte tag + payload:
+A property `Value` is a one-byte tag + payload (`src/storage/value_encoding.zig`), integers
+big-endian:
 
 | Tag | Value | Payload |
 | --- | --- | --- |
-| `0x01` | `int` | 8-byte big-endian `i64` |
+| `0x01` | `int` | `i64` |
 | `0x02` | `str` | raw bytes |
 | `0x03` | `boolean` | one byte, `0` or `1` |
-| `0x04` | `float` | 8-byte big-endian IEEE 754 bits |
+| `0x04` | `float` | IEEE 754 bits, `u64` |
+| `0x05` | date | days since 1970-01-01, `i64` |
+| `0x06` | local time | nanoseconds of the day, `i64` |
+| `0x07` | time | nanoseconds of the day, `i64`; offset seconds, `i32` |
+| `0x08` | local date-time | seconds, `i64`; nanoseconds, `u32` |
+| `0x09` | date-time | UTC seconds, `i64`; nanoseconds, `u32`; offset, `i32`; zone name bytes |
+| `0x0a` | duration | months, days, seconds, `i64`; nanoseconds, `u32` |
+| `0x0b` | list | count, `u32`; per element its length, `u32`, and its encoding |
 
-Nulls, lists and maps are produced during evaluation but are **never stored** as properties.
-For index keys, a string value gets a trailing `0x00` so a lookup prefix for `"X"` can't also match
-`"XY"`; numbers are fixed-width and need no delimiter. Numbers are indexed canonically: a float
-that equals an integer (`2.0`) is indexed as that integer, so `{x: 2}` and `{x: 2.0}` find the same
-nodes, as `=` says they should.
+A list is stored only when its elements share one storable type (integers and floats count as
+one). Nulls and maps are produced during evaluation but are **never stored** as properties.
+
+Index keys use the same encoding except that variable-length parts (strings, zone names) end in
+`0x00`, so a lookup prefix for `"X"` can't also match `"XY"`, and list elements carry no length.
+Numbers are indexed canonically: a float that equals an integer (`2.0`) is indexed as that
+integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should.
 
 ## The indexes, one by one
 

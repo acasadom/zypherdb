@@ -10,6 +10,7 @@ const MapEntry = @import("../value.zig").MapEntry;
 const mapOf = @import("../value.zig").mapOf;
 const formatFloat = @import("../value.zig").formatFloat;
 const comparison = @import("comparison.zig");
+const temporal_functions = @import("temporal_functions.zig");
 
 const Executor = @import("Executor.zig");
 const functions = @import("functions.zig");
@@ -226,7 +227,10 @@ pub fn propertyOf(self: *Executor, object: Value, key: []const u8) ExecutionErro
             if (!try self.graph.hasEdge(r.src, r.dst, r.edge_type)) return deletedEntity(self, "relationship", key);
             return .{ .null = {} };
         },
-        else => return typeMismatch(self, "only nodes, relationships and maps have properties"),
+        else => {
+            if (try temporal_functions.component(self, object, key)) |value| return value;
+            return typeMismatch(self, "only nodes, relationships, maps and temporal values have properties");
+        },
     }
 }
 
@@ -360,6 +364,7 @@ pub fn applyUnaryOperator(self: *Executor, operator: UnaryOperator, value: Value
 /// an element to either end). Null with anything is null.
 fn arithmetic(self: *Executor, operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {
     if (left.isNull() or right.isNull()) return .{ .null = {} };
+    if (temporal_functions.isTemporal(left) or temporal_functions.isTemporal(right)) return temporal_functions.arithmetic(self, operator, left, right);
     if (comparison.isNumber(left) and comparison.isNumber(right) and (operator == .power or left == .float or right == .float)) {
         const a = asFloat(left);
         const b = asFloat(right);

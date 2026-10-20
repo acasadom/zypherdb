@@ -18,6 +18,7 @@ Result cells are tagged by type:
 | `TYPE_MAP` | `7` | a map — a JSON object in the JSON result |
 | `TYPE_PATH` | `8` | a path — `{"~path": {"nodes": [...], "relationships": [...]}}` in the JSON result |
 | `TYPE_FLOAT64` | `9` | `f64`; in JSON always with a `.` or an exponent (`1.0`), and `NaN` / `Infinity` / `-Infinity` for the special values |
+| `TYPE_DATE` … `TYPE_DURATION` | `10` – `15` | date, local time, time, local date-time, date-time, duration — in JSON a tagged ISO 8601 string: `{"~date": "2024-07-02"}`, `{"~localtime": …}`, `{"~time": …}`, `{"~localdatetime": …}`, `{"~datetime": "2024-07-02T09:30+02:00[Europe/Madrid]"}`, `{"~duration": "P1DT2H"}` |
 
 ## Lifecycle
 
@@ -76,7 +77,8 @@ the bulk-ingestion path — individual mutators each commit on their own and are
 
 ```c
 Result* acmedb_query(Context*, const char* query, size_t query_len);   // NULL on failure
-// with `$name` parameters as a JSON object, e.g. {"card": 123, "zones": ["A"], "m": {"k": 1}}
+// with `$name` parameters as a JSON object, e.g. {"card": 123, "zones": ["A"], "m": {"k": 1}};
+// a temporal parameter is tagged as in results: {"at": {"~datetime": "2024-07-02T07:30Z"}}
 Result* acmedb_query_with_parameters(Context*, const char* query, size_t query_len,
                                      const char* parameters_json, size_t parameters_len);
 void    acmedb_result_free(Result*);
