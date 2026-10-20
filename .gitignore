@@ -22,3 +22,7 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .bench-data/
+
+# Rust build output of the SparrowDB loader (bench/comparison)
+bench/comparison/sparrow-loader/target/
+bench/comparison/sparrow-loader/Cargo.lock

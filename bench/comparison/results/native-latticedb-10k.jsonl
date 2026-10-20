@@ -1,0 +1,13 @@
+{"engine": "latticedb", "query": "load", "seconds": 27.052}
+{"query": "card lookup", "median_us": 118.0, "p95_us": 180.0, "runs": 100, "answers": "1:baa7054c99250b37 1:ba830a4c98e7e7b6 1:baae594c99317ef3"}
+{"query": "person's groups (1 hop)", "median_us": 131.0, "p95_us": 147.0, "runs": 100, "answers": "2:557fac2e2d348bf4 1:d9dac6428f3a6c35 2:edae60ba34425c5f"}
+{"query": "colleagues (2 hops, distinct)", "median_us": 215.0, "p95_us": 258.0, "runs": 100, "answers": "1:af61fb4c85febb39 1:af62ea4c86005156 1:af62f24c86005eee"}
+{"query": "may this card open this door?", "median_us": 4081.0, "p95_us": 6890.0, "runs": 100, "answers": "1:af63bd4c8601b7df 1:af63bd4c8601b7df 1:af63bc4c8601b62c"}
+{"query": "doors of a person's zones", "median_us": 221.0, "p95_us": 289.0, "runs": 100, "answers": "1:af63134c86009701 1:af63134c86009701 1:af637f4c86014e85"}
+{"query": "people over 60 (scan + filter)", "median_us": 425626.0, "p95_us": 440231.0, "runs": 5, "answers": "1:af66f54c86073007 1:af66f54c86073007 1:af66f54c86073007"}
+{"query": "oldest 10 (ORDER BY + LIMIT)", "median_us": 9465669.0, "p95_us": 9727926.0, "runs": 5, "answers": "10:9f29bb4580eec16e 10:9f29bb4580eec16e 10:9f29bb4580eec16e"}
+{"query": "group sizes (aggregate)", "median_us": 952573.0, "p95_us": 957252.0, "runs": 5, "answers": "10:451b74615f330aaf 10:451b74615f330aaf 10:451b74615f330aaf"}
+{"query": "department counts", "median_us": 421870.0, "p95_us": 423416.0, "runs": 5, "answers": "8:4db90f53b14d6627 8:4db90f53b14d6627 8:4db90f53b14d6627"}
+{"query": "return all people (3 columns)", "median_us": 831398.0, "p95_us": 853353.0, "runs": 5, "answers": "10000:01f652087f8e4c7b 10000:01f652087f8e4c7b 10000:01f652087f8e4c7b"}
+{"query": "create one node (commit)", "median_us": 100.0, "p95_us": 131.0, "runs": 100, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
+{"query": "create 1000 nodes (UNWIND)", "median_us": 112126.0, "p95_us": 113617.0, "runs": 5, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}

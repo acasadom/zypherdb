@@ -1,0 +1,12 @@
+[package]
+name = "sparrow-loader"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# SparrowDB at the commit the comparison measured (0.1.27).
+[dependencies]
+sparrowdb = { git = "https://github.com/ryaker/SparrowDB", rev = "479fb1847ec896d7271649524e14ce341331a835" }
+
+[profile.release]
+opt-level = 3
