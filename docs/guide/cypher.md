@@ -1,172 +1,290 @@
-# The openCypher subset
+# Cypher reference
 
-acmedb speaks a **subset of openCypher**. Keywords are case-insensitive; identifiers are
-case-sensitive. Strings use single quotes. This page is the reference; the
+acmedb speaks **openCypher**, the query language of graph databases. It adds a few extensions and
+leaves out a few features; both are listed below. This page is the complete reference, and the
 [tutorial](../tutorial/01-getting-started) introduces each feature by example.
+
+## Lexical structure
+
+- **Keywords** are case-insensitive: `MATCH` and `match` are the same keyword. **Identifiers** are
+  case-sensitive; that covers variables, labels, relationship types and property names. Write an
+  identifier that has spaces or symbols between backticks: `` (`my node`:`Floor 3`) ``.
+- **Strings** use single quotes, with backslash escapes (`'it\'s'`, `'\n'`).
+- **Numbers**:
+  - integers in decimal, hexadecimal (`0x1F`) or octal (`0o17`);
+  - floats (`1.5`, `1e3`, `2.5e-3`). A float needs a digit before the point: write `0.5`, not
+    `.5`.
+- **Comments**: `// to the end of the line` and `/* … */`.
+- **Parameters**: `$name` is a value passed with the query (in Python,
+  `db.query(text, name=value)`). A parameter is always a value; it cannot stand for a label, a type
+  or a property name.
 
 ## Clauses
 
-A query is a sequence of clauses:
+A query is a pipeline of clauses. Each clause receives the rows of the clause before it and passes
+its own rows on; the first clause receives one empty row.
 
-```text
-MATCH …  [OPTIONAL MATCH …]  [UNWIND …]  [WITH …]  [MATCH …]  [writes …]  RETURN …
-```
-
-| Clause | Purpose |
+| Clause | What it does |
 | --- | --- |
-| `MATCH` | bind variables to patterns; comma-separated patterns are joined |
-| `OPTIONAL MATCH` | like `MATCH`, but unmatched variables become `null` (outer join) |
-| `UNWIND` | one row per element of a list |
-| `WITH` | project/aggregate the rows, then continue the pipeline (with `WHERE`, `ORDER BY`, `SKIP`, `LIMIT`) |
-| `CREATE` | create nodes and edges |
-| `MERGE` | create-or-match, with `ON CREATE SET` / `ON MATCH SET` |
-| `SET` | `n.prop = v`; `n = map` (replace all properties); `n += map` (merge; a `null` entry removes); `n:Label` |
-| `DELETE` / `DETACH DELETE` | delete nodes or relationships (detach also removes a node's edges) |
-| `REMOVE` | remove a property (`n.prop`) or a label (`n:Label`) |
-| `RETURN` | project the result (`DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT`) |
+| `MATCH pattern, … [WHERE condition]` | extends each row with every match of the patterns that passes the condition; comma-separated patterns are matched together |
+| `OPTIONAL MATCH …` | like `MATCH`, but keeps a row that has no match, with its new variables set to `null` (an outer join) |
+| `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
+| `WITH items [ORDER BY …] [SKIP n] [LIMIT n] [WHERE condition]` | projects the rows like `RETURN` (aggregating, sorting, paging) and continues; only the projected names remain |
+| `CREATE pattern, …` | creates the nodes and relationships of the pattern; a node already bound is reused as it is |
+| `MERGE pattern [ON CREATE SET …] [ON MATCH SET …]` | matches the whole pattern, and each match becomes a row (with `ON MATCH SET` applied); if nothing matches, creates the whole pattern (with `ON CREATE SET` applied) |
+| `SET item, …` | `n.prop = v` sets one property; `n = map` replaces all properties; `n += map` adds and changes properties (a `null` entry removes one); `n:Label` adds labels |
+| `REMOVE item, …` | removes a property (`n.prop`) or labels (`n:Label`) |
+| `DELETE x, …` / `DETACH DELETE x, …` | deletes nodes and relationships; deleting a node that has relationships needs `DETACH`, which deletes those relationships too |
+| `RETURN [DISTINCT] items [ORDER BY …] [SKIP n] [LIMIT n]` | produces the result of the query |
+| `query UNION query`, `query UNION ALL query` | combines the rows of both parts (`UNION` drops duplicates, `UNION ALL` keeps them); both parts return the same column names |
 
-Clauses chain in any number and order, as in openCypher: each sees the rows and effects of the
-ones before it. After an updating clause, reading again (`MATCH`, `UNWIND`) needs a `WITH` in
-between; `RETURN`, if present, comes last; a query ends with `RETURN` or an updating clause.
-The `WHERE` of a `WITH` that does not aggregate also sees the variables from before the `WITH`.
-
-Queries ending in `RETURN` combine with `UNION` (their rows, without duplicates) or `UNION ALL`
-(all rows). The parts return the same column names; one union does not mix the two forms. The
-parts run in order, in one transaction.
+- Clauses chain in any number and order, with three rules:
+  - after a writing clause, a `WITH` must come before reading again (`MATCH`, `UNWIND`);
+  - `RETURN` comes last;
+  - a query ends with `RETURN` or with a writing clause.
+- When a `WITH` does not aggregate, its `WHERE` can also use the variables from before the `WITH`.
+- `ORDER BY x [ASC | DESC], …` sorts the rows, ascending by default. Ascending order puts `null`s
+  last. `SKIP` and `LIMIT` take an integer expression or a parameter.
+- A whole query is one transaction, `UNION` included: either all of its writes are kept or none
+  are.
 
 ## Patterns
 
 ```text
-(n:Label1:Label2 {prop: value, ...})            # a node (multiple labels allowed)
--[r:TYPE {prop: value, ...}]->                 # an outgoing typed edge
-<-[r:TYPE]-   -[r]-   -->   --                  # incoming, either direction, untyped
--[:A|B]->                                       # one of several types
--[r:TYPE*1..3]->   -[*]->   -[*2]->   -[*..3]-> # variable length (min..max hops)
-p = (a)-[:TYPE*]->(b)                           # a path variable
+(n:Label1:Label2 {prop: value, …})                 a node: variable, labels, property equalities
+-[r:TYPE {prop: value, …}]->   <-[r:TYPE]-   -[r]-  a relationship: outgoing, incoming, either way
+-->   <--   --                                     anonymous relationships
+-[:A|B]->                                          one of several types
+-[*]->  -[*2]->  -[*1..3]->  -[*..3]->  -[*0..]->  variable length: 1+, exactly 2, 1 to 3, up to 3, 0+
+path = (a)-[:TYPE*]->(b)                           a path variable
 ```
 
-- A variable (`n`, `r`) is optional; an anonymous node or edge omits it.
-- `TYPE` and `Label` are optional; an edge without a type matches any type.
-- A variable-length edge matches paths of `min..max` edges (`*` alone: 1 or more; `*0..` includes
-  the start node itself); its variable is the list of the path's relationships, in pattern order.
-  Within one `MATCH` an edge is used at most once, so paths do not loop back over an edge.
-- `p = …` binds the whole path; `length(p)`, `nodes(p)` and `relationships(p)` read it.
-- A node may carry several labels; all of them must hold.
-- `{…}` holds inline equality predicates, treated as index seeks.
+- Every part is optional: `()` is a node with no variable, label or properties, and a relationship
+  without a type matches any type.
+- A node with several labels must have all of them.
+- `{prop: value}` is an equality test on the property. When the value is a constant or a
+  parameter, acmedb answers it with an index seek.
+- A variable-length relationship binds its variable to the list of the path's relationships, in
+  pattern order. `*0..` includes the start node itself.
+- Within one `MATCH`, each relationship is used at most once, so a path never goes back over the
+  same relationship.
+- acmedb keeps at most one relationship per source, target and type.
 
 ## Expressions
 
-Literals: integers (decimal, `0x…` hex, `0o…` octal), floats (`1.5`, `.5`, `1e3`, `2.5e-3`), strings (`'…'`), booleans (`true`/`false`),
-`null`, lists (`[1, 2, 3]`) and maps (`{zone: 'Z1', floors: [1, 2]}`).
+### Values and access
 
-Any value takes the postfix operators `.key` (a node's or relationship's property, a map's entry),
-`[index]` (a list element — negative indexes count from the end, out of range is `null` — or a map
-entry by a string key) and `[from..to]` (a list slice; either end may be left out). A missing
-property or entry reads as `null`.
+The literals are:
 
-| Operator | Meaning |
+- numbers;
+- strings;
+- `true`, `false` and `null`;
+- lists, such as `[1, 'a', [2]]`;
+- maps, such as `{name: 'Ana', floors: [1, 2]}`.
+
+| Form | Meaning |
 | --- | --- |
-| `+`, `-`, `*`, `/`, `%`, unary `-` | arithmetic. Two integers give an integer (overflow and division by zero are errors; `/` truncates); a float operand gives a float (IEEE 754: `1.0 / 0` is `Infinity`). `+` also joins strings and lists |
-| `^` | power, always a float; binds tighter than `*` and after a sign (`-2 ^ 2` is `4.0`) |
-| `=`, `<>` | equality: numbers by value (`1 = 1.0`), NaN equals nothing, lists and maps element by element; values of different types are not equal |
-| `<`, `>`, `<=`, `>=` | ordering of numbers, strings, booleans (`false < true`), lists (lexicographic) and temporal values; other pairs give `null`. Comparisons chain: `1 < x <= 5` is `1 < x AND x <= 5` |
-| `AND`, `OR`, `XOR`, `NOT` | boolean logic (three-valued with null); `XOR` binds between `OR` and `AND` |
-| `x IS NULL`, `x IS NOT NULL` | null tests (always true or false, unlike `x = null`) |
-| `STARTS WITH`, `ENDS WITH`, `CONTAINS` | string predicates |
-| `IN` | list membership, with any list expression on the right (`x IN $allowed`); null-aware |
-| `$name` | a query parameter, passed with the query (see the Python and C ABI guides) |
-| `CASE WHEN cond THEN v … [ELSE v] END` | conditional expression (no `ELSE` → `null`) |
-| `CASE x WHEN value THEN v … [ELSE v] END` | the first branch whose value equals `x` |
-| `(a)-[:T]->(b)` in a `WHERE` | a pattern predicate: true if the pattern has a match (it may not introduce variables) |
-| `[p = (a)-->(b) WHERE pred \| expr]` | a pattern comprehension: `expr` for each match |
-| `EXISTS { (a)-->(b) WHERE pred }`, `EXISTS { MATCH … }` | true if the patterns have a match; they may introduce variables of their own |
-| `[x IN list WHERE pred \| expr]` | list comprehension (the `WHERE` and the `\| expr` are optional) |
-| `any` / `all` / `none` / `single(x IN list WHERE pred)` | quantifiers, three-valued with null |
-| `name(arguments…)` | a function call (below); names are case-insensitive |
+| `x.key` | a property of a node or relationship, or an entry of a map; `null` if missing |
+| `x[i]` | a list element (a negative index counts from the end, an index out of range gives `null`), or a map entry by a string key |
+| `x[from..to]` | a list slice; either end may be left out, and negative values count from the end |
+
+### Operators, by precedence (tightest first)
+
+| Operators | Meaning |
+| --- | --- |
+| `.key`, `[…]` | access (see above) |
+| unary `-`, `+` | sign |
+| `^` | power; the result is always a float (`-2 ^ 2` is `4.0`) |
+| `*`, `/`, `%` | arithmetic. Two integers give an integer: `/` truncates, and overflow or division by zero is an error. With a float operand the result is a float, following IEEE 754 (`1.0 / 0` is infinity) |
+| `+`, `-` | arithmetic. `+` also joins strings (`'a' + 1` is `'a1'`), joins lists, and appends an element to a list. A temporal value `±` a duration gives a temporal value |
+| `IS NULL`, `IS NOT NULL`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `IN` | tests; `IN` is list membership and handles `null` |
+| `=`, `<>`, `<`, `<=`, `>`, `>=` | comparison; comparisons chain, so `a < b <= c` means `a < b AND b <= c` |
+| `NOT` | |
+| `AND` | |
+| `XOR` | |
+| `OR` | |
+
+- **Equality**:
+  - numbers compare by value (`1 = 1.0`);
+  - `NaN` equals nothing;
+  - lists and maps compare element by element;
+  - values of different types are never equal.
+- **Ordering** (`<` and the others) is defined between:
+  - numbers;
+  - strings, by code point;
+  - booleans (`false < true`);
+  - lists, element by element;
+  - temporal values of the same type. Date-times and times compare by the instant they denote.
+
+  Ordering any other pair of values gives `null`.
+- **`null`** means unknown. An operator with a `null` operand gives `null`, so `null = null` is
+  `null`. The exceptions are `IS NULL`, and `AND`/`OR` when the other operand decides the result
+  (`false AND null` is `false`). `WHERE` keeps a row only when its condition is `true`.
+
+### Conditionals, comprehensions and subqueries
+
+| Form | Meaning |
+| --- | --- |
+| `CASE WHEN cond THEN v … [ELSE v] END` | the value of the first branch whose condition is true (`null` if none is and there is no `ELSE`) |
+| `CASE x WHEN a THEN v … [ELSE v] END` | the value of the first branch whose value equals `x` |
+| `[x IN list WHERE cond \| expr]` | list comprehension (`WHERE` and `\| expr` are optional) |
+| `any`, `all`, `none`, `single(x IN list WHERE cond)` | quantifiers, three-valued when `null` is involved |
+| `[path = (a)-->(b) WHERE cond \| expr]` | pattern comprehension: `expr` for each match of the pattern |
+| `(a)-[:T]->(b)` in a `WHERE` | pattern predicate: true if the pattern has a match; it cannot bind new variables |
+| `EXISTS { pattern [WHERE cond] }`, `EXISTS { MATCH … [RETURN …] }` | true if the pattern has a match; variables it introduces stay inside it |
+| `$name` | a parameter |
 
 ## Functions
 
-Unless noted, a function returns `null` for a `null` argument. Text functions count Unicode code
-points (`size('é')` is 1); `toUpper`/`toLower` change ASCII letters only.
+Function names are case-insensitive. A function returns `null` when given a `null` argument,
+unless noted otherwise. Calling an unknown function, or passing the wrong number of arguments, fails
+before the query runs.
 
 | Group | Functions |
 | --- | --- |
-| Lists, strings | `size`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])` |
-| Null handling | `coalesce(x, …)` — the first non-null argument |
+| Lists | `size(list)`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])`, `keys(map or entity)` |
+| Strings | `size(text)` (counts code points), `toLower`, `toUpper` (ASCII letters only), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
+| Conversion | `toString`, `toInteger` (truncates a float; `null` for a string that is not a number), `toFloat`, `toBoolean` |
+| Numbers | `abs`, `sign`, `round` (a float; halves round up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
+| Null | `coalesce(x, …)` returns the first argument that is not `null` |
+| Graph | `id(node)`, `labels(node)`, `type(relationship)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
-| Graph and maps | `id(node)`, `labels(node)`, `type(relationship)`, `keys(entity or map)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
-| Conversions | `toString`, `toInteger` (truncates a float; null for a string that is not a number), `toFloat`, `toBoolean` |
-| Strings | `toLower`, `toUpper`, `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)` |
-| Numbers | `abs`, `sign`, `round` (halves up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
+| Temporal | see [Temporal values](#temporal-values) |
 
-An unknown function or a wrong number of arguments fails before the query runs. `id()` of a
-relationship is an error: acmedb identifies a relationship by (source, target, type).
+`id()` of a relationship is an error, because a relationship is identified by its source, target
+and type rather than by an id.
 
-## Aggregations
+## Aggregation
 
-`count(x)` (and `count(*)`), `sum(x)` (an integer unless a float is summed), `avg(x)`, `min(x)`,
-`max(x)`, `stDev(x)` / `stDevP(x)` (sample / population standard deviation) and `collect(x)` (a
-list). Any projected
-expression without an aggregate is an implicit grouping key; aggregations skip nulls, and
-`count(*)` counts all rows.
+The aggregates are:
 
-Aggregates may sit anywhere in an expression: `count(*) + 1`, `sum(n.x) * 100 / count(*)`. Outside
-its aggregates such an expression may use only constants, parameters and *simple* grouping keys (a
-variable or a property that is itself projected), as openCypher requires. `ORDER BY` may combine
-the projection's names with aggregates the projection computes (`ORDER BY age + count(x)`). A
-`WITH` without aggregates keeps every row (it does not group).
+- `count(x)` and `count(*)`;
+- `sum(x)`, an integer unless a float is summed;
+- `avg(x)`, `min(x)`, `max(x)`;
+- `collect(x)`, which builds a list;
+- `stDev(x)` and `stDevP(x)`, the sample and population standard deviation.
 
-## Types
+Each aggregate accepts `DISTINCT` to use each value only once: `count(DISTINCT x)`.
 
-The runtime values are `int` (64-bit), `float` (64-bit IEEE 754), `str`, `boolean`, `null`, `list`, `map`, whole nodes and
-relationships (`RETURN n`), paths, and the temporal types (below). Nulls come from `OPTIONAL MATCH`, missing properties and `CASE` without
-`ELSE`; they propagate: a comparison or string predicate with a null operand is null, a null
-`WHERE` filters the row out, and aggregations skip nulls. Properties stored in the graph are
-`int`, `float`, `str`, `boolean`, temporal values, lists of one of those types (`[1, 2.5]`,
-`['a', 'b']`; not mixed lists), and maps; setting a property to `null` removes it.
+- In `RETURN` or `WITH`, every item that has no aggregate is a **grouping key**, and the result has
+  one row per distinct combination of keys. Without keys, all rows form one group. An empty input
+  still gives that one row: `count` is 0, `sum` is 0, and the other aggregates give `null` or `[]`.
+- Aggregates skip `null` values; `count(*)` counts rows.
+- An aggregate can appear inside an expression (`count(*) + 1`, `sum(x) * 100 / count(*)`). Outside
+  its aggregates, such an expression may only use constants, parameters, and grouping keys that are
+  themselves projected.
+- `ORDER BY` may use the names the projection defines and the aggregates it computes.
 
-**Documents (an acmedb extension).** openCypher does not store maps as properties; acmedb does,
-so a property can hold a JSON-like document: nested maps, lists of any elements, and nulls.
-Fields are read with the usual operators, and filter like any other value:
+## Values and properties
 
-```text
-CREATE (:Card {id: 1, holder: {name: 'Ana', address: {city: 'Madrid'}, phones: ['600', null]}})
-MATCH (c:Card) WHERE c.holder.address.city = 'Madrid' RETURN c.holder.name
-MATCH (c:Card {holder: {name: 'Ana', address: {city: 'Madrid'}, phones: ['600', null]}}) RETURN c
-```
+The value types are:
 
-A whole document is indexed (an equality lookup on it is an index seek); a filter on a field
-inside it reads the property of each candidate node. Graph entities (nodes, relationships, paths)
-cannot be stored inside a document. The TCK scenarios this changes are listed in
-`tests/tck/deviations.txt`.
+- `null`, booleans, integers (64-bit), floats (64-bit) and strings (UTF-8);
+- lists and maps;
+- nodes, relationships and paths;
+- the six temporal types.
+
+A **property** of a node or relationship may hold:
+
+- a boolean, number, string or temporal value;
+- a list whose elements share one of those types (integers and floats count as one type);
+- a map.
+
+Setting a property to `null` removes it.
+
+**Documents** (maps stored as properties) are an acmedb extension, since openCypher does not store
+maps. A document may nest maps and lists of any values, `null`s included, but it cannot contain
+nodes, relationships or paths.
+
+- Read its fields with the usual operators: `n.doc.address.city`.
+- A whole document is indexed for equality. A condition on a field inside a document is checked by
+  reading each candidate.
+
+`tests/tck/deviations.txt` lists the TCK scenarios where this extension gives a different answer
+from standard openCypher.
 
 ## Temporal values
 
-| Type | Example | Built by |
+| Type | Text form | Constructor |
 | --- | --- | --- |
-| `Date` | `2024-07-02` | `date(…)` |
-| `LocalTime` | `09:30:00.5` | `localtime(…)` |
-| `Time` | `09:30+02:00` | `time(…)` |
-| `LocalDateTime` | `2024-07-02T09:30` | `localdatetime(…)` |
-| `DateTime` | `2024-07-02T09:30+02:00[Europe/Madrid]` | `datetime(…)` |
-| `Duration` | `P1M2DT3H` | `duration(…)` |
+| date | `2025-03-10` | `date(…)` |
+| local time | `09:30:00.5` | `localtime(…)` |
+| time | `09:30+01:00` | `time(…)` |
+| local date-time | `2025-03-10T09:30` | `localdatetime(…)` |
+| date-time | `2025-03-10T09:30+01:00[Europe/Madrid]` | `datetime(…)` |
+| duration | `P1M2DT3H` | `duration(…)` |
 
-Each constructor takes an ISO 8601 string (`date('2015-W30-2')`, `time('214032-0100')`), a map of
-fields (`date({year: 1984, week: 10, dayOfWeek: 3})`, `datetime({date: d, hour: 12, timezone:
-'Europe/Stockholm'})`), another temporal value, or nothing (the current time, fixed for the
-statement; `.realtime()` reads the clock). Precision is the nanosecond; years range over
-±999,999,999. The default time zone is UTC. Named zones (`Europe/Madrid`) come from the system's
-time zone database (`/usr/share/zoneinfo`).
+**Constructors** take one of:
 
-- Components: `d.year`, `d.month`, `d.week`, `d.dayOfWeek`, `d.hour`, `d.nanosecond`,
-  `d.timezone`, `d.offsetMinutes`, `d.epochSeconds`, …; on a duration `dur.days`, `dur.hours`,
-  `dur.minutesOfHour`, ….
-- Arithmetic: a temporal value `±` a duration (months and days on the calendar, the time part on
-  the clock: `date('2020-01-31') + duration('P1M')` is `2020-02-29`); durations add, subtract,
-  and scale by numbers.
-- `duration.between(a, b)` (and `duration.inMonths`, `inDays`, `inSeconds`);
-  `date.truncate('month', d)` and the other `.truncate` functions; `datetime.fromepoch(s, ns)`,
-  `datetime.fromepochmillis(ms)`.
-- Comparison: values of one type compare in time (date-times and times by instant); durations
-  compare only for equality.
+- an ISO 8601 string (dates also as `2015-W30-2`, `2015-202` or `20150721`);
+- a map of fields (below);
+- another temporal value, which is converted;
+- no argument, which gives the current time. That time is the same throughout one statement:
+  - `date.statement()` and `date.transaction()` (and the same for the other types) also give it;
+  - `date.realtime()` and the like read the clock each time.
 
+The **maps** a constructor accepts:
+
+- dates: `{year, month, day}`, `{year, week, dayOfWeek}`, `{year, ordinalDay}`, or
+  `{year, quarter, dayOfQuarter}`. `{date: d, …}` changes some fields of a base date `d`.
+- times: `{hour, minute, second, millisecond, microsecond, nanosecond}`. `{time: t, …}` changes
+  some fields of a base time `t`.
+- zones: `timezone: '+01:00'` or `timezone: 'Europe/Madrid'`. On a value that already has a zone it
+  converts, giving the same instant elsewhere; on a value without a zone it places the value in that
+  zone.
+- durations: any of `years`, `quarters`, `months`, `weeks`, `days`, `hours`, `minutes`, `seconds`,
+  `milliseconds`, `microseconds` and `nanoseconds`. Fractional values are allowed (`{days: 1.5}`).
+
+**Components** are read like properties (`d.year`):
+
+- dates and date-times: `year`, `quarter`, `month`, `week`, `weekYear`, `day`, `ordinalDay`,
+  `dayOfWeek` (1 = Monday), `weekDay`, `dayOfQuarter`;
+- times and date-times: `hour`, `minute`, `second`, `millisecond`, `microsecond`, `nanosecond`;
+- values with a zone: `timezone`, `offset`, `offsetMinutes`, `offsetSeconds`;
+- date-times also: `epochSeconds`, `epochMillis`;
+- durations: `years`, `quarters`, `months`, `weeks`, `days`, `hours`, `minutes`, `seconds`,
+  `milliseconds`, `microseconds`, `nanoseconds`. The remainders are `quartersOfYear`,
+  `monthsOfQuarter`, `monthsOfYear`, `daysOfWeek`, `minutesOfHour`, `secondsOfMinute`,
+  `millisecondsOfSecond`, `microsecondsOfSecond`, `nanosecondsOfSecond`.
+
+**Functions**:
+
+- `duration.between(a, b)` gives the months, then the days, then the time that remains.
+- `duration.inMonths`, `duration.inDays` and `duration.inSeconds` give the difference in a single
+  unit.
+- `date.truncate(unit, value[, map])` truncates a value, and the other temporal types have the same
+  function. The units are `millennium`, `century`, `decade`, `year`, `weekYear`, `quarter`, `month`,
+  `week`, `day`, `hour`, `minute`, `second`, `millisecond`, `microsecond`.
+- `datetime.fromepoch(seconds, nanoseconds)` and `datetime.fromepochmillis(milliseconds)` build a
+  date-time from the Unix epoch.
+
+**Arithmetic and comparison**:
+
+- A temporal value plus or minus a duration: the months and days move the calendar, and the time
+  part moves the clock. For example, `date('2025-01-31') + duration('P1M')` is `2025-02-28`.
+- Durations add and subtract, and multiply or divide by numbers.
+- Values of the same type compare in time. Durations compare only for equality.
+
+Precision is the nanosecond, and years range over ±999,999,999. The default time zone is UTC. Named
+zones come from the system's time zone database.
+
+## Not supported
+
+acmedb does not implement these parts of openCypher (and of common Neo4j extensions):
+
+- `CALL` (procedures and subqueries), `LOAD CSV` and `FOREACH`;
+- `shortestPath` and `allShortestPaths`;
+- label tests as expressions (`WHERE n:Label`); use `'Label' IN labels(n)` instead;
+- `RETURN *` and `WITH *`;
+- map projections (`n {.name, .age}`);
+- `COUNT { … }` subqueries; use `size([(a)-->(b) | b])` instead;
+- the regular-expression operator `=~`;
+- `percentileCont` and `percentileDisc`;
+- the function `exists(n.property)`; use `n.property IS NOT NULL` instead;
+- the long sort keywords `ASCENDING` and `DESCENDING`; use `ASC` and `DESC` instead;
+- schema commands (`CREATE INDEX`, constraints), because every property is already indexed for
+  equality;
+- parallel relationships of the same type between the same two nodes.
+
+The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`
+gives the current pass rate per area.

@@ -17,15 +17,16 @@ pub fn build(b: *std.Build) void {
         .flags = &.{"-O2"},
     });
 
-    // Static library: the embeddable/exportable artifact (basis of the Python wrapper).
+    // Static library: the embeddable artifact, with the C ABI of src/c_api.zig.
     const lib = b.addLibrary(.{
         .name = "acmedb",
         .root_module = acmedb,
         .linkage = .static,
     });
+    lib.installHeader(b.path("include/acmedb.h"), "acmedb.h");
     b.installArtifact(lib);
 
-    // Shared library exposing the C ABI (src/c_api.zig), loadable from Python.
+    // Shared library with the same C ABI, for C programs and other languages' FFIs.
     const shared = b.addLibrary(.{
         .name = "acmedb",
         .root_module = acmedb,

@@ -7,10 +7,14 @@ Every ```python block under docs/ is executed:
   earlier ones, across pages;
 - every other page runs on its own, its blocks in one namespace.
 
-A ```text block that directly follows a python block (only blank lines between
-them) is that block's expected output: what the block prints must match it
-exactly (trailing spaces aside). Mark a block that must not run with
-``# docs-test: skip`` as its first line.
+Every ```c block that is a whole program (it has a ``main``) is compiled with
+``zig cc`` against the library in zig-out/ and run with a fresh database
+directory as its argument.
+
+A ```text block that directly follows a python or c block (only blank lines
+between them) is that block's expected output: what the block prints must match
+it exactly (trailing spaces aside). Mark a block that must not run with
+``# docs-test: skip`` (``// docs-test: skip`` in C) as its first line.
 """
 
 from __future__ import annotations
@@ -18,23 +22,30 @@ from __future__ import annotations
 import contextlib
 import io
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-DOCS = Path(__file__).resolve().parents[2] / "docs"
+ROOT = Path(__file__).resolve().parents[2]
+DOCS = ROOT / "docs"
+BUILD = ROOT / "zig-out"
 
 # A fenced block: its language and its body.
 _FENCE = re.compile(r"^```(\w*)[^\n]*\n(.*?)^```[ \t]*$", re.MULTILINE | re.DOTALL)
 
 
-def _examples(page: Path) -> list[tuple[str, str | None]]:
-    """The page's python blocks, each with the output the page shows for it."""
+_SKIP = {"python": "# docs-test: skip", "c": "// docs-test: skip"}
+
+
+def _examples(page: Path, wanted: str = "python") -> list[tuple[str, str | None]]:
+    """The page's blocks in language `wanted`, each with the output the page shows for it."""
     text = page.read_text()
     blocks = [(m.group(1), m.group(2), m.start(), m.end()) for m in _FENCE.finditer(text)]
     examples = []
     for i, (language, body, _, end) in enumerate(blocks):
-        if language != "python" or body.lstrip().startswith("# docs-test: skip"):
+        if language != wanted or body.lstrip().startswith(_SKIP[wanted]):
             continue
         expected = None
         if i + 1 < len(blocks):
@@ -43,6 +54,13 @@ def _examples(page: Path) -> list[tuple[str, str | None]]:
                 expected = next_body
         examples.append((body, expected))
     return examples
+
+
+def _matches(actual: str, expected: str) -> bool:
+    def lines(text: str) -> str:
+        return "\n".join(line.rstrip() for line in text.rstrip("\n").split("\n"))
+
+    return lines(actual) == lines(expected)
 
 
 def _run(page: Path, namespace: dict) -> None:
@@ -54,9 +72,8 @@ def _run(page: Path, namespace: dict) -> None:
         except Exception as error:  # report which page and block failed
             pytest.fail(f"{page.name} block {i} raised {type(error).__name__}: {error}\n--- block ---\n{code}")
         if expected is not None:
-            actual = "\n".join(line.rstrip() for line in printed.getvalue().rstrip("\n").split("\n"))
-            wanted = "\n".join(line.rstrip() for line in expected.rstrip("\n").split("\n"))
-            assert actual == wanted, f"{page.name} block {i} printed:\n{actual}\n--- the page shows ---\n{wanted}"
+            actual = printed.getvalue()
+            assert _matches(actual, expected), f"{page.name} block {i} printed:\n{actual}\n--- the page shows ---\n{expected}"
 
 
 def _tutorial_pages() -> list[Path]:
@@ -84,3 +101,33 @@ def test_tutorial(scratch):
 @pytest.mark.parametrize("page", _other_pages(), ids=lambda p: str(p.relative_to(DOCS)))
 def test_page(page, scratch):
     _run(page, {"__name__": "__docs__"})
+
+
+def _c_programs() -> list:
+    programs = []
+    for page in sorted(p for p in DOCS.rglob("*.md") if "_build" not in p.parts):
+        for i, (code, expected) in enumerate(_examples(page, "c")):
+            if re.search(r"\bint main\(", code):
+                programs.append(pytest.param(page, i, code, expected, id=f"{page.relative_to(DOCS)}-{i}"))
+    return programs
+
+
+@pytest.mark.parametrize("page, index, code, expected", _c_programs())
+def test_c_program(page, index, code, expected, scratch):
+    compiler = shutil.which("zig")
+    if compiler is None or not (BUILD / "include" / "acmedb.h").exists():
+        pytest.skip("needs zig and the library built with `zig build`")
+    source = scratch / "program.c"
+    source.write_text(code)
+    library = BUILD / "lib"
+    subprocess.run(
+        [compiler, "cc", f"-I{BUILD / 'include'}", str(source), f"-L{library}", "-lacmedb",
+         f"-Wl,-rpath,{library}", "-o", str(scratch / "program")],
+        check=True,
+    )
+    database = scratch / "db"
+    database.mkdir()
+    run = subprocess.run([str(scratch / "program"), str(database)], capture_output=True, text=True, timeout=60)
+    assert run.returncode == 0, f"{page.name} C block {index} exited with {run.returncode}:\n{run.stderr}"
+    if expected is not None:
+        assert _matches(run.stdout, expected), f"{page.name} C block {index} printed:\n{run.stdout}\n--- the page shows ---\n{expected}"

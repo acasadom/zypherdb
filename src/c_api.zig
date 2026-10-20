@@ -1,4 +1,5 @@
-//! C ABI for embedding acmedb (target: Python via ctypes, or any C FFI).
+//! C ABI for embedding acmedb from C, C++ or any language with a C FFI. The
+//! declarations are in include/acmedb.h; keep the two in step.
 //!
 //! Every function is `export fn` (C calling convention). Strings are passed as
 //! (pointer, length) pairs. Handles are opaque pointers (`*Context`, `*Result`);

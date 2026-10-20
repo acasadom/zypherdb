@@ -1,94 +1,228 @@
-# Embedding from Python
+# Python reference
 
-The `acmedb` package in `python/` runs the engine through a native extension module,
-`acmedb._native`, written in Zig on the Python limited C API (`python/native/module.zig`). Values
-cross between Python and the engine by direct conversion, without serializing them, and a query
-runs with the GIL released. The module uses only the stable ABI of Python 3.10, so one build works
-with every Python version from 3.10 on.
-
-## Install and use
+The `acmedb` package: one class, `Database`, plus the types results are built with and the
+exceptions errors are raised as. The [tutorial](../tutorial/01-getting-started) introduces all of
+it by example; this page is the complete list.
 
 ```bash
-make python                                  # zig build python -Dpython-include=<Python.h dir>
-pip install -e python/                       # or: export PYTHONPATH=python
+pip install acmedb
 ```
+
+acmedb needs Python 3.10 or later. The package carries the engine as a native extension module
+(see [the end of this page](#under-the-hood)).
+
+## `Database`
 
 ```python
-from acmedb import Database
-import tempfile
+import acmedb, tempfile
 
-with Database(tempfile.mkdtemp()) as db:
-    nid = db.allocate_node_id()
-    db.add_node(nid, "Person")
-    db.set_property(nid, "name", "Keanu Reeves")
-    db.add_node(100, "Movie")
-    db.set_property(100, "title", "The Matrix")
-    db.add_edge(nid, 100, "ACTED_IN")
-
-    print(db.query("MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title"))
-    # [['The Matrix']]
+db = acmedb.Database(tempfile.mkdtemp())
 ```
 
-## The `Database` object
+### `Database(path, durability="full", temporals="python")`
 
-- `Database(path, durability="full", temporals="python")` opens (or creates) the database in directory `path`; use it
-  as a context manager, or call `close()`. `durability` is how much a commit waits for the disk:
-  `"full"` (each commit is on disk when it returns, about 8 ms), `"relaxed"` (a power failure can
-  lose the last commit, never corrupt the database) or `"deferred"` (commits are written by the
-  operating system or `sync()`; a power failure can lose the recent ones; tens of microseconds per
-  commit). `sync()` writes every commit so far to disk.
-- `query(text, parameters=None, /, **named) -> list[list]` runs one query, with its `$name`
-  parameters from a dict and/or keyword arguments (`db.query("... {id: $card} ...", card=123)`;
-  values: `int`, finite `float`, `str`, `bool`, `None`, lists, `str`-keyed dicts, and temporal
-  values, below); maps come back as dicts; cells become `int`, `float`, `str`, `bool`, `None` (null), a
-  `list`, a `dict`, a whole `Node(id, labels, properties)` / `Relationship(source, target, type,
-  properties)`, a `Path(nodes, relationships)`, or a temporal value.
-- Temporal results are the `datetime` module's types: `date`; `time` (naive for a local time,
-  with a fixed-offset `timezone` for a time); `datetime` (naive for a local date-time, in its
-  `zoneinfo.ZoneInfo` zone or at its fixed offset for a date-time); `timedelta` for a duration, or
-  `acmedb.Duration(months, days, seconds, nanoseconds)` when it has months (a month is not a fixed
-  number of days). They hold microseconds, so nanoseconds are truncated, and years 1 to 9999, so a
-  year outside raises `ValueError`. `Database(path, temporals="iso")` returns every temporal value
-  as its exact ISO 8601 text instead. As parameters the same types are accepted (naive values as
-  local ones; an aware `datetime` in a `ZoneInfo` zone keeps the zone).
-- `export_graph() -> dict` returns the whole graph, read straight from storage.
-- `allocate_node_id()`, `add_node(id, label)`, `add_edge(src, dst, type)`, `set_property(id, name, value)`
-  write data. `set_property` accepts any value a query can store: numbers, `str`, `bool`, temporal
-  values, lists of one type, and dicts as documents; `None` removes the property.
-- `write()` is a context manager that batches mutators into **one** write transaction (one fsync):
-  the bulk-ingestion path. An exception inside the block aborts it.
+Opens the database in directory `path`, creating the directory and the database if they do not
+exist. A database is used as a context manager (`with Database(path) as db:`), which closes it on
+exit, or closed with `close()`.
 
-  ```python
-  with db.write():
-      for i in range(100_000):
-          nid = db.allocate_node_id()
-          db.add_node(nid, "Person")
-          db.set_property(nid, "name", f"p{i}")
-  ```
+- `durability` — how much a commit waits for the disk:
 
-  Each mutator on its own is a separate transaction (slow, durable); a `write()` block does one
-  commit for the whole batch (~2000x faster for bulk loads). Don't run `query()` inside the block.
-- Errors raise typed exceptions — `ParseError`, `UnknownVariableError`,
-  `TypeMismatchError`, `InvalidExpressionError`, `NodeStillConnectedError`, `StorageError` — all
-  subclasses of `AcmedbError`.
+  | Value | A commit returns when… | A power failure can lose… |
+  | --- | --- | --- |
+  | `"full"` | its data is on disk | nothing |
+  | `"relaxed"` | its data is on disk; its bookkeeping follows with the next commit | the last commit |
+  | `"deferred"` | it is in memory; the operating system writes it, or `sync()` | the commits since the last `sync()` |
 
-The library is located via the `ACMEDB_LIB` environment variable, then `zig-out/lib`, then a
-standard install path.
+  No mode can corrupt the database. `"deferred"` is hundreds of times faster for many small writes.
+- `temporals` — how query results return temporal values: `"python"` as `datetime`-module values
+  (see [values](#values)), or `"iso"` as their exact ISO 8601 text (`'09:30:00.123456789+01:00'`),
+  which keeps the nanoseconds and the years the `datetime` module cannot hold.
+
+### `query(text, parameters=None, /, **named) -> list[list]`
+
+Runs one openCypher query ([reference](cypher)) and returns its rows: a list with one list per
+row, one value per `RETURN` item. A query without `RETURN` returns `[]`. Parameters (`$name` in the
+query) come from a dict, keyword arguments, or both:
+
+```python
+db.query("CREATE (:Card {number: $number, holder: $holder})", number=123, holder="Ana")
+print(db.query("MATCH (c:Card) WHERE c.number IN $numbers RETURN c.holder", {"numbers": [123, 456]}))
+```
+
+```text
+[['Ana']]
+```
+
+A query is one transaction: if it fails, none of its writes are kept. It runs with Python's global
+interpreter lock released.
+
+### `write()`
+
+A context manager that makes every mutator call inside it one transaction, committed when the
+block ends and undone if it raises. Queries cannot run inside it.
+
+```python
+with db.write():
+    for number in (1, 2, 3):
+        node = db.allocate_node_id()
+        db.add_node(node, "Card")
+        db.set_property(node, "number", number)
+print(db.query("MATCH (c:Card) RETURN count(c)"))
+```
+
+```text
+[[4]]
+```
+
+### Mutators
+
+Direct writes, each its own transaction unless inside `write()`:
+
+- `allocate_node_id() -> int` — a fresh node id, never handed out before.
+- `add_node(id, label="")` — a node with that id (and label), if it does not exist; adds the label
+  if it does. Ids chosen by the caller are reserved: `allocate_node_id` will not return them.
+- `add_edge(source, target, type)` — a relationship from node `source` to node `target`; both
+  must exist (`NodeNotFoundError` otherwise). acmedb keeps one relationship per source, target and
+  type.
+- `set_property(id, name, value)` — sets a node's property to any [storable value](#values);
+  `None` removes it.
+
+### Other methods
+
+- `export_graph() -> dict` — the whole graph read straight from storage, as
+  `{"nodes": [{"id", "labels", "properties"}], "relationships": [{"source", "target", "type", "properties"}]}`.
+  Meant for tests and debugging; it reads everything.
+- `sync()` — writes every commit so far to disk (for `"deferred"` durability).
+- `close()` — releases the database. Using it afterwards raises `ClosedError`.
+
+## Values
+
+How values cross between Python and Cypher, both ways:
+
+| Cypher | Python |
+| --- | --- |
+| `null` | `None` |
+| boolean | `bool` |
+| integer (64-bit) | `int` (outside 64 bits: `OverflowError`) |
+| float | `float` (`NaN` and infinities included) |
+| string | `str` |
+| list | `list` (a `tuple` is accepted as a parameter) |
+| map | `dict` with `str` keys |
+| date | `datetime.date` |
+| local time | `datetime.time`, naive |
+| time | `datetime.time` with a fixed-offset `datetime.timezone` |
+| local date-time | `datetime.datetime`, naive |
+| date-time | `datetime.datetime` in its `zoneinfo.ZoneInfo` zone, or at a fixed offset |
+| duration | `datetime.timedelta`, or `acmedb.Duration` when it has months |
+| node | `acmedb.Node` (results only) |
+| relationship | `acmedb.Relationship` (results only) |
+| path | `acmedb.Path` (results only) |
+
+As **properties**, a node or relationship can store booleans, numbers, strings, temporal values,
+lists of one of those types, and maps — documents, which may nest maps and lists of any values,
+`null`s included (an acmedb extension to openCypher).
+
+Python's `datetime` types hold microseconds and years 1 to 9999: nanoseconds are truncated, and a
+value outside those years raises `ValueError` — open the database with `temporals="iso"` to get the
+exact text. An aware `datetime` in a `ZoneInfo` zone keeps its zone as a parameter.
+
+```python
+import datetime
+from zoneinfo import ZoneInfo
+
+print(db.query("RETURN $at.timezone, $at + duration('P1D')", at=datetime.datetime(2025, 3, 30, 1, 30, tzinfo=ZoneInfo("Europe/Madrid"))))
+```
+
+```text
+[['Europe/Madrid', datetime.datetime(2025, 3, 31, 1, 30, tzinfo=zoneinfo.ZoneInfo(key='Europe/Madrid'))]]
+```
+
+## Entities
+
+`Node`, `Relationship` and `Path` are immutable values, equal when all their fields are:
+
+- `Node(id, labels, properties)` — `id` is acmedb's id for the node; `labels` a tuple of strings
+  in byte order; `properties` a dict.
+- `Relationship(source, target, type, properties)` — `source` and `target` are node ids.
+- `Path(nodes, relationships)` — tuples; `relationships[i]` joins `nodes[i]` and `nodes[i + 1]`.
+
+A node is hashed by its id and labels, a relationship by its endpoints and type, so they can be
+dict keys and set members.
+
+```python
+(node,), = db.query("MATCH (c:Card {number: 123}) RETURN c")
+print(node.labels, node.properties)
+```
+
+```text
+('Card',) {'holder': 'Ana', 'number': 123}
+```
+
+## `Duration`
+
+`acmedb.Duration(months=0, days=0, seconds=0, nanoseconds=0)` — a duration with a months part,
+which `timedelta` cannot express (a month is not a fixed number of days). Its parts are separate:
+`months`, `days`, `seconds` (rounded down) and `nanoseconds` (0 to 999,999,999). `str()` gives its
+ISO 8601 text; `to_timedelta()` converts one without months. Equal to a `timedelta` of the same
+length when it has no months.
+
+```python
+print(db.query("RETURN duration('P1M2DT3H')"), str(acmedb.Duration(months=14, days=3)))
+```
+
+```text
+[[Duration(months=1, days=2, seconds=10800, nanoseconds=0)]] P1Y2M3D
+```
+
+## Exceptions
+
+Every exception is an `acmedb.AcmedbError`. A failed query raises a `QueryError`, with `code` and
+`message` attributes:
+
+| Exception | Code | Raised when |
+| --- | --- | --- |
+| `ParseError` | 1 | the query is not valid Cypher |
+| `UnknownVariableError` | 2 | the query uses a variable it never bound |
+| `TypeMismatchError` | 4 | an operator or function gets a value of the wrong type |
+| `InvalidExpressionError` | 5 | an expression is not allowed where it is |
+| `NodeStillConnectedError` | 6 | `DELETE` of a node that still has relationships |
+| `ParameterMissingError` | 8 | a `$parameter` was not passed |
+| `ArithmeticQueryError` | 9 | integer overflow or division by zero (also an `ArithmeticError`) |
+
+and outside queries:
+
+| Exception | Raised when |
+| --- | --- |
+| `StorageError` | the storage failed (a full disk, a broken file) |
+| `NodeNotFoundError` | a mutator was given a node id that does not exist |
+| `ClosedError` | a closed `Database` was used |
+
+Values that cannot be converted raise Python's own `TypeError`, `OverflowError` or `ValueError`.
 
 ## Concurrency
 
-LMDB is **single-writer / multi-reader**. Reads (queries) can run concurrently, but writes are
-serialized: the `Database` object holds a lock around every mutator (`add_node`, `add_edge`,
-`set_property`, `allocate_node_id`). Do not share one `Database` across processes; the multi-process model
-is read replication (a writer → N replicas), which is future work.
+- **Threads.** Share one `Database` among threads. Its calls take turns (one query at a time per
+  `Database`), and a query releases the global interpreter lock while it runs, so the rest of the
+  program carries on. A read query sees one consistent snapshot.
+- **Processes.** Each process opens the database itself. Reads run in parallel across processes;
+  writes are serialized, one write transaction at a time. Do not open the same directory twice in
+  one process, and do not hand a `Database` to another process.
 
 ## Under the hood
 
-`acmedb._native` (`python/native/module.zig`) opens the database, runs queries and writes, and
-converts values directly: a query's parameters into engine values, its rows into Python objects
-(nodes, relationships and paths are built without running `__init__`; temporal values field by
-field, in `python/native/temporals.zig`). It runs the engine with the GIL released and pauses Python's
-cycle collector while it builds a large result. `acmedb/db.py` adds the `Database` class:
-locking, `write()` blocks, argument checks. `acmedb/_engine.py` loads the module and registers the
-classes and exceptions it builds. Measured costs are in `bench/RESULTS.md`. To embed from another
-language, see the [C ABI reference](c-api).
+The package's engine is `acmedb._native`, an extension module written in Zig on the Python limited
+C API (`python/native/module.zig`). It uses only the stable ABI of Python 3.10, so one build serves
+every later Python version. It converts values directly — parameters into engine values, rows
+into Python objects (entities without running their `__init__`, temporal values field by field in
+`python/native/temporals.zig`) — runs the engine with the global interpreter lock released, and
+pauses Python's cycle collector while it builds a large result. `acmedb/db.py` adds the `Database`
+class (locking, `write()` blocks, argument checks); `acmedb/_engine.py` loads the module and
+registers the classes and exceptions it builds with.
+
+From a source checkout, `make python` builds the module into `zig-out/python/`, where the package
+finds it. Measured costs are in `bench/RESULTS.md`. To embed acmedb from another language, see the
+[C ABI](c-api).
+
+```python
+db.close()
+```
