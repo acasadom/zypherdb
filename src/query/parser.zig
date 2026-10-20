@@ -1,14 +1,10 @@
-//! Hand-written recursive-descent parser for the openCypher subset.
+//! Hand-written recursive-descent parser for openCypher: clauses and patterns
+//! here, expressions in `expression_parser.zig`.
 //!
-//! Produces an arena AST (see `src/query/ast.zig`). The subset covers:
-//!
-//! - `MATCH` with a chain of node/edge patterns (`(var:Label {k: v})`,
-//!   `-[var:TYPE]->`, `<-[var:TYPE]-`).
-//! - `WHERE` with comparisons (`=`, `<>`, `<`, `>`, `<=`, `>=`), boolean
-//!   `AND`/`OR`/`NOT`, and literals/property access.
-//! - `RETURN` with expressions and optional `AS` aliases.
-//!
-//! Keywords are case-insensitive; identifiers are case-sensitive.
+//! Produces an arena AST (see `src/query/ast.zig`). Keywords are
+//! case-insensitive and recognized by position (the lexer has none);
+//! identifiers are case-sensitive. The grammar is described in
+//! docs/guide/language.md.
 
 const std = @import("std");
 

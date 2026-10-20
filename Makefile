@@ -15,7 +15,7 @@ python: ## Compile the Python extension module (into zig-out/python/)
 test: ## Build and run the test suite
 	zig build test
 
-test-py: python ## Run the Python binding tests (pip install -e "python[dev]")
+test-py: build python ## Run the Python and documentation tests (pip install -e "python[dev]")
 	$(PYTHON) -m pytest python/tests -q
 
 tck: python ## Run the openCypher TCK, write its report, fail on regressions

@@ -6,7 +6,11 @@ and `src/storage/key_value_store.zig` (the LMDB wrapper).
 
 ## The model: everything is a key
 
-There is **one LMDB database, no tables, no schema**, and every fact is a key in a single B+tree.
+There are **no tables and no schema**. LMDB keeps two B+trees in one file:
+
+- the main one holds every fact as a key: edges, indexes, edge properties, counters;
+- `#nodes` holds the node records, keyed by the node id as a native integer (`MDB_INTEGERKEY`).
+
 LMDB iterates keys in **lexicographic byte order**, which is the whole trick: the layout is chosen
 so that *the order you get for free is the order you want*.
 
@@ -23,13 +27,14 @@ Two rules make that work:
 
 | Key | Meaning | Answering |
 | --- | --- | --- |
+| `id` in `#nodes` | the node record: labels and properties | `hasNode`, `labelsOf`, `propertiesOf`, `getProperty` |
 | `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` = `'o'` out / `'i'` in) | `neighbours`, `hasEdge` |
 | `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the **canonical** `src -> dst` orientation | `getEdgeProperty` |
 | `l \| label \| 0x00 \| id` | label index | `nodesWithLabel` |
 | `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
 | `g \| prop \| 0x00 \| value \| src \| dst \| 0x00 \| type` | edge-property index | `edgesByProperty` (an equality seek) |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
-| `!` | the next node id to allocate | `allocNodeId` |
+| `!` | the next node id to allocate | `allocateNodeId` |
 
 Every "index" is just more keys, maintained by the same `put`/`del` primitives. There is no
 separate index structure — an index *is* a key range.
@@ -89,7 +94,7 @@ integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should
   next key is near the last (a scan's nodes come in id order). A change rewrites the record.
 - **Label index (`l`).** Answers "which nodes carry this label" (a prefix scan), maintained with
   the record.
-- **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProp`
+- **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProperty`
   and `deleteNode`. This is what turns `MATCH (p:Person {name: 'Keanu'})` from a scan into a point
   lookup.
 - **Edge-property index (`g`).** The same idea for edges, keyed `prop == value` then `(src, dst,
@@ -100,9 +105,10 @@ integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should
 
 ## The id counter
 
-`allocNodeId` does a read-modify-write on the `!` key (8-byte counter): read, increment, write. In
-a write transaction this is atomic with the rest of the query, so a `CREATE` that aborts rolls the
-counter back too.
+`allocateNodeId` does a read-modify-write on the `!` key (8-byte counter): read, increment, write.
+In a write transaction this is atomic with the rest of the query, so a `CREATE` that aborts rolls
+the counter back too. `addNode` accepts an id chosen by the caller and moves the counter past it,
+so the counter never hands out an id that is in use.
 
 ## Transactions
 
@@ -115,6 +121,22 @@ counter back too.
   transactions, not one per `get`.
 - `MDB_NOTLS` is set on the environment, so a single thread may hold several read transactions at
   once — the executor needs that to run a scan, then a neighbour scan *inside* it.
+- The environment maps up to 1 TiB of address space (`mdb_env_set_mapsize`); the file only grows
+  as data is written.
 - An iterator returned by `scanPrefix` borrows its transaction; it must be `deinit`'d **before** the
   transaction ends (the cursor belongs to it). The executor scopes every iterator to its `runStep`
   frame, which is what makes this safe.
+
+## Durability
+
+`KeyValueStore.openWithOptions` takes a durability mode, mapped to LMDB flags:
+
+| Mode | LMDB flag | A commit returns when… |
+| --- | --- | --- |
+| `full` | none | data and metadata are flushed (`fsync`) |
+| `relaxed` | `MDB_NOMETASYNC` | data is flushed; the metadata page follows with the next commit |
+| `deferred` | `MDB_NOSYNC` | the write is in the page cache; `sync()` (`mdb_env_sync`) or the OS flushes it |
+
+LMDB is copy-on-write and never overwrites live pages, so no mode can corrupt the database: a
+crash loses at most the commits that were not yet flushed, and the database opens at the last
+flushed one.

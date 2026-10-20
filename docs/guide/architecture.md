@@ -34,19 +34,21 @@ acmedb is deliberately small and generic. Four decisions explain almost every fi
 
 ## The components
 
-Three layers, one directory each, plus a few cross-cutting files. Dependencies point one way: the
-C ABI uses execution and storage, execution uses the query AST and storage, and nothing below
-reaches up.
+Three layers, one directory each, plus a few cross-cutting files and the two embeddings. Dependencies
+point one way: the embeddings use execution and storage, execution uses the query AST and storage,
+and nothing below reaches up.
 
 ```{mermaid}
 flowchart TB
-  subgraph embed["Embedding"]
+  subgraph embed["Embeddings"]
     CAPI["c_api.zig — C ABI (export fn)"]
+    PyNative["python/native/ — Python extension module"]
   end
   subgraph query["query/ — text to AST"]
     Lexer["lexer.zig — tokens"]
     Parser["parser.zig + expression_parser.zig — grammar"]
     AST["ast.zig — arena AST"]
+    Semantics["semantics.zig — static checks"]
   end
   subgraph execution["execution/ — AST to rows"]
     Executor["Executor.zig — state, run(), phases"]
@@ -54,7 +56,7 @@ flowchart TB
   end
   subgraph storage["storage/ — graph on LMDB"]
     Graph["graph.zig — graph operations and indexes"]
-    Keys["key_encoding.zig — key layout"]
+    Keys["key_encoding.zig + node_record.zig — key and record layout"]
     KV["key_value_store.zig — transactions, prefix scans"]
     LMDB["lmdb_bindings.zig — C bindings"]
   end
@@ -62,6 +64,9 @@ flowchart TB
 
   CAPI --> Executor
   CAPI --> Graph
+  PyNative --> Executor
+  PyNative --> Graph
+  Semantics --> AST
   Executor --> Steps
   Steps --> AST
   Steps --> Graph
@@ -81,11 +86,13 @@ flowchart TB
 | `src/storage/key_value_store.zig` | `KeyValueStore`, a RAII wrapper over LMDB: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix` and explicit write/read transactions. `scanPrefix` returns an **iterator**, not a callback. |
 | `src/storage/key_encoding.zig` | The byte layout of every key (markers, node ids, edge keys, index keys). The only place that knows the key layout. |
 | `src/storage/value_encoding.zig` | How a property value is stored, and written in index keys. |
+| `src/storage/node_record.zig` | The node record: a node's labels and properties in one stored value, read with one B-tree search. |
 | `src/storage/graph.zig` | `Graph`: nodes, labels, typed edges, properties and their indexes, built on the key encoding. Each operation documents its cost. |
 | `src/query/lexer.zig` | `tokenize`: query text to tokens (UTF-8 and backtick-quoted identifiers). |
 | `src/query/parser.zig` | The `Parser` and the clause/pattern grammar. |
 | `src/query/expression_parser.zig` | The expression grammar, by precedence. |
 | `src/query/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, `addNode`/`nodeChildren`/`intern`, `sameExpression`. |
+| `src/query/semantics.zig` | Static checks before a query runs: each variable is used as one kind (node, relationship or value), literal operands have types their operators accept, no aggregates inside comprehensions. |
 | `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, then the clauses as a pipeline of rows. |
 | `src/execution/clauses.zig` | The pipeline's MATCH / OPTIONAL MATCH, UNWIND and write clauses: rows in, rows out. |
 | `src/execution/planner.zig` | Pattern planning: the chain of `PatternNode`s/`PatternEdge`s, predicate pushdown, anchor choice, `PlanStep`s. |
@@ -99,13 +106,17 @@ flowchart TB
 | `src/temporal/` | The calendar (`calendar.zig`), time zones (`zones.zig`), the temporal types (`types.zig`), ISO 8601 parsing (`parse.zig`), durations (`durations.zig`) and building values from fields (`selection.zig`). |
 | `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE. |
 | `src/execution/bindings.zig` | `Binding`/`Bindings`: what each query variable is bound to (regular types). |
-| `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. |
+| `src/execution/entities.zig` | `EntitySnapshot`: the labels and properties of every node and relationship a result mentions, read before the transaction ends. |
+| `src/execution/read_cache.zig` | A per-query cache of label tests, for read-only queries that reach the same nodes many times. |
+| `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. Declared in `include/acmedb.h`. |
+| `python/native/module.zig` | The Python extension module, on the limited C API: converts parameters and rows directly, runs queries with the GIL released. See [the Python reference](python.md#under-the-hood). |
+| `python/native/temporals.zig` | Converts temporal values to and from Python's `datetime` types. |
 | `src/root.zig` | The library root: re-exports the public surface. |
 | `tests/` | The test suite, through the public API only (see [contributing](contributing)). |
 
 ## The lifecycle of a query
 
-A query is text in, rows out, through four stages. Each stage is a separate file:
+A query is text in, rows out, through five stages. Each stage is a separate file:
 
 ```{mermaid}
 sequenceDiagram
@@ -135,13 +146,18 @@ sequenceDiagram
 
 1. **Lex + parse** — `tokenize` turns the text into a token array; the recursive-descent `Parser`
    walks it into the arena AST. See [the language](language).
-2. **Plan** — the executor reads the AST and, for each `MATCH` pattern, builds a plan: a chain of
+2. **Check** — `Executor.run` first rejects queries that are well-formed but meaningless:
+   `semantics.check` (a node used as a relationship, `1 IN true`) and `functions.checkCalls` (an
+   unknown function, a wrong number of arguments). Nothing has touched storage yet.
+3. **Plan** — the executor reads the AST and, for each `MATCH` pattern, builds a plan: a chain of
    `PatternNode`s/`PatternEdge`s, an anchor choice, and a list of `PlanStep`s. This is where the
    optimizations live. See [planning & execution](planning-execution).
-3. **Execute** — a recursive function (`runStep`) walks the steps; each step is a graph operation
+4. **Execute** — a recursive function (`runStep`) walks the steps; each step is a graph operation
    (a scan or an expansion) backed by a `scanPrefix` iterator. See [storage](storage) for what those
    operations *mean*.
-4. **Return** — rows are projected and handed back through the C ABI.
+5. **Return** — rows are projected; before the transaction ends, `EntitySnapshot.capture` reads
+   the nodes and relationships the rows mention; then the rows are handed back, through the C ABI
+   or the Python module.
 
 There is deliberately **no intermediate representation** between the AST and the plan: the plan
 structures are built directly inside the executor, and the optimizations are the anchor selection

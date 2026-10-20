@@ -1,5 +1,6 @@
 //! The node record: a node's labels and properties in one stored value, so
-//! one B-tree search reads all of them (the value of the `n | node_id` key).
+//! one B-tree search reads all of them (the value under the node's id in the
+//! `#nodes` database).
 //!
 //! Layout, integers big-endian:
 //!

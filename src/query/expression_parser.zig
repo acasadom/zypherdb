@@ -1,7 +1,7 @@
-//! Expression grammar of the openCypher subset, by precedence (lowest
-//! first): OR, AND, NOT, comparisons (incl. STARTS WITH / ENDS WITH /
-//! CONTAINS / IN), then primaries (literals, variables, property access,
-//! lists, CASE, size() and aggregate calls).
+//! Expression grammar, one function per precedence level (loosest first):
+//! OR, XOR, AND, NOT, comparisons (chained), predicates (IS NULL, STARTS
+//! WITH, ENDS WITH, CONTAINS, IN), + and -, * / %, ^, unary sign, then
+//! postfix access (`.key`, `[i]`, `[a..b]`) on atoms.
 
 const std = @import("std");
 
