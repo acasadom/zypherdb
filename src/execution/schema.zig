@@ -6,6 +6,7 @@ const Index = @import("../query/ast.zig").Index;
 const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
 const fulltext = @import("../storage/fulltext.zig");
+const fulltext_postings = @import("../storage/fulltext_postings.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -40,6 +41,7 @@ pub fn run(executor: *Executor, root: Index) ExecutionError![]const Row {
         .create_fulltext_index => try createIndex(executor, root),
         .drop_index => {
             const drop = executor.ast.data(root).drop_index;
+            if (try fulltext.find(graph, drop.name, executor.allocator) != null) try fulltext_postings.clear(graph, drop.name);
             if (!try fulltext.drop(graph, drop.name) and !drop.if_exists) {
                 executor.fail(.invalid_expression, "there is no index named '{s}'", .{drop.name});
                 return error.InvalidExpression;
@@ -60,13 +62,16 @@ fn createIndex(executor: *Executor, root: Index) ExecutionError!void {
     }
     const children = executor.ast.nodeChildren(root);
     const analyzer = if (children.len > 0) try analyzerOption(executor, children[0]) else "standard";
-    try fulltext.create(executor.graph, .{
+    const definition = fulltext.Definition{
         .name = command.name,
         .entity = if (command.relationships) .relationships else .nodes,
         .analyzer = analyzer,
         .labels_or_types = command.labels_or_types,
         .properties = command.properties,
-    });
+    };
+    try fulltext.create(executor.graph, definition);
+    // Index what the graph holds already.
+    try fulltext_postings.populate(executor.graph, definition);
 }
 
 /// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.

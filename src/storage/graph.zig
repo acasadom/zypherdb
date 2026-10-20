@@ -25,6 +25,8 @@ const Allocator = std.mem.Allocator;
 
 const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
+const fulltext_postings = @import("fulltext_postings.zig");
+const fulltext = @import("fulltext.zig");
 const node_record = @import("node_record.zig");
 const NodeRecord = node_record.NodeRecord;
 
@@ -204,7 +206,10 @@ pub const Graph = struct {
         defer scratch.deinit();
         const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
         if (record.hasLabel(label)) return;
-        try self.writeRecord(id, try node_record.withLabel(scratch.allocator(), record, label, true));
+        const old = try self.keptRecord(record, scratch.allocator());
+        const updated = try node_record.withLabel(scratch.allocator(), record, label, true);
+        try self.writeRecord(id, updated);
+        try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -220,7 +225,10 @@ pub const Graph = struct {
         defer scratch.deinit();
         const record = try self.readRecord(id, scratch.allocator()) orelse return;
         if (!record.hasLabel(label)) return;
-        try self.writeRecord(id, try node_record.withLabel(scratch.allocator(), record, label, false));
+        const old = try self.keptRecord(record, scratch.allocator());
+        const updated = try node_record.withLabel(scratch.allocator(), record, label, false);
+        try self.writeRecord(id, updated);
+        try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -228,6 +236,22 @@ pub const Graph = struct {
         try self.store.del(key.items);
         try self.bumpLabelCount(label, false);
         try self.refreshNeighbourLabels(id);
+    }
+
+    /// `record` as it must be kept across a write to its node: a copy if a
+    /// full-text index may need the old record (a write can move the view's
+    /// page), else the view itself, which nothing reads afterwards.
+    fn keptRecord(self: *Graph, record: NodeRecord, scratch: Allocator) StorageError!NodeRecord {
+        if (try fulltext.schemaVersion(self) == 0) return record;
+        return .{ .bytes = try scratch.dupe(u8, record.bytes) };
+    }
+
+    /// A copy of node `id`'s record, made with `allocator` ("" if no such node).
+    pub fn recordCopy(self: *Graph, id: NodeId, allocator: Allocator) StorageError![]const u8 {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const record = try self.readRecord(id, scratch.allocator()) orelse return "";
+        return allocator.dupe(u8, record.bytes);
     }
 
     /// The record of node `id` (null if there is no such node): a view into
@@ -318,6 +342,7 @@ pub const Graph = struct {
         while (properties.next()) |property| {
             try self.deleteIndexEntry(id, property.name, try value_encoding.decodeValue(property.encoded_value, scratch.allocator()));
         }
+        try fulltext_postings.nodeChanged(self, id, record, NodeRecord.empty, null);
         try self.store.deleteNode(id);
     }
 
@@ -379,7 +404,9 @@ pub const Graph = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         for (properties.items) |p| {
-            try self.deleteEdgeIndexEntry(p.name, try value_encoding.decodeValue(p.value, scratch.allocator()), src, dst, edge_type);
+            const old = try value_encoding.decodeValue(p.value, scratch.allocator());
+            try fulltext_postings.relationshipPropertyChanged(self, src, dst, edge_type, p.name, old, null);
+            try self.deleteEdgeIndexEntry(p.name, old, src, dst, edge_type);
             key.clearRetainingCapacity();
             try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, p.name);
             try self.store.del(key.items);
@@ -415,8 +442,10 @@ pub const Graph = struct {
         const updated = try node_record.withProperty(scratch.allocator(), record, name, encoded.items);
         // Remove the previous index entry, if any (read before the record changes).
         if (record.property(name)) |old| try self.deleteIndexEntry(id, name, try value_encoding.decodeValue(old, scratch.allocator()));
+        const old_record = try self.keptRecord(record, scratch.allocator());
         try self.writeRecord(id, updated);
         try self.putIndexEntry(id, name, value);
+        try fulltext_postings.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
     }
 
     /// Removes a typed property `name` from node `id` (and its index entry).
@@ -428,8 +457,10 @@ pub const Graph = struct {
         const old = record.property(name) orelse return;
         const old_value = try value_encoding.decodeValue(old, scratch.allocator());
         const updated = try node_record.withProperty(scratch.allocator(), record, name, null);
+        const old_record = try self.keptRecord(record, scratch.allocator());
         try self.writeRecord(id, updated);
         try self.deleteIndexEntry(id, name, old_value);
+        try fulltext_postings.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
     }
 
     /// Iterates all nodes whose property `name` equals `value` (via the
@@ -688,7 +719,8 @@ pub const Graph = struct {
         if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        if (try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator())) |old| try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
+        const old = try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator());
+        if (old) |previous| try self.deleteEdgeIndexEntry(name, previous, src, dst, edge_type);
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -700,6 +732,7 @@ pub const Graph = struct {
         try self.store.put(key.items, encoded.items);
 
         try self.putEdgeIndexEntry(name, value, src, dst, edge_type);
+        try fulltext_postings.relationshipPropertyChanged(self, src, dst, edge_type, name, old, value);
     }
 
     /// Removes a typed property from the directed edge `src -> dst` of type
@@ -707,11 +740,13 @@ pub const Graph = struct {
     pub fn removeEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8) StorageError!void {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        if (try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator())) |old| try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
+        const old = try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator()) orelse return;
+        try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
         try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, name);
         try self.store.del(key.items);
+        try fulltext_postings.relationshipPropertyChanged(self, src, dst, edge_type, name, old, null);
     }
 
     fn putEdgeIndexEntry(self: *Graph, property: []const u8, value: Value, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!void {

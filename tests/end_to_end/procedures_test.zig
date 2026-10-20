@@ -101,3 +101,74 @@ test "schema commands create, list and drop full-text indexes" {
         &.{ string("documents"), string("FULLTEXT"), string("NODE"), .{ .list = &.{ string("Document"), string("Note") } }, .{ .list = &.{ string("title"), string("body") } }, spanish },
     });
 }
+
+test "full-text search finds, ranks and follows changes to nodes and relationships" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Nodes that exist before the index are indexed when it is created.
+    try expectQuery(&ast, &g,
+        \\CREATE (:Doc {title: 'Contención biológica', body: 'Procedimiento de contención en el laboratorio BSL-3'}),
+        \\       (:Doc {title: 'Animales', body: 'Cuidado de los animales del vivario'}),
+        \\       (:Doc {title: 'CONTENCION', body: 'contención contención contención'}),
+        \\       (:Note {title: 'Contención', body: 'no indexed label'})
+    , &.{});
+    try expectQuery(&ast, &g, "CREATE FULLTEXT INDEX docs FOR (d:Doc) ON EACH [d.title, d.body]", &.{});
+
+    // Case and accents fold; more occurrences in a shorter text rank higher.
+    try expectOrdered(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'Contencion') YIELD node, score RETURN node.title", &.{
+        &.{string("CONTENCION")}, &.{string("Contención biológica")},
+    });
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'contención') YIELD node, score WHERE score > 0 RETURN count(*)", &.{&.{.{ .int = 2 }}});
+    // OR of the terms, by default.
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'animales laboratorio') YIELD node RETURN count(*)", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'inexistente') YIELD node RETURN count(*)", &.{&.{.{ .int = 0 }}});
+    // skip and limit; the rest of the query.
+    try expectOrdered(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'contencion', {skip: 1, limit: 5}) YIELD node RETURN node.title", &.{&.{string("Contención biológica")}});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'vivario') YIELD node MATCH (n:Doc) WHERE n = node RETURN n.title", &.{&.{string("Animales")}});
+
+    // Changes keep the index current: properties, labels, deletions.
+    try expectQuery(&ast, &g, "MATCH (d:Doc {title: 'Animales'}) SET d.body = 'Ratones y contención'", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'vivario') YIELD node RETURN count(*)", &.{&.{.{ .int = 0 }}});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'ratones') YIELD node RETURN node.title", &.{&.{string("Animales")}});
+    try expectQuery(&ast, &g, "MATCH (n:Note) SET n:Doc", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'indexed') YIELD node RETURN node.title", &.{&.{string("Contención")}});
+    try expectQuery(&ast, &g, "MATCH (n:Note) REMOVE n:Doc REMOVE n.title", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'indexed') YIELD node RETURN count(*)", &.{&.{.{ .int = 0 }}});
+    try expectQuery(&ast, &g, "MATCH (d:Doc {title: 'CONTENCION'}) DETACH DELETE d", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'contencion') YIELD node RETURN count(*)", &.{&.{.{ .int = 2 }}});
+    // Lists of strings are indexed as text; other values are not.
+    try expectQuery(&ast, &g, "CREATE (:Doc {title: ['primer', 'segundo'], body: 42})", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'segundo') YIELD node RETURN count(*)", &.{&.{.{ .int = 1 }}});
+
+    // Relationships.
+    try expectQuery(&ast, &g, "MATCH (a:Doc {title: 'Animales'}), (b:Doc {title: 'Contención biológica'}) CREATE (a)-[:CITES {note: 'ver el protocolo de contención'}]->(b)", &.{});
+    try expectQuery(&ast, &g, "CREATE FULLTEXT INDEX citations FOR ()-[r:CITES]-() ON EACH [r.note]", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryRelationships('citations', 'protocolo') YIELD relationship RETURN startNode(relationship).title, endNode(relationship).title", &.{
+        &.{ string("Animales"), string("Contención biológica") },
+    });
+    try expectQuery(&ast, &g, "MATCH ()-[r:CITES]->() SET r.note = 'sin texto útil'", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryRelationships('citations', 'protocolo') YIELD relationship RETURN count(*)", &.{&.{.{ .int = 0 }}});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryRelationships('citations', 'util') YIELD relationship RETURN count(*)", &.{&.{.{ .int = 1 }}});
+    try expectQuery(&ast, &g, "MATCH ()-[r:CITES]->() DELETE r", &.{});
+    try expectQuery(&ast, &g, "CALL db.index.fulltext.queryRelationships('citations', 'util') YIELD relationship RETURN count(*)", &.{&.{.{ .int = 0 }}});
+
+    // Wrong uses.
+    try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('nothing', 'x') YIELD node RETURN node", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('citations', 'x') YIELD node RETURN node", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 1) YIELD node RETURN node", error.TypeMismatch);
+    try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'x', {top: 1}) YIELD node RETURN node", error.InvalidExpression);
+
+    // Dropping an index removes every key it had.
+    try expectQuery(&ast, &g, "DROP INDEX docs", &.{});
+    try expectQuery(&ast, &g, "DROP INDEX citations", &.{});
+    for ([_][]const u8{ "wdocs\x00", "Wdocs\x00", "vdocs\x00", "Vdocs\x00", "wcitations\x00", "vcitations\x00" }) |prefix| {
+        try testing.expectEqual(@as(usize, 0), try store.countPrefix(prefix));
+    }
+}

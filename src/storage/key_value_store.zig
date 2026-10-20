@@ -79,6 +79,10 @@ pub const KeyValueStore = struct {
     pooled_cursors: usize = 0,
     /// Node records found in the active read transaction (see `RecordCache`).
     records: *RecordCache,
+    /// A value read in the active write transaction that only the transaction
+    /// itself can change, kept by the layer above for the transaction's life
+    /// (the full-text schema version); cleared when a transaction starts or ends.
+    write_transaction_memo: ?u64 = null,
 
     /// How much a commit waits for the disk.
     pub const Durability = enum {
@@ -167,11 +171,13 @@ pub const KeyValueStore = struct {
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.environment, null, 0, &transaction) != 0) return error.WriteFailed;
         self.active_write_transaction = transaction.?;
+        self.write_transaction_memo = null;
     }
 
     pub fn commitWrite(self: *KeyValueStore) StorageError!void {
         const transaction = self.active_write_transaction orelse return error.WriteFailed;
         self.active_write_transaction = null;
+        self.write_transaction_memo = null;
         if (c.mdb_txn_commit(transaction) != 0) {
             _ = c.mdb_txn_abort(transaction);
             return error.WriteFailed;
@@ -183,6 +189,7 @@ pub const KeyValueStore = struct {
             _ = c.mdb_txn_abort(transaction);
             self.active_write_transaction = null;
         }
+        self.write_transaction_memo = null;
     }
 
     /// Begins an explicit read transaction (an MVCC snapshot). Until

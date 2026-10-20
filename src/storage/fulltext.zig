@@ -96,17 +96,26 @@ pub fn drop(graph: *Graph, name: []const u8) StorageError!bool {
 }
 
 /// How many times the definitions changed (0 before the first index).
+/// Every mutation asks (to know whether there are indexes to keep current),
+/// so inside a write transaction the answer is read once: only the
+/// transaction itself could change it, and then it updates the memo too.
 pub fn schemaVersion(graph: *Graph) StorageError!u64 {
-    const raw = (try graph.store.get(schema_version_key)) orelse return 0;
-    defer graph.store.allocator.free(raw);
-    if (raw.len != 8) return 0;
-    return std.mem.readInt(u64, raw[0..8], .big);
+    const in_write = graph.store.active_write_transaction != null;
+    if (in_write) if (graph.store.write_transaction_memo) |version| return version;
+    const version: u64 = if (try graph.store.get(schema_version_key)) |raw| version: {
+        defer graph.store.allocator.free(raw);
+        break :version if (raw.len == 8) std.mem.readInt(u64, raw[0..8], .big) else 0;
+    } else 0;
+    if (in_write) graph.store.write_transaction_memo = version;
+    return version;
 }
 
 fn bumpSchemaVersion(graph: *Graph) StorageError!void {
+    const version = try schemaVersion(graph) + 1;
     var buffer: [8]u8 = undefined;
-    std.mem.writeInt(u64, &buffer, try schemaVersion(graph) + 1, .big);
+    std.mem.writeInt(u64, &buffer, version, .big);
     try graph.store.put(schema_version_key, &buffer);
+    if (graph.store.active_write_transaction != null) graph.store.write_transaction_memo = version;
 }
 
 fn appendDefinitionKey(key: *std.ArrayList(u8), allocator: Allocator, name: []const u8) Allocator.Error!void {

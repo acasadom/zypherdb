@@ -9,6 +9,8 @@ const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
 const Value = @import("../value.zig").Value;
 const signatures = @import("../query/procedures.zig");
+const fulltext = @import("../storage/fulltext.zig");
+const fulltext_search = @import("../storage/fulltext_search.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -84,7 +86,8 @@ const Binder = struct {
 
 /// Runs procedure `name` with `arguments`, emitting its rows.
 fn run(executor: *Executor, name: []const u8, arguments: []const Value, emit: Emit) ExecutionError!void {
-    _ = arguments;
+    if (std.mem.eql(u8, name, "db.index.fulltext.queryNodes")) return queryIndex(executor, name, .nodes, arguments, emit);
+    if (std.mem.eql(u8, name, "db.index.fulltext.queryRelationships")) return queryIndex(executor, name, .relationships, arguments, emit);
     if (std.mem.eql(u8, name, "db.labels")) {
         for (try executor.graph.labelNames(executor.allocator)) |label| try emit.row(emit.context, &.{.{ .string = label }});
     } else if (std.mem.eql(u8, name, "db.relationshipTypes")) {
@@ -94,6 +97,56 @@ fn run(executor: *Executor, name: []const u8, arguments: []const Value, emit: Em
     } else {
         executor.fail(.invalid_expression, "procedure '{s}' is not available yet", .{name});
         return error.InvalidExpression;
+    }
+}
+
+/// `db.index.fulltext.queryNodes(index, query[, {skip, limit}])` and its
+/// relationship twin: the matches, best first, with their scores.
+fn queryIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, arguments: []const Value, emit: Emit) ExecutionError!void {
+    if (arguments[0] != .string or arguments[1] != .string) {
+        executor.fail(.type_mismatch, "{s}() takes an index name and a query, both strings", .{name});
+        return error.TypeMismatch;
+    }
+    const index_name = arguments[0].string;
+    const definition = try fulltext.find(executor.graph, index_name, executor.allocator) orelse {
+        executor.fail(.invalid_expression, "there is no full-text index named '{s}'", .{index_name});
+        return error.InvalidExpression;
+    };
+    if (definition.entity != entity) {
+        executor.fail(.invalid_expression, "'{s}' indexes {s}: use db.index.fulltext.{s}", .{ index_name, @tagName(definition.entity), if (definition.entity == .nodes) "queryNodes" else "queryRelationships" });
+        return error.InvalidExpression;
+    }
+    var skip: usize = 0;
+    var limit: usize = std.math.maxInt(usize);
+    if (arguments.len > 2) {
+        if (arguments[2] != .map) {
+            executor.fail(.type_mismatch, "{s}() takes its options as a map: {{skip: n, limit: n}}", .{name});
+            return error.TypeMismatch;
+        }
+        for (arguments[2].map) |option| {
+            const count = if (option.value == .int and option.value.int >= 0) @as(usize, @intCast(option.value.int)) else {
+                executor.fail(.invalid_expression, "the option '{s}' must be a non-negative integer", .{option.key});
+                return error.InvalidExpression;
+            };
+            if (std.mem.eql(u8, option.key, "skip")) skip = count else if (std.mem.eql(u8, option.key, "limit")) limit = count else {
+                executor.fail(.invalid_expression, "unknown option '{s}' (expected skip, limit)", .{option.key});
+                return error.InvalidExpression;
+            }
+        }
+    }
+    const hits = try fulltext_search.search(executor.graph, executor.allocator, definition, arguments[1].string);
+    const end = @min(hits.len, skip +| limit);
+    if (skip >= end) return;
+    for (hits[skip..end]) |hit| {
+        const value: Value = switch (entity) {
+            .nodes => .{ .node = std.mem.readInt(u64, hit.entity[0..8], .big) },
+            .relationships => .{ .relationship = .{
+                .src = std.mem.readInt(u64, hit.entity[0..8], .big),
+                .dst = std.mem.readInt(u64, hit.entity[8..16], .big),
+                .edge_type = hit.entity[16..],
+            } },
+        };
+        try emit.row(emit.context, &.{ value, .{ .float = hit.score } });
     }
 }
 
