@@ -28,7 +28,7 @@ Two rules make that work:
 | Key | Meaning | Answering |
 | --- | --- | --- |
 | `id` in `#nodes` | the node record: labels and properties | `hasNode`, `labelsOf`, `propertiesOf`, `getProperty` |
-| `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` = `'o'` out / `'i'` in) | `neighbours`, `hasEdge` |
+| `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` = `'o'` out / `'i'` in); its value is the neighbour's labels | `neighbours`, `hasEdge` |
 | `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the **canonical** `src -> dst` orientation | `getEdgeProperty` |
 | `l \| label \| 0x00 \| id` | label index | `nodesWithLabel` |
 | `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
@@ -89,9 +89,25 @@ integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should
 - **Node records** (a table of their own, `#nodes`, keyed by the id as an integer). A node's
   labels and properties are one value (`node_record.zig`):
   label count, then each label; property count, then each name and encoded value, both sorted.
-  One B-tree search reads everything about a node, and a read transaction looks records up
-  through one reused cursor, which LMDB repositions without searching from the root when the
-  next key is near the last (a scan's nodes come in id order). A change rewrites the record.
+  One B-tree search reads everything about a node, and a change rewrites the record. In a read
+  transaction, three things make reading records cheaper:
+  - **A reused cursor.** Records are looked up through one cursor. When the next id is at most
+    four records ahead, the cursor steps forward (`MDB_NEXT`) instead of searching. A scan's nodes
+    come in id order, so a scan reads records almost sequentially.
+  - **A record cache** (`RecordCache`). It keeps the records found in the transaction as LMDB's
+    views, which stay valid until the transaction ends. It is direct-mapped by id with 4096 slots,
+    so a lookup or an insertion is one array access. A node reached many times (a team every
+    member reaches) is searched for once, and a scan that reads each node once pays almost
+    nothing for the cache.
+  - **Generations.** Starting a read transaction moves the cache to a new generation, which
+    empties it without touching it.
+- **Neighbour labels on edges.** The value of each edge key is the labels of the node at the other
+  end: a version byte, then the label section of that node's record. An expansion such as
+  `(g)<-[:MEMBER_OF]-(p:Person)` checks `Person` without reading `p`'s record.
+  - `addEdge` writes the value.
+  - `addLabel` and `removeLabel` rewrite it in every neighbour's key, which costs O(degree).
+  - An empty value, from a key written before this format, means the labels are unknown, and the
+    record is read.
 - **Label index (`l`).** Answers "which nodes carry this label" (a prefix scan), maintained with
   the record.
 - **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProperty`

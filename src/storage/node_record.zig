@@ -55,6 +55,12 @@ pub const NodeRecord = struct {
         return null;
     }
 
+    /// The record's labels part (count and labels), which edges keep a copy
+    /// of for the node at their other end (see `Graph.addEdge`).
+    pub fn labelSection(self: NodeRecord) []const u8 {
+        return self.bytes[0..self.labelsEnd()];
+    }
+
     fn labelsEnd(self: NodeRecord) usize {
         if (self.bytes.len == 0) return 0;
         var iterator = self.labels();

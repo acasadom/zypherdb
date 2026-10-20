@@ -20,6 +20,7 @@ const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
 const Relationship = @import("../value.zig").Relationship;
 const PatternEdge = @import("planner.zig").PatternEdge;
+const NodeRecord = @import("../storage/node_record.zig").NodeRecord;
 
 /// Candidate nodes for a pattern: the first label's index, or every node
 /// when the pattern is unlabeled. Callers verify the remaining labels.
@@ -153,7 +154,7 @@ fn expandEdge(self: *Executor, from: usize, to: usize, next_step: usize, pattern
                 for (edgeOrientations(edge, traversal, from_id, candidate)) |orientation| {
                     const ends = orientation orelse continue;
                     if (!try self.graph.hasEdge(ends.src, ends.dst, edge_type)) continue;
-                    try tryNeighbour(self, to, edge_index, candidate, .{ .src = ends.src, .dst = ends.dst, .edge_type = edge_type }, next_step, pattern_index, bindings);
+                    try tryNeighbour(self, to, edge_index, candidate, null, .{ .src = ends.src, .dst = ends.dst, .edge_type = edge_type }, next_step, pattern_index, bindings);
                 }
             }
         }
@@ -163,15 +164,19 @@ fn expandEdge(self: *Executor, from: usize, to: usize, next_step: usize, pattern
     var edges = MatchingEdges.init(self.graph, from_id, edge, traversal);
     defer edges.deinit();
     while (try edges.next()) |found| {
-        try tryNeighbour(self, to, edge_index, found.neighbour, found.ref, next_step, pattern_index, bindings);
+        try tryNeighbour(self, to, edge_index, found.neighbour, found.neighbour_labels, found.ref, next_step, pattern_index, bindings);
     }
 }
 
 /// Continues the match with `neighbour` at pattern position `to`, reached
-/// through `ref`, if it fits the node pattern there.
-fn tryNeighbour(self: *Executor, to: usize, edge_index: usize, neighbour: NodeId, ref: Relationship, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
+/// through `ref`, if it fits the node pattern there. `neighbour_labels` are
+/// its labels as the edge key keeps them, if it does (no record read then).
+fn tryNeighbour(self: *Executor, to: usize, edge_index: usize, neighbour: NodeId, neighbour_labels: ?[]const u8, ref: Relationship, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
     const to_node = self.nodes.items[to];
-    if (!(try hasAllLabels(self, neighbour, to_node.labels))) return;
+    if (neighbour_labels) |section| {
+        const known = NodeRecord{ .bytes = section };
+        for (to_node.labels) |label| if (!known.hasLabel(label)) return;
+    } else if (!(try hasAllLabels(self, neighbour, to_node.labels))) return;
     const saved = bindings.mark();
     defer bindings.restore(saved);
     // A `to` variable bound already (earlier in the pattern or the query)
@@ -332,7 +337,7 @@ const MatchingEdges = struct {
     next_direction: usize = 0,
     current: ?EdgeKeyIterator = null,
 
-    const Match = struct { neighbour: NodeId, ref: Relationship };
+    const Match = struct { neighbour: NodeId, ref: Relationship, neighbour_labels: ?[]const u8 };
 
     fn init(graph: *Graph, from_id: NodeId, edge: PatternEdge, traversal: Direction) MatchingEdges {
         return .{
@@ -356,7 +361,7 @@ const MatchingEdges = struct {
                     // An undirected self-loop shows up in both scans: keep one.
                     if (self.direction_count == 2 and key.direction == .in and key.neighbour == self.from_id) continue;
                     const outgoing = key.direction == .out;
-                    return .{ .neighbour = key.neighbour, .ref = .{
+                    return .{ .neighbour = key.neighbour, .neighbour_labels = key.neighbour_labels, .ref = .{
                         .src = if (outgoing) self.from_id else key.neighbour,
                         .dst = if (outgoing) key.neighbour else self.from_id,
                         .edge_type = key.edge_type,

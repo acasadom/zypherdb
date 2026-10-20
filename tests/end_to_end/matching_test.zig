@@ -415,3 +415,33 @@ test "IS NULL and IS NOT NULL" {
         &.{ .{ .boolean = true }, .{ .boolean = false }, .{ .null = {} } },
     });
 }
+
+test "an expansion sees label changes made after the relationships exist" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Edge keys keep a copy of the neighbour's labels: it must follow SET and REMOVE.
+    try expectQuery(&ast, &g, "CREATE (a:A {n: 1})-[:R]->(b {n: 2}), (b)-[:R]->(b)", &.{});
+    try expectQuery(&ast, &g, "MATCH (:A)-[:R]->(b:X) RETURN b.n", &.{});
+    try expectQuery(&ast, &g, "MATCH (b {n: 2}) SET b:X:Y", &.{});
+    try expectQuery(&ast, &g, "MATCH (:A)-[:R]->(b:X:Y) RETURN b.n", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "MATCH (b:X)<-[:R]-(a:A) RETURN a.n", &.{&.{.{ .int = 1 }}});
+    // The self-loop, from either end.
+    try expectQuery(&ast, &g, "MATCH (b:X)-[:R]->(c:Y) RETURN count(*)", &.{&.{.{ .int = 1 }}});
+    try expectQuery(&ast, &g, "MATCH (b {n: 2}) REMOVE b:X", &.{});
+    try expectQuery(&ast, &g, "MATCH (:A)-[:R]->(b:X) RETURN b.n", &.{});
+    try expectQuery(&ast, &g, "MATCH (:A)-[:R]->(b:Y) RETURN b.n", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "MATCH (b:Y)-[:R]->(c:Y) RETURN count(*)", &.{&.{.{ .int = 1 }}});
+    // Changing the other end's labels is seen from this end too.
+    try expectQuery(&ast, &g, "MATCH (a:A) SET a:B REMOVE a:A", &.{});
+    try expectQuery(&ast, &g, "MATCH (b:Y)<-[:R]-(a:B) RETURN a.n", &.{&.{.{ .int = 1 }}});
+    try expectQuery(&ast, &g, "MATCH (b:Y)<-[:R]-(a:A) RETURN a.n", &.{});
+}

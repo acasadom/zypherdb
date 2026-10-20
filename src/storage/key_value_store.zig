@@ -20,11 +20,49 @@ pub const StorageError = error{
     NodeStillConnected,
 };
 
+/// The node records read in a read transaction, kept as the views LMDB gives
+/// (valid until the transaction ends), so reading a node again costs no
+/// B-tree search: queries reach the same nodes many times (every member
+/// reaches their team), and read several properties of each.
+///
+/// Direct-mapped by node id, with a fixed number of slots: a lookup or an
+/// insertion is one array access, so a scan that reads each node once pays
+/// almost nothing for it. Each slot records the transaction (`generation`)
+/// it was filled in; starting a read transaction moves to a new generation,
+/// which empties the cache without touching it.
+pub const RecordCache = struct {
+    const slot_count = 4096;
+
+    slots: [slot_count]Slot = @splat(.{}),
+    generation: u32 = 1,
+
+    const Slot = struct { generation: u32 = 0, id: u64 = 0, bytes: []const u8 = "" };
+
+    fn find(self: *const RecordCache, id: u64) ?[]const u8 {
+        const slot = &self.slots[id % slot_count];
+        return if (slot.generation == self.generation and slot.id == id) slot.bytes else null;
+    }
+
+    fn keep(self: *RecordCache, id: u64, bytes: []const u8) void {
+        self.slots[id % slot_count] = .{ .generation = self.generation, .id = id, .bytes = bytes };
+    }
+
+    fn startTransaction(self: *RecordCache) void {
+        self.generation +%= 1;
+        if (self.generation == 0) { // wrapped around: forget every slot for real
+            self.slots = @splat(.{});
+            self.generation = 1;
+        }
+    }
+};
+
 pub const KeyValueStore = struct {
     environment: *c.MDB_env,
     database: c.MDB_dbi,
     node_database: c.MDB_dbi,
     node_cursor: ?*c.MDB_cursor = null,
+    /// The id `node_cursor` is positioned on, if it is.
+    node_cursor_id: ?u64 = null,
     allocator: std.mem.Allocator,
     active_write_transaction: ?*c.MDB_txn,
     active_read_transaction: ?*c.MDB_txn,
@@ -39,6 +77,8 @@ pub const KeyValueStore = struct {
     /// without searching from the root.
     cursor_pool: [16]*c.MDB_cursor = undefined,
     pooled_cursors: usize = 0,
+    /// Node records found in the active read transaction (see `RecordCache`).
+    records: *RecordCache,
 
     /// How much a commit waits for the disk.
     pub const Durability = enum {
@@ -103,7 +143,9 @@ pub const KeyValueStore = struct {
             return error.OpenFailed;
         }
 
-        return .{ .environment = environment.?, .database = database, .node_database = node_database, .allocator = allocator, .active_write_transaction = null, .active_read_transaction = null };
+        const records = allocator.create(RecordCache) catch return error.OutOfMemory;
+        records.* = .{};
+        return .{ .environment = environment.?, .database = database, .node_database = node_database, .allocator = allocator, .active_write_transaction = null, .active_read_transaction = null, .records = records };
     }
 
     /// Writes every commit so far to disk (what `full` durability does at
@@ -114,6 +156,7 @@ pub const KeyValueStore = struct {
 
     pub fn deinit(self: *KeyValueStore) void {
         c.mdb_env_close(self.environment);
+        self.allocator.destroy(self.records);
     }
 
     /// Begins an explicit write transaction. Until `commitWrite`/`abortWrite`,
@@ -152,6 +195,7 @@ pub const KeyValueStore = struct {
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.ReadFailed;
         self.active_read_transaction = transaction.?;
+        self.records.startTransaction();
     }
 
     /// Ends the active read transaction. For a read-only transaction "commit"
@@ -166,6 +210,7 @@ pub const KeyValueStore = struct {
         if (self.node_cursor) |cursor| {
             c.mdb_cursor_close(cursor);
             self.node_cursor = null;
+            self.node_cursor_id = null;
         }
         if (self.read_cursor) |cursor| {
             c.mdb_cursor_close(cursor);
@@ -223,6 +268,31 @@ pub const KeyValueStore = struct {
 
     // --- The node table: one record per node id ------------------------------
 
+    /// How far ahead of the node cursor `viewNode` walks instead of searching.
+    const max_node_steps = 4;
+
+    /// Moves the node cursor forward to `id` if it is a few records ahead
+    /// (a scan reads nodes in id order, and the label index interleaves
+    /// labels only lightly): `MDB_NEXT` costs no B-tree search. True with the
+    /// record in `data` if found, false if `id` is absent (the cursor passed
+    /// it), null if `id` is not just ahead (search instead).
+    fn stepToNode(self: *KeyValueStore, id: u64, data: *c.MDB_val) ?bool {
+        const at = self.node_cursor_id orelse return null;
+        if (id <= at or id - at > max_node_steps) return null;
+        var key_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
+        for (0..max_node_steps) |_| {
+            if (c.mdb_cursor_get(self.node_cursor.?, &key_val, data, c.MDB_NEXT) != 0) {
+                self.node_cursor_id = null;
+                return null;
+            }
+            const found = std.mem.bytesToValue(u64, valSlice(key_val)[0..@sizeOf(u64)]);
+            self.node_cursor_id = found;
+            if (found == id) return true;
+            if (found > id) return false;
+        }
+        return null;
+    }
+
     /// The record of node `id` in the active transaction, without copying
     /// (null if absent, or outside a transaction: then use `getNode`).
     pub fn viewNode(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
@@ -230,17 +300,26 @@ pub const KeyValueStore = struct {
         var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
         var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
         const rc = if (self.active_read_transaction) |transaction| rc: {
+            if (self.records.find(id)) |bytes| return bytes;
             if (self.node_cursor == null) {
                 if (c.mdb_cursor_open(transaction, self.node_database, &self.node_cursor) != 0) return error.ReadFailed;
             }
-            break :rc c.mdb_cursor_get(self.node_cursor.?, &key_val, &data_val, c.MDB_SET_KEY);
+            if (self.stepToNode(id, &data_val)) |found| {
+                if (!found) return null;
+                break :rc 0;
+            }
+            const rc = c.mdb_cursor_get(self.node_cursor.?, &key_val, &data_val, c.MDB_SET_KEY);
+            self.node_cursor_id = if (rc == 0) id else null;
+            break :rc rc;
         } else if (self.active_write_transaction) |transaction|
             c.mdb_get(transaction, self.node_database, &key_val, &data_val)
         else
             return null;
         if (rc == c.MDB_NOTFOUND) return null;
         if (rc != 0) return error.ReadFailed;
-        return valSlice(data_val);
+        const bytes = valSlice(data_val);
+        if (self.active_read_transaction != null) self.records.keep(id, bytes);
+        return bytes;
     }
 
     /// A copy of the record of node `id`, allocated with the store's allocator.

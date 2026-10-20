@@ -20,10 +20,9 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   visited set instead of path enumeration; shortest paths as a separate algorithm.
 - **Relationship uniqueness is a linear scan** of the edges used on the current branch: fine for
   short patterns, quadratic for long variable-length ones. Fix: a hash set past a few edges.
-- **The property cache was removed.** Caching every property read in a read-only query halved a
-  query that revisits nodes (group sizes) but slowed scans, where each node is read once. Only
-  labels are cached. Fix: cache records per node, only for nodes reached by expansion, or a small
-  bounded cache.
+- **Each property read decodes from the record.** A record is found once per node, through the
+  record cache (see [storage](storage)). But each `n.prop` still walks the record's property list
+  and decodes its value.
 
 ## Planning
 
@@ -35,9 +34,10 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   without a seek. Fix: per-label counters, like the edge-type counters.
 - **Anchor choice is per node, greedy.** Joins of several patterns are matched in written order,
   with no reordering by selectivity.
-- **Expansions check the target's labels with one random node lookup each** (the dominant cost of
-  "group sizes" in the benchmark). Fix: keep the neighbour's labels with the edge key, or
-  per-label bitmaps.
+- **Edge keys carry the neighbour's labels as text** (about 11 bytes for one short label). Fewer
+  keys fit in a page, so expansions that need no label check are about 10% slower than with empty
+  values. Loading is about 30% slower, because each new edge reads both ends' records. Fix: label
+  ids (a dictionary of labels) instead of names, and a bulk loader that knows the labels.
 
 ## Storage
 

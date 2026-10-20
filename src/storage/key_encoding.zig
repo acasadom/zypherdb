@@ -41,6 +41,9 @@ pub const EdgeKey = struct {
     direction: Direction,
     edge_type: []const u8,
     neighbour: NodeId,
+    /// The neighbour's labels, as stored with the key (a record's label
+    /// section), or null if the key does not carry them.
+    neighbour_labels: ?[]const u8 = null,
 };
 
 pub const edge_marker: u8 = 'e';

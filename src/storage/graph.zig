@@ -108,6 +108,7 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         try self.store.put(key.items, "");
+        try self.refreshNeighbourLabels(id);
     }
 
     /// Removes a label from a node (its record and the label index). Idempotent.
@@ -122,6 +123,7 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         try key_encoding.appendLabelKey(&key, self.allocator, label, id);
         try self.store.del(key.items);
+        try self.refreshNeighbourLabels(id);
     }
 
     /// The record of node `id` (null if there is no such node): a view into
@@ -379,14 +381,59 @@ pub const Graph = struct {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
 
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
         try key_encoding.appendEdgeKey(&key, self.allocator, src, .out, edge_type, dst);
-        try self.store.put(key.items, "");
+        try self.store.put(key.items, try self.neighbourLabels(dst, scratch.allocator()));
 
         key.clearRetainingCapacity();
         try key_encoding.appendEdgeKey(&key, self.allocator, dst, .in, edge_type, src);
-        try self.store.put(key.items, "");
+        try self.store.put(key.items, try self.neighbourLabels(src, scratch.allocator()));
 
         try self.bumpEdgeType(edge_type, true);
+    }
+
+    /// The value of an edge key: the labels of the node at its other end, so
+    /// an expansion checks a neighbour's labels without reading its record.
+    /// A version byte, then the record's label section; an empty value (keys
+    /// written before) means the labels are not known.
+    fn neighbourLabels(self: *Graph, id: NodeId, scratch: Allocator) StorageError![]const u8 {
+        const record = try self.readRecord(id, scratch) orelse NodeRecord.empty;
+        const section = record.labelSection();
+        const value = try scratch.alloc(u8, 1 + section.len);
+        value[0] = neighbour_labels_version;
+        @memcpy(value[1..], section);
+        return value;
+    }
+
+    /// After node `id`'s labels change, rewrites the copy its neighbours'
+    /// edge keys keep of them. O(degree): label changes are rare.
+    fn refreshNeighbourLabels(self: *Graph, id: NodeId) StorageError!void {
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const value = try self.neighbourLabels(id, scratch.allocator());
+        // Collect first, so no scan cursor is open across the writes.
+        const Incident = struct { neighbour: NodeId, direction: Direction, edge_type: []const u8 };
+        var incident = std.ArrayList(Incident).empty;
+        for ([_]Direction{ .out, .in }) |direction| {
+            var edges = try self.edgesOf(id, direction);
+            defer edges.deinit();
+            while (try edges.next()) |edge| {
+                try incident.append(scratch.allocator(), .{
+                    .neighbour = edge.neighbour,
+                    // The neighbour's key for this edge points the other way.
+                    .direction = if (direction == .out) .in else .out,
+                    .edge_type = try scratch.allocator().dupe(u8, edge.edge_type),
+                });
+            }
+        }
+        var key = std.ArrayList(u8).empty;
+        defer key.deinit(self.allocator);
+        for (incident.items) |edge| {
+            key.clearRetainingCapacity();
+            try key_encoding.appendEdgeKey(&key, self.allocator, edge.neighbour, edge.direction, edge.edge_type, id);
+            try self.store.put(key.items, value);
+        }
     }
 
     /// Number of directed edges carrying `edge_type` (a maintained counter).
@@ -709,9 +756,14 @@ pub const PropertyIterator = struct {
 
 pub const EdgeKeyIterator = KeyRangeIterator(EdgeKey, struct {
     fn decode(entry: PrefixIterator.Entry, _: usize) EdgeKey {
-        return key_encoding.decodeEdgeKey(entry.key);
+        var key = key_encoding.decodeEdgeKey(entry.key);
+        if (entry.value.len > 0 and entry.value[0] == neighbour_labels_version) key.neighbour_labels = entry.value[1..];
+        return key;
     }
 }.decode);
+
+/// The format of the neighbour labels an edge key's value holds.
+const neighbour_labels_version: u8 = 1;
 
 pub const EdgeIterator = struct {
     inner: PrefixIterator,
