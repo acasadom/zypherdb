@@ -14,9 +14,12 @@ the badge and the door. It is a node:
 (:Swipe)-[:AT]->(:Door)
 ```
 
-Why not a relationship from badge to door? Because acmedb keeps **one relationship of a type
-between two nodes**: a badge swiped at the same door a hundred times is a hundred events, not one
-fact. Modelling events as nodes is the usual graph pattern for anything that happens repeatedly.
+Why not a relationship from badge to door? It could be: two nodes may be joined by any number of
+relationships of one type, a hundred `SWIPED` from one badge to one door. But a swipe is something
+that happened, and queries look for swipes themselves (the denied ones, the ones at one door in an
+hour): as a node, a swipe is found by its own properties, and can be connected to anything else
+later, since a relationship always joins exactly two nodes. Modelling events as nodes is the usual
+graph pattern for anything that happens repeatedly.
 
 ## The month's data
 

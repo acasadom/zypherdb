@@ -55,8 +55,6 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   record, as for nodes.
 - **Every node property is indexed**, which doubles the writes and the disk used. Fix: indexes
   declared per label and property (`CREATE INDEX`), the rest stored only in records.
-- **One relationship per (source, target, type).** Not a performance issue but a model limit:
-  parallel relationships need an edge id in the key.
 - **A commit with `full` durability waits for the disk** (about 8 ms on macOS, which uses
   `F_FULLFSYNC`). Many small writes should be batched (`write()`, `UNWIND`) or use `relaxed` or
   `deferred` durability.

@@ -209,7 +209,7 @@ Values that JSON has no form for are tagged objects, with a key that starts with
 | Value | JSON |
 | --- | --- |
 | node | `{"~node": {"id": 0, "labels": [...], "properties": {...}}}` |
-| relationship | `{"~relationship": {"source": 0, "target": 1, "type": "T", "properties": {...}}}` |
+| relationship | `{"~relationship": {"id": 0, "source": 0, "target": 1, "type": "T", "properties": {...}}}` |
 | path | `{"~path": {"nodes": [...], "relationships": [...]}}` |
 | date, local time, time, local date-time, date-time, duration | `{"~date": "2025-03-10"}`, `{"~localtime": …}`, `{"~time": …}`, `{"~localdatetime": …}`, `{"~datetime": …}`, `{"~duration": "P1DT2H"}`, each with its ISO 8601 text |
 
@@ -239,7 +239,8 @@ These functions write without parsing a query, for loading data in bulk:
 - `acmedb_add_node` creates a node with that id and label if it does not exist, and adds the label
   if it does. An empty label adds none. Ids chosen by the caller are reserved, so
   `acmedb_allocate_node_id` never returns them.
-- `acmedb_add_edge` adds a relationship from `source` to `target`.
+- `acmedb_add_edge` adds a relationship from `source` to `target`; each call adds one, even
+  between nodes already joined by a relationship of that type.
 - `acmedb_set_property_*` set a node's property.
 
 Each function returns `ACMEDB_OK`, `ACMEDB_STORAGE_ERROR`, or `ACMEDB_NODE_NOT_FOUND` when a node
@@ -260,7 +261,7 @@ This function returns the whole graph as JSON, read straight from storage, or `N
 
 ```json
 {"nodes": [{"id": 0, "labels": ["Door"], "properties": {"name": "Cleanroom"}}],
- "relationships": [{"source": 0, "target": 1, "type": "LEADS_TO", "properties": {}}]}
+ "relationships": [{"id": 0, "source": 0, "target": 1, "type": "LEADS_TO", "properties": {}}]}
 ```
 
 The text belongs to the context, and stays valid until the next export or `acmedb_close`. It is

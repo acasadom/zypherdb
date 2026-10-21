@@ -279,11 +279,8 @@ fn id(self: *Executor, arguments: []const Value) ExecutionError!Value {
     return switch (arguments[0]) {
         .null => .{ .null = {} },
         .node => |node| .{ .int = @intCast(node) },
-        .relationship => {
-            self.fail(.type_mismatch, "id() of a relationship: acmedb identifies relationships by (source, target, type), not by an id", .{});
-            return error.TypeMismatch;
-        },
-        else => typeError(self, "id", "a node"),
+        .relationship => |r| .{ .int = @intCast(r.id) },
+        else => typeError(self, "id", "a node or a relationship"),
     };
 }
 
@@ -321,7 +318,7 @@ fn keys(self: *Executor, arguments: []const Value) ExecutionError!Value {
     var iterator = switch (arguments[0]) {
         .null => return .{ .null = {} },
         .node => |node| try self.graph.propertiesOf(node),
-        .relationship => |r| try self.graph.edgePropertiesOf(r.src, r.dst, r.edge_type),
+        .relationship => |r| try self.graph.edgePropertiesOf(r.id),
         else => return typeError(self, "keys", "a map, a node or a relationship"),
     };
     defer iterator.deinit();
@@ -342,7 +339,7 @@ fn properties(self: *Executor, arguments: []const Value) ExecutionError!Value {
 pub fn propertiesOf(self: *Executor, entity: Value) ExecutionError!Value {
     var iterator = switch (entity) {
         .node => |node| try self.graph.propertiesOf(node),
-        .relationship => |r| try self.graph.edgePropertiesOf(r.src, r.dst, r.edge_type),
+        .relationship => |r| try self.graph.edgePropertiesOf(r.id),
         else => return typeError(self, "properties", "a map, a node or a relationship"),
     };
     defer iterator.deinit();
@@ -405,7 +402,7 @@ fn endNode(self: *Executor, arguments: []const Value) ExecutionError!Value {
 fn requireExisting(self: *Executor, entity: Value, comptime function: []const u8) ExecutionError!void {
     const exists = switch (entity) {
         .node => |node| try self.graph.hasNode(node),
-        .relationship => |r| try self.graph.hasEdge(r.src, r.dst, r.edge_type),
+        .relationship => |r| try self.graph.hasRelationship(r.id),
         else => true,
     };
     if (!exists) {

@@ -492,3 +492,32 @@ test "CREATE and MERGE bind their path variables; one DELETE removes relationshi
     // Left: the :A and :C the first MERGE created.
     try expectQuery(&ast, &g, "MATCH (n) RETURN count(n)", &.{&.{.{ .int = 2 }}});
 }
+
+test "parallel relationships: each one is kept, matched, changed and deleted on its own" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // Two grants from one team to one door, with different hours.
+    try expectQuery(&ast, &g, "CREATE (t:Team {name: 'Lab'}), (d:Door {name: 'BSL-3'})", &.{});
+    try expectQuery(&ast, &g, "MATCH (t:Team), (d:Door) CREATE (t)-[:GRANT {from: 8, to: 14}]->(d)", &.{});
+    try expectQuery(&ast, &g, "MATCH (t:Team), (d:Door) CREATE (t)-[:GRANT {from: 16, to: 20}]->(d)", &.{});
+    try expectQuery(&ast, &g, "MATCH (:Team)-[g:GRANT]->(:Door) RETURN count(g), count(DISTINCT id(g))", &.{&.{ .{ .int = 2 }, .{ .int = 2 } }});
+    // With both ends known, each one is still a match of its own.
+    try expectQuery(&ast, &g, "MATCH (t:Team {name: 'Lab'}), (d:Door {name: 'BSL-3'}) MATCH (t)-[g:GRANT]->(d) RETURN g.from ORDER BY g.from", &.{ &.{.{ .int = 8 }}, &.{.{ .int = 16 }} });
+    try expectQuery(&ast, &g, "MATCH (:Team)-[g:GRANT {from: 16}]->(:Door) RETURN g.to", &.{&.{.{ .int = 20 }}});
+    // Changing one leaves the other as it was.
+    try expectQuery(&ast, &g, "MATCH ()-[g:GRANT {from: 8}]->() SET g.to = 12", &.{});
+    try expectQuery(&ast, &g, "MATCH ()-[g:GRANT]->() RETURN g.from, g.to ORDER BY g.from", &.{ &.{ .{ .int = 8 }, .{ .int = 12 } }, &.{ .{ .int = 16 }, .{ .int = 20 } } });
+    // MERGE matches both; a pattern uses each relationship once.
+    try expectQuery(&ast, &g, "MATCH (t:Team), (d:Door) MERGE (t)-[g:GRANT]->(d) RETURN count(g)", &.{&.{.{ .int = 2 }}});
+    try expectQuery(&ast, &g, "MATCH (t)-[a:GRANT]->(d)<-[b:GRANT]-(t) RETURN count(*)", &.{&.{.{ .int = 2 }}});
+    // Deleting one keeps the other.
+    try expectQuery(&ast, &g, "MATCH ()-[g:GRANT {from: 8}]->() DELETE g", &.{});
+    try expectQuery(&ast, &g, "MATCH ()-[g:GRANT]->() RETURN g.from", &.{&.{.{ .int = 16 }}});
+}

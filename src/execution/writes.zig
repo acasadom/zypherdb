@@ -41,22 +41,10 @@ pub fn createPattern(self: *Executor, pattern: Index, bindings: *Bindings, creat
         id.* = try createNode(self, node_pattern_index, bindings);
         if (variable_name.len > 0) try bindings.put(self.allocator, variable_name, .{ .node = id.* });
     }
-    try applyEdges(self, chain, node_ids, bindings, creator);
+    const relationships = try applyEdges(self, chain, node_ids, bindings, creator);
+    // A path variable (`CREATE p = (a)-[:R]->(b)`) binds what was written.
     const path_variable = self.ast.data(pattern).text;
-    if (path_variable.len > 0) try bindings.put(self.allocator, path_variable, try writtenPath(self, chain, node_ids));
-}
-
-/// The path a CREATE or MERGE pattern wrote, for its path variable
-/// (`CREATE p = (a)-[:R]->(b)`): its nodes and, between them, the
-/// relationships as `applyEdges` stored them.
-fn writtenPath(self: *Executor, chain: []const Index, node_ids: []const NodeId) ExecutionError!Value {
-    const relationships = try self.allocator.alloc(Relationship, node_ids.len - 1);
-    for (relationships, node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |*relationship, left_id, right_id, i| {
-        const edge_pattern = self.ast.data(chain[i * 2 + 1]).edge_pattern;
-        const reversed = edge_pattern.direction == .right_to_left;
-        relationship.* = .{ .src = if (reversed) right_id else left_id, .dst = if (reversed) left_id else right_id, .edge_type = edge_pattern.singleType().? };
-    }
-    return .{ .path = .{ .nodes = node_ids, .relationships = relationships } };
+    if (path_variable.len > 0) try bindings.put(self.allocator, path_variable, .{ .path = .{ .nodes = node_ids, .relationships = relationships } });
 }
 
 /// CREATE may reuse a bound node only as a relationship endpoint, as it is:
@@ -132,8 +120,9 @@ pub fn nodePropertiesMatch(self: *Executor, node_pattern_index: Index, id: NodeI
 /// Writes the edges of a CREATE/MERGE chain between the already resolved
 /// `node_ids` (one per node position, so anonymous nodes work too). With
 /// `merge`, an existing edge is kept instead of duplicated.
-pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeId, bindings: *Bindings, creator: Creator) ExecutionError!void {
-    for (node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |left_id, right_id, i| {
+pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeId, bindings: *Bindings, creator: Creator) ExecutionError![]const Relationship {
+    const relationships = try self.allocator.alloc(Relationship, node_ids.len - 1);
+    for (relationships, node_ids[0 .. node_ids.len - 1], node_ids[1..], 0..) |*relationship, left_id, right_id, i| {
         const edge_pattern_index = chain[i * 2 + 1];
         const edge_pattern = self.ast.data(edge_pattern_index).edge_pattern;
         const edge_type = edge_pattern.singleType() orelse {
@@ -151,16 +140,18 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
         // MERGE without a direction matches either way and creates left to right.
         const src: NodeId = if (edge_pattern.direction == .right_to_left) right_id else left_id;
         const dst: NodeId = if (edge_pattern.direction == .right_to_left) left_id else right_id;
-        try self.graph.addEdge(src, dst, edge_type);
+        const id = try self.graph.addEdge(src, dst, edge_type);
         for (self.ast.nodeChildren(edge_pattern_index)) |property_node| {
             const property_name = self.ast.data(property_node).text;
             const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
-            try setEdgeProperty(self, src, dst, edge_type, property_name, value);
+            try setEdgeProperty(self, id, property_name, value);
         }
+        relationship.* = .{ .id = id, .src = src, .dst = dst, .edge_type = edge_type };
         if (edge_pattern.variable_name.len > 0) {
-            try bindings.put(self.allocator, edge_pattern.variable_name, .{ .relationship = .{ .src = src, .dst = dst, .edge_type = edge_type } });
+            try bindings.put(self.allocator, edge_pattern.variable_name, .{ .relationship = relationship.* });
         }
     }
+    return relationships;
 }
 
 pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) ExecutionError!void {
@@ -213,7 +204,7 @@ fn labelsOnNodesOnly(self: *Executor) ExecutionError {
 fn setProperty(self: *Executor, target: Value, name: []const u8, value: Value) ExecutionError!void {
     switch (target) {
         .node => |id| try setNodeProperty(self, id, name, value),
-        .relationship => |r| try setEdgeProperty(self, r.src, r.dst, r.edge_type, name, value),
+        .relationship => |r| try setEdgeProperty(self, r.id, name, value),
         else => {},
     }
 }
@@ -248,7 +239,7 @@ pub fn applyRemove(self: *Executor, remove_clause: Index, bindings: *Bindings) E
                 const property = self.ast.data(item).text;
                 switch (try writeTarget(self, self.ast.nodeChildren(item)[0], bindings, "REMOVE")) {
                     .node => |id| try self.graph.removeProperty(id, property),
-                    .relationship => |r| try self.graph.removeEdgeProperty(r.src, r.dst, r.edge_type, property),
+                    .relationship => |r| try self.graph.removeEdgeProperty(r.id, property),
                     else => {},
                 }
             },
@@ -270,8 +261,8 @@ pub fn applyDelete(self: *Executor, delete_clause: Index, bindings: *Bindings) E
     // Every relationship first, then the nodes: a node is refused only if
     // something this DELETE does not remove still connects it.
     for (values) |value| switch (value) {
-        .relationship => |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
-        .path => |path| for (path.relationships) |r| try self.graph.deleteEdge(r.src, r.dst, r.edge_type),
+        .relationship => |r| try self.graph.deleteEdge(r.id),
+        .path => |path| for (path.relationships) |r| try self.graph.deleteEdge(r.id),
         .node, .null => {}, // null: e.g. from an OPTIONAL MATCH that found nothing
         else => {
             self.fail(.type_mismatch, "DELETE needs a node, a relationship or a path, not a {s}", .{value.typeName()});
@@ -310,8 +301,8 @@ fn setNodeProperty(self: *Executor, id: NodeId, name: []const u8, value: Value) 
 }
 
 /// Sets an edge property, explaining an unstorable value in the diagnostic.
-fn setEdgeProperty(self: *Executor, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value) ExecutionError!void {
-    self.graph.setEdgeProperty(src, dst, edge_type, name, value) catch |err| return reportPropertyError(self, name, err);
+fn setEdgeProperty(self: *Executor, id: u64, name: []const u8, value: Value) ExecutionError!void {
+    self.graph.setEdgeProperty(id, name, value) catch |err| return reportPropertyError(self, name, err);
 }
 
 fn reportPropertyError(self: *Executor, name: []const u8, err: GraphError) ExecutionError {

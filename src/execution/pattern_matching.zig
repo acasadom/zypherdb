@@ -140,7 +140,7 @@ fn scanEdgeIndex(self: *Executor, edge_index: usize, next_step: usize, pattern_i
     defer iterator.deinit();
     while (try iterator.next()) |found| {
         if (!edge.allowsType(found.edge_type)) continue;
-        const ref = Relationship{ .src = found.src, .dst = found.dst, .edge_type = try self.allocator.dupe(u8, found.edge_type) };
+        const ref = Relationship{ .id = found.id, .src = found.src, .dst = found.dst, .edge_type = try self.allocator.dupe(u8, found.edge_type) };
         // The left pattern node is the source when the pattern points right;
         // an undirected pattern takes both orientations (a self-loop once).
         const forward = edge.undirected or edge.forward_direction == .out;
@@ -179,8 +179,14 @@ fn expandEdge(self: *Executor, from: usize, to: usize, next_step: usize, pattern
             for (edge.edge_types) |edge_type| {
                 for (edgeOrientations(edge, traversal, from_id, candidate)) |orientation| {
                     const ends = orientation orelse continue;
+                    // Each relationship between them, parallel ones included
+                    // (most candidates have none: a cheap test first).
                     if (!try self.graph.hasEdge(ends.src, ends.dst, edge_type)) continue;
-                    try tryNeighbour(self, to, edge_index, candidate, null, .{ .src = ends.src, .dst = ends.dst, .edge_type = edge_type }, next_step, pattern_index, bindings);
+                    var between = try self.graph.edgesBetween(ends.src, ends.dst, edge_type);
+                    defer between.deinit();
+                    while (try between.next()) |key| {
+                        try tryNeighbour(self, to, edge_index, candidate, null, .{ .id = key.relationship, .src = ends.src, .dst = ends.dst, .edge_type = edge_type }, next_step, pattern_index, bindings);
+                    }
                 }
             }
         }
@@ -210,7 +216,7 @@ fn tryNeighbour(self: *Executor, to: usize, edge_index: usize, neighbour: NodeId
     if (!try bindings.bindNode(self.allocator, to_node.variable_name, neighbour)) return;
     self.nodes.items[to].id = neighbour;
     if (!try nodeSeeksMatch(self, to, neighbour, bindings)) return;
-    const owned = Relationship{ .src = ref.src, .dst = ref.dst, .edge_type = try self.ownedEdgeType(self.edges.items[edge_index], ref.edge_type) };
+    const owned = Relationship{ .id = ref.id, .src = ref.src, .dst = ref.dst, .edge_type = try self.ownedEdgeType(self.edges.items[edge_index], ref.edge_type) };
     try followEdge(self, edge_index, owned, next_step, pattern_index, bindings);
 }
 
@@ -298,7 +304,7 @@ fn walk(self: *Executor, expansion: Expansion, current: NodeId, trail: *std.Arra
     var edges = MatchingEdges.init(self.graph, current, edge, traversal);
     defer edges.deinit();
     while (try edges.next()) |found| {
-        const ref = Relationship{ .src = found.ref.src, .dst = found.ref.dst, .edge_type = try self.ownedEdgeType(edge, found.ref.edge_type) };
+        const ref = Relationship{ .id = found.ref.id, .src = found.ref.src, .dst = found.ref.dst, .edge_type = try self.ownedEdgeType(edge, found.ref.edge_type) };
         if (edgeUsed(self, ref)) continue;
         if (!try edgeSeeksMatch(self, edge, ref, bindings)) continue;
         try self.used_edges.append(self.allocator, ref);
@@ -388,6 +394,7 @@ const MatchingEdges = struct {
                     if (self.direction_count == 2 and key.direction == .in and key.neighbour == self.from_id) continue;
                     const outgoing = key.direction == .out;
                     return .{ .neighbour = key.neighbour, .neighbour_labels = key.neighbour_labels, .ref = .{
+                        .id = key.relationship,
                         .src = if (outgoing) self.from_id else key.neighbour,
                         .dst = if (outgoing) key.neighbour else self.from_id,
                         .edge_type = key.edge_type,
@@ -420,7 +427,7 @@ pub fn nodeSeeksMatch(self: *Executor, node_index: usize, id: NodeId, bindings: 
 pub fn edgeSeeksMatch(self: *Executor, edge: PatternEdge, ref: Relationship, bindings: *Bindings) ExecutionError!bool {
     for (edge.seeks.items) |seek| {
         const expected = try expressions.evaluate(self, seek.value, bindings);
-        const actual = (try self.graph.getEdgeProperty(ref.src, ref.dst, ref.edge_type, seek.property, self.allocator)) orelse return false;
+        const actual = (try self.graph.getEdgeProperty(ref.id, seek.property, self.allocator)) orelse return false;
         if (!Value.eql(actual, expected)) return false;
     }
     return true;

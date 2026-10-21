@@ -101,12 +101,12 @@ pub fn drop(graph: *Graph, name: []const u8) StorageError!bool {
 /// transaction itself could change it, and then it updates the memo too.
 pub fn schemaVersion(graph: *Graph) StorageError!u64 {
     const in_write = graph.store.active_write_transaction != null;
-    if (in_write) if (graph.store.write_transaction_memo) |version| return version;
+    if (in_write) if (graph.store.write_transaction_memo.schema_version) |version| return version;
     const version: u64 = if (try graph.store.get(schema_version_key)) |raw| version: {
         defer graph.store.allocator.free(raw);
         break :version if (raw.len == 8) std.mem.readInt(u64, raw[0..8], .big) else 0;
     } else 0;
-    if (in_write) graph.store.write_transaction_memo = version;
+    if (in_write) graph.store.write_transaction_memo.schema_version = version;
     return version;
 }
 
@@ -115,7 +115,7 @@ fn bumpSchemaVersion(graph: *Graph) StorageError!void {
     var buffer: [8]u8 = undefined;
     std.mem.writeInt(u64, &buffer, version, .big);
     try graph.store.put(schema_version_key, &buffer);
-    if (graph.store.active_write_transaction != null) graph.store.write_transaction_memo = version;
+    if (graph.store.active_write_transaction != null) graph.store.write_transaction_memo.schema_version = version;
 }
 
 fn appendDefinitionKey(key: *std.ArrayList(u8), allocator: Allocator, name: []const u8) Allocator.Error!void {

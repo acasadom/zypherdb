@@ -1,7 +1,7 @@
 //! The postings of full-text indexes, and how changes to the graph keep them
 //! current.
 //!
-//! An entity is a node (its 8-byte id) or a relationship (`src | dst | type`).
+//! An entity is a node or a relationship: its 8-byte id.
 //! Each indexed property is analyzed on its own; its terms and their
 //! positions are kept per property, so changing one property touches only
 //! the terms of its old and new text. Keys, after a one-byte marker and the
@@ -21,6 +21,7 @@ const Allocator = std.mem.Allocator;
 
 const Graph = @import("graph.zig").Graph;
 const NodeId = @import("graph.zig").NodeId;
+const RelationshipId = @import("graph.zig").RelationshipId;
 const NodeRecord = @import("node_record.zig").NodeRecord;
 const StorageError = @import("key_value_store.zig").StorageError;
 const Value = @import("../value.zig").Value;
@@ -33,19 +34,11 @@ pub const document_marker: u8 = 'W';
 pub const term_marker: u8 = 'v';
 pub const statistics_marker: u8 = 'V';
 
-/// The key of an entity in postings: a node's id.
-pub fn nodeEntity(id: NodeId) [8]u8 {
+/// The key of an entity in postings: a node's or a relationship's id (an
+/// index holds one kind or the other).
+pub fn entityOf(id: u64) [8]u8 {
     var bytes: [8]u8 = undefined;
     std.mem.writeInt(u64, &bytes, id, .big);
-    return bytes;
-}
-
-/// The key of an entity in postings: a relationship's `src | dst | type`.
-pub fn relationshipEntity(allocator: Allocator, src: NodeId, dst: NodeId, edge_type: []const u8) Allocator.Error![]u8 {
-    const bytes = try allocator.alloc(u8, 16 + edge_type.len);
-    std.mem.writeInt(u64, bytes[0..8], src, .big);
-    std.mem.writeInt(u64, bytes[8..16], dst, .big);
-    @memcpy(bytes[16..], edge_type);
     return bytes;
 }
 
@@ -77,7 +70,7 @@ pub fn nodeChanged(graph: *Graph, id: NodeId, old: NodeRecord, new: NodeRecord, 
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    const entity = nodeEntity(id);
+    const entity = entityOf(id);
     for (try fulltext.all(graph, arena)) |definition| {
         if (definition.entity != .nodes) continue;
         const was_in = hasAnyLabel(old, definition.labels_or_types);
@@ -92,9 +85,10 @@ pub fn nodeChanged(graph: *Graph, id: NodeId, old: NodeRecord, new: NodeRecord, 
     }
 }
 
-/// After the property `name` of the relationship `src -> dst` changed from
-/// `old` to `new` (null: absent), updates the relationship indexes it concerns.
-pub fn relationshipPropertyChanged(graph: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, old: ?Value, new: ?Value) StorageError!void {
+/// After the property `name` of relationship `id` (of type `edge_type`)
+/// changed from `old` to `new` (null: absent), updates the relationship
+/// indexes it concerns.
+pub fn relationshipPropertyChanged(graph: *Graph, id: RelationshipId, edge_type: []const u8, name: []const u8, old: ?Value, new: ?Value) StorageError!void {
     if (try fulltext.schemaVersion(graph) == 0) return;
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
@@ -103,8 +97,8 @@ pub fn relationshipPropertyChanged(graph: *Graph, src: NodeId, dst: NodeId, edge
         if (definition.entity != .relationships or !contains(definition.labels_or_types, edge_type)) continue;
         for (definition.properties, 0..) |property, ordinal| {
             if (!std.mem.eql(u8, property, name)) continue;
-            const entity = try relationshipEntity(arena, src, dst, edge_type);
-            try updateProperty(graph, arena, definition, entity, @intCast(ordinal), try textOf(arena, old), try textOf(arena, new));
+            const entity = entityOf(id);
+            try updateProperty(graph, arena, definition, &entity, @intCast(ordinal), try textOf(arena, old), try textOf(arena, new));
         }
     }
 }
@@ -125,7 +119,7 @@ pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!voi
             }
             for (ids.keys()) |id| {
                 const record = NodeRecord{ .bytes = try graph.recordCopy(id, arena) };
-                const entity = nodeEntity(id);
+                const entity = entityOf(id);
                 for (definition.properties, 0..) |property, ordinal| {
                     const text = try textOf(arena, try storedValue(arena, record, property)) orelse continue;
                     try updateProperty(graph, arena, definition, &entity, @intCast(ordinal), null, text);
@@ -133,27 +127,24 @@ pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!voi
             }
         },
         .relationships => {
-            // Relationship properties are keys `f | src | dst | 0x00 | type | 0x00 | name`.
-            const Found = struct { entity: []const u8, ordinal: u8, text: []const u8 };
+            // Relationship properties are keys `f | relationship_id | name`.
+            const Found = struct { entity: [8]u8, ordinal: u8, text: []const u8 };
             var found = std.ArrayList(Found).empty;
             {
                 var keys = try graph.store.scanPrefix("f");
                 defer keys.deinit();
                 while (try keys.next()) |entry| {
-                    const rest = entry.key[1 + 16 + 1 ..];
-                    const end = std.mem.indexOfScalar(u8, rest, 0) orelse continue;
-                    const edge_type = rest[0..end];
-                    const name = rest[end + 1 ..];
-                    if (!contains(definition.labels_or_types, edge_type)) continue;
+                    const id = std.mem.readInt(u64, entry.key[1..9], .big);
+                    const name = entry.key[9..];
                     const ordinal = indexOf(definition.properties, name) orelse continue;
+                    const stored = try graph.relationship(id, arena) orelse continue;
+                    if (!contains(definition.labels_or_types, stored.edge_type)) continue;
                     const value = try value_encoding.decodeValue(try arena.dupe(u8, entry.value), arena);
                     const text = try textOf(arena, value) orelse continue;
-                    const src = std.mem.readInt(u64, entry.key[1..9], .big);
-                    const dst = std.mem.readInt(u64, entry.key[9..17], .big);
-                    try found.append(arena, .{ .entity = try relationshipEntity(arena, src, dst, edge_type), .ordinal = @intCast(ordinal), .text = try arena.dupe(u8, text) });
+                    try found.append(arena, .{ .entity = entityOf(id), .ordinal = @intCast(ordinal), .text = try arena.dupe(u8, text) });
                 }
             }
-            for (found.items) |item| try updateProperty(graph, arena, definition, item.entity, item.ordinal, null, item.text);
+            for (found.items) |*item| try updateProperty(graph, arena, definition, &item.entity, item.ordinal, null, item.text);
         },
     }
 }

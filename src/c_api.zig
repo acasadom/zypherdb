@@ -188,7 +188,7 @@ fn requireNodes(context: *Context, ids: []const u64) c_int {
 pub export fn acmedb_add_edge(context: *Context, src: u64, dst: u64, edge_type_ptr: [*]const u8, edge_type_length: usize) c_int {
     const return_code = requireNodes(context, &.{ src, dst });
     if (return_code != RETURN_OK) return return_code;
-    context.graph.addEdge(src, dst, edge_type_ptr[0..edge_type_length]) catch return RETURN_STORAGE_ERROR;
+    _ = context.graph.addEdge(src, dst, edge_type_ptr[0..edge_type_length]) catch return RETURN_STORAGE_ERROR;
     return RETURN_OK;
 }
 
@@ -424,10 +424,10 @@ fn appendRelationshipsJson(graph: *Graph, buffer: *std.ArrayList(u8)) (StorageEr
         while (try edges.next()) |edge| {
             if (!first) try buffer.append(allocator, ',');
             first = false;
-            try buffer.print(allocator, "{{\"source\":{d},\"target\":{d},\"type\":", .{ source, edge.neighbour });
+            try buffer.print(allocator, "{{\"id\":{d},\"source\":{d},\"target\":{d},\"type\":", .{ edge.relationship, source, edge.neighbour });
             try appendJsonString(buffer, allocator, edge.edge_type);
             try buffer.appendSlice(allocator, ",\"properties\":");
-            var properties = try graph.edgePropertiesOf(source, edge.neighbour, edge.edge_type);
+            var properties = try graph.edgePropertiesOf(edge.relationship);
             defer properties.deinit();
             try appendPropertiesJson(&properties, buffer);
             try buffer.append(allocator, '}');
@@ -543,7 +543,7 @@ fn appendJsonValue(buffer: *std.ArrayList(u8), result_allocator: Allocator, v: V
         },
         .relationship => |r| {
             const properties: []const SnapshotProperty = if (entities) |snapshot| snapshot.relationships.getContext(r, .{}) orelse &.{} else &.{};
-            try buffer.print(result_allocator, "{{\"~relationship\":{{\"source\":{d},\"target\":{d},\"type\":", .{ r.src, r.dst });
+            try buffer.print(result_allocator, "{{\"~relationship\":{{\"id\":{d},\"source\":{d},\"target\":{d},\"type\":", .{ r.id, r.src, r.dst });
             try appendJsonString(buffer, result_allocator, r.edge_type);
             try buffer.appendSlice(result_allocator, ",\"properties\":");
             try appendSnapshotProperties(buffer, result_allocator, properties);

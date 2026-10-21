@@ -66,8 +66,8 @@ test "MATCH multi-pattern: join and shared variables" {
     try g.setProperty(2, "name", .{ .string = "B" });
     try g.addNode(3, "Person");
     try g.setProperty(3, "name", .{ .string = "C" });
-    try g.addEdge(1, 2, "KNOWS");
-    try g.addEdge(2, 3, "KNOWS");
+    _ = try g.addEdge(1, 2, "KNOWS");
+    _ = try g.addEdge(2, 3, "KNOWS");
 
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
@@ -101,10 +101,8 @@ test "edge-property index anchors unlabeled edge patterns" {
     try g.setProperty(2, "name", .{ .string = "B" });
     try g.addNode(3, "");
     try g.setProperty(3, "name", .{ .string = "C" });
-    try g.addEdge(1, 2, "KNOWS");
-    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 5 });
-    try g.addEdge(1, 3, "KNOWS");
-    try g.setEdgeProperty(1, 3, "KNOWS", "weight", .{ .int = 9 });
+    try g.setEdgeProperty(try g.addEdge(1, 2, "KNOWS"), "weight", .{ .int = 5 });
+    try g.setEdgeProperty(try g.addEdge(1, 3, "KNOWS"), "weight", .{ .int = 9 });
 
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();

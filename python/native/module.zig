@@ -89,7 +89,7 @@ fn configure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     if (!temporals.configure(table)) return null;
     object_new = py.PyObject_GetAttrString(@ptrCast(@alignCast(&py.PyBaseObject_Type)), "__new__") orelse return null;
     if (!internFields(&node_fields, &.{ "id", "labels", "properties" }) or
-        !internFields(&relationship_fields, &.{ "source", "target", "type", "properties" }) or
+        !internFields(&relationship_fields, &.{ "id", "source", "target", "type", "properties" }) or
         !internFields(&path_fields, &.{ "nodes", "relationships" })) return null;
     return none();
 }
@@ -277,7 +277,7 @@ fn objectOf(value: Value, out: Output) ?*py.PyObject {
         .relationship => |r| relationship: {
             const stored = if (out.entities) |snapshot| snapshot.relationships.getContext(r, .{}) else null;
             const properties = propertiesObject(stored orelse &.{}, out) orelse break :relationship null;
-            break :relationship newEntity(classes.relationship, &relationship_fields, &.{ py.PyLong_FromUnsignedLongLong(r.src), py.PyLong_FromUnsignedLongLong(r.dst), string(r.edge_type), properties });
+            break :relationship newEntity(classes.relationship, &relationship_fields, &.{ py.PyLong_FromUnsignedLongLong(r.id), py.PyLong_FromUnsignedLongLong(r.src), py.PyLong_FromUnsignedLongLong(r.dst), string(r.edge_type), properties });
         },
         .path => |p| path: {
             const nodes = py.PyTuple_New(@intCast(p.nodes.len)) orelse break :path null;
@@ -340,7 +340,7 @@ fn setItem(dict: *py.PyObject, key: []const u8, value: ?*py.PyObject) bool {
 // the generic setter, which bypasses the class's immutability guard.
 var object_new: ?*py.PyObject = null;
 var node_fields: [3]?*py.PyObject = @splat(null);
-var relationship_fields: [4]?*py.PyObject = @splat(null);
+var relationship_fields: [5]?*py.PyObject = @splat(null);
 var path_fields: [2]?*py.PyObject = @splat(null);
 
 fn internFields(fields: []?*py.PyObject, names: []const [*:0]const u8) bool {
@@ -666,8 +666,14 @@ fn addEdge(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     if (py.PyArg_ParseTuple(args, "OKKs#", &capsule, &source, &target, &type_pointer, &type_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     if (!requireNodes(database, &.{ source, target })) return null;
-    writing(database, Graph.addEdge, .{ &database.graph, source, target, type_pointer[0..@intCast(type_length)] }) catch return storageFailure();
-    return none();
+    var id: u64 = 0;
+    const Add = struct {
+        fn apply(graph: *Graph, src: u64, dst: u64, edge_type: []const u8, out: *u64) !void {
+            out.* = try graph.addEdge(src, dst, edge_type);
+        }
+    };
+    writing(database, Add.apply, .{ &database.graph, source, target, type_pointer[0..@intCast(type_length)], &id }) catch return storageFailure();
+    return py.PyLong_FromUnsignedLongLong(id);
 }
 
 fn setProperty(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
@@ -741,10 +747,11 @@ fn exportIn(graph: *Graph, iso_temporals: bool) !*py.PyObject {
         while (try edges.next()) |edge| {
             const relationship = py.PyDict_New() orelse return error.PythonError;
             defer py.Py_DecRef(relationship);
+            if (!setItem(relationship, "id", py.PyLong_FromUnsignedLongLong(edge.relationship))) return error.PythonError;
             if (!setItem(relationship, "source", py.PyLong_FromUnsignedLongLong(id))) return error.PythonError;
             if (!setItem(relationship, "target", py.PyLong_FromUnsignedLongLong(edge.neighbour))) return error.PythonError;
             if (!setItem(relationship, "type", string(edge.edge_type))) return error.PythonError;
-            var edge_properties = try graph.edgePropertiesOf(id, edge.neighbour, edge.edge_type);
+            var edge_properties = try graph.edgePropertiesOf(edge.relationship);
             defer edge_properties.deinit();
             if (!setItem(relationship, "properties", try propertiesFrom(&edge_properties, arena, iso_temporals))) return error.PythonError;
             if (py.PyList_Append(relationships, relationship) != 0) return error.PythonError;

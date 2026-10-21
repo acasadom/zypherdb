@@ -31,6 +31,8 @@ const node_record = @import("node_record.zig");
 const NodeRecord = node_record.NodeRecord;
 
 pub const NodeId = key_encoding.NodeId;
+pub const RelationshipId = key_encoding.RelationshipId;
+pub const RelationshipRecord = key_encoding.RelationshipRecord;
 pub const Direction = key_encoding.Direction;
 pub const EdgeKey = key_encoding.EdgeKey;
 pub const Value = @import("../value.zig").Value;
@@ -55,36 +57,47 @@ pub const Graph = struct {
 
     /// The storage format this code writes. 2 (October 2026): index keys
     /// order numbers and dates (range lookups), edge keys carry the
-    /// neighbour's labels, labels have counters. Databases without a format
-    /// key were written before.
-    pub const format_version: u32 = 2;
+    /// neighbour's labels, labels have counters. 3 (October 2026): every
+    /// relationship has an id of its own, so parallel relationships are
+    /// kept. Databases without a format key were written before 2.
+    pub const format_version: u32 = 3;
 
     /// Brings a database written by an earlier format up to this one, in one
-    /// write transaction: rebuilds the property indexes in the ordered
-    /// encoding, fills in neighbour labels on edge keys, and counts labels.
-    /// O(N) once; a database in this format is left as it is. Call it after
-    /// opening, before anything else.
+    /// write transaction, one format step after another. O(N) once; a
+    /// database in this format is left as it is. Call it after opening,
+    /// before anything else.
     pub fn upgrade(self: *Graph) StorageError!void {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();
+        var version: u32 = 1;
         if (try self.store.get(key_encoding.format_key)) |raw| {
             defer self.store.allocator.free(raw);
-            if (raw.len == 4 and std.mem.readInt(u32, raw[0..4], .big) >= format_version) return;
+            if (raw.len == 4) version = std.mem.readInt(u32, raw[0..4], .big);
         }
+        if (version >= format_version) return;
         try self.beginWrite();
         errdefer self.abortWrite();
+        if (version < 2) try self.upgradeNodeIndexes(arena);
+        if (version < 3) try self.upgradeRelationships(arena);
+        var bytes: [4]u8 = undefined;
+        std.mem.writeInt(u32, &bytes, format_version, .big);
+        try self.store.put(key_encoding.format_key, &bytes);
+        try self.commitWrite();
+    }
 
+    /// To format 2, for nodes: rebuilds the property index in the ordered
+    /// encoding and counts labels. (Its relationship changes are in format 3's.)
+    fn upgradeNodeIndexes(self: *Graph, arena: Allocator) StorageError!void {
         // The old index keys go: collect first, so no scan is open across the deletes.
         var stale = std.ArrayList([]const u8).empty;
-        for ([_]u8{ key_encoding.index_marker, key_encoding.edge_index_marker, key_encoding.label_count_marker }) |marker| {
+        for ([_]u8{ key_encoding.index_marker, key_encoding.label_count_marker }) |marker| {
             var keys = try self.store.scanPrefix(&.{marker});
             defer keys.deinit();
             while (try keys.next()) |entry| try stale.append(arena, try arena.dupe(u8, entry.key));
         }
         for (stale.items) |key| try self.store.del(key);
 
-        // Node properties and labels, from the records.
         const Node = struct { id: NodeId, record: NodeRecord };
         var nodes = std.ArrayList(Node).empty;
         {
@@ -115,44 +128,85 @@ pub const Graph = struct {
             std.mem.writeInt(u64, &buffer, entry.value_ptr.*, .big);
             try self.store.put(key.items, &buffer);
         }
+    }
 
-        // Edge properties: `f | src | dst | 0x00 | type | 0x00 | property`.
-        const EdgeProperty = struct { src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value };
-        var edge_properties = std.ArrayList(EdgeProperty).empty;
-        {
-            var keys = try self.store.scanPrefix(&.{key_encoding.edge_property_marker});
-            defer keys.deinit();
-            while (try keys.next()) |entry| {
-                const rest = entry.key[1 + 2 * key_encoding.node_id_length + 1 ..];
-                const end = std.mem.indexOfScalar(u8, rest, key_encoding.separator) orelse continue;
-                try edge_properties.append(arena, .{
-                    .src = key_encoding.readNodeId(entry.key[1..][0..key_encoding.node_id_length]),
-                    .dst = key_encoding.readNodeId(entry.key[1 + key_encoding.node_id_length ..][0..key_encoding.node_id_length]),
-                    .edge_type = try arena.dupe(u8, rest[0..end]),
-                    .name = try arena.dupe(u8, rest[end + 1 ..]),
-                    .value = try value_encoding.decodeValue(try arena.dupe(u8, entry.value), arena),
-                });
-            }
-        }
-        for (edge_properties.items) |p| try self.putEdgeIndexEntry(p.name, p.value, p.src, p.dst, p.edge_type);
-
-        // Edge keys: the neighbour's labels as their value.
-        const EdgeKeyCopy = struct { key: []const u8, neighbour: NodeId };
-        var edge_keys = std.ArrayList(EdgeKeyCopy).empty;
+    /// To format 3: gives every relationship an id. Before it, a relationship
+    /// was its (src, dst, type), in edge keys `e | node | dir | 0x00 | type |
+    /// 0x00 | neighbour` and properties `f | src | dst | 0x00 | type | 0x00 |
+    /// name`. Rewrites those keys, writes the relationship records, rebuilds
+    /// the edge-property index and the relationship full-text indexes.
+    fn upgradeRelationships(self: *Graph, arena: Allocator) StorageError!void {
+        const Ends = struct { src: NodeId, dst: NodeId, edge_type: []const u8 };
+        const OldProperty = struct { ends: Ends, name: []const u8, value: []const u8 };
+        var outgoing = std.ArrayList(Ends).empty;
+        var properties = std.ArrayList(OldProperty).empty;
+        var stale = std.ArrayList([]const u8).empty;
         {
             var keys = try self.store.scanPrefix(&.{key_encoding.edge_marker});
             defer keys.deinit();
             while (try keys.next()) |entry| {
-                const decoded = key_encoding.decodeEdgeKey(entry.key);
-                try edge_keys.append(arena, .{ .key = try arena.dupe(u8, entry.key), .neighbour = decoded.neighbour });
+                try stale.append(arena, try arena.dupe(u8, entry.key));
+                const id = key_encoding.readNodeId(entry.key[1..][0..key_encoding.node_id_length]);
+                if (entry.key[1 + key_encoding.node_id_length] != @backingInt(Direction.out)) continue;
+                const type_start = 1 + key_encoding.node_id_length + 2;
+                const neighbour_start = entry.key.len - key_encoding.node_id_length;
+                try outgoing.append(arena, .{
+                    .src = id,
+                    .dst = key_encoding.readNodeId(entry.key[neighbour_start..]),
+                    .edge_type = try arena.dupe(u8, entry.key[type_start .. neighbour_start - 1]),
+                });
             }
         }
-        for (edge_keys.items) |edge| try self.store.put(edge.key, try self.neighbourLabels(edge.neighbour, arena));
+        {
+            var keys = try self.store.scanPrefix(&.{key_encoding.edge_property_marker});
+            defer keys.deinit();
+            while (try keys.next()) |entry| {
+                try stale.append(arena, try arena.dupe(u8, entry.key));
+                const rest = entry.key[1 + 2 * key_encoding.node_id_length + 1 ..];
+                const end = std.mem.indexOfScalar(u8, rest, key_encoding.separator) orelse continue;
+                try properties.append(arena, .{
+                    .ends = .{
+                        .src = key_encoding.readNodeId(entry.key[1..][0..key_encoding.node_id_length]),
+                        .dst = key_encoding.readNodeId(entry.key[1 + key_encoding.node_id_length ..][0..key_encoding.node_id_length]),
+                        .edge_type = try arena.dupe(u8, rest[0..end]),
+                    },
+                    .name = try arena.dupe(u8, rest[end + 1 ..]),
+                    .value = try arena.dupe(u8, entry.value),
+                });
+            }
+        }
+        {
+            var keys = try self.store.scanPrefix(&.{key_encoding.edge_index_marker});
+            defer keys.deinit();
+            while (try keys.next()) |entry| try stale.append(arena, try arena.dupe(u8, entry.key));
+        }
+        for (stale.items) |key| try self.store.del(key);
 
-        var version: [4]u8 = undefined;
-        std.mem.writeInt(u32, &version, format_version, .big);
-        try self.store.put(key_encoding.format_key, &version);
-        try self.commitWrite();
+        // A relationship's id is its position among the old outgoing keys.
+        var ids = std.StringHashMapUnmanaged(RelationshipId).empty;
+        var key = std.ArrayList(u8).empty;
+        for (outgoing.items, 0..) |ends, position| {
+            const id: RelationshipId = position;
+            try self.writeRelationship(id, ends.src, ends.dst, ends.edge_type, arena);
+            key.clearRetainingCapacity();
+            try key_encoding.appendRelationshipRecord(&key, arena, ends.src, ends.dst, ends.edge_type);
+            try ids.put(arena, try arena.dupe(u8, key.items), id);
+        }
+        try self.setCounter(key_encoding.relationship_counter_key, outgoing.items.len);
+        for (properties.items) |property| {
+            key.clearRetainingCapacity();
+            try key_encoding.appendRelationshipRecord(&key, arena, property.ends.src, property.ends.dst, property.ends.edge_type);
+            const id = ids.get(key.items) orelse continue; // a property of no relationship
+            key.clearRetainingCapacity();
+            try key_encoding.appendEdgePropertyKey(&key, arena, id, property.name);
+            try self.store.put(key.items, property.value);
+            try self.putEdgeIndexEntry(property.name, try value_encoding.decodeValue(property.value, arena), id);
+        }
+        for (try fulltext.all(self, arena)) |definition| {
+            if (definition.entity != .relationships) continue;
+            try fulltext_postings.clear(self, definition.name);
+            try fulltext_postings.populate(self, definition);
+        }
     }
 
     /// Begins an atomic write transaction; see `commitWrite`/`abortWrite`. All
@@ -161,7 +215,12 @@ pub const Graph = struct {
         return self.store.beginWrite();
     }
 
+    /// Commits the write transaction, with the relationship ids it allocated
+    /// (every commit of a write transaction goes through here).
     pub fn commitWrite(self: *Graph) StorageError!void {
+        if (self.store.write_transaction_memo.next_relationship_id) |next| {
+            try self.setCounter(key_encoding.relationship_counter_key, next);
+        }
         return self.store.commitWrite();
     }
 
@@ -279,15 +338,39 @@ pub const Graph = struct {
 
     /// The id `allocateNodeId` gives next.
     fn nextNodeId(self: *Graph) StorageError!NodeId {
-        const raw = (try self.store.get(key_encoding.counter_key)) orelse return 0;
-        defer self.allocator.free(raw);
-        return if (raw.len == key_encoding.node_id_length) key_encoding.readNodeId(raw) else 0;
+        return self.counter(key_encoding.counter_key);
     }
 
     fn setNextNodeId(self: *Graph, next: NodeId) StorageError!void {
-        var buffer: [key_encoding.node_id_length]u8 = undefined;
-        std.mem.writeInt(NodeId, &buffer, next, .big);
-        try self.store.put(key_encoding.counter_key, &buffer);
+        return self.setCounter(key_encoding.counter_key, next);
+    }
+
+    /// Allocates a fresh, never-used relationship id (persistent counter).
+    /// Inside a write transaction the counter is read once and written when
+    /// it commits, so an id costs nothing more; otherwise O(log N).
+    fn allocateRelationshipId(self: *Graph) StorageError!RelationshipId {
+        const memo = &self.store.write_transaction_memo;
+        if (self.store.active_write_transaction != null) {
+            const next = memo.next_relationship_id orelse try self.counter(key_encoding.relationship_counter_key);
+            memo.next_relationship_id = next + 1;
+            return next;
+        }
+        const next = try self.counter(key_encoding.relationship_counter_key);
+        try self.setCounter(key_encoding.relationship_counter_key, next + 1);
+        return next;
+    }
+
+    /// The 8-byte big-endian counter at `key` (0 if absent).
+    fn counter(self: *Graph, key: []const u8) StorageError!u64 {
+        const raw = (try self.store.get(key)) orelse return 0;
+        defer self.allocator.free(raw);
+        return if (raw.len == 8) std.mem.readInt(u64, raw[0..8], .big) else 0;
+    }
+
+    fn setCounter(self: *Graph, key: []const u8, value: u64) StorageError!void {
+        var buffer: [8]u8 = undefined;
+        std.mem.writeInt(u64, &buffer, value, .big);
+        try self.store.put(key, &buffer);
     }
 
     /// Deletes a node; fails with `error.NodeStillConnected` if it still has
@@ -348,71 +431,75 @@ pub const Graph = struct {
 
     fn deleteEdgesInDirection(self: *Graph, id: NodeId, direction: Direction) StorageError!void {
         // Collect first, so the scan cursor is not open across the deletes.
-        var edges = std.ArrayList(struct { src: NodeId, dst: NodeId, edge_type: []u8 }).empty;
-        defer {
-            for (edges.items) |edge| self.allocator.free(edge.edge_type);
-            edges.deinit(self.allocator);
+        var relationships = std.ArrayList(RelationshipId).empty;
+        defer relationships.deinit(self.allocator);
+        {
+            var iterator = try self.edgesOf(id, direction);
+            defer iterator.deinit();
+            while (try iterator.next()) |key| try relationships.append(self.allocator, key.relationship);
         }
-        var iterator = try self.edgesOf(id, direction);
-        defer iterator.deinit();
-        while (try iterator.next()) |key| {
-            const outgoing = key.direction == .out;
-            try edges.append(self.allocator, .{
-                .src = if (outgoing) id else key.neighbour,
-                .dst = if (outgoing) key.neighbour else id,
-                .edge_type = try self.allocator.dupe(u8, key.edge_type),
-            });
-        }
-        for (edges.items) |edge| try self.deleteEdge(edge.src, edge.dst, edge.edge_type);
+        for (relationships.items) |relationship_id| try self.deleteEdge(relationship_id);
     }
 
-    /// Deletes the edge `src -> dst` of type `edge_type`: both directions, its
-    /// properties and their index entries, and its type count. Idempotent.
+    /// Deletes relationship `id`: both edge keys, its record, its properties
+    /// and their index entries, and its type count. Idempotent.
     /// O(log N · (1 + properties)).
-    pub fn deleteEdge(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!void {
-        if (!try self.hasEdge(src, dst, edge_type)) return;
-
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendEdgeKey(&key, self.allocator, src, .out, edge_type, dst);
-        try self.store.del(key.items);
-        key.clearRetainingCapacity();
-        try key_encoding.appendEdgeKey(&key, self.allocator, dst, .in, edge_type, src);
-        try self.store.del(key.items);
-
-        // Collect the properties first, so the cursor is not open across deletes.
-        var properties = std.ArrayList(struct { name: []u8, value: []u8 }).empty;
-        defer {
-            for (properties.items) |p| {
-                self.allocator.free(p.name);
-                self.allocator.free(p.value);
-            }
-            properties.deinit(self.allocator);
-        }
-        var prefix = std.ArrayList(u8).empty;
-        defer prefix.deinit(self.allocator);
-        try key_encoding.appendEdgePropertyPrefix(&prefix, self.allocator, src, dst, edge_type);
-        var scan = try self.store.scanPrefix(prefix.items);
-        while (try scan.next()) |entry| {
-            try properties.append(self.allocator, .{
-                .name = try self.allocator.dupe(u8, entry.key[prefix.items.len..]),
-                .value = try self.allocator.dupe(u8, entry.value),
-            });
-        }
-        scan.deinit();
-
+    pub fn deleteEdge(self: *Graph, id: RelationshipId) StorageError!void {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        for (properties.items) |p| {
-            const old = try value_encoding.decodeValue(p.value, scratch.allocator());
-            try fulltext_postings.relationshipPropertyChanged(self, src, dst, edge_type, p.name, old, null);
-            try self.deleteEdgeIndexEntry(p.name, old, src, dst, edge_type);
+        const arena = scratch.allocator();
+        const stored = try self.relationship(id, arena) orelse return;
+
+        var key = std.ArrayList(u8).empty;
+        try key_encoding.appendEdgeKey(&key, arena, stored.src, .out, stored.edge_type, stored.dst, id);
+        try self.store.del(key.items);
+        key.clearRetainingCapacity();
+        try key_encoding.appendEdgeKey(&key, arena, stored.dst, .in, stored.edge_type, stored.src, id);
+        try self.store.del(key.items);
+        try self.store.deleteRelationship(id);
+
+        // Collect the properties first, so the cursor is not open across deletes.
+        const Stored = struct { name: []const u8, value: Value };
+        var properties = std.ArrayList(Stored).empty;
+        {
+            var iterator = try self.edgePropertiesOf(id);
+            defer iterator.deinit();
+            while (try iterator.next()) |property| {
+                try properties.append(arena, .{ .name = try arena.dupe(u8, property.name), .value = try property.value(arena) });
+            }
+        }
+        for (properties.items) |property| {
+            try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, property.name, property.value, null);
+            try self.deleteEdgeIndexEntry(property.name, property.value, id);
             key.clearRetainingCapacity();
-            try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, p.name);
+            try key_encoding.appendEdgePropertyKey(&key, arena, id, property.name);
             try self.store.del(key.items);
         }
 
-        try self.bumpEdgeType(edge_type, false);
+        try self.bumpEdgeType(stored.edge_type, false);
+    }
+
+    /// Relationship `id`'s ends and type (the type copied with `allocator`),
+    /// or null if there is no such relationship. O(log N).
+    pub fn relationship(self: *Graph, id: RelationshipId, allocator: Allocator) StorageError!?RelationshipRecord {
+        const in_transaction = self.store.inTransaction();
+        if (!in_transaction) try self.store.beginRead();
+        defer if (!in_transaction) self.store.abortRead();
+        const raw = (try self.store.viewRelationship(id)) orelse return null;
+        return try copyRecord(raw, allocator);
+    }
+
+    fn copyRecord(raw: []const u8, allocator: Allocator) Allocator.Error!RelationshipRecord {
+        const record = key_encoding.decodeRelationshipRecord(raw);
+        return .{ .src = record.src, .dst = record.dst, .edge_type = try allocator.dupe(u8, record.edge_type) };
+    }
+
+    /// True if relationship `id` exists. O(log N).
+    pub fn hasRelationship(self: *Graph, id: RelationshipId) StorageError!bool {
+        const in_transaction = self.store.inTransaction();
+        if (!in_transaction) try self.store.beginRead();
+        defer if (!in_transaction) self.store.abortRead();
+        return try self.store.viewRelationship(id) != null;
     }
 
     pub fn hasNode(self: *Graph, id: NodeId) StorageError!bool {
@@ -608,24 +695,29 @@ pub const Graph = struct {
         return try value_encoding.decodeValue(raw, allocator);
     }
 
-    /// Adds a directed, typed edge, storing both directions. Idempotent. Also
-    /// maintains the edge-type cardinality counter. O(log N).
-    pub fn addEdge(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!void {
-        if (try self.hasEdge(src, dst, edge_type)) return;
-
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-
+    /// Adds a relationship `src -> dst` of type `edge_type` and returns its
+    /// new id: both edge keys, its record, its type count. Every call adds
+    /// one (relationships between the same nodes may be parallel). O(log N).
+    pub fn addEdge(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!RelationshipId {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        try key_encoding.appendEdgeKey(&key, self.allocator, src, .out, edge_type, dst);
-        try self.store.put(key.items, try self.neighbourLabels(dst, scratch.allocator()));
-
-        key.clearRetainingCapacity();
-        try key_encoding.appendEdgeKey(&key, self.allocator, dst, .in, edge_type, src);
-        try self.store.put(key.items, try self.neighbourLabels(src, scratch.allocator()));
-
+        const id = try self.allocateRelationshipId();
+        try self.writeRelationship(id, src, dst, edge_type, scratch.allocator());
         try self.bumpEdgeType(edge_type, true);
+        return id;
+    }
+
+    /// Writes relationship `id`'s two edge keys and its record.
+    fn writeRelationship(self: *Graph, id: RelationshipId, src: NodeId, dst: NodeId, edge_type: []const u8, scratch: Allocator) StorageError!void {
+        var key = std.ArrayList(u8).empty;
+        try key_encoding.appendEdgeKey(&key, scratch, src, .out, edge_type, dst, id);
+        try self.store.put(key.items, try self.neighbourLabels(dst, scratch));
+        key.clearRetainingCapacity();
+        try key_encoding.appendEdgeKey(&key, scratch, dst, .in, edge_type, src, id);
+        try self.store.put(key.items, try self.neighbourLabels(src, scratch));
+        var record = std.ArrayList(u8).empty;
+        try key_encoding.appendRelationshipRecord(&record, scratch, src, dst, edge_type);
+        try self.store.putRelationship(id, record.items);
     }
 
     /// The value of an edge key: the labels of the node at its other end, so
@@ -648,7 +740,7 @@ pub const Graph = struct {
         defer scratch.deinit();
         const value = try self.neighbourLabels(id, scratch.allocator());
         // Collect first, so no scan cursor is open across the writes.
-        const Incident = struct { neighbour: NodeId, direction: Direction, edge_type: []const u8 };
+        const Incident = struct { neighbour: NodeId, direction: Direction, edge_type: []const u8, relationship: RelationshipId };
         var incident = std.ArrayList(Incident).empty;
         for ([_]Direction{ .out, .in }) |direction| {
             var edges = try self.edgesOf(id, direction);
@@ -659,6 +751,7 @@ pub const Graph = struct {
                     // The neighbour's key for this edge points the other way.
                     .direction = if (direction == .out) .in else .out,
                     .edge_type = try scratch.allocator().dupe(u8, edge.edge_type),
+                    .relationship = edge.relationship,
                 });
             }
         }
@@ -666,7 +759,7 @@ pub const Graph = struct {
         defer key.deinit(self.allocator);
         for (incident.items) |edge| {
             key.clearRetainingCapacity();
-            try key_encoding.appendEdgeKey(&key, self.allocator, edge.neighbour, edge.direction, edge.edge_type, id);
+            try key_encoding.appendEdgeKey(&key, self.allocator, edge.neighbour, edge.direction, edge.edge_type, id, edge.relationship);
             try self.store.put(key.items, value);
         }
     }
@@ -702,87 +795,98 @@ pub const Graph = struct {
         try self.store.put(key.items, &buffer);
     }
 
-    /// True if the directed, typed edge `src -> dst` exists.
+    /// True if some relationship `src -> dst` of type `edge_type` exists.
+    /// O(log N).
     pub fn hasEdge(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!bool {
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendEdgeKey(&key, self.allocator, src, .out, edge_type, dst);
-        return self.store.exists(key.items);
+        var buffer: [128]u8 = undefined;
+        var memory = std.heap.BufferFirstAllocator.init(&buffer, self.allocator);
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(memory.allocator());
+        try key_encoding.appendEdgeBetweenPrefix(&prefix, memory.allocator(), src, .out, edge_type, dst);
+        return self.store.hasPrefix(prefix.items);
     }
 
-    /// Stores a typed property on the directed edge `src -> dst` of type
-    /// `edge_type`. Idempotent. Maintains the edge-property index. Setting
-    /// `null` removes the property; a list fails with
-    /// `UnsupportedPropertyType`. O(log N).
-    pub fn setEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, value: Value) GraphError!void {
-        if (value == .null) return self.removeEdgeProperty(src, dst, edge_type, name);
+    /// Iterates the relationships `src -> dst` of type `edge_type`, in id
+    /// order, as `EdgeKey`s of `src`. O(log N + their number).
+    pub fn edgesBetween(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!EdgeKeyIterator {
+        // Built on the stack: a match tests the edges to each candidate end.
+        var buffer: [128]u8 = undefined;
+        var memory = std.heap.BufferFirstAllocator.init(&buffer, self.allocator);
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(memory.allocator());
+        try key_encoding.appendEdgeBetweenPrefix(&prefix, memory.allocator(), src, .out, edge_type, dst);
+        return .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len };
+    }
+
+    /// Stores a typed property on relationship `id`. Idempotent. Maintains
+    /// the edge-property index. Setting `null` removes the property; a value
+    /// that cannot be stored fails with `UnsupportedPropertyType`. A missing
+    /// relationship is left alone. O(log N).
+    pub fn setEdgeProperty(self: *Graph, id: RelationshipId, name: []const u8, value: Value) GraphError!void {
+        if (value == .null) return self.removeEdgeProperty(id, name);
         if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        const old = try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator());
-        if (old) |previous| try self.deleteEdgeIndexEntry(name, previous, src, dst, edge_type);
+        const arena = scratch.allocator();
+        const stored = try self.relationship(id, arena) orelse return;
+        const old = try self.getEdgeProperty(id, name, arena);
+        if (old) |previous| try self.deleteEdgeIndexEntry(name, previous, id);
 
         var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, name);
-
+        try key_encoding.appendEdgePropertyKey(&key, arena, id, name);
         var encoded = std.ArrayList(u8).empty;
-        defer encoded.deinit(self.allocator);
-        try value_encoding.encodeValue(&encoded, self.allocator, value);
+        try value_encoding.encodeValue(&encoded, arena, value);
         try self.store.put(key.items, encoded.items);
 
-        try self.putEdgeIndexEntry(name, value, src, dst, edge_type);
-        try fulltext_postings.relationshipPropertyChanged(self, src, dst, edge_type, name, old, value);
+        try self.putEdgeIndexEntry(name, value, id);
+        try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, name, old, value);
     }
 
-    /// Removes a typed property from the directed edge `src -> dst` of type
-    /// `edge_type`. Idempotent.
-    pub fn removeEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8) StorageError!void {
+    /// Removes a typed property from relationship `id`. Idempotent.
+    pub fn removeEdgeProperty(self: *Graph, id: RelationshipId, name: []const u8) StorageError!void {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
-        const old = try self.getEdgeProperty(src, dst, edge_type, name, scratch.allocator()) orelse return;
-        try self.deleteEdgeIndexEntry(name, old, src, dst, edge_type);
+        const arena = scratch.allocator();
+        const old = try self.getEdgeProperty(id, name, arena) orelse return;
+        const stored = try self.relationship(id, arena) orelse return;
+        try self.deleteEdgeIndexEntry(name, old, id);
         var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendEdgePropertyKey(&key, self.allocator, src, dst, edge_type, name);
+        try key_encoding.appendEdgePropertyKey(&key, arena, id, name);
         try self.store.del(key.items);
-        try fulltext_postings.relationshipPropertyChanged(self, src, dst, edge_type, name, old, null);
+        try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, name, old, null);
     }
 
-    fn putEdgeIndexEntry(self: *Graph, property: []const u8, value: Value, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!void {
+    fn putEdgeIndexEntry(self: *Graph, property: []const u8, value: Value, id: RelationshipId) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try key_encoding.appendEdgeIndexKey(&key, self.allocator, property, value, src, dst, edge_type);
+        try key_encoding.appendEdgeIndexKey(&key, self.allocator, property, value, id);
         try self.store.put(key.items, "");
     }
 
-    fn deleteEdgeIndexEntry(self: *Graph, property: []const u8, value: Value, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!void {
+    fn deleteEdgeIndexEntry(self: *Graph, property: []const u8, value: Value, id: RelationshipId) StorageError!void {
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
-        try key_encoding.appendEdgeIndexKey(&key, self.allocator, property, value, src, dst, edge_type);
+        try key_encoding.appendEdgeIndexKey(&key, self.allocator, property, value, id);
         try self.store.del(key.items);
     }
 
-    /// Iterates all directed edges whose property `name` equals `value` (via the
-    /// edge-property index), in ascending (src, dst) order. O(log N + matches).
+    /// Iterates the relationships whose property `name` equals `value` (via
+    /// the edge-property index), in id order. O(log N · (1 + matches)).
     pub fn edgesByProperty(self: *Graph, name: []const u8, value: Value) StorageError!EdgeIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
         try key_encoding.appendEdgeIndexPrefix(&prefix, self.allocator, name, value);
-        const value_length = prefix.items.len;
-        const iterator = try self.store.scanPrefix(prefix.items);
-        return .{ .inner = iterator, .value_length = value_length };
+        return .{ .graph = self, .inner = try self.store.scanPrefix(prefix.items), .record = .init(self.allocator) };
     }
 
-    /// Reads a typed property of the directed edge `src -> dst` of type
-    /// `edge_type`, or `null` if absent.
-    pub fn getEdgeProperty(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8, name: []const u8, allocator: Allocator) StorageError!?Value {
+    /// Reads a typed property of relationship `id`, or `null` if absent.
+    pub fn getEdgeProperty(self: *Graph, id: RelationshipId, name: []const u8, allocator: Allocator) StorageError!?Value {
         var key_buffer: [256]u8 = undefined;
         var key_memory = std.heap.BufferFirstAllocator.init(&key_buffer, self.allocator);
         const key_allocator = key_memory.allocator();
         var key = std.ArrayList(u8).empty;
         defer key.deinit(key_allocator);
-        try key_encoding.appendEdgePropertyKey(&key, key_allocator, src, dst, edge_type, name);
+        try key_encoding.appendEdgePropertyKey(&key, key_allocator, id, name);
         return self.readValue(key.items, allocator);
     }
 
@@ -794,7 +898,8 @@ pub const Graph = struct {
         defer prefix.deinit(self.allocator);
         try key_encoding.appendEdgePrefix(&prefix, self.allocator, id, direction, edge_type);
         const iterator = try self.store.scanPrefix(prefix.items);
-        return .{ .inner = iterator };
+        // The neighbour's id comes before the relationship's.
+        return .{ .inner = iterator, .trailing_length = key_encoding.node_id_length };
     }
 
     /// Iterates all nodes carrying `label`, in ascending node-id order.
@@ -836,12 +941,12 @@ pub const Graph = struct {
         return .{ .record = .{ .bytes = bytes }, .owner = self.store.allocator };
     }
 
-    /// Iterates the properties of the edge `src -> dst` of type `edge_type`, in
-    /// name order (views into the store). O(log N + properties).
-    pub fn edgePropertiesOf(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!PropertyIterator {
+    /// Iterates the properties of relationship `id`, in name order (views
+    /// into the store). O(log N + properties).
+    pub fn edgePropertiesOf(self: *Graph, id: RelationshipId) StorageError!PropertyIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try key_encoding.appendEdgePropertyPrefix(&prefix, self.allocator, src, dst, edge_type);
+        try key_encoding.appendEdgePropertyPrefix(&prefix, self.allocator, id);
         return .{ .source = .{ .keys = .{ .inner = try self.store.scanPrefix(prefix.items), .prefix_length = prefix.items.len } } };
     }
 
@@ -949,6 +1054,9 @@ pub const NodeIdIterator = struct {
     key_length: ?usize = null,
     /// The keys are node ids in native byte order (the node table's).
     native_keys: bool = false,
+    /// Bytes after the node id at the end of each key (an edge key's
+    /// relationship id).
+    trailing_length: usize = 0,
 
     pub fn deinit(self: *NodeIdIterator) void {
         self.inner.deinit();
@@ -963,7 +1071,8 @@ pub const NodeIdIterator = struct {
                     if (entry.key.len != len) continue;
                 }
                 if (self.native_keys) return std.mem.readInt(NodeId, entry.key[0..8], .native);
-                return key_encoding.readNodeId(entry.key[entry.key.len - key_encoding.node_id_length ..]);
+                const end = entry.key.len - self.trailing_length;
+                return key_encoding.readNodeId(entry.key[end - key_encoding.node_id_length .. end]);
             }
             const second = self.second orelse return null;
             self.inner.deinit();
@@ -1072,20 +1181,29 @@ pub const EdgeKeyIterator = KeyRangeIterator(EdgeKey, struct {
 /// The format of the neighbour labels an edge key's value holds.
 const neighbour_labels_version: u8 = 1;
 
+/// The relationships an edge-property index scan finds, with their ends
+/// and type (`edge_type` valid until the next `next` call).
 pub const EdgeIterator = struct {
+    graph: *Graph,
     inner: PrefixIterator,
-    value_length: usize,
+    /// Holds the current relationship's type.
+    record: std.heap.ArenaAllocator,
+
+    pub const Found = struct { id: RelationshipId, src: NodeId, dst: NodeId, edge_type: []const u8 };
 
     pub fn deinit(self: *EdgeIterator) void {
         self.inner.deinit();
+        self.record.deinit();
     }
 
-    /// Returns the next `(src, dst, edge_type)` edge, or `null` at the end.
-    pub fn next(self: *EdgeIterator) StorageError!?struct { src: NodeId, dst: NodeId, edge_type: []const u8 } {
-        const entry = try self.inner.next() orelse return null;
-        const src = key_encoding.readNodeId(entry.key[self.value_length .. self.value_length + key_encoding.node_id_length]);
-        const dst = key_encoding.readNodeId(entry.key[self.value_length + key_encoding.node_id_length .. self.value_length + 2 * key_encoding.node_id_length]);
-        const edge_type = entry.key[self.value_length + 2 * key_encoding.node_id_length + 1 ..];
-        return .{ .src = src, .dst = dst, .edge_type = edge_type };
+    /// Returns the next relationship, or `null` at the end.
+    pub fn next(self: *EdgeIterator) StorageError!?Found {
+        while (try self.inner.next()) |entry| {
+            const id = key_encoding.readNodeId(entry.key[entry.key.len - key_encoding.node_id_length ..]);
+            _ = self.record.reset(.retain_capacity);
+            const stored = try self.graph.relationship(id, self.record.allocator()) orelse continue;
+            return .{ .id = id, .src = stored.src, .dst = stored.dst, .edge_type = stored.edge_type };
+        }
+        return null;
     }
 };

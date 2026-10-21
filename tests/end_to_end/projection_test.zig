@@ -155,7 +155,7 @@ test "nodes and relationships are values: returned, distinct, ordered, collected
         &.{.{ .node = 102 }},
     });
     try expectQuery(&ast, &g, "MATCH (d:Person)-[r:DIRECTED]->(m:Movie {title: 'The Matrix'}) RETURN r", &.{
-        &.{.{ .relationship = .{ .src = 4, .dst = 100, .edge_type = "DIRECTED" } }},
+        &.{.{ .relationship = .{ .id = 6, .src = 4, .dst = 100, .edge_type = "DIRECTED" } }},
     });
     try expectQuery(&ast, &g, "MATCH (p:Person)-[:DIRECTED]->(m) RETURN p, collect(m)", &.{
         &.{ .{ .node = 4 }, .{ .list = &.{ .{ .node = 100 }, .{ .node = 101 } } } },
