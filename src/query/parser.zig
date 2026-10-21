@@ -407,7 +407,34 @@ pub const Parser = struct {
             return try self.parseDeleteClause(true);
         }
         if (self.atKeyword("REMOVE")) return try self.parseRemoveClause();
+        if (self.atKeyword("FOREACH")) return try self.parseForeachClause();
         return null;
+    }
+
+    /// `FOREACH (x IN list | clause ...)`, the clauses all updating ones.
+    fn parseForeachClause(self: *Parser) ParseError!Index {
+        _ = self.advance(); // FOREACH
+        try self.expect(.left_paren);
+        const variable_name = try self.internIdentifier();
+        try self.expectKeyword("IN");
+        const list = try expression_parser.parseExpression(self);
+        try self.expect(.pipe);
+        var clauses = std.ArrayList(Index).empty;
+        defer clauses.deinit(self.ast.allocator);
+        while (!self.at(.right_paren)) {
+            const clause = try self.parseUpdatingClause() orelse {
+                self.fail("FOREACH takes only updating clauses (CREATE, MERGE, SET, DELETE, REMOVE, FOREACH), not {s}", .{describeToken(self.peek())});
+                return error.UnexpectedToken;
+            };
+            try clauses.append(self.ast.allocator, clause);
+        }
+        if (clauses.items.len == 0) {
+            self.fail("FOREACH needs an updating clause after '|'", .{});
+            return error.UnexpectedToken;
+        }
+        try self.expect(.right_paren);
+        const body = try self.ast.addNode(.query, .{ .none = {} }, clauses.items);
+        return self.ast.addNode(.foreach_clause, .{ .text = variable_name }, &.{ list, body });
     }
 
     fn parseMatchClause(self: *Parser) ParseError!Index {

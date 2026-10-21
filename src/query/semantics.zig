@@ -613,6 +613,25 @@ const Checker = struct {
         for (returned.items) |column| try self.scope.names.put(self.allocator, column.name, column.kind);
     }
 
+    /// FOREACH's clauses see the variables in scope and its own variable;
+    /// what they bind stays inside.
+    fn checkForeach(self: *Checker, variable_name: []const u8, body: Index) SemanticError!void {
+        var inner = Scope{};
+        var entries = self.scope.names.iterator();
+        while (entries.next()) |entry| try inner.names.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        if (inner.kindOf(variable_name) != null) return self.fail("FOREACH binds '{s}', which is already bound", .{variable_name});
+        try inner.names.put(self.allocator, variable_name, .any);
+        const outer = self.scope;
+        const outer_query = self.current_query;
+        self.scope = inner;
+        defer {
+            self.scope.names.deinit(self.allocator);
+            self.scope = outer;
+            self.current_query = outer_query;
+        }
+        try self.checkQuery(body);
+    }
+
     /// Clause by clause: declare what the clause binds, then check its
     /// expressions with those variables in scope (WITH and RETURN expressions
     /// see the scope before their projection).
@@ -625,6 +644,11 @@ const Checker = struct {
                 .delete_clause => for (children) |item| try self.checkDeleted(self.ast.nodeChildren(item)[0]),
                 .call_subquery => {
                     try self.checkCallSubquery(children[0]);
+                    continue;
+                },
+                .foreach_clause => {
+                    try self.checkExpressions(children[0]);
+                    try self.checkForeach(self.ast.data(clause).text, children[1]);
                     continue;
                 },
                 .call_clause => {

@@ -190,6 +190,10 @@ pub const NodeKind = enum {
     /// importing WITH (`importsVariables`); its RETURN's columns extend the
     /// row, and without a RETURN the row goes on as it was.
     call_subquery,
+    /// `FOREACH (x IN list | clauses)`: runs the updating clauses once per
+    /// element, with x bound to it; data.text is x; children [list, query of
+    /// the clauses]. What it binds stays inside it.
+    foreach_clause,
     /// One `YIELD column [AS alias]`: data.yield_.
     yield_item,
     /// `CREATE FULLTEXT INDEX name FOR (n:L) ON EACH [n.p, ...] [OPTIONS {...}]`:
@@ -211,7 +215,7 @@ pub fn isSubquery(kind: NodeKind) bool {
 /// found by `queryWrites`).
 pub fn isUpdatingClause(kind: NodeKind) bool {
     return switch (kind) {
-        .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause => true,
+        .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause, .foreach_clause => true,
         else => false,
     };
 }

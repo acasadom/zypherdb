@@ -9,6 +9,7 @@ const NodeKind = @import("../query/ast.zig").NodeKind;
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
+const Value = @import("../value.zig").Value;
 const expressions = @import("expressions.zig");
 const pattern_matching = @import("pattern_matching.zig");
 const procedures = @import("procedures.zig");
@@ -144,6 +145,31 @@ pub fn runCallSubquery(self: *Executor, clause: Index, input: []Bindings) Execut
     return output.items;
 }
 
+/// FOREACH: for each input row, its clauses run once per element of the
+/// list, with the variable bound to it (no element for `null`). The input
+/// rows go on unchanged.
+fn runForeach(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const children = self.ast.nodeChildren(clause);
+    const variable_name = self.ast.data(clause).text;
+    for (input) |*row| {
+        const value = try expressions.evaluate(self, children[0], row);
+        const items: []const Value = switch (value) {
+            .list => |items| items,
+            .null => &.{},
+            else => {
+                self.fail(.type_mismatch, "FOREACH needs a list, not {s}", .{@tagName(value)});
+                return error.TypeMismatch;
+            },
+        };
+        for (items) |item| {
+            var scope = try copyRow(self, row.*);
+            try scope.put(self.allocator, variable_name, item);
+            _ = try runSubquery(self, children[1], scope);
+        }
+    }
+    return input;
+}
+
 /// MERGE: for each input row, every match of the whole pattern (each one a
 /// row, with ON MATCH SET applied), or, when there is none, the pattern
 /// created — its unbound nodes and its relationships — with ON CREATE SET.
@@ -215,6 +241,7 @@ pub fn runUnwind(self: *Executor, clause: Index, input: []Bindings) ExecutionErr
 /// variables the clause bound.
 pub fn runWrite(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
     if (self.ast.kind(clause) == .merge_clause) return runMerge(self, clause, input);
+    if (self.ast.kind(clause) == .foreach_clause) return runForeach(self, clause, input);
     for (input) |*row| {
         switch (self.ast.kind(clause)) {
             .create_clause => for (self.ast.nodeChildren(clause)) |pattern| {
