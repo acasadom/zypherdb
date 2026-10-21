@@ -103,6 +103,8 @@ table_procedures: []const procedure_signatures.TableProcedure = &.{},
 /// Relationship uniqueness: the edges bound on the current search branch of
 /// the MATCH being run.
 used_edges: std.ArrayList(Relationship),
+/// The patterns of `=~` compiled in this query, by their text.
+regexes: std.StringHashMapUnmanaged(@import("../text/regex.zig").Regex) = .empty,
 /// How many matches have passed their MATCH's WHERE so far (a shortest-path
 /// search that tests the WHERE stops at the length where one did).
 accepted_matches: usize = 0,
@@ -166,6 +168,7 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     self.reset();
     self.entities = .{};
     self.statement_time = null;
+    self.regexes = .empty;
 
     const has_writes = writes: for (queries) |query| {
         if (self.ast.queryWrites(query)) break :writes true;

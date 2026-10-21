@@ -260,3 +260,29 @@ test "queries that cannot be right fail before they run" {
     // Still valid: the ORDER BY of a DISTINCT repeats a projected expression.
     try expectQuery(&ast, &g, "MATCH (a) RETURN DISTINCT a.name ORDER BY a.name", &.{});
 }
+
+test "=~ matches a whole string against a regular expression" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Card {code: 'AB-1234'}), (:Card {code: 'ab-99'}), (:Card {code: 'X-1'}), (:Card)", &.{});
+    try expectQuery(&ast, &g, "MATCH (c:Card) WHERE c.code =~ '[A-Z]{2}-\\\\d{4}' RETURN c.code", &.{&.{string("AB-1234")}});
+    try expectQuery(&ast, &g, "MATCH (c:Card) WHERE c.code =~ '(?i)ab-.*' RETURN c.code ORDER BY c.code", &.{ &.{string("AB-1234")}, &.{string("ab-99")} });
+    // The whole string: a part is not enough.
+    try expectQuery(&ast, &g, "RETURN 'abc' =~ 'b', 'abc' =~ '.*b.*'", &.{&.{ boolean(false), boolean(true) }});
+    // Null or a non-string on either side: null (the WHERE drops the row).
+    try expectQuery(&ast, &g, "RETURN null =~ 'a', 'a' =~ null, 1 =~ '1'", &.{&.{ null_value, null_value, null_value }});
+    try expectQuery(&ast, &g, "MATCH (c:Card) WHERE NOT c.code =~ 'X.*' RETURN count(c)", &.{&.{int(2)}});
+    // A pattern from a parameter, as precedence of a predicate: `=~` binds
+    // tighter than AND.
+    try support.expectQueryWithParameters(&ast, &g, "MATCH (c:Card) WHERE c.code =~ $pattern AND c.code STARTS WITH 'X' RETURN c.code", &.{.{ "pattern", string("X-\\d") }}, &.{&.{string("X-1")}});
+    // A malformed pattern is an error, when the query runs.
+    try expectQueryError(&ast, &g, "RETURN 'a' =~ '(a'", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "RETURN 'aa' =~ '(a)\\\\1'", error.InvalidExpression);
+}

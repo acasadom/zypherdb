@@ -87,6 +87,7 @@ test {
     _ = @import("storage/value_encoding.zig");
     _ = @import("storage/node_record.zig");
     _ = @import("storage/engine/contract.zig");
+    _ = @import("text/regex.zig");
     _ = @import("temporal/calendar.zig");
     _ = @import("temporal/zones.zig");
     _ = @import("temporal/types.zig");

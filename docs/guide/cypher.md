@@ -133,6 +133,7 @@ The literals are:
 | `*`, `/`, `%` | arithmetic. Two integers give an integer: `/` truncates, and overflow or division by zero is an error. With a float operand the result is a float, following IEEE 754 (`1.0 / 0` is infinity) |
 | `+`, `-` | arithmetic. `+` also joins strings (`'a' + 1` is `'a1'`), joins lists, and appends an element to a list. A temporal value `±` a duration gives a temporal value |
 | `IS NULL`, `IS NOT NULL`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `IN` | tests; `IN` is list membership and handles `null` |
+| `text =~ pattern` | true if the **whole** string matches the regular expression (Java's syntax, as in Neo4j); `null` if either side is `null` or not a string. Supported: classes, `\d \w \s` and their negations, `^ $ \b`, groups, `\|`, quantifiers (greedy, lazy, possessive), `\Q…\E`, and the flags `(?i)` (case-insensitive, with Unicode's case folding) and `(?s)`. Not supported (an error): backreferences, lookahead and lookbehind. Matching takes time proportional to the text times the pattern, never more |
 | `=`, `<>`, `<`, `<=`, `>`, `>=` | comparison; comparisons chain, so `a < b <= c` means `a < b AND b <= c` |
 | `NOT` | |
 | `AND` | |
@@ -407,7 +408,6 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
 
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
   inside `CALL { … }`; `LOAD CSV`;
-- the regular-expression operator `=~`;
 - schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
   already indexed for equality and ranges.
 

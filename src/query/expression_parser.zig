@@ -88,7 +88,7 @@ fn comparisonOperator(kind: TokenKind) ?BinaryOperator {
 }
 
 /// An additive expression followed by any number of `IS [NOT] NULL`,
-/// `STARTS WITH`, `ENDS WITH`, `CONTAINS` and `IN` tests, which bind tighter
+/// `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `=~` and `IN` tests, which bind tighter
 /// than comparisons: `x IS NULL = y IS NULL` compares two booleans.
 fn parsePredicate(self: *Parser) ParseError!Index {
     var lhs = try parseAdditive(self);
@@ -102,7 +102,9 @@ fn parsePredicate(self: *Parser) ParseError!Index {
             continue;
         }
         // `STARTS`/`ENDS`/`CONTAINS`/`IN` lex as plain identifiers.
-        const operator: BinaryOperator = if (self.atKeyword("STARTS") and self.atKeywordAhead(1, "WITH"))
+        const operator: BinaryOperator = if (self.at(.regex_match))
+            .regex_match
+        else if (self.atKeyword("STARTS") and self.atKeywordAhead(1, "WITH"))
             .starts_with
         else if (self.atKeyword("ENDS") and self.atKeywordAhead(1, "WITH"))
             .ends_with

@@ -76,6 +76,7 @@ pub const BinaryOperator = enum {
     starts_with,
     ends_with,
     contains,
+    regex_match, // `=~`: the whole string matches the pattern
     in_,
     add,
     subtract,
