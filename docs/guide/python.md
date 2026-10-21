@@ -19,7 +19,7 @@ import acmedb, tempfile
 db = acmedb.Database(tempfile.mkdtemp())
 ```
 
-### `Database(path, durability="full", temporals="python")`
+### `Database(path, durability="full", temporals="python", import_directory=None)`
 
 Opens the database in directory `path`, creating the directory and the database if they do not
 exist. A database is used as a context manager (`with Database(path) as db:`), which closes it on
@@ -37,6 +37,9 @@ exit, or closed with `close()`.
 - `temporals` — how query results return temporal values: `"python"` as `datetime`-module values
   (see [values](#values)), or `"iso"` as their exact ISO 8601 text (`'09:30:00.123456789+01:00'`),
   which keeps the nanoseconds and the years the `datetime` module cannot hold.
+- `import_directory` — the directory `LOAD CSV` reads from: a query's `file:///name.csv` is
+  `name.csv` in it, and nothing outside it can be read. Without one, `LOAD CSV` raises
+  `ExternalResourceError`. A path that is not a directory raises `ValueError`.
 
 ### `query(text, parameters=None, /, **named) -> list[list]`
 
@@ -187,6 +190,7 @@ Every exception is an `acmedb.AcmedbError`. A failed query raises a `QueryError`
 | `InvalidExpressionError` | 5 | an expression is not allowed where it is |
 | `NodeStillConnectedError` | 6 | `DELETE` of a node that still has relationships |
 | `ConstraintViolationError` | 10 | a write would break a uniqueness constraint (also from `add_node` / `set_property`) |
+| `ExternalResourceError` | 11 | `LOAD CSV` could not read its file (off, outside the import directory, missing, or not CSV) |
 | `ParameterMissingError` | 8 | a `$parameter` was not passed |
 | `ArithmeticQueryError` | 9 | integer overflow or division by zero (also an `ArithmeticError`) |
 

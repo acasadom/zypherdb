@@ -36,6 +36,8 @@ pub const Context = struct {
     diagnostic: Diagnostic,
     /// The last `acmedb_export_json` document, owned by the context.
     export_json: []u8 = &.{},
+    /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
+    import_directory: ?[]u8 = null,
 };
 
 const Result = struct {
@@ -102,6 +104,7 @@ pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize
     context.allocator = allocator;
     context.diagnostic = Diagnostic.init();
     context.export_json = &.{};
+    context.import_directory = null;
     return context;
 }
 
@@ -113,8 +116,19 @@ pub export fn acmedb_sync(context: *Context) c_int {
 
 pub export fn acmedb_close(context: *Context) void {
     allocator.free(context.export_json);
+    if (context.import_directory) |directory| allocator.free(directory);
     context.store.deinit();
     allocator.destroy(context);
+}
+
+/// Sets the directory LOAD CSV reads files from (`path_len` 0: none, which
+/// turns LOAD CSV off, as it is after opening). RETURN_OK, or
+/// RETURN_STORAGE_ERROR when out of memory.
+pub export fn acmedb_set_import_directory(context: *Context, path_ptr: [*]const u8, path_len: usize) c_int {
+    const directory: ?[]u8 = if (path_len == 0) null else allocator.dupe(u8, path_ptr[0..path_len]) catch return RETURN_STORAGE_ERROR;
+    if (context.import_directory) |old| allocator.free(old);
+    context.import_directory = directory;
+    return RETURN_OK;
 }
 
 /// Returns the last error message (and its length), if the most recent
@@ -253,6 +267,7 @@ fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) 
     var executor = Executor.init(&ast, &context.graph, scratch.allocator());
     executor.diagnostic = &context.diagnostic;
     executor.parameters = parameters;
+    executor.import_directory = context.import_directory;
     const rows = executor.run(q) catch |err| {
         // A bare runtime error that didn't set a message gets a generic one.
         if (context.diagnostic.message().len == 0) noteError(&context.diagnostic, err);

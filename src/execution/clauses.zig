@@ -11,6 +11,7 @@ const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
 const Value = @import("../value.zig").Value;
 const expressions = @import("expressions.zig");
+const load_csv = @import("load_csv.zig");
 const pattern_matching = @import("pattern_matching.zig");
 const procedures = @import("procedures.zig");
 const projection = @import("projection.zig");
@@ -107,6 +108,7 @@ pub fn runSubquery(self: *Executor, query: Index, row: Bindings) ExecutionError!
                 break :matched next.items;
             },
             .unwind_clause => try runUnwind(self, clause, rows),
+            .load_csv_clause => try runLoadCsv(self, clause, rows),
             .with_clause, .return_clause => try projection.applyWith(self, clause, rows),
             .call_clause => try procedures.runCall(self, clause, rows, false),
             .call_subquery => try runCallSubquery(self, clause, rows),
@@ -168,6 +170,20 @@ fn runForeach(self: *Executor, clause: Index, input: []Bindings) ExecutionError!
         }
     }
     return input;
+}
+
+/// LOAD CSV: every input row, extended with each record of the file.
+pub fn runLoadCsv(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const variable_name = self.ast.data(clause).load_csv.variable_name;
+    var output = std.ArrayList(Bindings).empty;
+    for (input) |*row| {
+        for (try load_csv.records(self, clause, row)) |record| {
+            var extended = try copyRow(self, row.*);
+            try extended.put(self.allocator, variable_name, record);
+            try output.append(self.allocator, extended);
+        }
+    }
+    return output.items;
 }
 
 /// MERGE: for each input row, every match of the whole pattern (each one a

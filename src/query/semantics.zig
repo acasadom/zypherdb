@@ -667,6 +667,13 @@ const Checker = struct {
                     try self.use(self.ast.data(clause).unwind.variable_name, .any);
                     continue;
                 },
+                .load_csv_clause => {
+                    try self.checkExpressions(clause);
+                    const name = self.ast.data(clause).load_csv.variable_name;
+                    if (self.scope.kindOf(name) != null) return self.fail("LOAD CSV binds '{s}', which is already bound", .{name});
+                    try self.use(name, .value);
+                    continue;
+                },
                 .with_clause => {
                     try self.recordStar(children[0], false);
                     try self.checkWhere(children[children.len - 1]);

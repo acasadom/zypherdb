@@ -41,6 +41,7 @@ typedef struct acmedb_result acmedb_result;
 #define ACMEDB_ERROR_PARAMETER_MISSING 8
 #define ACMEDB_ERROR_ARITHMETIC 9
 #define ACMEDB_ERROR_CONSTRAINT_VIOLATION 10
+#define ACMEDB_ERROR_EXTERNAL_RESOURCE 11 /* LOAD CSV could not read its file */
 
 /* Cell types reported by acmedb_result_type and acmedb_result_list_item_type. */
 #define ACMEDB_TYPE_INT64 0
@@ -64,6 +65,8 @@ typedef struct acmedb_result acmedb_result;
 acmedb_context *acmedb_open(const char *path, size_t path_len);
 acmedb_context *acmedb_open_with_durability(const char *path, size_t path_len, int durability);
 int acmedb_sync(acmedb_context *context);
+/* The directory LOAD CSV reads from; path_len 0 turns LOAD CSV off (as after opening). */
+int acmedb_set_import_directory(acmedb_context *context, const char *path, size_t path_len);
 void acmedb_close(acmedb_context *context);
 const char *acmedb_last_error(acmedb_context *context, size_t *out_len);
 int acmedb_error_code(acmedb_context *context);

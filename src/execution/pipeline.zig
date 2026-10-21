@@ -31,6 +31,7 @@ const expressions = @import("expressions.zig");
 const pattern_matching = @import("pattern_matching.zig");
 const projection = @import("projection.zig");
 const procedures = @import("procedures.zig");
+const load_csv = @import("load_csv.zig");
 const Value = @import("../value.zig").Value;
 
 const Pipeline = @This();
@@ -44,6 +45,7 @@ rows_needed: ?usize,
 const Stage = union(enum) {
     match: struct { optional: bool },
     unwind,
+    load_csv,
     call,
     call_subquery,
     with_streaming: struct { info: projection.WithClauseParts, items: []const projection.WithItem },
@@ -66,6 +68,7 @@ pub fn run(executor: *Executor, query: Index) ExecutionError!void {
             .match_clause => .{ .match = .{ .optional = false } },
             .optional_match_clause => .{ .match = .{ .optional = true } },
             .unwind_clause => .unwind,
+            .load_csv_clause => .load_csv,
             .call_clause => .call,
             .call_subquery => .call_subquery,
             .with_clause => if (try projection.withStreams(executor, clause)) with: {
@@ -127,6 +130,15 @@ pub fn feed(self: *Pipeline, index: usize, row: *Bindings) ExecutionError!void {
                 const saved = row.mark();
                 defer row.restore(saved);
                 try row.put(executor.allocator, variable_name, item);
+                try self.feed(index + 1, row);
+            }
+        },
+        .load_csv => {
+            const variable_name = executor.ast.data(clause).load_csv.variable_name;
+            for (try load_csv.records(executor, clause, row)) |record| {
+                const saved = row.mark();
+                defer row.restore(saved);
+                try row.put(executor.allocator, variable_name, record);
                 try self.feed(index + 1, row);
             }
         },

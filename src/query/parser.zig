@@ -256,7 +256,7 @@ pub const Parser = struct {
         var after_update = false;
         var last_reads = false; // the last clause reads (it cannot end the query)
         while (!self.atSequenceEnd(sequence)) {
-            if (self.atKeyword("MATCH") or self.atKeyword("OPTIONAL") or self.atKeyword("UNWIND")) {
+            if (self.atKeyword("MATCH") or self.atKeyword("OPTIONAL") or self.atKeyword("UNWIND") or (self.atKeyword("LOAD") and self.atKeywordAhead(1, "CSV"))) {
                 if (after_update) {
                     self.fail("a WITH is needed between an updating clause and {s}", .{describeToken(self.peek())});
                     return error.UnexpectedToken;
@@ -265,6 +265,8 @@ pub const Parser = struct {
                     try self.parseMatchClause()
                 else if (self.atKeyword("OPTIONAL"))
                     try self.parseOptionalMatchClause()
+                else if (self.atKeyword("LOAD"))
+                    try self.parseLoadCsvClause()
                 else
                     try self.parseUnwindClause();
                 try clauses.append(self.ast.allocator, clause);
@@ -447,6 +449,27 @@ pub const Parser = struct {
         _ = self.advance(); // OPTIONAL
         try self.expectKeyword("MATCH");
         return self.parseMatchBody(.optional_match_clause);
+    }
+
+    /// `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR 't']`.
+    fn parseLoadCsvClause(self: *Parser) ParseError!Index {
+        _ = self.advance(); // LOAD
+        _ = self.advance(); // CSV
+        var with_headers = false;
+        if (self.atKeyword("WITH")) {
+            _ = self.advance();
+            try self.expectKeyword("HEADERS");
+            with_headers = true;
+        }
+        try self.expectKeyword("FROM");
+        const url = try expression_parser.parseExpression(self);
+        try self.expectKeyword("AS");
+        const variable_name = try self.internIdentifier();
+        const terminator = if (self.atKeyword("FIELDTERMINATOR")) terminator: {
+            _ = self.advance();
+            break :terminator try expression_parser.parseExpression(self);
+        } else try self.ast.addNode(.null_literal, .{ .none = {} }, &.{});
+        return self.ast.addNode(.load_csv_clause, .{ .load_csv = .{ .variable_name = variable_name, .with_headers = with_headers } }, &.{ url, terminator });
     }
 
     fn parseUnwindClause(self: *Parser) ParseError!Index {

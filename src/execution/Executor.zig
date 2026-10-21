@@ -56,6 +56,8 @@ pub const ExecutionError = StorageError || error{
     TypeMismatch,
     /// Internal: a streamed RETURN has every row it keeps (see `pipeline.zig`).
     LimitReached,
+    /// LOAD CSV could not read its file (load_csv.zig).
+    ExternalResourceFailed,
 };
 
 /// A projected row: one `Value` per RETURN item.
@@ -103,6 +105,8 @@ table_procedures: []const procedure_signatures.TableProcedure = &.{},
 /// Relationship uniqueness: the edges bound on the current search branch of
 /// the MATCH being run.
 used_edges: std.ArrayList(Relationship),
+/// The directory LOAD CSV reads from; null: LOAD CSV is off.
+import_directory: ?[]const u8 = null,
 /// The patterns of `=~` compiled in this query, by their text.
 regexes: std.StringHashMapUnmanaged(@import("../text/regex.zig").Regex) = .empty,
 /// How many matches have passed their MATCH's WHERE so far (a shortest-path
@@ -206,6 +210,7 @@ fn runClauses(self: *Executor, query: Index) ExecutionError!void {
             .match_clause => try clauses.runMatch(self, clause, rows, false),
             .optional_match_clause => try clauses.runMatch(self, clause, rows, true),
             .unwind_clause => try clauses.runUnwind(self, clause, rows),
+            .load_csv_clause => try clauses.runLoadCsv(self, clause, rows),
             .with_clause => try projection.applyWith(self, clause, rows),
             .call_clause => try procedures.runCall(self, clause, rows, position + 1 == query_clauses.len),
             .call_subquery => try clauses.runCallSubquery(self, clause, rows),

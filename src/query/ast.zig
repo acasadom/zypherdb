@@ -195,6 +195,10 @@ pub const NodeKind = enum {
     /// element, with x bound to it; data.text is x; children [list, query of
     /// the clauses]. What it binds stays inside it.
     foreach_clause,
+    /// `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR t]`: one row
+    /// per record of the file; data.load_csv; children [url, terminator (a
+    /// null literal when there is none)].
+    load_csv_clause,
     /// One `YIELD column [AS alias]`: data.yield_.
     yield_item,
     /// `CREATE FULLTEXT INDEX name FOR (n:L) ON EACH [n.p, ...] [OPTIONS {...}]`:
@@ -250,6 +254,7 @@ pub const Data = union(enum) {
     return_: struct { distinct: bool },
     with_: struct { distinct: bool },
     unwind: struct { variable_name: []const u8 },
+    load_csv: struct { variable_name: []const u8, with_headers: bool },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
     quantifier: struct { kind: QuantifierKind, variable_name: []const u8 },

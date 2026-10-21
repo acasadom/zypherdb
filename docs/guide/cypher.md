@@ -30,6 +30,7 @@ its own rows on; the first clause receives one empty row.
 | `MATCH pattern, … [WHERE condition]` | extends each row with every match of the patterns that passes the condition; comma-separated patterns are matched together |
 | `OPTIONAL MATCH …` | like `MATCH`, but keeps a row that has no match, with its new variables set to `null` (an outer join) |
 | `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
+| `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR ';']` | one row per record of a CSV file: a list of strings, or with headers a map from each header to its field; an empty field is `null`, a quoted one (`""`) the empty string. It reads only from the **import directory** the database was opened with (off without one): `file:///people.csv` is `people.csv` in it, and `..` or a symbolic link out of it is refused, as is any other scheme (`http`). Values are strings: convert them (`toInteger(row.card)`). A failure is error code 11 (`ExternalResourceError` in Python). `linenumber()` and `file()` are not supported |
 | `CALL procedure(arguments) [YIELD column [AS name], … \| *] [WHERE condition]` | runs a [procedure](#procedures) for each row; each row it returns extends the row with the yielded columns |
 | `FOREACH (x IN list \| clause …)` | runs the updating clauses (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`, `FOREACH`) once per element, with `x` bound to it; `null` has no element. The rows go on unchanged, and what the clauses bind stays inside |
 | `CALL { query }`, `CALL (a, b) { query }` | runs the subquery for each row, in turn (a row sees what the subquery wrote for the rows before it). It sees the row's variables only if it imports them: a first `WITH a, b` (or `WITH *`), which `CALL (a, b)` / `CALL (*)` write for you. Each row its `RETURN` returns extends the row with the returned columns, which must be named (`AS`) and new; a subquery without `RETURN` (one that writes) keeps the row once. `IN TRANSACTIONS` and `UNION` inside are not supported |
@@ -432,7 +433,7 @@ Results come best first.
 acmedb does not implement these parts of openCypher (and of common Neo4j extensions):
 
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
-  inside `CALL { … }`; `LOAD CSV`;
+  inside `CALL { … }`; `LOAD CSV` from URLs other than `file:` in the import directory;
 - constraints other than uniqueness on nodes (`IS NOT NULL`, `IS NODE KEY`, relationship
   constraints); indexes other than full-text change nothing (every property is already indexed).
 
