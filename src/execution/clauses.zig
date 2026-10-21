@@ -11,6 +11,8 @@ const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
 const expressions = @import("expressions.zig");
 const pattern_matching = @import("pattern_matching.zig");
+const procedures = @import("procedures.zig");
+const projection = @import("projection.zig");
 const writes = @import("writes.zig");
 
 /// True for the clauses that write to the graph.
@@ -78,15 +80,41 @@ pub fn nestedMatches(self: *Executor, patterns: []const Index, where_expression:
     return output.items;
 }
 
-/// The rows of a chain of MATCH clauses (as in `EXISTS { MATCH ... MATCH
-/// ... }`) starting from `row`.
-pub fn nestedMatchClauses(self: *Executor, match_clauses: []const Index, row: Bindings) ExecutionError![]Bindings {
+/// The rows of a read-only subquery (`EXISTS { ... }`) run from `row`: its
+/// clauses one after the other, each on every row the one before made, as
+/// `Executor.runClauses` runs a query. The state of the query being run
+/// around it is put back afterwards; each MATCH has its own relationship
+/// uniqueness.
+pub fn runSubquery(self: *Executor, query: Index, row: Bindings) ExecutionError![]Bindings {
+    const saved_overrides = self.expression_overrides;
+    defer self.expression_overrides = saved_overrides;
+    self.expression_overrides = null;
+
     var rows = try self.allocator.dupe(Bindings, &.{row});
-    for (match_clauses) |clause| {
-        const children = self.ast.nodeChildren(clause);
-        var next = std.ArrayList(Bindings).empty;
-        for (rows) |input| try next.appendSlice(self.allocator, try nestedMatches(self, children[0 .. children.len - 1], children[children.len - 1], input));
-        rows = next.items;
+    for (self.ast.nodeChildren(query)) |clause| {
+        rows = switch (self.ast.kind(clause)) {
+            .match_clause, .optional_match_clause => matched: {
+                const children = self.ast.nodeChildren(clause);
+                const patterns = children[0 .. children.len - 1];
+                var next = std.ArrayList(Bindings).empty;
+                for (rows) |input| {
+                    const matches = try nestedMatches(self, patterns, children[children.len - 1], input);
+                    try next.appendSlice(self.allocator, matches);
+                    if (matches.len == 0 and self.ast.kind(clause) == .optional_match_clause) {
+                        var unmatched = try copyRow(self, input);
+                        try bindNewVariablesToNull(self, patterns, &unmatched);
+                        try next.append(self.allocator, unmatched);
+                    }
+                }
+                break :matched next.items;
+            },
+            .unwind_clause => try runUnwind(self, clause, rows),
+            .with_clause, .return_clause => try projection.applyWith(self, clause, rows),
+            .call_clause => try procedures.runCall(self, clause, rows, false),
+            else => unreachable, // the parser keeps writing clauses out of subqueries
+        };
+        // No early end on no rows: a later aggregation without keys still
+        // makes one (`RETURN count(*)`).
     }
     return rows;
 }

@@ -78,15 +78,18 @@ pub const RowContext = struct {
 
 pub fn withClauseParts(self: *Executor, with_clause: Index) WithClauseParts {
     const children = self.ast.nodeChildren(with_clause);
+    // A subquery's RETURN makes rows as a WITH does, without a WHERE.
+    const is_return = self.ast.kind(with_clause) == .return_clause;
     var info = WithClauseParts{
         .projection = children[0],
         .order_by = null,
         .skip = null,
         .limit = null,
-        .where_expression = children[children.len - 1],
-        .distinct = self.ast.data(with_clause).with_.distinct,
+        .where_expression = if (is_return) Executor.no_where else children[children.len - 1],
+        .distinct = if (is_return) self.ast.data(with_clause).return_.distinct else self.ast.data(with_clause).with_.distinct,
+        .requires_aliases = !is_return,
     };
-    for (children[1 .. children.len - 1]) |child| {
+    for (children[1 .. if (is_return) children.len else children.len - 1]) |child| {
         switch (self.ast.kind(child)) {
             .order_by => info.order_by = child,
             .skip => info.skip = child,
@@ -100,9 +103,10 @@ pub fn withClauseParts(self: *Executor, with_clause: Index) WithClauseParts {
 /// Projects the collected bindings through the WITH clause (grouping +
 /// aggregation), then applies WHERE / DISTINCT / ORDER BY / SKIP / LIMIT,
 /// rebinding the result into fresh variable bindings for the next clauses.
+/// (Also a subquery's RETURN, whose rows are made the same way.)
 pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) ExecutionError![]Bindings {
     const info = withClauseParts(self, with_clause);
-    const items = try withItems(self, info.projection);
+    const items = try withItems(self, info);
     const projected = try self.projectedExpressions(info.projection);
 
     var keys = std.ArrayList(Index).empty;
@@ -147,7 +151,7 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
                 try row.put(self.allocator, item.name, value);
                 try values.append(self.allocator, value);
             }
-            if (!try expressions.evaluateBool(self, info.where_expression, &row)) continue;
+            if (info.where_expression != Executor.no_where and !try expressions.evaluateBool(self, info.where_expression, &row)) continue;
             const sort_key = try groupSortKey(self, info.order_by, projected, values.items, &row, aggregation_plan, key_values, states);
             try rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
         }
@@ -183,19 +187,20 @@ pub fn withRow(self: *Executor, info: WithClauseParts, items: []const WithItem, 
 pub fn withStreams(self: *Executor, with_clause: Index) ExecutionError!bool {
     const info = withClauseParts(self, with_clause);
     if (info.distinct or info.order_by != null or info.skip != null or info.limit != null) return false;
-    for (try withItems(self, info.projection)) |item| if (item.aggregating) return false;
+    for (try withItems(self, info)) |item| if (item.aggregating) return false;
     return true;
 }
 
 /// The WITH projection items: each binds `name` (its alias, or the variable it
 /// projects) to `expr`; an expression containing aggregates is computed per
-/// group.
-pub fn withItems(self: *Executor, projection: Index) ExecutionError![]const WithItem {
+/// group. (A subquery's RETURN may leave an expression unnamed: no clause
+/// reads its rows' names.)
+pub fn withItems(self: *Executor, info: WithClauseParts) ExecutionError![]const WithItem {
     var items = std.ArrayList(WithItem).empty;
-    for (self.ast.nodeChildren(projection)) |item| {
+    for (self.ast.nodeChildren(info.projection)) |item| {
         const expr = self.ast.nodeChildren(item)[0];
         const alias = self.ast.data(item).text;
-        const name = if (alias.len > 0) alias else if (self.ast.kind(expr) == .variable) self.ast.data(expr).text else {
+        const name = if (alias.len > 0) alias else if (self.ast.kind(expr) == .variable) self.ast.data(expr).text else if (!info.requires_aliases) "" else {
             self.fail(.invalid_expression, "WITH expression requires an alias", .{});
             return error.InvalidExpression;
         };
@@ -424,4 +429,7 @@ pub const WithClauseParts = struct {
     limit: ?Index,
     where_expression: Index,
     distinct: bool,
+    /// Every non-variable expression must have an alias (a WITH; not a
+    /// subquery's RETURN).
+    requires_aliases: bool,
 };

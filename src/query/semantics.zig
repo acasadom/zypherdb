@@ -32,7 +32,8 @@ pub const SemanticError = Allocator.Error || error{InvalidExpression};
 /// list's element), so any use of it is accepted here.
 const Kind = enum { node, relationship, path, value, any };
 
-const Star = struct { projection: Index, names: []const []const u8 };
+/// A `*` projection, the query it is in, and the variables it stands for.
+const Star = struct { query: Index, projection: Index, names: []const []const u8 };
 
 const Scope = struct {
     names: std.StringHashMapUnmanaged(Kind) = .empty,
@@ -67,8 +68,13 @@ const Checker = struct {
     /// Nesting depth of comprehensions and quantifiers being checked.
     iteration_depth: usize = 0,
     /// Variables local to the expression being checked: of comprehensions,
-    /// quantifiers, pattern comprehensions and EXISTS subqueries.
+    /// quantifiers and pattern comprehensions.
     local_names: std.ArrayList([]const u8) = .empty,
+    /// The query whose clauses are being checked (the top one, or a subquery).
+    current_query: Index = 0,
+    /// The subqueries met (`EXISTS { ... }`), whose clauses get the same
+    /// rewrites as the top query's.
+    subqueries: std.ArrayList(Index) = .empty,
 
     fn fail(self: *Checker, comptime fmt: []const u8, args: anytype) SemanticError {
         if (self.diagnostic) |d| d.set(.invalid_expression, 0, fmt, args);
@@ -172,7 +178,7 @@ const Checker = struct {
                 return std.mem.order(u8, a, b) == .lt;
             }
         }.lessThan);
-        try self.stars.append(self.allocator, .{ .projection = projection, .names = names.items });
+        try self.stars.append(self.allocator, .{ .query = self.current_query, .projection = projection, .names = names.items });
     }
 
     fn projectScope(self: *Checker, projection: Index) SemanticError!void {
@@ -217,15 +223,7 @@ const Checker = struct {
                 }
             },
             .pattern_comprehension => return self.checkWithLocals(&.{children[0]}, children),
-            .exists_subquery => {
-                var patterns = std.ArrayList(Index).empty;
-                defer patterns.deinit(self.allocator);
-                for (children) |clause| {
-                    const parts = self.ast.nodeChildren(clause);
-                    try patterns.appendSlice(self.allocator, parts[0 .. parts.len - 1]);
-                }
-                return self.checkWithLocals(patterns.items, children);
-            },
+            .exists_subquery => return self.checkSubquery(children[0]),
             .aggregate => {
                 if (self.iteration_depth > 0) return self.fail("an aggregate cannot be used inside a list comprehension or quantifier", .{});
                 // Aggregating values that change from call to call is meaningless.
@@ -548,10 +546,39 @@ const Checker = struct {
         }
     }
 
+    /// A subquery is checked as a query of its own that starts with the
+    /// variables in scope (the enclosing query's, and the local ones of the
+    /// expression it is in); what it binds stays inside it.
+    fn checkSubquery(self: *Checker, query: Index) SemanticError!void {
+        var inner = Scope{};
+        var entries = self.scope.names.iterator();
+        while (entries.next()) |entry| try inner.names.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        for (self.local_names.items) |name| try inner.names.put(self.allocator, name, .any);
+
+        const outer = self.scope;
+        const outer_locals = self.local_names;
+        const outer_query = self.current_query;
+        const outer_depth = self.iteration_depth;
+        self.scope = inner;
+        self.local_names = .empty;
+        self.iteration_depth = 0; // its own WITH may aggregate
+        defer {
+            self.iteration_depth = outer_depth;
+            self.scope.names.deinit(self.allocator);
+            self.local_names.deinit(self.allocator);
+            self.scope = outer;
+            self.local_names = outer_locals;
+            self.current_query = outer_query;
+        }
+        try self.subqueries.append(self.allocator, query);
+        try self.checkQuery(query);
+    }
+
     /// Clause by clause: declare what the clause binds, then check its
     /// expressions with those variables in scope (WITH and RETURN expressions
     /// see the scope before their projection).
     fn checkQuery(self: *Checker, query: Index) SemanticError!void {
+        self.current_query = query;
         const query_clauses = self.ast.nodeChildren(query);
         for (query_clauses, 0..) |clause, position| {
             const children = self.ast.nodeChildren(clause);
@@ -599,10 +626,14 @@ pub fn check(ast: *Ast, query: Index, allocator: Allocator, diagnostic: ?*Diagno
     defer checker.scope.names.deinit(allocator);
     defer checker.local_types.deinit(allocator);
     defer checker.stars.deinit(allocator);
+    defer checker.subqueries.deinit(allocator);
     try checker.checkQuery(query);
     // `*` becomes the variables it stands for, so execution sees plain items.
-    for (checker.stars.items) |star| try expandStar(ast, query, star);
+    for (checker.stars.items) |star| try expandStar(ast, star.query, star);
     for (ast.nodeChildren(query)) |clause| try nameProjectedInOrderBy(ast, clause);
+    for (checker.subqueries.items) |subquery| {
+        for (ast.nodeChildren(subquery)) |clause| try nameProjectedInOrderBy(ast, clause);
+    }
 }
 
 /// In the ORDER BY of a WITH or RETURN, each part that repeats a projected
@@ -656,6 +687,7 @@ fn expandStar(ast: *Ast, query: Index, star: Star) Allocator.Error!void {
 
 fn containsAggregate(ast: *const Ast, expression: Index) bool {
     if (ast.kind(expression) == .aggregate) return true;
+    if (ast.kind(expression) == .exists_subquery) return false; // its aggregates are its own
     for (ast.nodeChildren(expression)) |child| if (containsAggregate(ast, child)) return true;
     return false;
 }

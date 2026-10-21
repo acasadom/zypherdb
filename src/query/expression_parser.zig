@@ -217,28 +217,31 @@ fn parseFloatLiteral(self: *Parser, negative: bool) ParseError!Index {
     return self.ast.addNode(.float_literal, .{ .float = if (negative) -magnitude else magnitude }, &.{});
 }
 
-/// `EXISTS { pattern [WHERE predicate] }` or `EXISTS { MATCH ... [RETURN ...] }`:
-/// true if the patterns have a match for the current row. The patterns may
-/// introduce variables of their own; a RETURN is accepted and ignored (it
-/// cannot change whether there is a row).
+/// `EXISTS { pattern [WHERE predicate] }`, or `EXISTS { query }` with any
+/// clauses that only read (MATCH, OPTIONAL MATCH, UNWIND, WITH, CALL,
+/// RETURN): true if the subquery has a row for the current row. Its one
+/// child is a `query` node (the short form becomes one MATCH); the
+/// subquery sees the variables in scope and may introduce its own.
 fn parseExistsSubquery(self: *Parser) ParseError!Index {
     try self.expect(.left_brace);
-    var clauses = std.ArrayList(Index).empty;
-    defer clauses.deinit(self.ast.allocator);
-    if (self.atKeyword("MATCH")) {
-        while (self.atKeyword("MATCH")) {
-            _ = self.advance();
-            try clauses.append(self.ast.allocator, try self.parseMatchBody(.match_clause));
-        }
-        if (self.atKeyword("RETURN")) {
-            _ = self.advance();
-            _ = try self.parseReturnClause();
-        }
-    } else {
-        try clauses.append(self.ast.allocator, try self.parseMatchBody(.match_clause));
+    const query = if (atClauseKeyword(self))
+        try self.parseClauses(.read_subquery)
+    else
+        try self.ast.addNode(.query, .{ .none = {} }, &.{try self.parseMatchBody(.match_clause)});
+    if (self.ast.nodeChildren(query).len == 0) {
+        self.fail("EXISTS needs a pattern or a query between its braces", .{});
+        return error.UnexpectedToken;
     }
     try self.expect(.right_brace);
-    return self.ast.addNode(.exists_subquery, .{ .none = {} }, clauses.items);
+    return self.ast.addNode(.exists_subquery, .{ .none = {} }, &.{query});
+}
+
+/// True if a clause starts here (not a bare pattern).
+fn atClauseKeyword(self: *const Parser) bool {
+    for ([_][]const u8{ "MATCH", "OPTIONAL", "UNWIND", "WITH", "CALL", "RETURN", "CREATE", "MERGE", "SET", "DELETE", "DETACH", "REMOVE", "FOREACH" }) |keyword| {
+        if (self.atKeyword(keyword)) return true;
+    }
+    return false;
 }
 
 /// `[p = (a)-->(b) WHERE predicate | projection]`: the projection for each

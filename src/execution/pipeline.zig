@@ -68,7 +68,7 @@ pub fn run(executor: *Executor, query: Index) ExecutionError!void {
             .call_clause => .call,
             .with_clause => if (try projection.withStreams(executor, clause)) with: {
                 const info = projection.withClauseParts(executor, clause);
-                break :with .{ .with_streaming = .{ .info = info, .items = try projection.withItems(executor, info.projection) } };
+                break :with .{ .with_streaming = .{ .info = info, .items = try projection.withItems(executor, info) } };
             } else .{ .with_collecting = .empty },
             .return_clause => ret: {
                 const info = try projection.beginReturn(executor, clause);

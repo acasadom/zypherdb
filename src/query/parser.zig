@@ -237,12 +237,23 @@ pub const Parser = struct {
     }
 
     fn parseQuery(self: *Parser) ParseError!Index {
+        return self.parseClauses(.query);
+    }
+
+    /// Where a sequence of clauses is: a whole query (ends at the end of the
+    /// input or at UNION, with RETURN or an updating clause), or a read-only
+    /// subquery (`EXISTS { ... }`: ends at `}`, with any clause but an
+    /// updating one).
+    pub const ClauseSequence = enum { query, read_subquery };
+
+    /// A sequence of clauses, as a `query` node.
+    pub fn parseClauses(self: *Parser, sequence: ClauseSequence) ParseError!Index {
         var clauses = std.ArrayList(Index).empty;
         defer clauses.deinit(self.ast.allocator);
 
         var after_update = false;
         var last_reads = false; // the last clause reads (it cannot end the query)
-        while (self.peek().kind != .end_of_input and !self.atKeyword("UNION")) {
+        while (!self.atSequenceEnd(sequence)) {
             if (self.atKeyword("MATCH") or self.atKeyword("OPTIONAL") or self.atKeyword("UNWIND")) {
                 if (after_update) {
                     self.fail("a WITH is needed between an updating clause and {s}", .{describeToken(self.peek())});
@@ -273,11 +284,14 @@ pub const Parser = struct {
             } else if (self.atKeyword("RETURN")) {
                 _ = self.advance();
                 try clauses.append(self.ast.allocator, try self.parseReturnClause());
-                if (self.peek().kind != .end_of_input and !self.atKeyword("UNION")) {
+                if (!self.atSequenceEnd(sequence)) {
                     self.fail("RETURN must be the last clause, found {s} after it", .{describeToken(self.peek())});
                     return error.UnexpectedToken;
                 }
                 last_reads = false;
+            } else if (sequence == .read_subquery and self.atUpdatingClause()) {
+                self.fail("{s} cannot be used in a subquery that only reads (InvalidClauseComposition)", .{describeToken(self.peek())});
+                return error.UnexpectedToken;
             } else if (try self.parseUpdatingClause()) |clause| {
                 try clauses.append(self.ast.allocator, clause);
                 after_update = true;
@@ -291,11 +305,25 @@ pub const Parser = struct {
             self.fail("expected a clause (MATCH, CREATE, RETURN, ...)", .{});
             return error.UnexpectedToken;
         }
-        if (last_reads) {
+        if (last_reads and sequence == .query) {
             self.fail("a query must end with RETURN or an updating clause", .{});
             return error.UnexpectedToken;
         }
         return self.ast.addNode(.query, .{ .none = {} }, clauses.items);
+    }
+
+    fn atSequenceEnd(self: *const Parser, sequence: ClauseSequence) bool {
+        return switch (sequence) {
+            .query => self.peek().kind == .end_of_input or self.atKeyword("UNION"),
+            .read_subquery => self.at(.right_brace) or self.peek().kind == .end_of_input,
+        };
+    }
+
+    fn atUpdatingClause(self: *const Parser) bool {
+        for ([_][]const u8{ "CREATE", "MERGE", "SET", "DELETE", "DETACH", "REMOVE", "FOREACH" }) |keyword| {
+            if (self.atKeyword(keyword)) return true;
+        }
+        return false;
     }
 
     /// CREATE, MERGE, SET, DELETE, DETACH DELETE or REMOVE; null if the next

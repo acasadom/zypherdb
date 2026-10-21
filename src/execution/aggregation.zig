@@ -31,6 +31,7 @@ pub const AggregationPlan = struct {
 /// True if `expr` contains an aggregate call anywhere.
 pub fn containsAggregate(self: *const Executor, expr: Index) bool {
     if (self.ast.kind(expr) == .aggregate) return true;
+    if (self.ast.kind(expr) == .exists_subquery) return false; // its aggregates are its own
     for (self.ast.nodeChildren(expr)) |child| {
         if (containsAggregate(self, child)) return true;
     }
@@ -66,6 +67,7 @@ fn collectAggregates(self: *Executor, expr: Index, aggregates: *std.ArrayList(In
         try kinds.append(self.allocator, self.ast.data(expr).aggregate);
         return;
     }
+    if (self.ast.kind(expr) == .exists_subquery) return;
     for (self.ast.nodeChildren(expr)) |child| try collectAggregates(self, child, aggregates, kinds);
 }
 

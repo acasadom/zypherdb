@@ -143,7 +143,7 @@ pub const NodeKind = enum {
     function_call, // `name(args...)`; data.text is the name as written, children the arguments
     pattern_predicate, // `(a)-->(b)` in a WHERE: children [pattern, true literal]
     pattern_comprehension, // `[p = (a)-->(b) WHERE w | e]`: children [pattern, w, e]
-    exists_subquery, // `EXISTS { ... }`: children are match clauses
+    exists_subquery, // `EXISTS { ... }`: one child, the subquery (a `query` node)
     case_expression, // children [condition, result]..., optional else
     simple_case_expression, // children [subject, (value, result)..., optional else]
     binary_operation,

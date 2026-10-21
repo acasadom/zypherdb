@@ -1524,6 +1524,7 @@ expressions/existentialSubqueries/ExistentialSubquery1.feature: [2] Simple subqu
 expressions/existentialSubqueries/ExistentialSubquery1.feature: [3] Simple subquery without WHERE clause, not existing pattern
 expressions/existentialSubqueries/ExistentialSubquery1.feature: [4] Simple subquery with WHERE clause, not existing pattern
 expressions/existentialSubqueries/ExistentialSubquery2.feature: [1] Full existential subquery
+expressions/existentialSubqueries/ExistentialSubquery2.feature: [2] Full existential subquery with aggregation
 expressions/existentialSubqueries/ExistentialSubquery2.feature: [3] Full existential subquery with update clause should fail
 expressions/existentialSubqueries/ExistentialSubquery3.feature: [1] Nested simple existential subquery
 expressions/existentialSubqueries/ExistentialSubquery3.feature: [2] Nested full existential subquery

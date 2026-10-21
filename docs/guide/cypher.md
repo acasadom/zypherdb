@@ -155,7 +155,7 @@ The literals are:
 | `any`, `all`, `none`, `single(x IN list WHERE cond)` | quantifiers, three-valued when `null` is involved |
 | `[path = (a)-->(b) WHERE cond \| expr]` | pattern comprehension: `expr` for each match of the pattern |
 | `(a)-[:T]->(b)` in a `WHERE` | pattern predicate: true if the pattern has a match; it cannot bind new variables |
-| `EXISTS { pattern [WHERE cond] }`, `EXISTS { MATCH … [RETURN …] }` | true if the pattern has a match; variables it introduces stay inside it |
+| `EXISTS { pattern [WHERE cond] }`, `EXISTS { query }` | true if the pattern has a match, or the subquery a row. The subquery is any query that only reads (`MATCH`, `OPTIONAL MATCH`, `UNWIND`, `WITH`, `CALL`, `RETURN`), run from the current row: it sees the variables in scope, and what it binds or aggregates stays inside it. A `RETURN count(*)` always has a row |
 | `$name` | a parameter |
 
 ## Functions
@@ -396,7 +396,7 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
 - `CALL { … }` subqueries and procedures other than those [listed](#procedures); `LOAD CSV` and
   `FOREACH`;
 - `shortestPath` and `allShortestPaths`;
-- `COUNT { … }` subqueries, and `WITH` inside `EXISTS { … }`; use `size([(a)-->(b) | b])` instead;
+- `COUNT { … }` subqueries; use `size([(a)-->(b) | b])` instead;
 - the regular-expression operator `=~`;
 - the function `exists(n.property)`; use `n.property IS NOT NULL` instead;
 - schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
