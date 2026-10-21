@@ -1,7 +1,7 @@
 const std = @import("std");
 
 /// The storage engines acmedb can be built with (src/storage/engine/).
-const StorageEngine = enum { lmdb };
+const StorageEngine = enum { lmdb, mdbx };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -26,6 +26,20 @@ pub fn build(b: *std.Build) void {
             acmedb.addCSourceFiles(.{
                 .files = &.{ "vendor/lmdb/mdb.c", "vendor/lmdb/midl.c" },
                 .flags = &.{"-O2"},
+            });
+        },
+        .mdbx => {
+            acmedb.addIncludePath(b.path("vendor/libmdbx"));
+            // Only for Linux targets: see the shim's comment.
+            if (target.result.os.tag == .linux) acmedb.addIncludePath(b.path("vendor/shims"));
+            // A fixed timestamp keeps builds reproducible (libmdbx would
+            // record __DATE__ and __TIME__). Debug builds keep libmdbx's
+            // cheap checks, and drop the alignment sanitizer: libmdbx reads
+            // and writes unaligned words on purpose where the CPU allows it.
+            const common = .{ "-O2", "-DNDEBUG", "-DMDBX_BUILD_SHARED_LIBRARY=0", "-DMDBX_BUILD_TIMESTAMP=\"unknown\"", "-DMDBX_BUILD_FLAGS=\"acmedb\"" };
+            acmedb.addCSourceFiles(.{
+                .files = &.{"vendor/libmdbx/mdbx.c"},
+                .flags = if (optimize == .debug) &(common ++ .{ "-DMDBX_CHECKING=1", "-fno-sanitize=alignment" }) else &common,
             });
         },
     }
