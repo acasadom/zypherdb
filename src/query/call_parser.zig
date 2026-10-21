@@ -12,11 +12,7 @@ const ParseError = @import("parser.zig").ParseError;
 const expression_parser = @import("expression_parser.zig");
 
 pub fn parseCallClause(self: *Parser) ParseError!Index {
-    _ = self.advance(); // CALL
-    if (self.at(.left_brace)) {
-        self.fail("CALL subqueries (CALL {{ ... }}) are not supported", .{});
-        return error.UnexpectedToken;
-    }
+    _ = self.advance(); // CALL (a `CALL {` is a subquery: Parser.parseCallSubquery)
     const procedure = try parseProcedureName(self);
 
     var children = std.ArrayList(Index).empty;

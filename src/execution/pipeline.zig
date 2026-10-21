@@ -45,6 +45,7 @@ const Stage = union(enum) {
     match: struct { optional: bool },
     unwind,
     call,
+    call_subquery,
     with_streaming: struct { info: projection.WithClauseParts, items: []const projection.WithItem },
     with_collecting: std.ArrayList(Bindings),
     return_: projection.ReturnClauseParts,
@@ -66,6 +67,7 @@ pub fn run(executor: *Executor, query: Index) ExecutionError!void {
             .optional_match_clause => .{ .match = .{ .optional = true } },
             .unwind_clause => .unwind,
             .call_clause => .call,
+            .call_subquery => .call_subquery,
             .with_clause => if (try projection.withStreams(executor, clause)) with: {
                 const info = projection.withClauseParts(executor, clause);
                 break :with .{ .with_streaming = .{ .info = info, .items = try projection.withItems(executor, info) } };
@@ -145,6 +147,10 @@ pub fn feed(self: *Pipeline, index: usize, row: *Bindings) ExecutionError!void {
             };
             var next = Next{ .pipeline = self, .index = index + 1 };
             try procedures.callRow(executor, clause, row, index + 1 == self.query_clauses.len, .{ .context = &next, .extended = Next.extended, .result = Next.result });
+        },
+        .call_subquery => {
+            var input = [_]Bindings{row.*};
+            for (try clauses.runCallSubquery(executor, clause, &input)) |*extended| try self.feed(index + 1, extended);
         },
         .with_streaming => |with| {
             var projected = try projection.withRow(executor, with.info, with.items, row) orelse return;

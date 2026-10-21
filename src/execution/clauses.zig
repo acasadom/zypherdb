@@ -17,10 +17,7 @@ const writes = @import("writes.zig");
 
 /// True for the clauses that write to the graph.
 pub fn isWrite(kind: NodeKind) bool {
-    return switch (kind) {
-        .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause => true,
-        else => false,
-    };
+    return @import("../query/ast.zig").isUpdatingClause(kind);
 }
 
 /// A copy of a row whose entries the next clause may extend independently.
@@ -80,7 +77,7 @@ pub fn nestedMatches(self: *Executor, patterns: []const Index, where_expression:
     return output.items;
 }
 
-/// The rows of a read-only subquery (`EXISTS { ... }`) run from `row`: its
+/// The rows of a subquery (`EXISTS { ... }`, `CALL { ... }`) run from `row`: its
 /// clauses one after the other, each on every row the one before made, as
 /// `Executor.runClauses` runs a query. The state of the query being run
 /// around it is put back afterwards; each MATCH has its own relationship
@@ -111,12 +108,40 @@ pub fn runSubquery(self: *Executor, query: Index, row: Bindings) ExecutionError!
             .unwind_clause => try runUnwind(self, clause, rows),
             .with_clause, .return_clause => try projection.applyWith(self, clause, rows),
             .call_clause => try procedures.runCall(self, clause, rows, false),
-            else => unreachable, // the parser keeps writing clauses out of subqueries
+            .call_subquery => try runCallSubquery(self, clause, rows),
+            else => try runWrite(self, clause, rows), // a CALL { }'s (the parser keeps them out of EXISTS)
         };
         // No early end on no rows: a later aggregation without keys still
         // makes one (`RETURN count(*)`).
     }
     return rows;
+}
+
+/// `CALL { }`: its subquery run for each input row in turn (so a row sees
+/// what the subquery wrote for the rows before it), from that row if the
+/// subquery imports variables, else from an empty one. With a RETURN, each
+/// row it returns extends the input row; without, the input row goes on
+/// once.
+pub fn runCallSubquery(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const query = self.ast.nodeChildren(clause)[0];
+    const body = self.ast.nodeChildren(query);
+    const imports = self.ast.importsVariables(query);
+    const returns = self.ast.kind(body[body.len - 1]) == .return_clause;
+    var output = std.ArrayList(Bindings).empty;
+    for (input) |row| {
+        const start = if (imports) row else Bindings{ .entries = .empty };
+        const results = try runSubquery(self, query, start);
+        if (!returns) {
+            try output.append(self.allocator, try copyRow(self, row));
+            continue;
+        }
+        for (results) |result| {
+            var extended = try copyRow(self, row);
+            for (result.entries.items) |entry| try extended.put(self.allocator, entry.name, entry.value);
+            try output.append(self.allocator, extended);
+        }
+    }
+    return output.items;
 }
 
 /// MERGE: for each input row, every match of the whole pattern (each one a

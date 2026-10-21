@@ -575,6 +575,44 @@ const Checker = struct {
         try self.checkQuery(query);
     }
 
+    /// A `CALL { }`: its subquery starts with the outer variables only if it
+    /// imports them (a leading `WITH a, b`), else with none. Its RETURN's
+    /// columns, which must be named and new, join the outer scope.
+    fn checkCallSubquery(self: *Checker, query: Index) SemanticError!void {
+        var inner = Scope{};
+        if (self.ast.importsVariables(query)) {
+            var entries = self.scope.names.iterator();
+            while (entries.next()) |entry| try inner.names.put(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        const outer_query = self.current_query;
+        const outer = self.scope;
+        self.scope = inner;
+        defer self.current_query = outer_query;
+        errdefer {
+            self.scope.names.deinit(self.allocator);
+            self.scope = outer;
+        }
+        try self.subqueries.append(self.allocator, query);
+        try self.checkQuery(query);
+
+        const body = self.ast.nodeChildren(query);
+        const last = body[body.len - 1];
+        var returned = std.ArrayList(struct { name: []const u8, kind: Kind }).empty;
+        defer returned.deinit(self.allocator);
+        if (self.ast.kind(last) == .return_clause) {
+            for (self.ast.nodeChildren(self.ast.nodeChildren(last)[0])) |item| {
+                const name = columnName(self.ast, item) orelse return self.fail("an expression returned by CALL {{ }} needs an alias (AS name)", .{});
+                if (outer.kindOf(name) != null) return self.fail("CALL {{ }} returns '{s}', which is already bound", .{name});
+                const expression = self.ast.nodeChildren(item)[0];
+                const kind: Kind = if (self.ast.kind(expression) == .variable) self.scope.kindOf(self.ast.data(expression).text) orelse .any else .any;
+                try returned.append(self.allocator, .{ .name = name, .kind = kind });
+            }
+        }
+        self.scope.names.deinit(self.allocator);
+        self.scope = outer;
+        for (returned.items) |column| try self.scope.names.put(self.allocator, column.name, column.kind);
+    }
+
     /// Clause by clause: declare what the clause binds, then check its
     /// expressions with those variables in scope (WITH and RETURN expressions
     /// see the scope before their projection).
@@ -585,6 +623,10 @@ const Checker = struct {
             const children = self.ast.nodeChildren(clause);
             switch (self.ast.kind(clause)) {
                 .delete_clause => for (children) |item| try self.checkDeleted(self.ast.nodeChildren(item)[0]),
+                .call_subquery => {
+                    try self.checkCallSubquery(children[0]);
+                    continue;
+                },
                 .call_clause => {
                     try self.checkCall(clause, position + 1 == query_clauses.len);
                     try self.checkExpressions(clause);

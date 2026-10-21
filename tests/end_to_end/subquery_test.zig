@@ -149,3 +149,69 @@ test "COUNT counts the rows of a pattern or a read-only subquery" {
         \\MATCH (p:Person) RETURN COUNT { (p)-->() } AS groups, count(*) AS people ORDER BY groups
     , &.{ &.{ int(0), int(1) }, &.{ int(1), int(1) }, &.{ int(2), int(1) } });
 }
+
+test "CALL { } runs a subquery per row: imports, returned columns, writes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try createGroups(&ast, &g);
+
+    const int = struct {
+        fn of(n: i64) Value {
+            return .{ .int = n };
+        }
+    }.of;
+    // An importing WITH brings the row's variables in; RETURN's columns
+    // extend the row, one row per returned row (none: the row is gone).
+    try expectQuery(&ast, &g,
+        \\MATCH (p:Person)
+        \\CALL { WITH p MATCH (p)-[:MEMBER_OF]->(g) RETURN g.name AS group }
+        \\RETURN p.name, group ORDER BY p.name, group
+    , &.{ &.{ string("Ana"), string("engineering") }, &.{ string("Ana"), string("security") }, &.{ string("Bo"), string("visitors") } });
+    // An aggregate per row, and the scope form CALL (p) { ... }.
+    try expectQuery(&ast, &g,
+        \\MATCH (p:Person)
+        \\CALL (p) { MATCH (p)-[:MEMBER_OF]->(g) RETURN count(g) AS groups }
+        \\RETURN p.name, groups ORDER BY p.name
+    , &.{ &.{ string("Ana"), int(2) }, &.{ string("Bo"), int(1) }, &.{ string("Cy"), int(0) } });
+    // Without an import it sees nothing from outside: it runs on its own,
+    // once per row.
+    try expectQuery(&ast, &g,
+        \\UNWIND [1, 2] AS i
+        \\CALL { MATCH (z:Zone) RETURN z.name AS zone }
+        \\RETURN i, zone
+    , &.{ &.{ int(1), string("floor 3") }, &.{ int(2), string("floor 3") } });
+    // Its `p` is not the outer one: 3 people × the 4 relationships.
+    try expectQuery(&ast, &g, "MATCH (p:Person) CALL { MATCH (p)-->(g) RETURN g AS x } RETURN count(x)", &.{&.{int(12)}});
+    // A subquery without RETURN writes, and the row goes on once; each row
+    // sees what the rows before it wrote.
+    try expectQuery(&ast, &g,
+        \\MATCH (p:Person)
+        \\CALL { WITH p CREATE (:Badge {owner: p.name}) }
+        \\RETURN count(*) AS people
+    , &.{&.{int(3)}});
+    try expectQuery(&ast, &g, "MATCH (b:Badge) RETURN count(b)", &.{&.{int(3)}});
+    try expectQuery(&ast, &g,
+        \\UNWIND [1, 2, 3] AS i
+        \\CALL { MATCH (b:Badge) WITH count(b) AS badges CREATE (:Badge {owner: 'extra', seen: badges}) }
+        \\WITH i MATCH (b:Badge {owner: 'extra'}) RETURN b.seen ORDER BY b.seen
+    , &.{ &.{int(3)}, &.{int(4)}, &.{int(5)}, &.{int(3)}, &.{int(4)}, &.{int(5)}, &.{int(3)}, &.{int(4)}, &.{int(5)} });
+    // A query may end with a CALL that writes.
+    try expectQuery(&ast, &g, "MATCH (b:Badge {owner: 'extra'}) CALL { WITH b DETACH DELETE b }", &.{});
+    try expectQuery(&ast, &g, "MATCH (b:Badge {owner: 'extra'}) RETURN count(b)", &.{&.{int(0)}});
+
+    // What cannot be right fails before it runs.
+    const invalid = [_][]const u8{
+        "MATCH (p:Person) CALL { WITH p RETURN p } RETURN p", // p is already bound
+        "CALL { MATCH (n) RETURN n.name } RETURN 1", // a returned expression needs an alias
+        "CALL { MATCH (n) RETURN n AS m } RETURN n", // n stays inside
+    };
+    for (invalid) |query| try expectQueryError(&ast, &g, query, error.InvalidExpression);
+    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "CALL { MATCH (n) } RETURN 1", null));
+    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "MATCH (n) WHERE EXISTS { CALL { CREATE (x) } } RETURN n", null));
+}

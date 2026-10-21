@@ -165,9 +165,7 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     self.statement_time = null;
 
     const has_writes = writes: for (queries) |query| {
-        for (self.ast.nodeChildren(query)) |clause| {
-            if (clauses.isWrite(self.ast.kind(clause))) break :writes true;
-        }
+        if (self.ast.queryWrites(query)) break :writes true;
     } else false;
     if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
     errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
@@ -201,6 +199,7 @@ fn runClauses(self: *Executor, query: Index) ExecutionError!void {
             .unwind_clause => try clauses.runUnwind(self, clause, rows),
             .with_clause => try projection.applyWith(self, clause, rows),
             .call_clause => try procedures.runCall(self, clause, rows, position + 1 == query_clauses.len),
+            .call_subquery => try clauses.runCallSubquery(self, clause, rows),
             .return_clause => {
                 try projection.applyReturn(self, clause, rows);
                 break;

@@ -184,6 +184,12 @@ pub const NodeKind = enum {
     /// arguments, then the `yield_item`s, then the WHERE (a `true` literal
     /// when there is none).
     call_clause,
+    /// `CALL { ... }` (or `CALL (a, b) { ... }`, which becomes a leading
+    /// `WITH a, b`): runs the subquery for each row; one child, the subquery
+    /// (a `query` node). It sees the outer variables only through an
+    /// importing WITH (`importsVariables`); its RETURN's columns extend the
+    /// row, and without a RETURN the row goes on as it was.
+    call_subquery,
     /// One `YIELD column [AS alias]`: data.yield_.
     yield_item,
     /// `CREATE FULLTEXT INDEX name FOR (n:L) ON EACH [n.p, ...] [OPTIONS {...}]`:
@@ -199,6 +205,15 @@ pub const NodeKind = enum {
 /// `COUNT { ... }`): what is inside them, aggregates included, is theirs.
 pub fn isSubquery(kind: NodeKind) bool {
     return kind == .exists_subquery or kind == .count_subquery;
+}
+
+/// True for the clauses that write to the graph (a `CALL { }` that writes is
+/// found by `queryWrites`).
+pub fn isUpdatingClause(kind: NodeKind) bool {
+    return switch (kind) {
+        .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause => true,
+        else => false,
+    };
 }
 
 /// Node payload. The active variant is determined by the node's `kind`; kinds
@@ -338,6 +353,36 @@ pub const Ast = struct {
         for (self.children.items[n.first_child .. n.first_child + n.child_count]) |*child| {
             if (child.* == old) child.* = new;
         }
+    }
+
+    /// True if a clause of `query`, or of a `CALL { }` in it, writes.
+    pub fn queryWrites(self: *const Ast, query: Index) bool {
+        for (self.nodeChildren(query)) |clause| {
+            if (isUpdatingClause(self.kind(clause))) return true;
+            if (self.kind(clause) == .call_subquery and self.queryWrites(self.nodeChildren(clause)[0])) return true;
+        }
+        return false;
+    }
+
+    /// True if subquery `query` starts with an importing WITH: one that only
+    /// names variables (`WITH a, b` or `WITH *`), which brings them in from
+    /// the enclosing query. A `CALL { }` without one sees no outer variable.
+    pub fn importsVariables(self: *const Ast, query: Index) bool {
+        const clauses = self.nodeChildren(query);
+        if (clauses.len == 0 or self.kind(clauses[0]) != .with_clause) return false;
+        const with = clauses[0];
+        if (self.data(with).with_.distinct) return false;
+        const parts = self.nodeChildren(with);
+        if (parts.len != 2) return false; // an ORDER BY, SKIP or LIMIT
+        const where = parts[1];
+        if (self.kind(where) != .boolean_literal or !self.data(where).boolean) return false;
+        for (self.nodeChildren(parts[0])) |item| {
+            const expression = self.nodeChildren(item)[0];
+            if (self.kind(expression) != .variable) return false;
+            const alias = self.data(item).text;
+            if (alias.len > 0 and !std.mem.eql(u8, alias, self.data(expression).text)) return false;
+        }
+        return true;
     }
 
     pub fn nodeChildren(self: *const Ast, index: Index) []const Index {

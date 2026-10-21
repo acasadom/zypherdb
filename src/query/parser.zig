@@ -241,10 +241,11 @@ pub const Parser = struct {
     }
 
     /// Where a sequence of clauses is: a whole query (ends at the end of the
-    /// input or at UNION, with RETURN or an updating clause), or a read-only
+    /// input or at UNION, with RETURN or an updating clause), a read-only
     /// subquery (`EXISTS { ... }`: ends at `}`, with any clause but an
-    /// updating one).
-    pub const ClauseSequence = enum { query, read_subquery };
+    /// updating one), or a `CALL { ... }` subquery (ends at `}`, like a
+    /// whole query otherwise).
+    pub const ClauseSequence = enum { query, read_subquery, call_subquery };
 
     /// A sequence of clauses, as a `query` node.
     pub fn parseClauses(self: *Parser, sequence: ClauseSequence) ParseError!Index {
@@ -267,6 +268,19 @@ pub const Parser = struct {
                     try self.parseUnwindClause();
                 try clauses.append(self.ast.allocator, clause);
                 last_reads = true;
+            } else if (self.atKeyword("CALL") and (self.peekAhead(1).kind == .left_brace or self.peekAhead(1).kind == .left_paren)) {
+                const clause = try self.parseCallSubquery();
+                const subquery = self.ast.nodeChildren(clause)[0];
+                if (sequence == .read_subquery and self.ast.queryWrites(subquery)) {
+                    self.fail("a CALL {{ }} that writes cannot be used in a subquery that only reads (InvalidClauseComposition)", .{});
+                    return error.UnexpectedToken;
+                }
+                try clauses.append(self.ast.allocator, clause);
+                // Its RETURN's columns are for the clauses after it; one
+                // without RETURN (it writes) may end the query.
+                const body = self.ast.nodeChildren(subquery);
+                last_reads = self.ast.kind(body[body.len - 1]) == .return_clause;
+                after_update = false;
             } else if (self.atKeyword("CALL")) {
                 if (after_update) {
                     self.fail("a WITH is needed between an updating clause and CALL", .{});
@@ -305,8 +319,8 @@ pub const Parser = struct {
             self.fail("expected a clause (MATCH, CREATE, RETURN, ...)", .{});
             return error.UnexpectedToken;
         }
-        if (last_reads and sequence == .query) {
-            self.fail("a query must end with RETURN or an updating clause", .{});
+        if (last_reads and sequence != .read_subquery) {
+            self.fail("{s} must end with RETURN or an updating clause", .{if (sequence == .query) "a query" else "a CALL { } subquery"});
             return error.UnexpectedToken;
         }
         return self.ast.addNode(.query, .{ .none = {} }, clauses.items);
@@ -315,8 +329,53 @@ pub const Parser = struct {
     fn atSequenceEnd(self: *const Parser, sequence: ClauseSequence) bool {
         return switch (sequence) {
             .query => self.peek().kind == .end_of_input or self.atKeyword("UNION"),
-            .read_subquery => self.at(.right_brace) or self.peek().kind == .end_of_input,
+            .read_subquery, .call_subquery => self.at(.right_brace) or self.peek().kind == .end_of_input,
         };
+    }
+
+    /// `CALL { query }`, or `CALL (a, b) { query }` / `CALL (*) { ... }` /
+    /// `CALL () { ... }`, whose variables become a leading importing
+    /// `WITH a, b` (or `WITH *`; nothing for `()`).
+    fn parseCallSubquery(self: *Parser) ParseError!Index {
+        _ = self.advance(); // CALL
+        var imports: ?Index = null;
+        if (self.at(.left_paren)) {
+            _ = self.advance();
+            var items = std.ArrayList(Index).empty;
+            defer items.deinit(self.ast.allocator);
+            var star = false;
+            if (self.at(.star)) {
+                _ = self.advance();
+                star = true;
+            } else while (!self.at(.right_paren)) {
+                const name = try self.internIdentifier();
+                const variable = try self.ast.addNode(.variable, .{ .text = name }, &.{});
+                try items.append(self.ast.allocator, try self.ast.addNode(.projection_item, .{ .text = "" }, &.{variable}));
+                if (!self.at(.comma)) break;
+                _ = self.advance();
+            }
+            try self.expect(.right_paren);
+            if (star or items.items.len > 0) {
+                const projection = try self.ast.addNode(.projection, .{ .boolean = star }, items.items);
+                const where = try self.ast.addNode(.boolean_literal, .{ .boolean = true }, &.{});
+                imports = try self.ast.addNode(.with_clause, .{ .with_ = .{ .distinct = false } }, &.{ projection, where });
+            }
+        }
+        try self.expect(.left_brace);
+        const body = try self.parseClauses(.call_subquery);
+        try self.expect(.right_brace);
+        if (self.atKeyword("IN")) {
+            self.fail("CALL {{ ... }} IN TRANSACTIONS is not supported", .{});
+            return error.UnexpectedToken;
+        }
+        const query = if (imports) |with| query: {
+            var clauses = std.ArrayList(Index).empty;
+            defer clauses.deinit(self.ast.allocator);
+            try clauses.append(self.ast.allocator, with);
+            try clauses.appendSlice(self.ast.allocator, self.ast.nodeChildren(body));
+            break :query try self.ast.addNode(.query, .{ .none = {} }, clauses.items);
+        } else body;
+        return self.ast.addNode(.call_subquery, .{ .none = {} }, &.{query});
     }
 
     fn atUpdatingClause(self: *const Parser) bool {

@@ -31,6 +31,7 @@ its own rows on; the first clause receives one empty row.
 | `OPTIONAL MATCH …` | like `MATCH`, but keeps a row that has no match, with its new variables set to `null` (an outer join) |
 | `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
 | `CALL procedure(arguments) [YIELD column [AS name], … \| *] [WHERE condition]` | runs a [procedure](#procedures) for each row; each row it returns extends the row with the yielded columns |
+| `CALL { query }`, `CALL (a, b) { query }` | runs the subquery for each row, in turn (a row sees what the subquery wrote for the rows before it). It sees the row's variables only if it imports them: a first `WITH a, b` (or `WITH *`), which `CALL (a, b)` / `CALL (*)` write for you. Each row its `RETURN` returns extends the row with the returned columns, which must be named (`AS`) and new; a subquery without `RETURN` (one that writes) keeps the row once. `IN TRANSACTIONS` and `UNION` inside are not supported |
 | `WITH items [ORDER BY …] [SKIP n] [LIMIT n] [WHERE condition]` | projects the rows like `RETURN` (aggregating, sorting, paging) and continues; only the projected names remain |
 | `CREATE pattern, …` | creates the nodes and relationships of the pattern; a node already bound is reused as it is, and `CREATE p = …` binds the path created |
 | `MERGE pattern [ON CREATE SET …] [ON MATCH SET …]` | matches the whole pattern, and each match becomes a row (with `ON MATCH SET` applied); if nothing matches, creates the whole pattern (with `ON CREATE SET` applied) |
@@ -394,8 +395,8 @@ Results come best first.
 
 acmedb does not implement these parts of openCypher (and of common Neo4j extensions):
 
-- `CALL { … }` subqueries and procedures other than those [listed](#procedures); `LOAD CSV` and
-  `FOREACH`;
+- procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
+  inside `CALL { … }`; `LOAD CSV` and `FOREACH`;
 - `shortestPath` and `allShortestPaths`;
 - the regular-expression operator `=~`;
 - schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
