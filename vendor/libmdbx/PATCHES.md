@@ -18,3 +18,13 @@ answers `KERN_FAILURE`, so every environment open logs
 transaction falls back to 1024 pages. The patch uses `HOST_VM_INFO64_COUNT`
 with `host_statistics64` (the 32-bit path keeps `HOST_VM_INFO_COUNT`).
 Marked `acmedb patch` in `mdbx.c`. To report upstream.
+
+## Known limits (not patched)
+
+- **Windows on ARM64 does not compile** with Zig (`aarch64-windows-gnu`): libmdbx's SEH
+  emulation for MinGW (`mdbx_simple_SEH`) walks the x86 TIB exception chain and sets the `Rip`
+  register; ARM64 has neither. Renaming the register would compile but not work. Needs an
+  upstream fix, or an MSVC-ABI build of that target.
+- Build flags acmedb passes (see `build.zig`): `MDBX_HAVE_BUILTIN_CPU_SUPPORTS=0` (Zig's
+  compiler-rt has no `__cpu_model`; libmdbx then uses the target's CPU features instead of
+  choosing SSE2/AVX2 at runtime for its page lists), a fixed `MDBX_BUILD_TIMESTAMP`, `NDEBUG`.

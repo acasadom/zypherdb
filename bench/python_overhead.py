@@ -62,7 +62,7 @@ def main() -> None:
         # Bring the file into the OS page cache, as in a process that has been
         # running a while: otherwise the first reads of each page go to disk,
         # which measures the disk, not acmedb.
-        with open(Path(args.dir) / "data.mdb", "rb") as data:
+        with open(Path(args.dir) / "mdbx.dat", "rb") as data:
             while data.read(1 << 24):
                 pass
 

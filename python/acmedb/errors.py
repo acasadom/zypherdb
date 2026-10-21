@@ -6,7 +6,7 @@ class AcmedbError(Exception):
 
 
 class StorageError(AcmedbError):
-    """A storage-layer failure (I/O, LMDB)."""
+    """A storage-layer failure (I/O, the storage engine)."""
 
 
 class ClosedError(AcmedbError):

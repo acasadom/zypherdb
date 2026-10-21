@@ -19,6 +19,9 @@ const Table = engine.Table;
 pub const StorageError = engine.Error || error{
     IteratorFailed,
     NodeStillConnected,
+    /// The database was written in another storage format (see
+    /// `Graph.checkFormat`).
+    IncompatibleFormat,
 };
 
 /// The node records read in a read transaction, kept as the views the engine

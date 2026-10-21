@@ -1,11 +1,11 @@
 # acmedb
 
-*An embedded graph database in Zig, speaking openCypher, on LMDB.*
+*An embedded graph database in Zig, speaking openCypher, on libmdbx.*
 
 acmedb is a graph database you embed in your program: no server, no configuration. You store
 nodes and relationships, and you query them with **openCypher**, the language of graph databases —
 from Python (`pip install acmedb`), or from any language through its C ABI. Under the hood it is a
-compact engine written in Zig, with storage on **LMDB**: transactions, crash safety, readers that
+compact engine written in Zig, with storage on **libmdbx**: transactions, crash safety, readers that
 never wait.
 
 ## Is a graph database the right tool?

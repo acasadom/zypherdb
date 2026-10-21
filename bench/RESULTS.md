@@ -39,6 +39,37 @@ neighbour's properties (the access check, 266 → 29 µs). Durability modes: `fu
 Where the time goes now: random lookups of node records (checking the label of each node an
 expansion reaches), and edge properties, still one key each.
 
+## libmdbx instead of LMDB (October 2026)
+
+The same code on each engine (`-Dstorage-engine`, before LMDB was removed), each loading its own
+data; best median of four alternating rounds, `--people 100000 --runs 200`, full durability. The
+queries that differed most were then run again alone, five rounds each.
+
+| Query | LMDB | libmdbx | |
+| --- | ---: | ---: | ---: |
+| load (storage API, one transaction) | 2.32 s | 2.59 s | +11% |
+| card lookup | 5.6 µs | 5.1 µs | −9% |
+| person's groups (1 hop) | 8.6 µs | 7.5 µs | −13% |
+| colleagues (2 hops, `count(DISTINCT)`) | 80 µs | 76 µs | −4% |
+| may this card open this door? (MATCH) | 35 µs | 30 µs | −16% |
+| same, with `EXISTS` | 37 µs | 38 µs | 0% |
+| doors of a person's zones (`*1..3`) | 120 µs | 119 µs | 0% |
+| people over 60 (range index + records) | 4.2 ms | 5.1 ms | +22% |
+| oldest 10 (`ORDER BY … LIMIT`) | 24.5 ms | 25.2 ms | +3% |
+| group sizes (expand 200k edges + aggregate) | 25.1 ms | 26.6 ms | +6% |
+| department counts (scan + group) | 13.1 ms | 13.2 ms | +1% |
+| return 100k rows (3 columns) | 16.9 ms | 17.3 ms | +2% |
+| create one node (one commit) | 8.1 ms | 4.1 ms | −50% |
+| create 1000 nodes (`UNWIND`, one commit) | 15.9 ms | 11.0 ms | −31% |
+
+Both flush with `F_FULLFSYNC` on macOS; libmdbx's commit needs fewer flushes. What is slower is a
+B-tree search of the integer-keyed node table, which the range-index scan does once per run of
+ids (`p.age > 60` yields ids in age order): libmdbx's search costs more per seek. `-O3`,
+`MDBX_DISABLE_VALIDATION` and 4, 8 or 16 KiB pages did not change it. `MDBX_WRITEMAP` made a
+commit 10x faster, but on macOS it flushes with `msync` and no `F_FULLFSYNC`, which is not
+durable: not used. `MDBX_LIFORECLAIM` changed nothing measurable. Renewing read transactions
+instead of making them made short reads 2-3% faster.
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

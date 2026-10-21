@@ -1,4 +1,4 @@
-//! KeyValueStore: LMDB-backed keys, prefix scans and read transactions.
+//! KeyValueStore: keys, prefix scans and read transactions over the storage engine.
 
 const std = @import("std");
 const testing = std.testing;

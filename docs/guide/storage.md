@@ -2,18 +2,19 @@
 
 This is the theory of how the graph is stored. If you are going to add an index, change a property
 type, or debug a traversal, start here. Everything lives in `src/storage/graph.zig` (the encoding)
-and `src/storage/key_value_store.zig` (the LMDB wrapper).
+and `src/storage/key_value_store.zig` (the store over the storage engine).
 
 ## The model: everything is a key
 
-There are **no tables and no schema**. LMDB keeps three B+trees in one file:
+There are **no tables and no schema**. The storage engine, libmdbx, keeps three B+trees in one
+file:
 
 - the main one holds every fact as a key: edges, indexes, edge properties, counters;
-- `#nodes` holds the node records, keyed by the node id as a native integer (`MDB_INTEGERKEY`);
+- `#nodes` holds the node records, keyed by the node id as a native integer (`MDBX_INTEGERKEY`);
 - `#relationships` holds the relationship records (`src | dst | type`), keyed the same way by the
   relationship's id.
 
-LMDB iterates keys in **lexicographic byte order**, which is the whole trick: the layout is chosen
+The engine iterates keys in **lexicographic byte order**, which is the whole trick: the layout is chosen
 so that *the order you get for free is the order you want*.
 
 Two rules make that work:
@@ -100,23 +101,15 @@ A range of values is then a range of keys. `Graph.nodesInRange` reads a range of
 key ranges, integers and floats, from which NaN is excluded. It rounds fractional bounds
 outwards, so it returns a superset of the matches, and the WHERE is still checked on each.
 
-## The storage format and upgrades
+## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version`. When the C ABI or the
-Python package opens a database, `Graph.upgrade` brings one of an earlier format up to date, in
-one write transaction:
+The key `!format` holds the format's version, `Graph.format_version` (1). When the C ABI or the
+Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
+written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
 
-- to format 2: it rebuilds the node property index (`p`) in the ordered encoding, and counts
-  every label;
-- to format 3: it gives every relationship an id (in the order of its old outgoing key), rewrites
-  the edge keys with it and the neighbour labels, writes the relationship records, moves the
-  relationship properties to `f | rel | prop`, and rebuilds the edge-property index and the
-  full-text indexes of relationships.
-
-This costs O(N), once. A database already in the current format is left as it is.
-
-A change to how keys or values are written raises the version, and adds its migration to
-`upgrade`.
+Until the first release there are no migrations: acmedb has no users yet, so a change to how keys
+or values are written raises the version and earlier databases are not read. Migrations come with
+the first release.
 
 ## The indexes, one by one
 
@@ -126,10 +119,10 @@ A change to how keys or values are written raises the version, and adds its migr
   One B-tree search reads everything about a node, and a change rewrites the record. In a read
   transaction, three things make reading records cheaper:
   - **A reused cursor.** Records are looked up through one cursor. When the next id is at most
-    four records ahead, the cursor steps forward (`MDB_NEXT`) instead of searching. A scan's nodes
+    four records ahead, the cursor steps forward (`MDBX_NEXT`) instead of searching. A scan's nodes
     come in id order, so a scan reads records almost sequentially.
-  - **A record cache** (`RecordCache`). It keeps the records found in the transaction as LMDB's
-    views, which stay valid until the transaction ends. It is direct-mapped by id with 4096 slots,
+  - **A record cache** (`RecordCache`). It keeps the records found in the transaction as the
+    engine's views, which stay valid until the transaction ends. It is direct-mapped by id with 4096 slots,
     so a lookup or an insertion is one array access. A node reached many times (a team every
     member reaches) is searched for once, and a scan that reads each node once pays almost
     nothing for the cache.
@@ -200,24 +193,30 @@ so the counter never hands out an id that is in use.
 - **Reads** are batched: a read-only query opens one read transaction (an MVCC snapshot,
   `beginRead`/`commitRead`) and all its reads run inside it — so a filtered scan is O(1)
   transactions, not one per `get`.
-- `MDB_NOTLS` is set on the environment, so a single thread may hold several read transactions at
-  once — the executor needs that to run a scan, then a neighbour scan *inside* it.
-- The environment maps up to 1 TiB of address space (`mdb_env_set_mapsize`); the file only grows
-  as data is written.
+- `MDBX_NOSTICKYTHREADS` is set on the environment, so a single thread may hold several read
+  transactions at once — the executor needs that to run a scan, then a neighbour scan *inside* it.
+- An ended read transaction is reset and kept (up to four per database) for the next one to
+  renew (`Environment.endRead`): starting a read costs no allocation.
+- The file grows as data is written, in steps of 16 MiB, up to 1 TiB of address space
+  (`mdbx_env_set_geometry`), and gives the free space at its end back to the file system once it
+  passes 64 MiB.
 - An iterator returned by `scanPrefix` borrows its transaction; it must be `deinit`'d **before** the
   transaction ends (the cursor belongs to it). The executor scopes every iterator to its `runStep`
   frame, which is what makes this safe.
 
 ## Durability
 
-`KeyValueStore.openWithOptions` takes a durability mode, mapped to LMDB flags:
+`KeyValueStore.openWithOptions` takes a durability mode, mapped to libmdbx flags:
 
-| Mode | LMDB flag | A commit returns when… |
+| Mode | libmdbx flag | A commit returns when… |
 | --- | --- | --- |
-| `full` | none | data and metadata are flushed (`fsync`) |
-| `relaxed` | `MDB_NOMETASYNC` | data is flushed; the metadata page follows with the next commit |
-| `deferred` | `MDB_NOSYNC` | the write is in the page cache; `sync()` (`mdb_env_sync`) or the OS flushes it |
+| `full` | `MDBX_SYNC_DURABLE` | data and metadata are flushed (`fsync`; `F_FULLFSYNC` on macOS) |
+| `relaxed` | `MDBX_NOMETASYNC` | data is flushed; the metadata page follows with the next commit |
+| `deferred` | `MDBX_SAFE_NOSYNC` | the write is in the page cache; `sync()` (`mdbx_env_sync_ex`) or the OS flushes it |
 
-LMDB is copy-on-write and never overwrites live pages, so no mode can corrupt the database: a
+Every process that opens a database at once must agree on `deferred`: libmdbx refuses to open a
+database in `deferred` mode that another process has open in `full` or `relaxed`, and the reverse.
+
+libmdbx is copy-on-write and never overwrites live pages, so no mode can corrupt the database: a
 crash loses at most the commits that were not yet flushed, and the database opens at the last
 flushed one.

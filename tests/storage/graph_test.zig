@@ -509,7 +509,10 @@ fn bigEndian(comptime T: type, n: T) [@sizeOf(T)]u8 {
     return bytes;
 }
 
-test "upgrade brings a database of an earlier format up to date" {
+/// The key holding the storage format (src/storage/key_encoding.zig).
+const format_key = "!format";
+
+test "checkFormat stamps a new database and refuses another format" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -518,68 +521,12 @@ test "upgrade brings a database of an earlier format up to date" {
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
-    try g.addNode(1, "Person");
-    try g.setProperty(1, "age", .{ .int = -5 });
-    try g.addNode(2, "Team");
-    try g.addNode(3, "Team");
+    try g.checkFormat();
+    const stamped = (try store.get(format_key)).?;
+    defer testing.allocator.free(stamped);
+    try testing.expectEqualSlices(u8, &bigEndian(u32, Graph.format_version), stamped);
+    try g.checkFormat(); // its own format: accepted, unchanged
 
-    // Make it look written before format 2: no label counter, the index key
-    // encoding a negative integer in two's complement, and relationships
-    // without ids (edge keys ending in the neighbour, without its labels;
-    // properties under `f | src | dst | 0x00 | type | 0x00 | name`).
-    try store.del("cPerson");
-    var index = try store.scanPrefix("page\x00");
-    const current_key = try testing.allocator.dupe(u8, (try index.next()).?.key);
-    index.deinit();
-    defer testing.allocator.free(current_key);
-    try store.del(current_key);
-    const old_key = "page\x00\x01" ++ bigEndian(i64, -5) ++ bigEndian(u64, 1);
-    try store.put(old_key, "");
-    inline for (.{ 2, 3 }) |team| {
-        try store.put("e" ++ bigEndian(u64, 1) ++ "o\x00MEMBER_OF\x00" ++ bigEndian(u64, team), "");
-        try store.put("e" ++ bigEndian(u64, team) ++ "i\x00MEMBER_OF\x00" ++ bigEndian(u64, 1), "");
-    }
-    try store.put("tMEMBER_OF", &bigEndian(u64, 2));
-    var since = std.ArrayList(u8).empty;
-    defer since.deinit(testing.allocator);
-    try acmedb.value_encoding.encodeValue(&since, testing.allocator, .{ .int = 2020 });
-    try store.put("f" ++ bigEndian(u64, 1) ++ bigEndian(u64, 3) ++ "\x00MEMBER_OF\x00since", since.items);
-
-    try g.upgrade();
-
-    // The old index key is gone; equality and ranges find the node again.
-    try testing.expectEqual(@as(usize, 1), try store.countPrefix("page\x00"));
-    var equal = try g.nodesByProperty("age", .{ .int = -5 });
-    try testing.expectEqual(@as(?NodeId, 1), try equal.next());
-    equal.deinit();
-    const in_range = try rangeIds(&g, "age", .{ .int = -10 }, .{ .int = 0 });
-    defer testing.allocator.free(in_range);
-    try testing.expectEqualSlices(NodeId, &.{1}, in_range);
-    try testing.expectEqual(@as(usize, 1), try g.labelCount("Person"));
-
-    // Each relationship has an id, in the order of the old keys, and its
-    // edge keys carry the neighbour's labels.
-    var edges = try g.edgesOf(1, .out);
-    const to_two = (try edges.next()).?;
-    const to_three = (try edges.next()).?;
-    try testing.expect((try edges.next()) == null);
-    edges.deinit();
-    try testing.expectEqual(@as(u64, 0), to_two.relationship);
-    try testing.expectEqual(@as(u64, 1), to_three.relationship);
-    try testing.expect(to_three.neighbour_labels != null);
-    const stored = (try g.relationship(1, testing.allocator)).?;
-    defer testing.allocator.free(stored.edge_type);
-    try testing.expectEqual(@as(NodeId, 3), stored.dst);
-    // Its property moved to the new key, and the index finds it.
-    try testing.expectEqual(@as(i64, 2020), (try g.getEdgeProperty(1, "since", testing.allocator)).?.int);
-    var by_since = try g.edgesByProperty("since", .{ .int = 2020 });
-    try testing.expectEqual(@as(u64, 1), (try by_since.next()).?.id);
-    by_since.deinit();
-    // New relationships get ids after the old ones.
-    try testing.expectEqual(@as(u64, 2), try g.addEdge(1, 2, "MEMBER_OF"));
-
-    // Upgrading an up-to-date database changes nothing.
-    try store.put(old_key, "");
-    try g.upgrade();
-    try testing.expectEqual(@as(usize, 2), try store.countPrefix("page\x00"));
+    try store.put(format_key, &bigEndian(u32, Graph.format_version + 1));
+    try testing.expectError(error.IncompatibleFormat, g.checkFormat());
 }
