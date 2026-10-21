@@ -171,7 +171,7 @@ before the query runs.
 | Strings | `size(text)` (counts code points), `toLower`, `toUpper` (full Unicode case mappings: `toUpper('straße')` is `'STRASSE'`), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
 | Conversion | `toString`, `toInteger` (truncates a float; `null` for a string that is not a number), `toFloat`, `toBoolean` |
 | Numbers | `abs`, `sign`, `round` (a float; halves round up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
-| Null | `coalesce(x, …)` returns the first argument that is not `null` |
+| Null | `coalesce(x, …)` returns the first argument that is not `null`; `exists(n.property)` is true if the property is set (the same as `n.property IS NOT NULL`; its argument must be a property) |
 | Graph | `id(entity)`, `labels(node)`, `type(relationship)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
 | Temporal | see [Temporal values](#temporal-values) |
@@ -398,7 +398,6 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
   `FOREACH`;
 - `shortestPath` and `allShortestPaths`;
 - the regular-expression operator `=~`;
-- the function `exists(n.property)`; use `n.property IS NOT NULL` instead;
 - schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
   already indexed for equality and ranges.
 

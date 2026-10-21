@@ -64,6 +64,13 @@ test "conversions, numbers and null handling" {
     try expectQuery(&ast, &g, "RETURN abs(-3), sign(-3), coalesce(null, null, 2, 3), coalesce(null), toUpper(null)", &.{
         &.{ int(3), int(-1), int(2), null_value, null_value },
     });
+    // exists(property): set or not; its argument must be a property.
+    try expectQuery(&ast, &g, "CREATE (:Item {name: 'a'}), (:Item {name: 'b', price: 2})", &.{});
+    try expectQuery(&ast, &g, "MATCH (i:Item) WHERE exists(i.price) RETURN i.name", &.{&.{string("b")}});
+    try expectQuery(&ast, &g, "MATCH (i:Item) WHERE NOT EXISTS(i.price) RETURN i.name", &.{&.{string("a")}});
+    try expectQuery(&ast, &g, "WITH {k: 1} AS m RETURN exists(m.k), exists(m.other)", &.{&.{ .{ .boolean = true }, .{ .boolean = false } }});
+    try expectQueryError(&ast, &g, "MATCH (i:Item) RETURN exists(i)", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "RETURN exists(1)", error.InvalidExpression);
     // Unknown functions and wrong arity fail before running; wrong types at run time.
     try expectQueryError(&ast, &g, "MATCH (n) RETURN nope(n)", error.InvalidExpression);
     try expectQueryError(&ast, &g, "MATCH (n) RETURN toUpper(n, n)", error.InvalidExpression);

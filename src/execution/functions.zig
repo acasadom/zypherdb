@@ -52,6 +52,7 @@ const builtin_entries = [_]Entry{
     .{ "range", Function{ .min_arguments = 2, .max_arguments = 3, .implementation = range } },
     // Null handling.
     .{ "coalesce", Function{ .min_arguments = 1, .max_arguments = variadic, .implementation = coalesce } },
+    .{ "exists", fixed(1, propertyExists) },
     // Graph entities.
     .{ "id", fixed(1, id) },
     .{ "labels", fixed(1, labels) },
@@ -171,6 +172,10 @@ pub fn checkCalls(ast: *const Ast, index: Index, diagnostic: ?*Diagnostic) error
             if (diagnostic) |d| d.set(.invalid_expression, 0, "function '{s}' does not take {d} argument(s)", .{ name, count });
             return error.InvalidExpression;
         }
+        if (std.ascii.eqlIgnoreCase(name, "exists") and ast.kind(ast.nodeChildren(index)[0]) != .property_access) {
+            if (diagnostic) |d| d.set(.invalid_expression, 0, "exists() takes a property, as in exists(n.name); for a pattern use EXISTS {{ ... }}", .{});
+            return error.InvalidExpression;
+        }
     }
     for (ast.nodeChildren(index)) |child| try checkCalls(ast, child, diagnostic);
 }
@@ -266,6 +271,12 @@ fn range(self: *Executor, arguments: []const Value) ExecutionError!Value {
 // --- Null handling -------------------------------------------------------------
 
 /// The first argument that is not null, or null.
+/// `exists(n.property)`: true if the property is set (not null). Its
+/// argument must be a property access (`checkCalls`).
+fn propertyExists(_: *Executor, arguments: []const Value) ExecutionError!Value {
+    return .{ .boolean = !arguments[0].isNull() };
+}
+
 fn coalesce(_: *Executor, arguments: []const Value) ExecutionError!Value {
     for (arguments) |argument| {
         if (!argument.isNull()) return argument;
