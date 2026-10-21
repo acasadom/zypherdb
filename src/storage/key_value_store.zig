@@ -22,6 +22,9 @@ pub const StorageError = engine.Error || error{
     /// The database was written in another storage format (see
     /// `Graph.checkFormat`).
     IncompatibleFormat,
+    /// A write would break a uniqueness constraint (constraints.zig); the
+    /// graph's `violationMessage` says which.
+    ConstraintViolation,
 };
 
 /// The node records read in a read transaction, kept as the views the engine

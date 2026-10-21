@@ -30,7 +30,10 @@ its own rows on; the first clause receives one empty row.
 | `MATCH pattern, … [WHERE condition]` | extends each row with every match of the patterns that passes the condition; comma-separated patterns are matched together |
 | `OPTIONAL MATCH …` | like `MATCH`, but keeps a row that has no match, with its new variables set to `null` (an outer join) |
 | `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
+| `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR ';']` | one row per record of a CSV file: a list of strings, or with headers a map from each header to its field; an empty field is `null`, a quoted one (`""`) the empty string. It reads only from the **import directory** the database was opened with (off without one): `file:///people.csv` is `people.csv` in it, and `..` or a symbolic link out of it is refused, as is any other scheme (`http`). Values are strings: convert them (`toInteger(row.card)`). A failure is error code 11 (`ExternalResourceError` in Python). `linenumber()` and `file()` are not supported |
 | `CALL procedure(arguments) [YIELD column [AS name], … \| *] [WHERE condition]` | runs a [procedure](#procedures) for each row; each row it returns extends the row with the yielded columns |
+| `FOREACH (x IN list \| clause …)` | runs the updating clauses (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`, `FOREACH`) once per element, with `x` bound to it; `null` has no element. The rows go on unchanged, and what the clauses bind stays inside |
+| `CALL { query }`, `CALL (a, b) { query }` | runs the subquery for each row, in turn (a row sees what the subquery wrote for the rows before it). It sees the row's variables only if it imports them: a first `WITH a, b` (or `WITH *`), which `CALL (a, b)` / `CALL (*)` write for you. Each row its `RETURN` returns extends the row with the returned columns, which must be named (`AS`) and new; a subquery without `RETURN` (one that writes) keeps the row once. `IN TRANSACTIONS` and `UNION` inside are not supported |
 | `WITH items [ORDER BY …] [SKIP n] [LIMIT n] [WHERE condition]` | projects the rows like `RETURN` (aggregating, sorting, paging) and continues; only the projected names remain |
 | `CREATE pattern, …` | creates the nodes and relationships of the pattern; a node already bound is reused as it is, and `CREATE p = …` binds the path created |
 | `MERGE pattern [ON CREATE SET …] [ON MATCH SET …]` | matches the whole pattern, and each match becomes a row (with `ON MATCH SET` applied); if nothing matches, creates the whole pattern (with `ON CREATE SET` applied) |
@@ -78,6 +81,8 @@ its own rows on; the first clause receives one empty row.
 -[:A|B]->                                          one of several types
 -[*]->  -[*2]->  -[*1..3]->  -[*..3]->  -[*0..]->  variable length: 1+, exactly 2, 1 to 3, up to 3, 0+
 path = (a)-[:TYPE*]->(b)                           a path variable
+path = shortestPath((a)-[:TYPE*]-(b))              only a shortest path between a and b
+path = allShortestPaths((a)-[*..10]->(b))          every shortest path between them
 ```
 
 - Every part is optional: `()` is a node with no variable, label or properties, and a relationship
@@ -91,6 +96,13 @@ path = (a)-[:TYPE*]->(b)                           a path variable
   same relationship.
 - Each relationship has an id of its own (`id(r)`), so two nodes may be joined by several
   relationships of one type (parallel ones), each matched, changed and deleted on its own.
+- `shortestPath` and `allShortestPaths` take a pattern of one variable-length relationship
+  (`*`, `*..n`, or `*0..` to include the start). For each pair of end nodes they keep one
+  shortest path, or every path of the shortest length; an unbound end gets a path to each node
+  reached. When the `WHERE` reads the path (its variable, or the relationship list), the result
+  is the shortest path the `WHERE` keeps: paths are then tried by increasing length, which
+  explores every path up to that length (bound it with `*..n` on large graphs). Otherwise a
+  breadth-first search finds them, in time proportional to the part of the graph it reaches.
 
 ## Expressions
 
@@ -122,6 +134,7 @@ The literals are:
 | `*`, `/`, `%` | arithmetic. Two integers give an integer: `/` truncates, and overflow or division by zero is an error. With a float operand the result is a float, following IEEE 754 (`1.0 / 0` is infinity) |
 | `+`, `-` | arithmetic. `+` also joins strings (`'a' + 1` is `'a1'`), joins lists, and appends an element to a list. A temporal value `±` a duration gives a temporal value |
 | `IS NULL`, `IS NOT NULL`, `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `IN` | tests; `IN` is list membership and handles `null` |
+| `text =~ pattern` | true if the **whole** string matches the regular expression (Java's syntax, as in Neo4j); `null` if either side is `null` or not a string. Supported: classes, `\d \w \s` and their negations, `^ $ \b`, groups, `\|`, quantifiers (greedy, lazy, possessive), `\Q…\E`, and the flags `(?i)` (case-insensitive, with Unicode's case folding) and `(?s)`. Not supported (an error): backreferences, lookahead and lookbehind. Matching takes time proportional to the text times the pattern, never more |
 | `=`, `<>`, `<`, `<=`, `>`, `>=` | comparison; comparisons chain, so `a < b <= c` means `a < b AND b <= c` |
 | `NOT` | |
 | `AND` | |
@@ -155,7 +168,8 @@ The literals are:
 | `any`, `all`, `none`, `single(x IN list WHERE cond)` | quantifiers, three-valued when `null` is involved |
 | `[path = (a)-->(b) WHERE cond \| expr]` | pattern comprehension: `expr` for each match of the pattern |
 | `(a)-[:T]->(b)` in a `WHERE` | pattern predicate: true if the pattern has a match; it cannot bind new variables |
-| `EXISTS { pattern [WHERE cond] }`, `EXISTS { MATCH … [RETURN …] }` | true if the pattern has a match; variables it introduces stay inside it |
+| `EXISTS { pattern [WHERE cond] }`, `EXISTS { query }` | true if the pattern has a match, or the subquery a row. The subquery is any query that only reads (`MATCH`, `OPTIONAL MATCH`, `UNWIND`, `WITH`, `CALL`, `RETURN`), run from the current row: it sees the variables in scope, and what it binds or aggregates stays inside it. A `RETURN count(*)` always has a row |
+| `COUNT { pattern [WHERE cond] }`, `COUNT { query }` | the number of matches of the pattern, or of rows of the subquery (the same forms as `EXISTS`); an integer per row, not an aggregate |
 | `$name` | a parameter |
 
 ## Functions
@@ -170,7 +184,7 @@ before the query runs.
 | Strings | `size(text)` (counts code points), `toLower`, `toUpper` (full Unicode case mappings: `toUpper('straße')` is `'STRASSE'`), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
 | Conversion | `toString`, `toInteger` (truncates a float; `null` for a string that is not a number), `toFloat`, `toBoolean` |
 | Numbers | `abs`, `sign`, `round` (a float; halves round up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
-| Null | `coalesce(x, …)` returns the first argument that is not `null` |
+| Null | `coalesce(x, …)` returns the first argument that is not `null`; `exists(n.property)` is true if the property is set (the same as `n.property IS NOT NULL`; its argument must be a property) |
 | Graph | `id(entity)`, `labels(node)`, `type(relationship)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
 | Temporal | see [Temporal values](#temporal-values) |
@@ -312,8 +326,10 @@ takes arguments then takes each one from the query parameter of the same name.
 
 ## Schema commands
 
-Every property is indexed for equality and ranges without being asked. The one kind of index a
-command creates is a full-text index. Each schema command is a statement of its own:
+Every property is indexed for equality and ranges without being asked. The kind of index a
+command adds that changes anything is a full-text index; `CREATE INDEX` is accepted, so that
+Neo4j's scripts run, and changes nothing. Constraints keep values unique. Each schema command is
+a statement of its own:
 
 ```text
 CREATE FULLTEXT INDEX name [IF NOT EXISTS]
@@ -324,21 +340,44 @@ CREATE FULLTEXT INDEX name [IF NOT EXISTS]
   FOR ()-[r:TYPE1|TYPE2]-() ON EACH [r.property]
   [OPTIONS {...}]
 
-DROP INDEX name [IF EXISTS]
+CREATE [RANGE | TEXT] INDEX [name] [IF NOT EXISTS]
+  FOR (n:Label) ON (n.property, …)          -- or FOR ()-[r:TYPE]-() ON (r.property)
 
-SHOW [FULLTEXT] INDEXES
+CREATE CONSTRAINT [name] [IF NOT EXISTS]
+  FOR (n:Label) REQUIRE n.property IS UNIQUE  -- or REQUIRE (n.a, n.b) IS UNIQUE
+
+DROP INDEX name [IF EXISTS]
+DROP CONSTRAINT name [IF EXISTS]
+
+SHOW [FULLTEXT | RANGE] INDEXES
+SHOW CONSTRAINTS
 ```
 
-- A node index covers the nodes with any of the labels. A relationship index covers the
-  relationships of any of the types.
-- `CREATE` indexes what the graph holds already. From then on, every change keeps the index
-  current, in the transaction that makes it.
+- Indexes and constraints share one namespace of names. Without a name, `CREATE INDEX` and
+  `CREATE CONSTRAINT` make one of what they are on (`index_Card_number`,
+  `constraint_Door_building_number`).
 - `IF NOT EXISTS` makes `CREATE` do nothing when the name is taken. Otherwise a taken name is an
-  error. `IF EXISTS` does the same for `DROP`.
-- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT`), `entityType` (`NODE` or
-  `RELATIONSHIP`), `labelsOrTypes`, `properties`, `options`.
-- `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since acmedb's
+  error. `IF EXISTS` does the same for `DROP`. `DROP INDEX` of a constraint (or `DROP CONSTRAINT`
+  of an index) is an error.
+- A full-text node index covers the nodes with any of the labels; a relationship index covers
+  the relationships of any of the types. `CREATE` indexes what the graph holds already. From then
+  on, every change keeps the index current, in the transaction that makes it.
+  `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since acmedb's
   indexes are always current.
+- A `RANGE` or `TEXT` index (or one with no kind) is recorded and listed, and every query runs as
+  before: the property index already answers equality and range lookups. Its `OPTIONS` are
+  ignored.
+- **Uniqueness constraints** are on one node label, and one property or several together. A
+  write that would give a node of that label the same values as another (by `CREATE`, `SET`,
+  `MERGE`, a new label, or the Python and C write functions) fails with a constraint violation
+  (`ConstraintViolationError` in Python, error code 10), and its query writes nothing. A node
+  without one of the properties is not concerned. The check is made at each write, so swapping
+  two nodes' values in one query fails. `CREATE CONSTRAINT` fails if the graph already has
+  duplicates. Neo4j 4's `CREATE CONSTRAINT ON (n:Label) ASSERT n.p IS UNIQUE` is accepted too.
+  Other constraints (`IS NOT NULL`, `IS NODE KEY`, on relationships) are not supported.
+- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT` or `RANGE`), `entityType`
+  (`NODE` or `RELATIONSHIP`), `labelsOrTypes`, `properties`, `options`. `SHOW CONSTRAINTS`
+  returns `name`, `type` (`UNIQUENESS`), `entityType`, `labelsOrTypes`, `properties`.
 
 ## Full-text search
 
@@ -393,14 +432,10 @@ Results come best first.
 
 acmedb does not implement these parts of openCypher (and of common Neo4j extensions):
 
-- `CALL { … }` subqueries and procedures other than those [listed](#procedures); `LOAD CSV` and
-  `FOREACH`;
-- `shortestPath` and `allShortestPaths`;
-- `COUNT { … }` subqueries, and `WITH` inside `EXISTS { … }`; use `size([(a)-->(b) | b])` instead;
-- the regular-expression operator `=~`;
-- the function `exists(n.property)`; use `n.property IS NOT NULL` instead;
-- schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
-  already indexed for equality and ranges.
+- procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
+  inside `CALL { … }`; `LOAD CSV` from URLs other than `file:` in the import directory;
+- constraints other than uniqueness on nodes (`IS NOT NULL`, `IS NODE KEY`, relationship
+  constraints); indexes other than full-text change nothing (every property is already indexed).
 
 The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`
 gives the current pass rate per area.

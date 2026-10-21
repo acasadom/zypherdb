@@ -76,6 +76,7 @@ pub const BinaryOperator = enum {
     starts_with,
     ends_with,
     contains,
+    regex_match, // `=~`: the whole string matches the pattern
     in_,
     add,
     subtract,
@@ -143,7 +144,8 @@ pub const NodeKind = enum {
     function_call, // `name(args...)`; data.text is the name as written, children the arguments
     pattern_predicate, // `(a)-->(b)` in a WHERE: children [pattern, true literal]
     pattern_comprehension, // `[p = (a)-->(b) WHERE w | e]`: children [pattern, w, e]
-    exists_subquery, // `EXISTS { ... }`: children are match clauses
+    exists_subquery, // `EXISTS { ... }`: one child, the subquery (a `query` node)
+    count_subquery, // `COUNT { ... }`: one child, the subquery (a `query` node)
     case_expression, // children [condition, result]..., optional else
     simple_case_expression, // children [subject, (value, result)..., optional else]
     binary_operation,
@@ -183,16 +185,55 @@ pub const NodeKind = enum {
     /// arguments, then the `yield_item`s, then the WHERE (a `true` literal
     /// when there is none).
     call_clause,
+    /// `CALL { ... }` (or `CALL (a, b) { ... }`, which becomes a leading
+    /// `WITH a, b`): runs the subquery for each row; one child, the subquery
+    /// (a `query` node). It sees the outer variables only through an
+    /// importing WITH (`importsVariables`); its RETURN's columns extend the
+    /// row, and without a RETURN the row goes on as it was.
+    call_subquery,
+    /// `FOREACH (x IN list | clauses)`: runs the updating clauses once per
+    /// element, with x bound to it; data.text is x; children [list, query of
+    /// the clauses]. What it binds stays inside it.
+    foreach_clause,
+    /// `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR t]`: one row
+    /// per record of the file; data.load_csv; children [url, terminator (a
+    /// null literal when there is none)].
+    load_csv_clause,
     /// One `YIELD column [AS alias]`: data.yield_.
     yield_item,
     /// `CREATE FULLTEXT INDEX name FOR (n:L) ON EACH [n.p, ...] [OPTIONS {...}]`:
-    /// data.fulltext_index; children: the OPTIONS map, if any.
+    /// data.schema_definition; children: the OPTIONS map, if any.
     create_fulltext_index,
+    /// `CREATE [RANGE|TEXT] INDEX [name] FOR (n:L) ON (n.p, ...)`: recorded,
+    /// with no effect (every property is indexed already); data.schema_definition.
+    create_index,
+    /// `CREATE CONSTRAINT [name] FOR (n:L) REQUIRE n.p IS UNIQUE`:
+    /// data.schema_definition.
+    create_constraint,
     /// `DROP INDEX name [IF EXISTS]`: data.drop_index.
     drop_index,
-    /// `SHOW [FULLTEXT] INDEXES`: data.boolean is true for FULLTEXT only.
+    /// `DROP CONSTRAINT name [IF EXISTS]`: data.drop_index.
+    drop_constraint,
+    /// `SHOW [FULLTEXT|RANGE] INDEXES`: data.show_indexes.
     show_indexes,
+    /// `SHOW CONSTRAINTS`.
+    show_constraints,
 };
+
+/// True for the expressions that hold a query of their own (`EXISTS { ... }`,
+/// `COUNT { ... }`): what is inside them, aggregates included, is theirs.
+pub fn isSubquery(kind: NodeKind) bool {
+    return kind == .exists_subquery or kind == .count_subquery;
+}
+
+/// True for the clauses that write to the graph (a `CALL { }` that writes is
+/// found by `queryWrites`).
+pub fn isUpdatingClause(kind: NodeKind) bool {
+    return switch (kind) {
+        .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause, .foreach_clause => true,
+        else => false,
+    };
+}
 
 /// Node payload. The active variant is determined by the node's `kind`; kinds
 /// that carry no extra data use `none`.
@@ -213,6 +254,7 @@ pub const Data = union(enum) {
     return_: struct { distinct: bool },
     with_: struct { distinct: bool },
     unwind: struct { variable_name: []const u8 },
+    load_csv: struct { variable_name: []const u8, with_headers: bool },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
     quantifier: struct { kind: QuantifierKind, variable_name: []const u8 },
@@ -226,14 +268,17 @@ pub const Data = union(enum) {
         implicit_arguments: bool = false,
     },
     yield_: struct { column: []const u8, alias: []const u8 },
-    fulltext_index: struct {
+    /// An index or constraint to create.
+    schema_definition: struct {
         name: []const u8,
-        /// Indexes relationships of these types, not nodes with these labels.
+        /// Of relationships of these types, not nodes with these labels.
         relationships: bool,
         labels_or_types: []const []const u8,
         properties: []const []const u8,
         if_not_exists: bool,
     },
+    /// Which indexes SHOW INDEXES lists.
+    show_indexes: enum { all, fulltext, range },
     drop_index: struct { name: []const u8, if_exists: bool },
     labels: []const []const u8,
 };
@@ -251,6 +296,11 @@ pub const EdgePatternData = struct {
     variable_length: bool = false,
     min_hops: u32 = 1,
     max_hops: ?u32 = 1,
+    /// `shortestPath(...)` / `allShortestPaths(...)` around the pattern: only
+    /// the shortest of its paths between two nodes (one, or all of them).
+    shortest: Shortest = .none,
+
+    pub const Shortest = enum { none, one, all };
 
     /// The single type a written edge must have, if there is exactly one.
     pub fn singleType(self: EdgePatternData) ?[]const u8 {
@@ -331,6 +381,36 @@ pub const Ast = struct {
         for (self.children.items[n.first_child .. n.first_child + n.child_count]) |*child| {
             if (child.* == old) child.* = new;
         }
+    }
+
+    /// True if a clause of `query`, or of a `CALL { }` in it, writes.
+    pub fn queryWrites(self: *const Ast, query: Index) bool {
+        for (self.nodeChildren(query)) |clause| {
+            if (isUpdatingClause(self.kind(clause))) return true;
+            if (self.kind(clause) == .call_subquery and self.queryWrites(self.nodeChildren(clause)[0])) return true;
+        }
+        return false;
+    }
+
+    /// True if subquery `query` starts with an importing WITH: one that only
+    /// names variables (`WITH a, b` or `WITH *`), which brings them in from
+    /// the enclosing query. A `CALL { }` without one sees no outer variable.
+    pub fn importsVariables(self: *const Ast, query: Index) bool {
+        const clauses = self.nodeChildren(query);
+        if (clauses.len == 0 or self.kind(clauses[0]) != .with_clause) return false;
+        const with = clauses[0];
+        if (self.data(with).with_.distinct) return false;
+        const parts = self.nodeChildren(with);
+        if (parts.len != 2) return false; // an ORDER BY, SKIP or LIMIT
+        const where = parts[1];
+        if (self.kind(where) != .boolean_literal or !self.data(where).boolean) return false;
+        for (self.nodeChildren(parts[0])) |item| {
+            const expression = self.nodeChildren(item)[0];
+            if (self.kind(expression) != .variable) return false;
+            const alias = self.data(item).text;
+            if (alias.len > 0 and !std.mem.eql(u8, alias, self.data(expression).text)) return false;
+        }
+        return true;
     }
 
     pub fn nodeChildren(self: *const Ast, index: Index) []const Index {

@@ -27,6 +27,7 @@ const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const fulltext_postings = @import("fulltext_postings.zig");
 const fulltext = @import("fulltext.zig");
+const constraints = @import("constraints.zig");
 const node_record = @import("node_record.zig");
 const NodeRecord = node_record.NodeRecord;
 
@@ -50,15 +51,29 @@ pub const GraphError = StorageError || error{UnsupportedPropertyType};
 pub const Graph = struct {
     store: *KeyValueStore,
     allocator: Allocator,
+    /// What the last `error.ConstraintViolation` broke.
+    violation: [256]u8 = undefined,
+    violation_length: usize = 0,
 
     pub fn init(store: *KeyValueStore, allocator: Allocator) Graph {
         return .{ .store = store, .allocator = allocator };
     }
 
+    /// The message of the last `error.ConstraintViolation`.
+    pub fn violationMessage(self: *const Graph) []const u8 {
+        return self.violation[0..self.violation_length];
+    }
+
+    pub fn setViolation(self: *Graph, comptime fmt: []const u8, args: anytype) void {
+        const written = std.fmt.bufPrint(&self.violation, fmt, args) catch &self.violation;
+        self.violation_length = written.len;
+    }
+
     /// The storage format this code writes and reads. A database in another
     /// format is refused: acmedb has no users yet, so formats change without
-    /// migrations until the first release.
-    pub const format_version: u32 = 1;
+    /// migrations until the first release. 2: schema definitions have a kind
+    /// (full-text, range, unique).
+    pub const format_version: u32 = 2;
 
     /// Stamps a new database with this code's format, and refuses one
     /// written in another (`error.IncompatibleFormat`). Call it after
@@ -132,6 +147,7 @@ pub const Graph = struct {
         if (record.hasLabel(label)) return;
         const old = try self.keptRecord(record, scratch.allocator());
         const updated = try node_record.withLabel(scratch.allocator(), record, label, true);
+        try constraints.checkNode(self, id, .{ .bytes = updated });
         try self.writeRecord(id, updated);
         try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
 
@@ -392,6 +408,7 @@ pub const Graph = struct {
         var encoded = std.ArrayList(u8).empty;
         try value_encoding.encodeValue(&encoded, scratch.allocator(), value);
         const updated = try node_record.withProperty(scratch.allocator(), record, name, encoded.items);
+        try constraints.checkNode(self, id, .{ .bytes = updated });
         // Remove the previous index entry, if any (read before the record changes).
         if (record.property(name)) |old| try self.deleteIndexEntry(id, name, try value_encoding.decodeValue(old, scratch.allocator()));
         const old_record = try self.keptRecord(record, scratch.allocator());

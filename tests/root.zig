@@ -20,6 +20,11 @@ test {
     _ = @import("end_to_end/floats_test.zig");
     _ = @import("end_to_end/temporal_test.zig");
     _ = @import("end_to_end/language_test.zig");
+    _ = @import("end_to_end/subquery_test.zig");
+    _ = @import("end_to_end/foreach_test.zig");
+    _ = @import("end_to_end/shortest_paths_test.zig");
+    _ = @import("end_to_end/constraints_test.zig");
+    _ = @import("end_to_end/load_csv_test.zig");
     _ = @import("end_to_end/maps_test.zig");
     _ = @import("end_to_end/comprehensions_test.zig");
     _ = @import("end_to_end/paths_test.zig");

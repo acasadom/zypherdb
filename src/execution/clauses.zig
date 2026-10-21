@@ -9,16 +9,17 @@ const NodeKind = @import("../query/ast.zig").NodeKind;
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
+const Value = @import("../value.zig").Value;
 const expressions = @import("expressions.zig");
+const load_csv = @import("load_csv.zig");
 const pattern_matching = @import("pattern_matching.zig");
+const procedures = @import("procedures.zig");
+const projection = @import("projection.zig");
 const writes = @import("writes.zig");
 
 /// True for the clauses that write to the graph.
 pub fn isWrite(kind: NodeKind) bool {
-    return switch (kind) {
-        .create_clause, .merge_clause, .set_clause, .delete_clause, .remove_clause => true,
-        else => false,
-    };
+    return @import("../query/ast.zig").isUpdatingClause(kind);
 }
 
 /// A copy of a row whose entries the next clause may extend independently.
@@ -78,17 +79,111 @@ pub fn nestedMatches(self: *Executor, patterns: []const Index, where_expression:
     return output.items;
 }
 
-/// The rows of a chain of MATCH clauses (as in `EXISTS { MATCH ... MATCH
-/// ... }`) starting from `row`.
-pub fn nestedMatchClauses(self: *Executor, match_clauses: []const Index, row: Bindings) ExecutionError![]Bindings {
+/// The rows of a subquery (`EXISTS { ... }`, `CALL { ... }`) run from `row`: its
+/// clauses one after the other, each on every row the one before made, as
+/// `Executor.runClauses` runs a query. The state of the query being run
+/// around it is put back afterwards; each MATCH has its own relationship
+/// uniqueness.
+pub fn runSubquery(self: *Executor, query: Index, row: Bindings) ExecutionError![]Bindings {
+    const saved_overrides = self.expression_overrides;
+    defer self.expression_overrides = saved_overrides;
+    self.expression_overrides = null;
+
     var rows = try self.allocator.dupe(Bindings, &.{row});
-    for (match_clauses) |clause| {
-        const children = self.ast.nodeChildren(clause);
-        var next = std.ArrayList(Bindings).empty;
-        for (rows) |input| try next.appendSlice(self.allocator, try nestedMatches(self, children[0 .. children.len - 1], children[children.len - 1], input));
-        rows = next.items;
+    for (self.ast.nodeChildren(query)) |clause| {
+        rows = switch (self.ast.kind(clause)) {
+            .match_clause, .optional_match_clause => matched: {
+                const children = self.ast.nodeChildren(clause);
+                const patterns = children[0 .. children.len - 1];
+                var next = std.ArrayList(Bindings).empty;
+                for (rows) |input| {
+                    const matches = try nestedMatches(self, patterns, children[children.len - 1], input);
+                    try next.appendSlice(self.allocator, matches);
+                    if (matches.len == 0 and self.ast.kind(clause) == .optional_match_clause) {
+                        var unmatched = try copyRow(self, input);
+                        try bindNewVariablesToNull(self, patterns, &unmatched);
+                        try next.append(self.allocator, unmatched);
+                    }
+                }
+                break :matched next.items;
+            },
+            .unwind_clause => try runUnwind(self, clause, rows),
+            .load_csv_clause => try runLoadCsv(self, clause, rows),
+            .with_clause, .return_clause => try projection.applyWith(self, clause, rows),
+            .call_clause => try procedures.runCall(self, clause, rows, false),
+            .call_subquery => try runCallSubquery(self, clause, rows),
+            else => try runWrite(self, clause, rows), // a CALL { }'s (the parser keeps them out of EXISTS)
+        };
+        // No early end on no rows: a later aggregation without keys still
+        // makes one (`RETURN count(*)`).
     }
     return rows;
+}
+
+/// `CALL { }`: its subquery run for each input row in turn (so a row sees
+/// what the subquery wrote for the rows before it), from that row if the
+/// subquery imports variables, else from an empty one. With a RETURN, each
+/// row it returns extends the input row; without, the input row goes on
+/// once.
+pub fn runCallSubquery(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const query = self.ast.nodeChildren(clause)[0];
+    const body = self.ast.nodeChildren(query);
+    const imports = self.ast.importsVariables(query);
+    const returns = self.ast.kind(body[body.len - 1]) == .return_clause;
+    var output = std.ArrayList(Bindings).empty;
+    for (input) |row| {
+        const start = if (imports) row else Bindings{ .entries = .empty };
+        const results = try runSubquery(self, query, start);
+        if (!returns) {
+            try output.append(self.allocator, try copyRow(self, row));
+            continue;
+        }
+        for (results) |result| {
+            var extended = try copyRow(self, row);
+            for (result.entries.items) |entry| try extended.put(self.allocator, entry.name, entry.value);
+            try output.append(self.allocator, extended);
+        }
+    }
+    return output.items;
+}
+
+/// FOREACH: for each input row, its clauses run once per element of the
+/// list, with the variable bound to it (no element for `null`). The input
+/// rows go on unchanged.
+fn runForeach(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const children = self.ast.nodeChildren(clause);
+    const variable_name = self.ast.data(clause).text;
+    for (input) |*row| {
+        const value = try expressions.evaluate(self, children[0], row);
+        const items: []const Value = switch (value) {
+            .list => |items| items,
+            .null => &.{},
+            else => {
+                self.fail(.type_mismatch, "FOREACH needs a list, not {s}", .{@tagName(value)});
+                return error.TypeMismatch;
+            },
+        };
+        for (items) |item| {
+            var scope = try copyRow(self, row.*);
+            try scope.put(self.allocator, variable_name, item);
+            _ = try runSubquery(self, children[1], scope);
+        }
+    }
+    return input;
+}
+
+/// LOAD CSV: every input row, extended with each record of the file.
+pub fn runLoadCsv(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
+    const variable_name = self.ast.data(clause).load_csv.variable_name;
+    var output = std.ArrayList(Bindings).empty;
+    for (input) |*row| {
+        for (try load_csv.records(self, clause, row)) |record| {
+            var extended = try copyRow(self, row.*);
+            try extended.put(self.allocator, variable_name, record);
+            try output.append(self.allocator, extended);
+        }
+    }
+    return output.items;
 }
 
 /// MERGE: for each input row, every match of the whole pattern (each one a
@@ -162,6 +257,7 @@ pub fn runUnwind(self: *Executor, clause: Index, input: []Bindings) ExecutionErr
 /// variables the clause bound.
 pub fn runWrite(self: *Executor, clause: Index, input: []Bindings) ExecutionError![]Bindings {
     if (self.ast.kind(clause) == .merge_clause) return runMerge(self, clause, input);
+    if (self.ast.kind(clause) == .foreach_clause) return runForeach(self, clause, input);
     for (input) |*row| {
         switch (self.ast.kind(clause)) {
             .create_clause => for (self.ast.nodeChildren(clause)) |pattern| {

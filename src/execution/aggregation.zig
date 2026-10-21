@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 const Index = @import("../query/ast.zig").Index;
 const AggregateKind = @import("../query/ast.zig").AggregateKind;
 const AggregateCall = @import("../query/ast.zig").AggregateCall;
+const isSubquery = @import("../query/ast.zig").isSubquery;
 const Value = @import("../value.zig").Value;
 
 const SequenceContext = @import("../sequence_algorithms.zig").SequenceContext;
@@ -31,6 +32,7 @@ pub const AggregationPlan = struct {
 /// True if `expr` contains an aggregate call anywhere.
 pub fn containsAggregate(self: *const Executor, expr: Index) bool {
     if (self.ast.kind(expr) == .aggregate) return true;
+    if (isSubquery(self.ast.kind(expr))) return false; // its aggregates are its own
     for (self.ast.nodeChildren(expr)) |child| {
         if (containsAggregate(self, child)) return true;
     }
@@ -66,6 +68,7 @@ fn collectAggregates(self: *Executor, expr: Index, aggregates: *std.ArrayList(In
         try kinds.append(self.allocator, self.ast.data(expr).aggregate);
         return;
     }
+    if (isSubquery(self.ast.kind(expr))) return;
     for (self.ast.nodeChildren(expr)) |child| try collectAggregates(self, child, aggregates, kinds);
 }
 

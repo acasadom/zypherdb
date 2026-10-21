@@ -1,5 +1,6 @@
-//! Schema commands: CREATE FULLTEXT INDEX, DROP INDEX, SHOW INDEXES. Each runs
-//! as a statement of its own, in its own transaction.
+//! Schema commands: CREATE [FULLTEXT|RANGE] INDEX, CREATE CONSTRAINT, DROP
+//! INDEX / CONSTRAINT, SHOW INDEXES / CONSTRAINTS. Each runs as a statement
+//! of its own, in its own transaction.
 
 const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
@@ -7,6 +8,7 @@ const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
 const fulltext = @import("../storage/fulltext.zig");
 const fulltext_postings = @import("../storage/fulltext_postings.zig");
+const constraints = @import("../storage/constraints.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -19,59 +21,83 @@ pub const analyzers = [_][]const u8{ "standard", "english", "spanish" };
 
 pub fn isSchemaCommand(executor: *Executor, root: Index) bool {
     return switch (executor.ast.kind(root)) {
-        .create_fulltext_index, .drop_index, .show_indexes => true,
+        .create_fulltext_index, .create_index, .create_constraint, .drop_index, .drop_constraint, .show_indexes, .show_constraints => true,
         else => false,
     };
 }
 
-/// Runs a schema command; SHOW INDEXES returns rows, the others none.
+/// Runs a schema command; SHOW returns rows, the others none.
 pub fn run(executor: *Executor, root: Index) ExecutionError![]const Row {
     const graph = executor.graph;
     switch (executor.ast.kind(root)) {
-        .show_indexes => {
+        .show_indexes, .show_constraints => {
             try graph.beginRead();
             defer graph.commitRead();
-            return showIndexes(executor);
+            return if (executor.ast.kind(root) == .show_indexes) showIndexes(executor, executor.ast.data(root).show_indexes) else showConstraints(executor);
         },
         else => {},
     }
     try graph.beginWrite();
     errdefer graph.abortWrite();
     switch (executor.ast.kind(root)) {
-        .create_fulltext_index => try createIndex(executor, root),
-        .drop_index => {
-            const drop = executor.ast.data(root).drop_index;
-            if (try fulltext.find(graph, drop.name, executor.allocator) != null) try fulltext_postings.clear(graph, drop.name);
-            if (!try fulltext.drop(graph, drop.name) and !drop.if_exists) {
-                executor.fail(.invalid_expression, "there is no index named '{s}'", .{drop.name});
-                return error.InvalidExpression;
-            }
-        },
+        .create_fulltext_index => try create(executor, root, .fulltext),
+        .create_index => try create(executor, root, .range),
+        .create_constraint => try create(executor, root, .unique),
+        .drop_index => try drop(executor, root, "index"),
+        .drop_constraint => try drop(executor, root, "constraint"),
         else => unreachable,
     }
     try graph.commitWrite();
     return &.{};
 }
 
-fn createIndex(executor: *Executor, root: Index) ExecutionError!void {
-    const command = executor.ast.data(root).fulltext_index;
-    if (try fulltext.find(executor.graph, command.name, executor.allocator) != null) {
+/// `DROP INDEX` drops an index, `DROP CONSTRAINT` a constraint (one
+/// namespace for both names).
+fn drop(executor: *Executor, root: Index, comptime what: []const u8) ExecutionError!void {
+    const graph = executor.graph;
+    const command = executor.ast.data(root).drop_index;
+    const found = try fulltext.find(graph, command.name, executor.allocator) orelse {
+        if (command.if_exists) return;
+        executor.fail(.invalid_expression, "there is no " ++ what ++ " named '{s}'", .{command.name});
+        return error.InvalidExpression;
+    };
+    const is_constraint = found.kind == .unique;
+    if (is_constraint != std.mem.eql(u8, what, "constraint")) {
+        executor.fail(.invalid_expression, "'{s}' is {s}: use DROP {s}", .{ command.name, if (is_constraint) "a constraint" else "an index", if (is_constraint) "CONSTRAINT" else "INDEX" });
+        return error.InvalidExpression;
+    }
+    if (found.kind == .fulltext) try fulltext_postings.clear(graph, command.name);
+    _ = try fulltext.drop(graph, command.name);
+}
+
+fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!void {
+    const command = executor.ast.data(root).schema_definition;
+    if (try fulltext.find(executor.graph, command.name, executor.allocator)) |existing| {
         if (command.if_not_exists) return;
-        executor.fail(.invalid_expression, "an index named '{s}' already exists", .{command.name});
+        executor.fail(.invalid_expression, "{s} named '{s}' already exists", .{ if (existing.kind == .unique) "a constraint" else "an index", command.name });
         return error.InvalidExpression;
     }
     const children = executor.ast.nodeChildren(root);
-    const analyzer = if (children.len > 0) try analyzerOption(executor, children[0]) else "standard";
+    const analyzer = if (kind != .fulltext) "" else if (children.len > 0) try analyzerOption(executor, children[0]) else "standard";
     const definition = fulltext.Definition{
         .name = command.name,
+        .kind = kind,
         .entity = if (command.relationships) .relationships else .nodes,
         .analyzer = analyzer,
         .labels_or_types = command.labels_or_types,
         .properties = command.properties,
     };
+    switch (kind) {
+        // A constraint the graph already breaks is refused.
+        .unique => constraints.checkExisting(executor.graph, definition) catch |err| {
+            if (err == error.ConstraintViolation) executor.fail(.constraint_violation, "{s}", .{executor.graph.violationMessage()});
+            return err;
+        },
+        .fulltext, .range => {},
+    }
     try fulltext.create(executor.graph, definition);
     // Index what the graph holds already.
-    try fulltext_postings.populate(executor.graph, definition);
+    if (kind == .fulltext) try fulltext_postings.populate(executor.graph, definition);
 }
 
 /// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.
@@ -101,20 +127,44 @@ fn unknownOption(executor: *Executor, key: []const u8) ExecutionError {
     return error.InvalidExpression;
 }
 
-/// One row per full-text index: name, type, entityType, labelsOrTypes,
-/// properties, options.
-fn showIndexes(executor: *Executor) ExecutionError![]const Row {
+/// One row per index (full-text, or range: declared, and doing nothing):
+/// name, type, entityType, labelsOrTypes, properties, options.
+fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig").Data, "show_indexes")) ExecutionError![]const Row {
     const allocator = executor.allocator;
     var rows = std.ArrayList(Row).empty;
     for (try fulltext.all(executor.graph, allocator)) |definition| {
+        switch (definition.kind) {
+            .unique => continue,
+            .fulltext => if (which == .range) continue,
+            .range => if (which == .fulltext) continue,
+        }
         var row = Row.empty;
         try row.append(allocator, .{ .string = definition.name });
-        try row.append(allocator, .{ .string = "FULLTEXT" });
+        try row.append(allocator, .{ .string = if (definition.kind == .fulltext) "FULLTEXT" else "RANGE" });
         try row.append(allocator, .{ .string = if (definition.entity == .nodes) "NODE" else "RELATIONSHIP" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
         try row.append(allocator, try stringList(allocator, definition.properties));
-        const config = try allocator.dupe(MapEntry, &.{.{ .key = "fulltext.analyzer", .value = .{ .string = definition.analyzer } }});
+        const config: []const MapEntry = if (definition.kind == .fulltext)
+            try allocator.dupe(MapEntry, &.{.{ .key = "fulltext.analyzer", .value = .{ .string = definition.analyzer } }})
+        else
+            &.{};
         try row.append(allocator, .{ .map = try allocator.dupe(MapEntry, &.{.{ .key = "indexConfig", .value = .{ .map = config } }}) });
+        try rows.append(allocator, row);
+    }
+    return rows.items;
+}
+
+/// One row per constraint: name, type, entityType, labelsOrTypes, properties.
+fn showConstraints(executor: *Executor) ExecutionError![]const Row {
+    const allocator = executor.allocator;
+    var rows = std.ArrayList(Row).empty;
+    for (try fulltext.allOfKind(executor.graph, allocator, .unique)) |definition| {
+        var row = Row.empty;
+        try row.append(allocator, .{ .string = definition.name });
+        try row.append(allocator, .{ .string = "UNIQUENESS" });
+        try row.append(allocator, .{ .string = "NODE" });
+        try row.append(allocator, try stringList(allocator, definition.labels_or_types));
+        try row.append(allocator, try stringList(allocator, definition.properties));
         try rows.append(allocator, row);
     }
     return rows.items;

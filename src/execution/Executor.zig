@@ -56,6 +56,8 @@ pub const ExecutionError = StorageError || error{
     TypeMismatch,
     /// Internal: a streamed RETURN has every row it keeps (see `pipeline.zig`).
     LimitReached,
+    /// LOAD CSV could not read its file (load_csv.zig).
+    ExternalResourceFailed,
 };
 
 /// A projected row: one `Value` per RETURN item.
@@ -103,6 +105,13 @@ table_procedures: []const procedure_signatures.TableProcedure = &.{},
 /// Relationship uniqueness: the edges bound on the current search branch of
 /// the MATCH being run.
 used_edges: std.ArrayList(Relationship),
+/// The directory LOAD CSV reads from; null: LOAD CSV is off.
+import_directory: ?[]const u8 = null,
+/// The patterns of `=~` compiled in this query, by their text.
+regexes: std.StringHashMapUnmanaged(@import("../text/regex.zig").Regex) = .empty,
+/// How many matches have passed their MATCH's WHERE so far (a shortest-path
+/// search that tests the WHERE stops at the length where one did).
+accepted_matches: usize = 0,
 
 // RETURN aggregation.
 has_aggregates: bool,
@@ -163,11 +172,10 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     self.reset();
     self.entities = .{};
     self.statement_time = null;
+    self.regexes = .empty;
 
     const has_writes = writes: for (queries) |query| {
-        for (self.ast.nodeChildren(query)) |clause| {
-            if (clauses.isWrite(self.ast.kind(clause))) break :writes true;
-        }
+        if (self.ast.queryWrites(query)) break :writes true;
     } else false;
     if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
     errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
@@ -175,7 +183,10 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     var result = std.ArrayList(Row).empty;
     for (queries) |query| {
         self.reset();
-        if (has_writes) try self.runClauses(query) else try Pipeline.run(self, query);
+        if (has_writes) self.runClauses(query) catch |err| {
+            if (err == error.ConstraintViolation) self.fail(.constraint_violation, "{s}", .{self.graph.violationMessage()});
+            return err;
+        } else try Pipeline.run(self, query);
         for (self.rows.items) |sortable| try result.append(self.allocator, sortable.item);
     }
     // UNION (not UNION ALL) keeps one of each row.
@@ -199,8 +210,10 @@ fn runClauses(self: *Executor, query: Index) ExecutionError!void {
             .match_clause => try clauses.runMatch(self, clause, rows, false),
             .optional_match_clause => try clauses.runMatch(self, clause, rows, true),
             .unwind_clause => try clauses.runUnwind(self, clause, rows),
+            .load_csv_clause => try clauses.runLoadCsv(self, clause, rows),
             .with_clause => try projection.applyWith(self, clause, rows),
             .call_clause => try procedures.runCall(self, clause, rows, position + 1 == query_clauses.len),
+            .call_subquery => try clauses.runCallSubquery(self, clause, rows),
             .return_clause => {
                 try projection.applyReturn(self, clause, rows);
                 break;
@@ -247,6 +260,7 @@ pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) Exe
 /// run: keeps it, as a row of its own, if it passes the MATCH's WHERE.
 pub fn matchFound(self: *Executor, bindings: *Bindings) ExecutionError!void {
     if (self.where_expression != no_where and !try expressions.evaluateBool(self, self.where_expression, bindings)) return;
+    self.accepted_matches += 1;
     if (self.matches) |output| return output.append(self.allocator, try clauses.copyRow(self, bindings.*));
     const pipeline = self.pipeline orelse return;
     self.stream_emitted += 1;

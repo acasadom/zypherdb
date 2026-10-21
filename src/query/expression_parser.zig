@@ -6,6 +6,7 @@
 const std = @import("std");
 
 const Index = @import("ast.zig").Index;
+const NodeKind = @import("ast.zig").NodeKind;
 const BinaryOperator = @import("ast.zig").BinaryOperator;
 const AggregateKind = @import("ast.zig").AggregateKind;
 const QuantifierKind = @import("ast.zig").QuantifierKind;
@@ -87,7 +88,7 @@ fn comparisonOperator(kind: TokenKind) ?BinaryOperator {
 }
 
 /// An additive expression followed by any number of `IS [NOT] NULL`,
-/// `STARTS WITH`, `ENDS WITH`, `CONTAINS` and `IN` tests, which bind tighter
+/// `STARTS WITH`, `ENDS WITH`, `CONTAINS`, `=~` and `IN` tests, which bind tighter
 /// than comparisons: `x IS NULL = y IS NULL` compares two booleans.
 fn parsePredicate(self: *Parser) ParseError!Index {
     var lhs = try parseAdditive(self);
@@ -101,7 +102,9 @@ fn parsePredicate(self: *Parser) ParseError!Index {
             continue;
         }
         // `STARTS`/`ENDS`/`CONTAINS`/`IN` lex as plain identifiers.
-        const operator: BinaryOperator = if (self.atKeyword("STARTS") and self.atKeywordAhead(1, "WITH"))
+        const operator: BinaryOperator = if (self.at(.regex_match))
+            .regex_match
+        else if (self.atKeyword("STARTS") and self.atKeywordAhead(1, "WITH"))
             .starts_with
         else if (self.atKeyword("ENDS") and self.atKeywordAhead(1, "WITH"))
             .ends_with
@@ -217,28 +220,33 @@ fn parseFloatLiteral(self: *Parser, negative: bool) ParseError!Index {
     return self.ast.addNode(.float_literal, .{ .float = if (negative) -magnitude else magnitude }, &.{});
 }
 
-/// `EXISTS { pattern [WHERE predicate] }` or `EXISTS { MATCH ... [RETURN ...] }`:
-/// true if the patterns have a match for the current row. The patterns may
-/// introduce variables of their own; a RETURN is accepted and ignored (it
-/// cannot change whether there is a row).
-fn parseExistsSubquery(self: *Parser) ParseError!Index {
+/// `EXISTS { pattern [WHERE predicate] }`, or `EXISTS { query }` with any
+/// clauses that only read (MATCH, OPTIONAL MATCH, UNWIND, WITH, CALL,
+/// RETURN): true if the subquery has a row for the current row. `COUNT {
+/// ... }` takes the same forms and is the number of rows. Its one child is
+/// a `query` node (the short form becomes one MATCH); the subquery sees the
+/// variables in scope and may introduce its own.
+fn parseSubqueryExpression(self: *Parser, kind: NodeKind) ParseError!Index {
+    const name = if (kind == .exists_subquery) "EXISTS" else "COUNT";
     try self.expect(.left_brace);
-    var clauses = std.ArrayList(Index).empty;
-    defer clauses.deinit(self.ast.allocator);
-    if (self.atKeyword("MATCH")) {
-        while (self.atKeyword("MATCH")) {
-            _ = self.advance();
-            try clauses.append(self.ast.allocator, try self.parseMatchBody(.match_clause));
-        }
-        if (self.atKeyword("RETURN")) {
-            _ = self.advance();
-            _ = try self.parseReturnClause();
-        }
-    } else {
-        try clauses.append(self.ast.allocator, try self.parseMatchBody(.match_clause));
+    const query = if (atClauseKeyword(self))
+        try self.parseClauses(.read_subquery)
+    else
+        try self.ast.addNode(.query, .{ .none = {} }, &.{try self.parseMatchBody(.match_clause)});
+    if (self.ast.nodeChildren(query).len == 0) {
+        self.fail("{s} needs a pattern or a query between its braces", .{name});
+        return error.UnexpectedToken;
     }
     try self.expect(.right_brace);
-    return self.ast.addNode(.exists_subquery, .{ .none = {} }, clauses.items);
+    return self.ast.addNode(kind, .{ .none = {} }, &.{query});
+}
+
+/// True if a clause starts here (not a bare pattern).
+fn atClauseKeyword(self: *const Parser) bool {
+    for ([_][]const u8{ "MATCH", "OPTIONAL", "UNWIND", "WITH", "CALL", "RETURN", "CREATE", "MERGE", "SET", "DELETE", "DETACH", "REMOVE", "FOREACH" }) |keyword| {
+        if (self.atKeyword(keyword)) return true;
+    }
+    return false;
 }
 
 /// `[p = (a)-->(b) WHERE predicate | projection]`: the projection for each
@@ -445,7 +453,10 @@ fn parseAtom(self: *Parser) ParseError!Index {
                 }
                 return parseFunctionCall(self, t.text);
             }
-            if (std.ascii.eqlIgnoreCase(t.text, "exists") and self.at(.left_brace)) return parseExistsSubquery(self);
+            if (self.at(.left_brace)) {
+                if (std.ascii.eqlIgnoreCase(t.text, "exists")) return parseSubqueryExpression(self, .exists_subquery);
+                if (std.ascii.eqlIgnoreCase(t.text, "count")) return parseSubqueryExpression(self, .count_subquery);
+            }
             // `date.truncate(...)`: a namespaced function.
             if (self.at(.dot) and self.peekAhead(1).kind == .identifier and isNamespacedCall(self)) {
                 var name = std.ArrayList(u8).empty;

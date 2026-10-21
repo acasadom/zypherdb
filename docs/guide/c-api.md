@@ -64,6 +64,7 @@ zig cc -Izig-out/include first.c -Lzig-out/lib -lacmedb -o first
 acmedb_context *acmedb_open(const char *path, size_t path_len);
 acmedb_context *acmedb_open_with_durability(const char *path, size_t path_len, int durability);
 int acmedb_sync(acmedb_context *context);
+int acmedb_set_import_directory(acmedb_context *context, const char *path, size_t path_len);
 void acmedb_close(acmedb_context *context);
 ```
 
@@ -76,6 +77,10 @@ and `acmedb_open_with_durability` chooses the mode:
 | `ACMEDB_DURABILITY_FULL` (0) | its data is on disk | nothing |
 | `ACMEDB_DURABILITY_RELAXED` (1) | its data is on disk; its bookkeeping follows with the next commit | the last commit |
 | `ACMEDB_DURABILITY_DEFERRED` (2) | it is in memory; the operating system writes it, or `acmedb_sync` | the commits since the last `acmedb_sync` |
+
+`acmedb_set_import_directory` sets the directory `LOAD CSV` reads from (`path_len` 0: none, which
+turns `LOAD CSV` off, as it is after opening): a query's `file:///name.csv` is `name.csv` in it,
+and nothing outside it can be read.
 
 No mode can corrupt the database. `acmedb_sync` writes every commit so far to disk and returns
 `ACMEDB_OK` or `ACMEDB_STORAGE_ERROR`.
@@ -101,6 +106,8 @@ message stays valid until the next call on the context.
 | 7 | `ACMEDB_ERROR_STORAGE` | the storage failed |
 | 8 | `ACMEDB_ERROR_PARAMETER_MISSING` | a `$parameter` was not given |
 | 9 | `ACMEDB_ERROR_ARITHMETIC` | integer overflow or division by zero |
+| 10 | `ACMEDB_ERROR_CONSTRAINT_VIOLATION` | a write would break a uniqueness constraint |
+| 11 | `ACMEDB_ERROR_EXTERNAL_RESOURCE` | `LOAD CSV` could not read its file |
 
 Code 3 is reserved: it was once "missing property", and a missing property now reads as `null`.
 
@@ -243,7 +250,9 @@ These functions write without parsing a query, for loading data in bulk:
   between nodes already joined by a relationship of that type.
 - `acmedb_set_property_*` set a node's property.
 
-Each function returns `ACMEDB_OK`, `ACMEDB_STORAGE_ERROR`, or `ACMEDB_NODE_NOT_FOUND` when a node
+Each function returns `ACMEDB_OK`, `ACMEDB_STORAGE_ERROR`, `ACMEDB_CONSTRAINT_VIOLATION` when a
+uniqueness constraint refuses the write (`acmedb_last_error` says which), or
+`ACMEDB_NODE_NOT_FOUND` when a node
 it names does not exist.
 
 On its own, each call is a transaction that waits for the disk. Between `acmedb_begin_write` and

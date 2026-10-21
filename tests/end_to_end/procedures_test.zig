@@ -62,7 +62,9 @@ test "CALL yields a procedure's columns, as variables or as the result" {
     try expectQueryError(&ast, &g, "CALL db.labels() MATCH (n) RETURN n", error.InvalidExpression);
     try expectQueryError(&ast, &g, "CALL db.index.fulltext.queryNodes('x', 'y') YIELD score MATCH (score)-->() RETURN 1", error.InvalidExpression);
     try expectParseError(&ast, "MATCH (n) CALL db.labels() YIELD label");
-    try expectParseError(&ast, "CALL { MATCH (n) RETURN n } RETURN 1");
+    // A CALL { } subquery is not a procedure call (subquery_test.zig); IN
+    // TRANSACTIONS is not supported.
+    try expectParseError(&ast, "CALL { MATCH (n) RETURN n } IN TRANSACTIONS RETURN 1");
 }
 
 test "schema commands create, list and drop full-text indexes" {
@@ -91,7 +93,7 @@ test "schema commands create, list and drop full-text indexes" {
     try expectQueryError(&ast, &g, "CREATE FULLTEXT INDEX other FOR (n:X) ON EACH [n.y] OPTIONS {size: 3}", error.InvalidExpression);
     try expectParseError(&ast, "CREATE FULLTEXT INDEX FOR (n:X) ON EACH [n.y]");
     try expectParseError(&ast, "CREATE FULLTEXT INDEX other FOR (n:X) ON EACH [m.y]");
-    try expectParseError(&ast, "CREATE INDEX other FOR (n:X) ON (n.y)");
+    try expectParseError(&ast, "CREATE INDEX other FOR (n:X) ON (m.y)");
     try expectParseError(&ast, "SHOW INDEXES RETURN 1");
 
     try expectQuery(&ast, &g, "DROP INDEX remarks", &.{});

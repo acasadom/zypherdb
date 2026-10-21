@@ -6,7 +6,7 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 3201/3202 (100.0%)** · Negative: 694/694 (100.0%)
+**Positive: 3202/3202 (100.0%)** · Negative: 694/694 (100.0%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
@@ -31,7 +31,7 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | expressions/boolean | 32/32 (100.0%) | 118/118 (100.0%) | 0 | 0 |
 | expressions/comparison | 71/71 (100.0%) | 1/1 (100.0%) | 0 | 0 |
 | expressions/conditional | 13/13 (100.0%) | – | 0 | 0 |
-| expressions/existentialSubqueries | 8/9 (88.9%) | 1/1 (100.0%) | 0 | 0 |
+| expressions/existentialSubqueries | 9/9 (100.0%) | 1/1 (100.0%) | 0 | 0 |
 | expressions/graph | 43/43 (100.0%) | 17/17 (100.0%) | 0 | 0 |
 | expressions/list | 126/126 (100.0%) | 59/59 (100.0%) | 0 | 0 |
 | expressions/literals | 106/106 (100.0%) | 25/25 (100.0%) | 0 | 0 |
@@ -52,6 +52,5 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 
 | Scenarios | Reason |
 | --- | --- |
-| 1 | fail: unexpected error: expected '}', found WITH |
 
 1 scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.

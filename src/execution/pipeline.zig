@@ -31,6 +31,7 @@ const expressions = @import("expressions.zig");
 const pattern_matching = @import("pattern_matching.zig");
 const projection = @import("projection.zig");
 const procedures = @import("procedures.zig");
+const load_csv = @import("load_csv.zig");
 const Value = @import("../value.zig").Value;
 
 const Pipeline = @This();
@@ -44,7 +45,9 @@ rows_needed: ?usize,
 const Stage = union(enum) {
     match: struct { optional: bool },
     unwind,
+    load_csv,
     call,
+    call_subquery,
     with_streaming: struct { info: projection.WithClauseParts, items: []const projection.WithItem },
     with_collecting: std.ArrayList(Bindings),
     return_: projection.ReturnClauseParts,
@@ -65,10 +68,12 @@ pub fn run(executor: *Executor, query: Index) ExecutionError!void {
             .match_clause => .{ .match = .{ .optional = false } },
             .optional_match_clause => .{ .match = .{ .optional = true } },
             .unwind_clause => .unwind,
+            .load_csv_clause => .load_csv,
             .call_clause => .call,
+            .call_subquery => .call_subquery,
             .with_clause => if (try projection.withStreams(executor, clause)) with: {
                 const info = projection.withClauseParts(executor, clause);
-                break :with .{ .with_streaming = .{ .info = info, .items = try projection.withItems(executor, info.projection) } };
+                break :with .{ .with_streaming = .{ .info = info, .items = try projection.withItems(executor, info) } };
             } else .{ .with_collecting = .empty },
             .return_clause => ret: {
                 const info = try projection.beginReturn(executor, clause);
@@ -128,6 +133,15 @@ pub fn feed(self: *Pipeline, index: usize, row: *Bindings) ExecutionError!void {
                 try self.feed(index + 1, row);
             }
         },
+        .load_csv => {
+            const variable_name = executor.ast.data(clause).load_csv.variable_name;
+            for (try load_csv.records(executor, clause, row)) |record| {
+                const saved = row.mark();
+                defer row.restore(saved);
+                try row.put(executor.allocator, variable_name, record);
+                try self.feed(index + 1, row);
+            }
+        },
         .call => {
             const Next = struct {
                 pipeline: *Pipeline,
@@ -145,6 +159,10 @@ pub fn feed(self: *Pipeline, index: usize, row: *Bindings) ExecutionError!void {
             };
             var next = Next{ .pipeline = self, .index = index + 1 };
             try procedures.callRow(executor, clause, row, index + 1 == self.query_clauses.len, .{ .context = &next, .extended = Next.extended, .result = Next.result });
+        },
+        .call_subquery => {
+            var input = [_]Bindings{row.*};
+            for (try clauses.runCallSubquery(executor, clause, &input)) |*extended| try self.feed(index + 1, extended);
         },
         .with_streaming => |with| {
             var projected = try projection.withRow(executor, with.info, with.items, row) orelse return;

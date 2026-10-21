@@ -48,6 +48,7 @@ pub fn setupPattern(self: *Executor, pattern: Index, bindings: *Bindings) Execut
                 .variable_length = edge_pattern.variable_length,
                 .min_hops = edge_pattern.min_hops,
                 .max_hops = edge_pattern.max_hops,
+                .shortest = edge_pattern.shortest,
                 .forward_direction = forward_direction,
                 .undirected = edge_pattern.direction == .undirected,
                 .variable_name = edge_pattern.variable_name,
@@ -254,6 +255,8 @@ pub const PatternEdge = struct {
     variable_length: bool,
     min_hops: u32,
     max_hops: ?u32,
+    /// Only the shortest paths (`shortestPath`: one, `allShortestPaths`: all).
+    shortest: @import("../query/ast.zig").EdgePatternData.Shortest = .none,
     forward_direction: Direction, // direction when traversing node_i -> node_{i+1}
     undirected: bool, // `-[...]-`: either direction (forward_direction unused)
     variable_name: []const u8,

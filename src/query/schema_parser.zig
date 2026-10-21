@@ -4,33 +4,46 @@
 //!       FOR (n:Label1|Label2) ON EACH [n.property, ...] [OPTIONS {...}]
 //!     CREATE FULLTEXT INDEX name [IF NOT EXISTS]
 //!       FOR ()-[r:TYPE1|TYPE2]-() ON EACH [r.property, ...] [OPTIONS {...}]
+//!     CREATE [RANGE|TEXT] INDEX [name] [IF NOT EXISTS]
+//!       FOR (n:Label) ON (n.property, ...) [OPTIONS {...}]   (or FOR ()-[r:TYPE]-())
+//!     CREATE CONSTRAINT [name] [IF NOT EXISTS]
+//!       FOR (n:Label) REQUIRE n.property IS UNIQUE           (or (n.a, n.b); ON ... ASSERT)
 //!     DROP INDEX name [IF EXISTS]
-//!     SHOW [FULLTEXT] INDEXES
+//!     DROP CONSTRAINT name [IF EXISTS]
+//!     SHOW [FULLTEXT|RANGE] INDEXES
+//!     SHOW CONSTRAINTS
 //!
 //! As in Neo4j. Every property is already indexed for equality (and ranges),
-//! so FULLTEXT is the only kind of index a command creates.
+//! so a RANGE or TEXT index is recorded (SHOW INDEXES lists it) and changes
+//! nothing; FULLTEXT is the kind of index that does.
 
 const std = @import("std");
 
 const Index = @import("ast.zig").Index;
+const NodeKind = @import("ast.zig").NodeKind;
 const Parser = @import("parser.zig").Parser;
 const ParseError = @import("parser.zig").ParseError;
 const expression_parser = @import("expression_parser.zig");
 
 /// True if the statement starting here is a schema command.
 pub fn atSchemaCommand(self: *const Parser) bool {
-    if (self.atKeyword("CREATE")) return self.atKeywordAhead(1, "FULLTEXT") or self.atKeywordAhead(1, "INDEX");
-    if (self.atKeyword("DROP")) return self.atKeywordAhead(1, "INDEX");
+    if (self.atKeyword("CREATE")) {
+        for ([_][]const u8{ "FULLTEXT", "INDEX", "RANGE", "TEXT", "BTREE", "CONSTRAINT" }) |keyword| {
+            if (self.atKeywordAhead(1, keyword)) return true;
+        }
+        return false;
+    }
+    if (self.atKeyword("DROP")) return self.atKeywordAhead(1, "INDEX") or self.atKeywordAhead(1, "CONSTRAINT");
     return self.atKeyword("SHOW");
 }
 
 pub fn parseSchemaCommand(self: *Parser) ParseError!Index {
     const command = if (self.atKeyword("CREATE"))
-        try parseCreateIndex(self)
+        if (self.atKeywordAhead(1, "CONSTRAINT")) try parseCreateConstraint(self) else try parseCreateIndex(self)
     else if (self.atKeyword("DROP"))
-        try parseDropIndex(self)
+        try parseDrop(self)
     else
-        try parseShowIndexes(self);
+        try parseShow(self);
     if (!self.at(.end_of_input)) {
         self.fail("a schema command is a statement of its own; unexpected text after it", .{});
         return error.UnexpectedToken;
@@ -38,33 +51,18 @@ pub fn parseSchemaCommand(self: *Parser) ParseError!Index {
     return command;
 }
 
-fn parseCreateIndex(self: *Parser) ParseError!Index {
-    _ = self.advance(); // CREATE
-    if (!self.atKeyword("FULLTEXT")) {
-        self.fail("only FULLTEXT indexes can be created: every property is already indexed for equality and ranges", .{});
-        return error.UnexpectedToken;
-    }
-    _ = self.advance();
-    try self.expectKeyword("INDEX");
-    if (self.atKeyword("IF") or self.atKeyword("FOR")) {
-        self.fail("a full-text index needs a name: CREATE FULLTEXT INDEX name FOR ...", .{});
-        return error.UnexpectedToken;
-    }
-    const name = try self.internIdentifier();
-    var if_not_exists = false;
-    if (self.atKeyword("IF")) {
-        _ = self.advance();
-        try self.expectKeyword("NOT");
-        try self.expectKeyword("EXISTS");
-        if_not_exists = true;
-    }
-    try self.expectKeyword("FOR");
+/// What an index or constraint is on: `(n:A|B)` or `()-[r:T|U]-()`.
+const Entity = struct {
+    relationships: bool,
+    variable: []const u8,
+    names: []const []const u8,
+};
 
-    // `(n:A|B)` or `()-[r:T|U]-()`, with the variable the properties use.
+fn parseEntity(self: *Parser) ParseError!Entity {
+    var names = std.ArrayList([]const u8).empty;
+    defer names.deinit(self.ast.allocator);
     var relationships = false;
     var variable: []const u8 = "";
-    var labels_or_types = std.ArrayList([]const u8).empty;
-    defer labels_or_types.deinit(self.ast.allocator);
     try self.expect(.left_paren);
     if (self.at(.right_paren)) {
         relationships = true;
@@ -72,24 +70,25 @@ fn parseCreateIndex(self: *Parser) ParseError!Index {
         try self.expect(.minus);
         try self.expect(.left_bracket);
         variable = try self.internIdentifier();
-        try parseNames(self, &labels_or_types);
+        try parseNames(self, &names);
         try self.expect(.right_bracket);
         try expectRelationshipEnd(self);
     } else {
         variable = try self.internIdentifier();
-        try parseNames(self, &labels_or_types);
+        try parseNames(self, &names);
         try self.expect(.right_paren);
     }
+    return .{ .relationships = relationships, .variable = variable, .names = try self.ast.internSlice(names.items) };
+}
 
-    try self.expectKeyword("ON");
-    try self.expectKeyword("EACH");
-    try self.expect(.left_bracket);
+/// `v.a, v.b, ...` (`close` ends the list): the property names, each of `variable`.
+fn parseProperties(self: *Parser, variable: []const u8, close: @import("lexer.zig").TokenKind) ParseError![]const []const u8 {
     var properties = std.ArrayList([]const u8).empty;
     defer properties.deinit(self.ast.allocator);
     while (true) {
         const owner = try self.internIdentifier();
         if (!std.mem.eql(u8, owner, variable)) {
-            self.fail("the indexed properties must be of '{s}', not '{s}'", .{ variable, owner });
+            self.fail("the properties must be of '{s}', not '{s}'", .{ variable, owner });
             return error.UnexpectedToken;
         }
         try self.expect(.dot);
@@ -97,25 +96,137 @@ fn parseCreateIndex(self: *Parser) ParseError!Index {
         if (!self.at(.comma)) break;
         _ = self.advance();
     }
-    try self.expect(.right_bracket);
+    try self.expect(close);
+    return self.ast.internSlice(properties.items);
+}
 
+/// `[name] [IF NOT EXISTS]`, before FOR (or ON): the name, or one made of
+/// what the index or constraint is on, once that is known (empty here).
+fn parseNameAndIfNotExists(self: *Parser, name_required: bool, what: []const u8) ParseError!struct { name: []const u8, if_not_exists: bool } {
+    var name: []const u8 = "";
+    if (!self.atKeyword("IF") and !self.atKeyword("FOR") and !self.atKeyword("ON")) {
+        name = try self.internIdentifier();
+    } else if (name_required) {
+        self.fail("{s} needs a name: CREATE {s} name FOR ...", .{ what, what });
+        return error.UnexpectedToken;
+    }
+    var if_not_exists = false;
+    if (self.atKeyword("IF")) {
+        _ = self.advance();
+        try self.expectKeyword("NOT");
+        try self.expectKeyword("EXISTS");
+        if_not_exists = true;
+    }
+    return .{ .name = name, .if_not_exists = if_not_exists };
+}
+
+/// A name for an unnamed index or constraint: `prefix_Label_property_...`.
+fn generatedName(self: *Parser, prefix: []const u8, entity: Entity, properties: []const []const u8) ParseError![]const u8 {
+    var name = std.ArrayList(u8).empty;
+    defer name.deinit(self.ast.allocator);
+    try name.appendSlice(self.ast.allocator, prefix);
+    for (entity.names) |label| {
+        try name.append(self.ast.allocator, '_');
+        try name.appendSlice(self.ast.allocator, label);
+    }
+    for (properties) |property| {
+        try name.append(self.ast.allocator, '_');
+        try name.appendSlice(self.ast.allocator, property);
+    }
+    return self.ast.intern(name.items);
+}
+
+/// `OPTIONS {...}`, if there is one: the map's expression.
+fn parseOptions(self: *Parser, children: *std.ArrayList(Index)) ParseError!void {
+    if (!self.atKeyword("OPTIONS")) return;
+    _ = self.advance();
+    if (!self.at(.left_brace)) {
+        self.fail("OPTIONS takes a map: OPTIONS {{indexConfig: {{...}}}}", .{});
+        return error.UnexpectedToken;
+    }
+    try children.append(self.ast.allocator, try expression_parser.parseExpression(self));
+}
+
+fn parseCreateIndex(self: *Parser) ParseError!Index {
+    _ = self.advance(); // CREATE
+    const fulltext = self.atKeyword("FULLTEXT");
+    if (fulltext or self.atKeyword("RANGE") or self.atKeyword("TEXT") or self.atKeyword("BTREE")) _ = self.advance();
+    try self.expectKeyword("INDEX");
+    const header = try parseNameAndIfNotExists(self, fulltext, "FULLTEXT INDEX");
+    try self.expectKeyword("FOR");
+    const entity = try parseEntity(self);
+    try self.expectKeyword("ON");
+    var properties: []const []const u8 = undefined;
+    if (fulltext) {
+        try self.expectKeyword("EACH");
+        try self.expect(.left_bracket);
+        properties = try parseProperties(self, entity.variable, .right_bracket);
+    } else {
+        try self.expect(.left_paren);
+        properties = try parseProperties(self, entity.variable, .right_paren);
+    }
     var children = std.ArrayList(Index).empty;
     defer children.deinit(self.ast.allocator);
-    if (self.atKeyword("OPTIONS")) {
+    try parseOptions(self, &children);
+    const kind: NodeKind = if (fulltext) .create_fulltext_index else .create_index;
+    return self.ast.addNode(kind, .{ .schema_definition = .{
+        .name = if (header.name.len > 0) header.name else try generatedName(self, "index", entity, properties),
+        .relationships = entity.relationships,
+        .labels_or_types = entity.names,
+        .properties = properties,
+        .if_not_exists = header.if_not_exists,
+    } }, if (fulltext) children.items else &.{});
+}
+
+/// `CREATE CONSTRAINT [name] [IF NOT EXISTS] FOR (n:L) REQUIRE n.p IS UNIQUE`
+/// (`(n.a, n.b)` for several properties; Neo4j 4's `ON ... ASSERT` too).
+fn parseCreateConstraint(self: *Parser) ParseError!Index {
+    _ = self.advance(); // CREATE
+    _ = self.advance(); // CONSTRAINT
+    const header = try parseNameAndIfNotExists(self, false, "CONSTRAINT");
+    const old_form = self.atKeyword("ON");
+    if (old_form) _ = self.advance() else try self.expectKeyword("FOR");
+    const entity = try parseEntity(self);
+    if (old_form) try self.expectKeyword("ASSERT") else try self.expectKeyword("REQUIRE");
+    const properties = if (self.at(.left_paren)) list: {
         _ = self.advance();
-        if (!self.at(.left_brace)) {
-            self.fail("OPTIONS takes a map: OPTIONS {{indexConfig: {{...}}}}", .{});
-            return error.UnexpectedToken;
-        }
-        try children.append(self.ast.allocator, try expression_parser.parseExpression(self));
+        break :list try parseProperties(self, entity.variable, .right_paren);
+    } else try parseSingleProperty(self, entity.variable);
+    try self.expectKeyword("IS");
+    if (!self.atKeyword("UNIQUE")) {
+        self.fail("only uniqueness constraints are supported (REQUIRE n.property IS UNIQUE), not {s}", .{@import("lexer.zig").describeToken(self.peek())});
+        return error.UnexpectedToken;
     }
-    return self.ast.addNode(.create_fulltext_index, .{ .fulltext_index = .{
-        .name = name,
-        .relationships = relationships,
-        .labels_or_types = try self.ast.internSlice(labels_or_types.items),
-        .properties = try self.ast.internSlice(properties.items),
-        .if_not_exists = if_not_exists,
-    } }, children.items);
+    _ = self.advance();
+    if (entity.relationships) {
+        self.fail("uniqueness constraints are on nodes, not relationships", .{});
+        return error.UnexpectedToken;
+    }
+    if (entity.names.len != 1) {
+        self.fail("a constraint is on one label", .{});
+        return error.UnexpectedToken;
+    }
+    var children = std.ArrayList(Index).empty;
+    defer children.deinit(self.ast.allocator);
+    try parseOptions(self, &children);
+    return self.ast.addNode(.create_constraint, .{ .schema_definition = .{
+        .name = if (header.name.len > 0) header.name else try generatedName(self, "constraint", entity, properties),
+        .relationships = false,
+        .labels_or_types = entity.names,
+        .properties = properties,
+        .if_not_exists = header.if_not_exists,
+    } }, &.{});
+}
+
+/// `n.property`: one property of `variable`.
+fn parseSingleProperty(self: *Parser, variable: []const u8) ParseError![]const []const u8 {
+    const owner = try self.internIdentifier();
+    if (!std.mem.eql(u8, owner, variable)) {
+        self.fail("the properties must be of '{s}', not '{s}'", .{ variable, owner });
+        return error.UnexpectedToken;
+    }
+    try self.expect(.dot);
+    return self.ast.internSlice(&.{try self.internIdentifier()});
 }
 
 /// `:A|B|C` after a variable: at least one name.
@@ -135,9 +246,11 @@ fn expectRelationshipEnd(self: *Parser) ParseError!void {
     try self.expect(.right_paren);
 }
 
-fn parseDropIndex(self: *Parser) ParseError!Index {
+/// `DROP INDEX name [IF EXISTS]` or `DROP CONSTRAINT name [IF EXISTS]`.
+fn parseDrop(self: *Parser) ParseError!Index {
     _ = self.advance(); // DROP
-    try self.expectKeyword("INDEX");
+    const kind: NodeKind = if (self.atKeyword("CONSTRAINT")) .drop_constraint else .drop_index;
+    _ = self.advance();
     const name = try self.internIdentifier();
     var if_exists = false;
     if (self.atKeyword("IF")) {
@@ -145,21 +258,29 @@ fn parseDropIndex(self: *Parser) ParseError!Index {
         try self.expectKeyword("EXISTS");
         if_exists = true;
     }
-    return self.ast.addNode(.drop_index, .{ .drop_index = .{ .name = name, .if_exists = if_exists } }, &.{});
+    return self.ast.addNode(kind, .{ .drop_index = .{ .name = name, .if_exists = if_exists } }, &.{});
 }
 
-fn parseShowIndexes(self: *Parser) ParseError!Index {
+/// `SHOW [FULLTEXT|RANGE] INDEXES` or `SHOW CONSTRAINTS` (singular too).
+fn parseShow(self: *Parser) ParseError!Index {
     _ = self.advance(); // SHOW
-    var fulltext_only = false;
+    if (self.atKeyword("CONSTRAINTS") or self.atKeyword("CONSTRAINT")) {
+        _ = self.advance();
+        return self.ast.addNode(.show_constraints, .{ .none = {} }, &.{});
+    }
+    var which: @FieldType(@import("ast.zig").Data, "show_indexes") = .all;
     if (self.atKeyword("FULLTEXT")) {
         _ = self.advance();
-        fulltext_only = true;
+        which = .fulltext;
+    } else if (self.atKeyword("RANGE")) {
+        _ = self.advance();
+        which = .range;
     }
     if (self.atKeyword("INDEXES") or self.atKeyword("INDEX")) {
         _ = self.advance();
     } else {
-        self.fail("expected INDEXES after SHOW", .{});
+        self.fail("expected INDEXES or CONSTRAINTS after SHOW", .{});
         return error.UnexpectedToken;
     }
-    return self.ast.addNode(.show_indexes, .{ .boolean = fulltext_only }, &.{});
+    return self.ast.addNode(.show_indexes, .{ .show_indexes = which }, &.{});
 }

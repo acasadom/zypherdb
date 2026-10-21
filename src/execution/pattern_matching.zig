@@ -1,6 +1,7 @@
 //! Pattern matching: runs the planned steps (scan, expand, edge-index scan)
 //! over the graph, reporting each complete match to `Executor.matchFound`.
-//! A variable-length edge (`*min..max`) expands depth-first; a pattern named
+//! A variable-length edge (`*min..max`) expands depth-first (a shortest one
+//! breadth-first: shortest_paths.zig); a pattern named
 //! as a path (`p = ...`) binds its path once every step has matched.
 
 const std = @import("std");
@@ -15,6 +16,7 @@ const Value = @import("../value.zig").Value;
 const Executor = @import("Executor.zig");
 const planner = @import("planner.zig");
 const expressions = @import("expressions.zig");
+const shortest_paths = @import("shortest_paths.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
@@ -166,7 +168,10 @@ fn bindEdgeEndpoints(self: *Executor, edge_index: usize, ref: Relationship, left
 /// when `to` is already bound, otherwise binds `to` to each neighbour.
 fn expandEdge(self: *Executor, from: usize, to: usize, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
     const edge_index = @min(from, to);
-    if (self.edges.items[edge_index].variable_length) return expandVariableLength(self, from, to, next_step, pattern_index, bindings);
+    if (self.edges.items[edge_index].variable_length) {
+        if (self.edges.items[edge_index].shortest != .none) return shortest_paths.expand(self, from, to, next_step, pattern_index, bindings);
+        return expandVariableLength(self, from, to, next_step, pattern_index, bindings);
+    }
     const from_id = self.nodes.items[from].id;
     const edge = self.edges.items[edge_index];
     const traversal: Direction = if (from < to) edge.forward_direction else opposite(edge.forward_direction);
@@ -273,7 +278,7 @@ fn followEdge(self: *Executor, edge_index: usize, ref: Relationship, next_step: 
 }
 
 /// Relationship uniqueness: one MATCH never uses the same edge twice.
-fn edgeUsed(self: *Executor, ref: Relationship) bool {
+pub fn edgeUsed(self: *Executor, ref: Relationship) bool {
     for (self.used_edges.items) |used| {
         if (used.eql(ref)) return true;
     }
@@ -282,7 +287,7 @@ fn edgeUsed(self: *Executor, ref: Relationship) bool {
 
 /// One variable-length expansion: pattern positions `from` (bound) to `to`,
 /// through the edge between them.
-const Expansion = struct { from: usize, to: usize, edge_index: usize, next_step: usize, pattern_index: usize };
+pub const Expansion = struct { from: usize, to: usize, edge_index: usize, next_step: usize, pattern_index: usize };
 
 /// Follows a variable-length edge depth-first: every path of `min_hops` to
 /// `max_hops` edges from `from` whose edges fit the pattern (type,
@@ -317,7 +322,7 @@ fn walk(self: *Executor, expansion: Expansion, current: NodeId, trail: *std.Arra
 
 /// A variable-length path reached `end`: if it fits the `to` node, bind it
 /// and the edge variable, and continue with the next step.
-fn reachEnd(self: *Executor, expansion: Expansion, end: NodeId, trail: []const Relationship, bindings: *Bindings) ExecutionError!void {
+pub fn reachEnd(self: *Executor, expansion: Expansion, end: NodeId, trail: []const Relationship, bindings: *Bindings) ExecutionError!void {
     const to_node = self.nodes.items[expansion.to];
     if (!try hasAllLabels(self, end, to_node.labels)) return;
     const saved = bindings.mark();
@@ -360,7 +365,7 @@ fn matchedPath(self: *Executor) ExecutionError!Value {
 /// direction (or both, when undirected), of the pattern's type (or any).
 /// Yields each with its far-side node. The yielded edge type is a view into
 /// the store, valid until the next `next`.
-const MatchingEdges = struct {
+pub const MatchingEdges = struct {
     graph: *Graph,
     from_id: NodeId,
     edge: PatternEdge,
@@ -371,7 +376,7 @@ const MatchingEdges = struct {
 
     const Match = struct { neighbour: NodeId, ref: Relationship, neighbour_labels: ?[]const u8 };
 
-    fn init(graph: *Graph, from_id: NodeId, edge: PatternEdge, traversal: Direction) MatchingEdges {
+    pub fn init(graph: *Graph, from_id: NodeId, edge: PatternEdge, traversal: Direction) MatchingEdges {
         return .{
             .graph = graph,
             .from_id = from_id,
@@ -381,11 +386,11 @@ const MatchingEdges = struct {
         };
     }
 
-    fn deinit(self: *MatchingEdges) void {
+    pub fn deinit(self: *MatchingEdges) void {
         if (self.current) |*iterator| iterator.deinit();
     }
 
-    fn next(self: *MatchingEdges) StorageError!?Match {
+    pub fn next(self: *MatchingEdges) StorageError!?Match {
         while (true) {
             if (self.current) |*iterator| {
                 if (try iterator.next()) |key| {

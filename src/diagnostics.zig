@@ -17,6 +17,8 @@ pub const ErrorCode = enum(u32) {
     storage = 7,
     parameter_missing = 8,
     arithmetic = 9,
+    constraint_violation = 10,
+    external_resource = 11,
 };
 
 pub const Diagnostic = struct {
@@ -80,6 +82,8 @@ pub fn codeOf(err: anyerror) ErrorCode {
         error.IntegerOverflow, error.DivisionByZero => .arithmetic,
         error.InvalidExpression => .invalid_expression,
         error.NodeStillConnected => .node_still_connected,
+        error.ConstraintViolation => .constraint_violation,
+        error.ExternalResourceFailed => .external_resource,
         else => .storage,
     };
 }

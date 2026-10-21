@@ -2,6 +2,7 @@
 //! with three-valued (null) logic, CASE, IN and size().
 
 const std = @import("std");
+const regex = @import("../text/regex.zig");
 const Index = @import("../query/ast.zig").Index;
 const BinaryOperator = @import("../query/ast.zig").BinaryOperator;
 const UnaryOperator = @import("../query/ast.zig").UnaryOperator;
@@ -108,7 +109,8 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             const children = self.ast.nodeChildren(expr);
             break :blk .{ .boolean = (try clauses.nestedMatches(self, children[0..1], children[1], bindings.*)).len > 0 };
         },
-        .exists_subquery => .{ .boolean = (try clauses.nestedMatchClauses(self, self.ast.nodeChildren(expr), bindings.*)).len > 0 },
+        .exists_subquery => .{ .boolean = (try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len > 0 },
+        .count_subquery => .{ .int = @intCast((try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len) },
         .pattern_comprehension => blk: {
             const children = self.ast.nodeChildren(expr);
             const matches = try clauses.nestedMatches(self, children[0..1], children[1], bindings.*);
@@ -358,9 +360,35 @@ fn listPosition(index: i64, length: usize) ?usize {
     return @intCast(resolved);
 }
 
+/// `text =~ pattern`: whether the whole string matches; null when either is
+/// null or not a string.
+fn regexMatch(self: *Executor, left: Value, right: Value) ExecutionError!Value {
+    if (Value.isNull(left) or Value.isNull(right)) return .{ .null = {} };
+    const text = asString(left) catch return .{ .null = {} };
+    const pattern = asString(right) catch return .{ .null = {} };
+    const compiled = try compiledRegex(self, pattern);
+    return .{ .boolean = try compiled.matches(self.allocator, text) };
+}
+
+/// `pattern` compiled, once per query (a WHERE tests it on every row).
+fn compiledRegex(self: *Executor, pattern: []const u8) ExecutionError!regex.Regex {
+    if (self.regexes.get(pattern)) |compiled| return compiled;
+    var problem = regex.Problem{};
+    const compiled = regex.Regex.compile(self.allocator, pattern, &problem) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.InvalidRegex => {
+            self.fail(.invalid_expression, "invalid regular expression '{s}': {s} (at character {d})", .{ pattern, problem.message, problem.offset });
+            return error.InvalidExpression;
+        },
+    };
+    try self.regexes.put(self.allocator, try self.allocator.dupe(u8, pattern), compiled);
+    return compiled;
+}
+
 pub fn applyBinaryOperator(self: *Executor, operator: BinaryOperator, left: Value, right: Value) ExecutionError!Value {
     return switch (operator) {
         .add, .subtract, .multiply, .divide, .modulo, .power => arithmetic(self, operator, left, right),
+        .regex_match => regexMatch(self, left, right),
         .equal, .not_equal, .less_than, .greater_than, .less_or_equal, .greater_or_equal, .starts_with, .ends_with, .contains => blk: {
             // Three-valued logic: any null operand yields null.
             if (Value.isNull(left) or Value.isNull(right)) break :blk .{ .null = {} };

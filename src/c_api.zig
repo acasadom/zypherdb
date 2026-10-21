@@ -36,6 +36,8 @@ pub const Context = struct {
     diagnostic: Diagnostic,
     /// The last `acmedb_export_json` document, owned by the context.
     export_json: []u8 = &.{},
+    /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
+    import_directory: ?[]u8 = null,
 };
 
 const Result = struct {
@@ -102,6 +104,7 @@ pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize
     context.allocator = allocator;
     context.diagnostic = Diagnostic.init();
     context.export_json = &.{};
+    context.import_directory = null;
     return context;
 }
 
@@ -113,8 +116,19 @@ pub export fn acmedb_sync(context: *Context) c_int {
 
 pub export fn acmedb_close(context: *Context) void {
     allocator.free(context.export_json);
+    if (context.import_directory) |directory| allocator.free(directory);
     context.store.deinit();
     allocator.destroy(context);
+}
+
+/// Sets the directory LOAD CSV reads files from (`path_len` 0: none, which
+/// turns LOAD CSV off, as it is after opening). RETURN_OK, or
+/// RETURN_STORAGE_ERROR when out of memory.
+pub export fn acmedb_set_import_directory(context: *Context, path_ptr: [*]const u8, path_len: usize) c_int {
+    const directory: ?[]u8 = if (path_len == 0) null else allocator.dupe(u8, path_ptr[0..path_len]) catch return RETURN_STORAGE_ERROR;
+    if (context.import_directory) |old| allocator.free(old);
+    context.import_directory = directory;
+    return RETURN_OK;
 }
 
 /// Returns the last error message (and its length), if the most recent
@@ -165,14 +179,24 @@ pub export fn acmedb_allocate_node_id(context: *Context) u64 {
 }
 
 pub export fn acmedb_add_node(context: *Context, id: u64, label_ptr: [*]const u8, label_len: usize) c_int {
-    context.graph.addNode(id, label_ptr[0..label_len]) catch return 1;
+    context.graph.addNode(id, label_ptr[0..label_len]) catch |err| return writeFailure(context, err);
     return 0;
 }
 
-/// Mutator return codes: success, storage failure, and a missing node.
+/// Mutator return codes: success, storage failure, a missing node, and a
+/// write a uniqueness constraint refused (its message in acmedb_last_error).
 pub const RETURN_OK: c_int = 0;
 pub const RETURN_STORAGE_ERROR: c_int = 1;
 pub const RETURN_NODE_NOT_FOUND: c_int = 2;
+pub const RETURN_CONSTRAINT_VIOLATION: c_int = 3;
+
+/// The return code of a failed write; a constraint violation's message
+/// goes to the context's diagnostic.
+fn writeFailure(context: *Context, err: anyerror) c_int {
+    if (err != error.ConstraintViolation) return RETURN_STORAGE_ERROR;
+    context.diagnostic.set(.constraint_violation, 0, "{s}", .{context.graph.violationMessage()});
+    return RETURN_CONSTRAINT_VIOLATION;
+}
 
 /// Returns `RETURN_NODE_NOT_FOUND` unless every id in `ids` is an existing node.
 fn requireNodes(context: *Context, ids: []const u64) c_int {
@@ -196,7 +220,7 @@ pub export fn acmedb_add_edge(context: *Context, src: u64, dst: u64, edge_type_p
 pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: i64) c_int {
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
-    context.graph.setProperty(id, name_ptr[0..name_len], .{ .int = value }) catch return RETURN_STORAGE_ERROR;
+    context.graph.setProperty(id, name_ptr[0..name_len], .{ .int = value }) catch |err| return writeFailure(context, err);
     return RETURN_OK;
 }
 
@@ -204,7 +228,7 @@ pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*
 pub export fn acmedb_set_property_float64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: f64) c_int {
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
-    context.graph.setProperty(id, name_ptr[0..name_len], .{ .float = value }) catch return RETURN_STORAGE_ERROR;
+    context.graph.setProperty(id, name_ptr[0..name_len], .{ .float = value }) catch |err| return writeFailure(context, err);
     return RETURN_OK;
 }
 
@@ -212,7 +236,7 @@ pub export fn acmedb_set_property_float64(context: *Context, id: u64, name_ptr: 
 pub export fn acmedb_set_property_string(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_length: usize) c_int {
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
-    context.graph.setProperty(id, name_ptr[0..name_len], .{ .string = value_ptr[0..value_length] }) catch return RETURN_STORAGE_ERROR;
+    context.graph.setProperty(id, name_ptr[0..name_len], .{ .string = value_ptr[0..value_length] }) catch |err| return writeFailure(context, err);
     return RETURN_OK;
 }
 
@@ -243,6 +267,7 @@ fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) 
     var executor = Executor.init(&ast, &context.graph, scratch.allocator());
     executor.diagnostic = &context.diagnostic;
     executor.parameters = parameters;
+    executor.import_directory = context.import_directory;
     const rows = executor.run(q) catch |err| {
         // A bare runtime error that didn't set a message gets a generic one.
         if (context.diagnostic.message().len == 0) noteError(&context.diagnostic, err);

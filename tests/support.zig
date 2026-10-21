@@ -90,7 +90,7 @@ pub fn loadMoviesGraph(g: *Graph) !void {
 }
 
 /// Asserts that `rows` equals `expected` as an unordered set of rows.
-fn expectRows(rows: []const Row, expected: []const []const Value) !void {
+pub fn expectRows(rows: []const Row, expected: []const []const Value) !void {
     try testing.expectEqual(expected.len, rows.len);
     const used = try testing.allocator.alloc(bool, rows.len);
     defer testing.allocator.free(used);

@@ -12,8 +12,10 @@ from acmedb import (
     AcmedbError,
     ArithmeticQueryError,
     ClosedError,
+    ConstraintViolationError,
     Database,
     Duration,
+    ExternalResourceError,
     NodeNotFoundError,
     Node,
     ParameterMissingError,
@@ -71,6 +73,36 @@ def test_errors(db):
         db.query("RETURN n.name")
     with pytest.raises(TypeMismatchError):
         db.query("RETURN size(1)")
+
+
+def test_uniqueness_constraint(db):
+    db.query("CREATE CONSTRAINT card_number FOR (c:Card) REQUIRE c.number IS UNIQUE")
+    db.query("CREATE (:Card {number: 1})")
+    with pytest.raises(ConstraintViolationError, match="card_number") as caught:
+        db.query("CREATE (:Card {number: 1})")
+    assert caught.value.code == 10
+    # The direct API is held to it too.
+    db.add_node(50, "Card")
+    with pytest.raises(ConstraintViolationError):
+        db.set_property(50, "number", 1)
+    assert db.query("MATCH (c:Card {number: 1}) RETURN count(c)") == [[1]]
+
+
+def test_load_csv_reads_only_from_the_import_directory(tmp_path):
+    imports = tmp_path / "imports"
+    imports.mkdir()
+    (imports / "cards.csv").write_text("number,holder\n1001,Ana\n1002,Bo\n")
+    (tmp_path / "secret.csv").write_text("x\n")
+    with Database(str(tmp_path / "db"), import_directory=str(imports)) as db:
+        db.query("LOAD CSV WITH HEADERS FROM 'file:///cards.csv' AS row CREATE (:Card {number: toInteger(row.number), holder: row.holder})")
+        assert db.query("MATCH (c:Card) RETURN c.holder ORDER BY c.number") == [["Ana"], ["Bo"]]
+        with pytest.raises(ExternalResourceError, match="outside the import directory"):
+            db.query("LOAD CSV FROM 'file:///../secret.csv' AS row RETURN row")
+    with Database(str(tmp_path / "db2")) as db:
+        with pytest.raises(ExternalResourceError, match="LOAD CSV is off"):
+            db.query("LOAD CSV FROM 'file:///cards.csv' AS row RETURN row")
+    with pytest.raises(ValueError):
+        Database(str(tmp_path / "db3"), import_directory=str(tmp_path / "missing"))
 
 
 def test_json_roundtrip(db):

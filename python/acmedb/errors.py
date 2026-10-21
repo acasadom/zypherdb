@@ -46,6 +46,14 @@ class NodeStillConnectedError(QueryError):
     """A DELETE targeted a node that still has relationships (use DETACH DELETE)."""
 
 
+class ConstraintViolationError(QueryError):
+    """A write would break a uniqueness constraint (CREATE CONSTRAINT ... IS UNIQUE)."""
+
+
+class ExternalResourceError(QueryError):
+    """LOAD CSV could not read its file (off, outside the import directory, missing, not CSV)."""
+
+
 class ParameterMissingError(QueryError):
     """The query uses a `$name` parameter that was not given."""
 
@@ -63,6 +71,8 @@ _CODE_TO_ERROR = {
     6: NodeStillConnectedError,
     8: ParameterMissingError,
     9: ArithmeticQueryError,
+    10: ConstraintViolationError,
+    11: ExternalResourceError,
 }
 
 

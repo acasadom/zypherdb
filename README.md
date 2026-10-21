@@ -134,10 +134,10 @@ See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 ## Status
 
 acmedb is measured against the [openCypher TCK](tests/tck/README.md), the reference scenarios of
-the language: **3201 of the 3202 scenarios that expect a result pass**, and all 694 that
-expect an error — see [tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area. The
-scenario left needs a `WITH` inside `EXISTS { … }`; the [Cypher reference](docs/guide/cypher.md#not-supported) lists
-what acmedb does not implement. See `STATUS.md` (kept out of git) for the working notes and the roadmap.
+the language: **all 3202 scenarios that expect a result pass**, and all 694 that expect an
+error — see [tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area. The TCK does not
+cover everything Neo4j users write: the [Cypher reference](docs/guide/cypher.md#not-supported)
+lists what acmedb does not implement yet. See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 
 ## License
 

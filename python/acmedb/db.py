@@ -32,7 +32,7 @@ class Database:
             db.query("CREATE (n:Movie {title: 'The Matrix'})")
     """
 
-    def __init__(self, path: str, durability: str = "full", temporals: str = "python"):
+    def __init__(self, path: str, durability: str = "full", temporals: str = "python", import_directory: str | None = None):
         """Opens (or creates) the database in directory `path`.
 
         `durability` is how much a commit waits for the disk: "full" (each
@@ -47,6 +47,10 @@ class Database:
         `temporals` is how query results return dates, times and durations:
         "python" as `datetime`-module values (microsecond precision, years
         1-9999), or "iso" as their exact ISO 8601 text.
+
+        `import_directory` is the directory LOAD CSV reads from: a query's
+        `file:///name.csv` is `name.csv` in it, and nothing outside it can be
+        read. Without one, LOAD CSV is off.
         """
         if durability not in _DURABILITY:
             raise ValueError(f"durability must be one of {', '.join(_DURABILITY)}, not {durability!r}")
@@ -55,6 +59,11 @@ class Database:
         if temporals not in _TEMPORALS:
             raise ValueError(f"temporals must be one of {', '.join(_TEMPORALS)}, not {temporals!r}")
         self._db = native.open(path, _DURABILITY[durability], _TEMPORALS[temporals])
+        if import_directory is not None:
+            if not os.path.isdir(import_directory):
+                native.close(self._db)
+                raise ValueError(f"import_directory {import_directory!r} is not a directory")
+            native.set_import_directory(self._db, os.path.abspath(import_directory))
         # The native context holds per-handle transaction state, so every call
         # into it is serialized. Reentrant, so a `write()` block can call the
         # mutators that themselves take the lock.

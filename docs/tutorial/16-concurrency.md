@@ -19,6 +19,7 @@ that says why, with a message and a stable code:
 | `ParameterMissingError` | a `$parameter` was not passed |
 | `ArithmeticQueryError` | integer overflow or division by zero (also an `ArithmeticError`) |
 | `NodeStillConnectedError` | `DELETE` of a node that still has relationships |
+| `ConstraintViolationError` | a write would break a uniqueness constraint |
 
 Outside queries there are `StorageError` (the disk), `NodeNotFoundError` (a mutator given an id
 that does not exist) and `ClosedError` (a closed `Database`).

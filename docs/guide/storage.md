@@ -103,7 +103,7 @@ outwards, so it returns a superset of the matches, and the WHERE is still checke
 
 ## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version` (1). When the C ABI or the
+The key `!format` holds the format's version, `Graph.format_version` (2). When the C ABI or the
 Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
 written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
 
@@ -148,12 +148,19 @@ the first release.
 
 ## Full-text indexes
 
-A full-text index's definition lives under `i | name`: whether it indexes nodes or
-relationships, its analyzer, its labels or types, and its properties. `!schema` counts the changes
-to the definitions. Every mutation asks for it, to know whether any index must follow the change,
-so inside a write transaction it is read once (`KeyValueStore.write_transaction_memo`): only that
-transaction could change it, and when it does it updates the memo too. A database without
-full-text indexes pays one read per write transaction.
+Every schema definition lives under `i | name` (`fulltext.zig`): its kind (a full-text index, a
+declared range index, or a uniqueness constraint), whether it is on nodes or relationships, its
+analyzer (full-text only), its labels or types, and its properties. `!schema` counts the changes
+to the definitions. Every mutation asks for it, to know whether any index or constraint must
+follow the change, so inside a write transaction it is read once
+(`KeyValueStore.write_transaction_memo`): only that transaction could change it, and when it does
+it updates the memo too. A database without definitions pays one read per write transaction.
+
+A uniqueness constraint (`constraints.zig`) is checked before a node's new record is written
+(`setProperty`, `addLabel`): the property index gives the other nodes with the first property's
+value, and one with the label and every other value equal is a violation
+(`error.ConstraintViolation`, `Graph.violationMessage`). Checking before writing keeps a refused
+write from changing anything, also outside a transaction.
 
 The postings live in four key spaces of their own, each after a marker byte, the index's name and a
 `0x00`. An entity is a node's or a relationship's id (8 bytes; an index holds one kind).

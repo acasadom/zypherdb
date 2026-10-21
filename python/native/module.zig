@@ -44,13 +44,29 @@ const Database = struct {
     /// with their values in `procedure_arena`.
     table_procedures: std.ArrayList(acmedb.procedures.TableProcedure) = .empty,
     procedure_arena: std.heap.ArenaAllocator,
+    /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
+    import_directory: ?[]u8 = null,
 };
 
 /// Frees what an open database holds, and the database.
 fn release(database: *Database) void {
     database.store.deinit();
     database.procedure_arena.deinit();
+    if (database.import_directory) |directory| allocator.free(directory);
     allocator.destroy(database);
+}
+
+/// `set_import_directory(db, path or None)`: where LOAD CSV reads files.
+fn setImportDirectory(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var path_pointer: [*c]const u8 = null;
+    var path_length: py.Py_ssize_t = 0;
+    if (py.PyArg_ParseTuple(args, "Oz#", &capsule, &path_pointer, &path_length) == 0) return null;
+    const database = databaseOf(capsule) orelse return null;
+    const directory: ?[]u8 = if (path_pointer == null) null else allocator.dupe(u8, path_pointer[0..@intCast(path_length)]) catch return py.PyErr_NoMemory();
+    if (database.import_directory) |old| allocator.free(old);
+    database.import_directory = directory;
+    return none();
 }
 
 /// How result values become Python objects: the entities the rows refer to,
@@ -484,6 +500,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     database.iso_temporals = iso_temporals != 0;
     database.table_procedures = .empty;
     database.procedure_arena = std.heap.ArenaAllocator.init(allocator);
+    database.import_directory = null;
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
         release(database);
         return null;
@@ -541,6 +558,7 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     executor.diagnostic = &database.diagnostic;
     executor.parameters = parameters;
     executor.table_procedures = database.table_procedures.items;
+    executor.import_directory = database.import_directory;
     const thread_state = py.PyEval_SaveThread();
     const outcome = run(&executor, &ast, text, &database.diagnostic);
     py.PyEval_RestoreThread(thread_state);
@@ -587,6 +605,14 @@ fn run(executor: *Executor, ast: *acmedb.Ast, text: []const u8, diagnostic: *Dia
 
 fn storageFailure() ?*py.PyObject {
     return raise(classes.storage_error, "write failed", .{});
+}
+
+/// The exception for a failed write: a constraint it would break
+/// (ConstraintViolationError), or a storage failure.
+fn writeFailure(database: *Database, err: anyerror) ?*py.PyObject {
+    if (err != error.ConstraintViolation) return storageFailure();
+    database.diagnostic.set(.constraint_violation, 0, "{s}", .{database.graph.violationMessage()});
+    return raiseQueryError(database);
 }
 
 fn beginWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
@@ -641,7 +667,7 @@ fn addNode(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var label_length: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "OKs#", &capsule, &id, &label_pointer, &label_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
-    writing(database, Graph.addNode, .{ &database.graph, id, label_pointer[0..@intCast(label_length)] }) catch return storageFailure();
+    writing(database, Graph.addNode, .{ &database.graph, id, label_pointer[0..@intCast(label_length)] }) catch |err| return writeFailure(database, err);
     return none();
 }
 
@@ -692,7 +718,7 @@ fn setProperty(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     const value = valueOf(value_object.?, arena_state.allocator(), false) orelse return null;
     writing(database, Graph.setProperty, .{ &database.graph, id, name_pointer[0..@intCast(name_length)], value }) catch |err| switch (err) {
         error.UnsupportedPropertyType => return raise(py.PyExc_TypeError, "this value cannot be stored as a property", .{}),
-        else => return storageFailure(),
+        else => return writeFailure(database, err),
     };
     return none();
 }
@@ -801,6 +827,7 @@ var methods = [_]py.PyMethodDef{
     method("set_property", setProperty),
     method("export_graph", exportGraph),
     method("define_procedure", defineProcedure),
+    method("set_import_directory", setImportDirectory),
     method("duration_text", durationText),
     .{ .ml_name = null, .ml_meth = null, .ml_flags = 0, .ml_doc = null },
 };

@@ -41,6 +41,7 @@ pub const TokenKind = enum {
     arrow_right,
     arrow_left,
     equal,
+    regex_match, // `=~`
     not_equal,
     less_than,
     greater_than,
@@ -86,6 +87,7 @@ pub fn describeTokenKind(kind: TokenKind) []const u8 {
         .arrow_right => "'->'",
         .arrow_left => "'<-'",
         .equal => "'='",
+        .regex_match => "'=~'",
         .not_equal => "'<>'",
         .less_than => "'<'",
         .greater_than => "'>'",
@@ -335,6 +337,11 @@ pub fn tokenize(allocator: Allocator, src: []const u8, diagnostic: ?*Diagnostic)
                 }
             },
             '=' => {
+                if (i + 1 < src.len and src[i + 1] == '~') {
+                    try add(&tokens, allocator, .regex_match, src[i .. i + 2], i);
+                    i += 2;
+                    continue;
+                }
                 try add(&tokens, allocator, .equal, src[i .. i + 1], i);
                 i += 1;
             },
