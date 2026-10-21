@@ -97,6 +97,10 @@ pub extern "c" fn mdbx_env_sync_ex(env: *MDBX_env, force: bool, nonblock: bool) 
 pub extern "c" fn mdbx_txn_begin(env: *MDBX_env, parent: ?*MDBX_txn, flags: c_uint, txn: *?*MDBX_txn) c_int;
 pub extern "c" fn mdbx_txn_commit(txn: *MDBX_txn) c_int;
 pub extern "c" fn mdbx_txn_abort(txn: *MDBX_txn) c_int;
+/// Ends a read transaction but keeps its handle (and reader slot) for
+/// `mdbx_txn_renew`, which starts it again on the latest snapshot.
+pub extern "c" fn mdbx_txn_reset(txn: *MDBX_txn) c_int;
+pub extern "c" fn mdbx_txn_renew(txn: *MDBX_txn) c_int;
 
 // --- Tables ---
 

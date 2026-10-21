@@ -7,9 +7,11 @@
 //! - `Environment`: an open database at a path.
 //!     `open(allocator, path, Options) Error!Environment`, `close()`,
 //!     `sync() Error!void`, `beginRead() Error!Transaction`,
-//!     `beginWrite() Error!Transaction`.
+//!     `endRead(Transaction)` (ends a read transaction, perhaps keeping it
+//!     to be begun again cheaply), `beginWrite() Error!Transaction`.
 //! - `Transaction`: a snapshot (read) or the single writer (write).
-//!     `commit() Error!void` (a failed commit is aborted), `abort()`,
+//!     `commit() Error!void` (a failed commit is aborted), `abort()` (a
+//!     read transaction ends better with `Environment.endRead`),
 //!     `get(Table, key) Error!?[]const u8`, `put(Table, key, value) Error!void`,
 //!     `delete(Table, key) Error!void` (deleting an absent key succeeds),
 //!     `openCursor(Table) Error!Cursor`.
@@ -84,7 +86,7 @@ pub const Options = struct { durability: Durability = .full };
 pub fn check(comptime Engine: type) void {
     const required = .{
         .{ Engine, &.{"Environment", "Transaction", "Cursor"} },
-        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "beginWrite" } },
+        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite" } },
         .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },
     };

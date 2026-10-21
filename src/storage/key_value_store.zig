@@ -178,7 +178,7 @@ pub const KeyValueStore = struct {
             self.read_cursor = null;
         }
         if (self.active_read_transaction) |transaction| {
-            transaction.abort();
+            self.environment.endRead(transaction);
             self.active_read_transaction = null;
         }
     }
@@ -237,14 +237,14 @@ pub const KeyValueStore = struct {
     pub fn get(self: *KeyValueStore, key: []const u8) StorageError!?[]u8 {
         if (self.activeTransaction()) |transaction| return self.copy(try transaction.get(.main, key));
         const transaction = try self.environment.beginRead();
-        defer transaction.abort();
+        defer self.environment.endRead(transaction);
         return self.copy(try transaction.get(.main, key));
     }
 
     pub fn exists(self: *KeyValueStore, key: []const u8) StorageError!bool {
         if (self.activeTransaction()) |transaction| return try transaction.get(.main, key) != null;
         const transaction = try self.environment.beginRead();
-        defer transaction.abort();
+        defer self.environment.endRead(transaction);
         return try transaction.get(.main, key) != null;
     }
 
@@ -398,7 +398,7 @@ pub const KeyValueStore = struct {
     fn scan(self: *KeyValueStore, table: Table, prefix: []const u8, start: []const u8, upper: ?[]const u8) StorageError!PrefixIterator {
         if (self.activeTransaction()) |transaction| return self.scanIn(transaction, false, table, prefix, start, upper);
         const transaction = self.environment.beginRead() catch return error.IteratorFailed;
-        errdefer transaction.abort();
+        errdefer self.environment.endRead(transaction);
         return self.scanIn(transaction, true, table, prefix, start, upper);
     }
 
@@ -441,7 +441,8 @@ pub const KeyValueStore = struct {
 /// not end it).
 pub const PrefixIterator = struct {
     store: *KeyValueStore,
-    /// null = borrowed from the active write/read transaction.
+    /// A read transaction of its own; null = borrowed from the active
+    /// write/read transaction.
     transaction: ?engine.Transaction,
     /// The number of the read transaction whose cursor pool the cursor goes
     /// back to (see `KeyValueStore.read_transaction_number`).
@@ -465,7 +466,7 @@ pub const PrefixIterator = struct {
             store.cursor_pool[store.pooled_cursors] = self.cursor;
             store.pooled_cursors += 1;
         } else self.cursor.close();
-        if (self.transaction) |transaction| transaction.abort();
+        if (self.transaction) |transaction| store.environment.endRead(transaction);
         if (self.prefix_storage.heap) |bytes| store.allocator.free(bytes);
         if (self.upper) |bytes| store.allocator.free(bytes);
     }

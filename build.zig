@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     // The storage engine under the key-value store (src/storage/engine.zig).
-    const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine (default: lmdb)") orelse .lmdb;
+    const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine (default: mdbx)") orelse .mdbx;
     const build_options = b.addOptions();
     build_options.addOption(StorageEngine, "storage_engine", storage_engine);
 

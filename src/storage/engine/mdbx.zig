@@ -31,6 +31,12 @@ const geometry = struct {
 pub const Environment = struct {
     handle: *c.MDBX_env,
     tables: TableHandles,
+    /// Ended read transactions kept to be renewed: renewing one costs no
+    /// allocation and keeps its reader slot.
+    parked_reads: [max_parked_reads]*c.MDBX_txn = undefined,
+    parked_read_count: usize = 0,
+
+    const max_parked_reads = 4;
 
     /// Opens (or creates) the database in directory `path`, which must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8, options: contract.Options) Error!Environment {
@@ -80,6 +86,8 @@ pub const Environment = struct {
     }
 
     pub fn close(self: *Environment) void {
+        for (self.parked_reads[0..self.parked_read_count]) |transaction| _ = c.mdbx_txn_abort(transaction);
+        self.parked_read_count = 0;
         _ = c.mdbx_env_close_ex(self.handle, false);
     }
 
@@ -92,9 +100,24 @@ pub const Environment = struct {
     }
 
     pub fn beginRead(self: *Environment) Error!Transaction {
+        while (self.parked_read_count > 0) {
+            self.parked_read_count -= 1;
+            const parked = self.parked_reads[self.parked_read_count];
+            if (c.mdbx_txn_renew(parked) == c.MDBX_SUCCESS) return .{ .handle = parked, .tables = self.tables };
+            _ = c.mdbx_txn_abort(parked);
+        }
         var transaction: ?*c.MDBX_txn = null;
         if (c.mdbx_txn_begin(self.handle, null, c.MDBX_TXN_RDONLY, &transaction) != c.MDBX_SUCCESS) return error.ReadFailed;
         return .{ .handle = transaction.?, .tables = self.tables };
+    }
+
+    /// Ends read transaction `transaction`, keeping it to be renewed by a
+    /// later `beginRead` while there is room.
+    pub fn endRead(self: *Environment, transaction: Transaction) void {
+        if (self.parked_read_count == max_parked_reads) return transaction.abort();
+        if (c.mdbx_txn_reset(transaction.handle) != c.MDBX_SUCCESS) return transaction.abort();
+        self.parked_reads[self.parked_read_count] = transaction.handle;
+        self.parked_read_count += 1;
     }
 
     pub fn beginWrite(self: *Environment) Error!Transaction {

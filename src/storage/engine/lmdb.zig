@@ -16,6 +16,12 @@ const TableHandles = [Table.count]c.MDB_dbi;
 pub const Environment = struct {
     handle: *c.MDB_env,
     tables: TableHandles,
+    /// Ended read transactions kept to be renewed: renewing one costs no
+    /// allocation and keeps its reader slot.
+    parked_reads: [max_parked_reads]*c.MDB_txn = undefined,
+    parked_read_count: usize = 0,
+
+    const max_parked_reads = 4;
 
     /// Opens (or creates) the database in directory `path`, which must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8, options: contract.Options) Error!Environment {
@@ -67,6 +73,8 @@ pub const Environment = struct {
     }
 
     pub fn close(self: *Environment) void {
+        for (self.parked_reads[0..self.parked_read_count]) |transaction| c.mdb_txn_abort(transaction);
+        self.parked_read_count = 0;
         c.mdb_env_close(self.handle);
     }
 
@@ -77,9 +85,24 @@ pub const Environment = struct {
     }
 
     pub fn beginRead(self: *Environment) Error!Transaction {
+        while (self.parked_read_count > 0) {
+            self.parked_read_count -= 1;
+            const parked = self.parked_reads[self.parked_read_count];
+            if (c.mdb_txn_renew(parked) == 0) return .{ .handle = parked, .tables = self.tables };
+            c.mdb_txn_abort(parked);
+        }
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.handle, null, c.MDB_RDONLY, &transaction) != 0) return error.ReadFailed;
         return .{ .handle = transaction.?, .tables = self.tables };
+    }
+
+    /// Ends read transaction `transaction`, keeping it to be renewed by a
+    /// later `beginRead` while there is room.
+    pub fn endRead(self: *Environment, transaction: Transaction) void {
+        if (self.parked_read_count == max_parked_reads) return transaction.abort();
+        c.mdb_txn_reset(transaction.handle);
+        self.parked_reads[self.parked_read_count] = transaction.handle;
+        self.parked_read_count += 1;
     }
 
     pub fn beginWrite(self: *Environment) Error!Transaction {
