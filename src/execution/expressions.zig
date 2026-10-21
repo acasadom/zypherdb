@@ -296,8 +296,8 @@ pub fn propertyOf(self: *Executor, object: Value, key: []const u8) ExecutionErro
             return .{ .null = {} };
         },
         .relationship => |r| {
-            if (try self.graph.getEdgeProperty(r.src, r.dst, r.edge_type, key, self.allocator)) |value| return value;
-            if (!try self.graph.hasEdge(r.src, r.dst, r.edge_type)) return deletedEntity(self, "relationship", key);
+            if (try self.graph.getEdgeProperty(r.id, key, self.allocator)) |value| return value;
+            if (!try self.graph.hasRelationship(r.id)) return deletedEntity(self, "relationship", key);
             return .{ .null = {} };
         },
         else => {

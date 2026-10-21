@@ -41,7 +41,7 @@ pub const EntitySnapshot = struct {
                 .relationship => |relationship| {
                     const entry = try self.relationships.getOrPutContext(allocator, relationship, .{});
                     if (!entry.found_existing) {
-                        var properties = try graph.edgePropertiesOf(relationship.src, relationship.dst, relationship.edge_type);
+                        var properties = try graph.edgePropertiesOf(relationship.id);
                         defer properties.deinit();
                         entry.value_ptr.* = try copyProperties(&properties, allocator);
                     }

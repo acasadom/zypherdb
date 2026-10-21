@@ -1,7 +1,7 @@
 """Graph entities returned by queries: whole nodes, relationships and paths.
 
 They are immutable values: equal when their fields are, hashable by their
-identity (a node's id and labels, a relationship's endpoints and type). The
+identity (a node's id and labels, a relationship's id). The
 native engine builds them without running `__init__` (which costs more than
 the rest of building a node), so `__init__` is only for code that makes one
 by hand.
@@ -59,12 +59,13 @@ class Node(_Entity):
 class Relationship(_Entity):
     """A relationship from `source` to `target` (node ids) of type `type`.
 
-    acmedb keeps one relationship per (source, target, type), which identifies it.
+    Its `id` identifies it: two relationships may share their ends and type.
     """
 
-    __slots__ = ("source", "target", "type", "properties")
+    __slots__ = ("id", "source", "target", "type", "properties")
     _fields = __slots__
-    _identity = ("source", "target", "type")
+    _identity = ("id",)
+    id: int
     source: int
     target: int
     type: str

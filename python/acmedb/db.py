@@ -114,7 +114,7 @@ class Database:
         query engine)::
 
             {"nodes": [{"id": 0, "labels": ["Person"], "properties": {"name": "Ana"}}],
-             "relationships": [{"source": 0, "target": 1, "type": "KNOWS", "properties": {}}]}
+             "relationships": [{"id": 0, "source": 0, "target": 1, "type": "KNOWS", "properties": {}}]}
 
         Nodes come in id order. Reads one consistent snapshot; O(size of the graph).
         """
@@ -174,12 +174,14 @@ class Database:
         with self._lock:
             native.add_node(self._handle(), id, label)
 
-    def add_edge(self, src: int, dst: int, type: str) -> None:
-        """Add a directed edge; both endpoints must already exist."""
+    def add_edge(self, src: int, dst: int, type: str) -> int:
+        """Add a directed relationship and return its id; both endpoints must
+        already exist. Each call adds one, even between nodes already joined
+        by a relationship of that type."""
         _check_node_id(src)
         _check_node_id(dst)
         with self._lock:
-            native.add_edge(self._handle(), src, dst, type)
+            return native.add_edge(self._handle(), src, dst, type)
 
     def set_property(self, id: int, name: str, value) -> None:
         """Set a property on an existing node: any value a query can store

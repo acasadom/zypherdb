@@ -6,15 +6,18 @@
 //!
 //! Key layout (all integers big-endian, fixed width):
 //!
-//! Node records (a node's labels and properties, see node_record.zig) are
-//! not here: they live in a table of their own, keyed by the id as an
-//! integer (see key_value_store.zig).
-//! - edge (per direction):   `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`
+//! Node records (a node's labels and properties, see node_record.zig) and
+//! relationship records (`src | dst | edge_type`) are not here: each lives
+//! in a table of its own, keyed by the id as an integer (see
+//! key_value_store.zig).
+//! - edge (per direction):   `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id | relationship_id`
 //!
-//! `node_id` is a fixed-width u64, so lexicographic byte order equals numeric
-//! order and no id is ever a prefix of another. `dir` is a single byte
-//! (`'o'`/`'i'`), and `edge_type` is a string delimited by `0x00` (edge types
-//! are identifiers, so they never contain `0x00`).
+//! `node_id` and `relationship_id` are fixed-width u64s, so lexicographic
+//! byte order equals numeric order and no id is ever a prefix of another.
+//! `dir` is a single byte (`'o'`/`'i'`), and `edge_type` is a string
+//! delimited by `0x00` (edge types are identifiers, so they never contain
+//! `0x00`). Each relationship has an id of its own, so two relationships of
+//! one type between the same nodes (parallel ones) are two keys.
 //!
 //! The markers below list the remaining kinds (labels, property and edge
 //! indexes, edge-type counters).
@@ -27,6 +30,9 @@ const encodeIndexValue = @import("value_encoding.zig").encodeIndexValue;
 
 /// Node identifiers are fixed-width u64.
 pub const NodeId = u64;
+
+/// Relationship identifiers are fixed-width u64, counted apart from nodes.
+pub const RelationshipId = u64;
 
 /// Traversal direction relative to the node a key is stored under.
 pub const Direction = enum(u8) {
@@ -41,6 +47,7 @@ pub const EdgeKey = struct {
     direction: Direction,
     edge_type: []const u8,
     neighbour: NodeId,
+    relationship: RelationshipId,
     /// The neighbour's labels, as stored with the key (a record's label
     /// section), or null if the key does not carry them.
     neighbour_labels: ?[]const u8 = null,
@@ -58,6 +65,8 @@ pub const node_id_length: usize = @sizeOf(NodeId);
 
 /// Key storing the next node id to allocate (8-byte big-endian counter).
 pub const counter_key: []const u8 = "!";
+/// Key storing the next relationship id to allocate (8-byte big-endian counter).
+pub const relationship_counter_key: []const u8 = "!relationships";
 /// The storage format's version (see `Graph.upgrade`).
 pub const format_key: []const u8 = "!format";
 
@@ -99,21 +108,30 @@ pub fn appendIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, propert
     try encodeIndexValue(list, allocator, value);
 }
 
-/// Appends the key for an edge property (canonical `src -> dst` orientation):
-/// `f | src | dst | 0x00 | edge_type | 0x00 | property`.
-pub fn appendEdgePropertyKey(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, edge_type: []const u8, property: []const u8) !void {
-    try appendEdgePropertyPrefix(list, allocator, src, dst, edge_type);
+/// Appends a relationship's record: `src | dst | edge_type`.
+pub fn appendRelationshipRecord(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, edge_type: []const u8) !void {
+    try appendNodeId(list, allocator, src);
+    try appendNodeId(list, allocator, dst);
+    try list.appendSlice(allocator, edge_type);
+}
+
+/// The fields of a relationship's record (`edge_type` is a view into it).
+pub const RelationshipRecord = struct { src: NodeId, dst: NodeId, edge_type: []const u8 };
+
+pub fn decodeRelationshipRecord(record: []const u8) RelationshipRecord {
+    return .{ .src = readNodeId(record[0..node_id_length]), .dst = readNodeId(record[node_id_length .. 2 * node_id_length]), .edge_type = record[2 * node_id_length ..] };
+}
+
+/// Appends the key for a relationship property: `f | relationship_id | property`.
+pub fn appendEdgePropertyKey(list: *std.ArrayList(u8), allocator: Allocator, relationship: RelationshipId, property: []const u8) !void {
+    try appendEdgePropertyPrefix(list, allocator, relationship);
     try list.appendSlice(allocator, property);
 }
 
-/// Appends the prefix of all properties of an edge: `f | src | dst | 0x00 | edge_type | 0x00`.
-pub fn appendEdgePropertyPrefix(list: *std.ArrayList(u8), allocator: Allocator, src: NodeId, dst: NodeId, edge_type: []const u8) !void {
+/// Appends the prefix of all properties of a relationship: `f | relationship_id`.
+pub fn appendEdgePropertyPrefix(list: *std.ArrayList(u8), allocator: Allocator, relationship: RelationshipId) !void {
     try list.append(allocator, edge_property_marker);
-    try appendNodeId(list, allocator, src);
-    try appendNodeId(list, allocator, dst);
-    try list.append(allocator, separator);
-    try list.appendSlice(allocator, edge_type);
-    try list.append(allocator, separator);
+    try appendNodeId(list, allocator, relationship);
 }
 
 /// Appends the shared prefix of all edge keys for `(id, direction, edge_type)`, up to
@@ -137,20 +155,24 @@ pub fn appendEdgeIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, pro
 }
 
 /// Appends the edge-property index key:
-/// `g | property | 0x00 | value | src | dst | 0x00 | edge_type`.
-pub fn appendEdgeIndexKey(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value, src: NodeId, dst: NodeId, edge_type: []const u8) !void {
+/// `g | property | 0x00 | value | relationship_id`.
+pub fn appendEdgeIndexKey(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value, relationship: RelationshipId) !void {
     try appendEdgeIndexPrefix(list, allocator, property, value);
-    try appendNodeId(list, allocator, src);
-    try appendNodeId(list, allocator, dst);
-    try list.append(allocator, separator);
-    try list.appendSlice(allocator, edge_type);
+    try appendNodeId(list, allocator, relationship);
+}
+
+/// Appends the prefix of the edge keys of `(id, direction, edge_type)` to one
+/// neighbour: the relationships of that type between the two nodes.
+pub fn appendEdgeBetweenPrefix(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, direction: Direction, edge_type: []const u8, neighbour: NodeId) !void {
+    try appendEdgePrefix(list, allocator, id, direction, edge_type);
+    try appendNodeId(list, allocator, neighbour);
 }
 
 /// Appends the key for one stored direction of an edge:
-/// `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id`.
-pub fn appendEdgeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, direction: Direction, edge_type: []const u8, neighbour: NodeId) !void {
-    try appendEdgePrefix(list, allocator, id, direction, edge_type);
-    try appendNodeId(list, allocator, neighbour);
+/// `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id | relationship_id`.
+pub fn appendEdgeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, direction: Direction, edge_type: []const u8, neighbour: NodeId, relationship: RelationshipId) !void {
+    try appendEdgeBetweenPrefix(list, allocator, id, direction, edge_type, neighbour);
+    try appendNodeId(list, allocator, relationship);
 }
 
 /// Decodes an edge key produced by `appendEdgeKey`.
@@ -164,7 +186,8 @@ pub fn decodeEdgeKey(key: []const u8) EdgeKey {
     const edge_type = key[edge_type_start .. edge_type_start + edge_type_length];
     const neighbour_start = edge_type_start + edge_type_length + 1;
     const neighbour = readNodeId(key[neighbour_start .. neighbour_start + node_id_length]);
-    return .{ .id = id, .direction = direction, .edge_type = edge_type, .neighbour = neighbour };
+    const relationship = readNodeId(key[neighbour_start + node_id_length .. neighbour_start + 2 * node_id_length]);
+    return .{ .id = id, .direction = direction, .edge_type = edge_type, .neighbour = neighbour, .relationship = relationship };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,11 +200,12 @@ test "edge key encodes and decodes round-trip" {
     var list = std.ArrayList(u8).empty;
     defer list.deinit(testing.allocator);
 
-    try appendEdgeKey(&list, testing.allocator, 0x1234_5678_9abc_def0, .out, "ACTED_IN", 42);
+    try appendEdgeKey(&list, testing.allocator, 0x1234_5678_9abc_def0, .out, "ACTED_IN", 42, 7);
 
     const decoded = decodeEdgeKey(list.items);
     try testing.expectEqual(@as(NodeId, 0x1234_5678_9abc_def0), decoded.id);
     try testing.expectEqual(Direction.out, decoded.direction);
     try testing.expectEqualStrings("ACTED_IN", decoded.edge_type);
     try testing.expectEqual(@as(NodeId, 42), decoded.neighbour);
+    try testing.expectEqual(@as(RelationshipId, 7), decoded.relationship);
 }

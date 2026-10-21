@@ -167,12 +167,12 @@ fn load(graph: *Graph, counts: Counts) !Loaded {
         const card = counts.card(i);
         try graph.addNode(card, "Card");
         try graph.setProperty(card, "number", .{ .int = 1_000_000 + @as(i64, @intCast(i)) });
-        try graph.addEdge(card, person, "HELD_BY");
+        _ = try graph.addEdge(card, person, "HELD_BY");
         // One to three groups, distinct.
         const memberships = 1 + random.uintLessThan(u64, 3);
         for (0..memberships) |m| {
             const group = (random.uintLessThan(u64, counts.groups) + m * 7) % counts.groups;
-            try graph.addEdge(person, counts.group(group), "MEMBER_OF");
+            _ = try graph.addEdge(person, counts.group(group), "MEMBER_OF");
         }
         loaded.nodes += 2;
         loaded.properties += 5;
@@ -187,15 +187,15 @@ fn load(graph: *Graph, counts: Counts) !Loaded {
         try graph.setProperty(group, "id", .{ .int = @intCast(i) });
         try graph.setProperty(group, "name", .{ .string = try std.fmt.bufPrint(&name_buffer, "group-{d}", .{i}) });
         if (i >= 10) {
-            try graph.addEdge(group, counts.group(i / 10), "MEMBER_OF");
+            _ = try graph.addEdge(group, counts.group(i / 10), "MEMBER_OF");
             loaded.relationships += 1;
         }
         for (0..2) |z| {
             const zone = counts.zone((i * 3 + z * 11) % counts.zones);
-            try graph.addEdge(group, zone, "MAY_ENTER");
-            try graph.setEdgeProperty(group, zone, "MAY_ENTER", "days", weekdays);
-            try graph.setEdgeProperty(group, zone, "MAY_ENTER", "from", nine);
-            try graph.setEdgeProperty(group, zone, "MAY_ENTER", "until", six);
+            const may_enter = try graph.addEdge(group, zone, "MAY_ENTER");
+            try graph.setEdgeProperty(may_enter, "days", weekdays);
+            try graph.setEdgeProperty(may_enter, "from", nine);
+            try graph.setEdgeProperty(may_enter, "until", six);
             loaded.relationships += 1;
             loaded.properties += 3;
         }
@@ -211,7 +211,7 @@ fn load(graph: *Graph, counts: Counts) !Loaded {
     for (0..counts.doors) |i| {
         try graph.addNode(counts.door(i), "Door");
         try graph.setProperty(counts.door(i), "id", .{ .int = @intCast(i) });
-        try graph.addEdge(counts.door(i), counts.zone(i % counts.zones), "IN");
+        _ = try graph.addEdge(counts.door(i), counts.zone(i % counts.zones), "IN");
         loaded.nodes += 1;
         loaded.properties += 1;
         loaded.relationships += 1;

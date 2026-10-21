@@ -56,10 +56,21 @@ pub const RecordCache = struct {
     }
 };
 
+/// See `KeyValueStore.write_transaction_memo`.
+pub const WriteTransactionMemo = struct {
+    /// The full-text schema version (see fulltext.zig).
+    schema_version: ?u64 = null,
+    /// The next relationship id, when this transaction allocated one: the
+    /// graph writes it to its counter key when it commits.
+    next_relationship_id: ?u64 = null,
+};
+
 pub const KeyValueStore = struct {
     environment: *c.MDB_env,
     database: c.MDB_dbi,
     node_database: c.MDB_dbi,
+    /// Relationship records (`src | dst | type`), keyed by the id as an integer.
+    relationship_database: c.MDB_dbi,
     node_cursor: ?*c.MDB_cursor = null,
     /// The id `node_cursor` is positioned on, if it is.
     node_cursor_id: ?u64 = null,
@@ -79,10 +90,10 @@ pub const KeyValueStore = struct {
     pooled_cursors: usize = 0,
     /// Node records found in the active read transaction (see `RecordCache`).
     records: *RecordCache,
-    /// A value read in the active write transaction that only the transaction
-    /// itself can change, kept by the layer above for the transaction's life
-    /// (the full-text schema version); cleared when a transaction starts or ends.
-    write_transaction_memo: ?u64 = null,
+    /// Values that only the active write transaction can change, kept by the
+    /// layer above for the transaction's life; cleared when a transaction
+    /// starts or ends.
+    write_transaction_memo: WriteTransactionMemo = .{},
 
     /// How much a commit waits for the disk.
     pub const Durability = enum {
@@ -114,7 +125,7 @@ pub const KeyValueStore = struct {
         // address-space reservation (sparse mmap), not RAM: the file grows as
         // pages are written. 1 TiB is plenty for an embedded graph DB on 64-bit.
         if (c.mdb_env_set_mapsize(environment.?, 1 << 40) != 0) return error.OpenFailed;
-        if (c.mdb_env_set_maxdbs(environment.?, 2) != 0) return error.OpenFailed;
+        if (c.mdb_env_set_maxdbs(environment.?, 3) != 0) return error.OpenFailed;
 
         const c_path = allocator.dupeSentinel(u8, path, 0) catch return error.OutOfMemory;
         defer allocator.free(c_path);
@@ -142,6 +153,10 @@ pub const KeyValueStore = struct {
         // of the main table; `#` starts no key the graph writes.)
         var node_database: c.MDB_dbi = 0;
         if (c.mdb_dbi_open(transaction.?, "#nodes", c.MDB_CREATE | c.MDB_INTEGERKEY, &node_database) != 0) return error.OpenFailed;
+        // Relationship records too: the main tree keeps only what is scanned
+        // by prefix.
+        var relationship_database: c.MDB_dbi = 0;
+        if (c.mdb_dbi_open(transaction.?, "#relationships", c.MDB_CREATE | c.MDB_INTEGERKEY, &relationship_database) != 0) return error.OpenFailed;
         if (c.mdb_txn_commit(transaction.?) != 0) {
             _ = c.mdb_txn_abort(transaction.?);
             return error.OpenFailed;
@@ -149,7 +164,7 @@ pub const KeyValueStore = struct {
 
         const records = allocator.create(RecordCache) catch return error.OutOfMemory;
         records.* = .{};
-        return .{ .environment = environment.?, .database = database, .node_database = node_database, .allocator = allocator, .active_write_transaction = null, .active_read_transaction = null, .records = records };
+        return .{ .environment = environment.?, .database = database, .node_database = node_database, .relationship_database = relationship_database, .allocator = allocator, .active_write_transaction = null, .active_read_transaction = null, .records = records };
     }
 
     /// Writes every commit so far to disk (what `full` durability does at
@@ -171,13 +186,13 @@ pub const KeyValueStore = struct {
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.environment, null, 0, &transaction) != 0) return error.WriteFailed;
         self.active_write_transaction = transaction.?;
-        self.write_transaction_memo = null;
+        self.write_transaction_memo = .{};
     }
 
     pub fn commitWrite(self: *KeyValueStore) StorageError!void {
         const transaction = self.active_write_transaction orelse return error.WriteFailed;
         self.active_write_transaction = null;
-        self.write_transaction_memo = null;
+        self.write_transaction_memo = .{};
         if (c.mdb_txn_commit(transaction) != 0) {
             _ = c.mdb_txn_abort(transaction);
             return error.WriteFailed;
@@ -189,7 +204,7 @@ pub const KeyValueStore = struct {
             _ = c.mdb_txn_abort(transaction);
             self.active_write_transaction = null;
         }
-        self.write_transaction_memo = null;
+        self.write_transaction_memo = .{};
     }
 
     /// Begins an explicit read transaction (an MVCC snapshot). Until
@@ -365,6 +380,35 @@ pub const KeyValueStore = struct {
         return self.deleteNode(id);
     }
 
+    /// The record of relationship `id` in the active transaction, without
+    /// copying (null if absent, or outside a transaction).
+    pub fn viewRelationship(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
+        const transaction = self.active_read_transaction orelse self.active_write_transaction orelse return null;
+        var key = id;
+        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
+        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
+        const rc = c.mdb_get(transaction, self.relationship_database, &key_val, &data_val);
+        if (rc == c.MDB_NOTFOUND) return null;
+        if (rc != 0) return error.ReadFailed;
+        return valSlice(data_val);
+    }
+
+    pub fn putRelationship(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
+        var key = id;
+        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
+        var data_val = makeVal(record);
+        const transaction = self.active_write_transaction orelse return self.autocommit(putRelationship, .{ self, id, record });
+        if (c.mdb_put(transaction, self.relationship_database, &key_val, &data_val, 0) != 0) return error.WriteFailed;
+    }
+
+    pub fn deleteRelationship(self: *KeyValueStore, id: u64) StorageError!void {
+        var key = id;
+        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
+        const transaction = self.active_write_transaction orelse return self.autocommit(deleteRelationship, .{ self, id });
+        const rc = c.mdb_del(transaction, self.relationship_database, &key_val, null);
+        if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
+    }
+
     /// Runs `operation` in a write transaction of its own, committed at once.
     fn autocommit(self: *KeyValueStore, comptime operation: anytype, arguments: anytype) StorageError!void {
         try self.beginWrite();
@@ -425,6 +469,23 @@ pub const KeyValueStore = struct {
         if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.IteratorFailed;
         errdefer _ = c.mdb_txn_abort(transaction.?);
         return self.scanIn(transaction.?, self.database, prefix, start, upper, true);
+    }
+
+    /// True if some key starts with `prefix`. In a read transaction it only
+    /// positions a pooled cursor (no iterator is made): an existence test as
+    /// cheap as a point lookup.
+    pub fn hasPrefix(self: *KeyValueStore, prefix: []const u8) StorageError!bool {
+        if (self.active_read_transaction != null and self.pooled_cursors > 0) {
+            var key_val = makeVal(prefix);
+            var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
+            const rc = c.mdb_cursor_get(self.cursor_pool[self.pooled_cursors - 1], &key_val, &data_val, c.MDB_SET_RANGE);
+            if (rc == c.MDB_NOTFOUND) return false;
+            if (rc != 0) return error.ReadFailed;
+            return std.mem.startsWith(u8, valSlice(key_val), prefix);
+        }
+        var iterator = try self.scanPrefix(prefix);
+        defer iterator.deinit();
+        return try iterator.next() != null;
     }
 
     pub fn countPrefix(self: *KeyValueStore, prefix: []const u8) StorageError!usize {

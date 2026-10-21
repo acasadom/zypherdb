@@ -186,11 +186,11 @@ fn queryIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, ar
     for (hits[skip..end]) |hit| {
         const value: Value = switch (entity) {
             .nodes => .{ .node = std.mem.readInt(u64, hit.entity[0..8], .big) },
-            .relationships => .{ .relationship = .{
-                .src = std.mem.readInt(u64, hit.entity[0..8], .big),
-                .dst = std.mem.readInt(u64, hit.entity[8..16], .big),
-                .edge_type = hit.entity[16..],
-            } },
+            .relationships => relationship: {
+                const id = std.mem.readInt(u64, hit.entity[0..8], .big);
+                const stored = try executor.graph.relationship(id, executor.allocator) orelse continue;
+                break :relationship .{ .relationship = .{ .id = id, .src = stored.src, .dst = stored.dst, .edge_type = stored.edge_type } };
+            },
         };
         try emit.row(emit.context, &.{ value, .{ .float = hit.score } });
     }

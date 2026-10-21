@@ -89,7 +89,8 @@ path = (a)-[:TYPE*]->(b)                           a path variable
   pattern order. `*0..` includes the start node itself.
 - Within one `MATCH`, each relationship is used at most once, so a path never goes back over the
   same relationship.
-- acmedb keeps at most one relationship per source, target and type.
+- Each relationship has an id of its own (`id(r)`), so two nodes may be joined by several
+  relationships of one type (parallel ones), each matched, changed and deleted on its own.
 
 ## Expressions
 
@@ -170,12 +171,12 @@ before the query runs.
 | Conversion | `toString`, `toInteger` (truncates a float; `null` for a string that is not a number), `toFloat`, `toBoolean` |
 | Numbers | `abs`, `sign`, `round` (a float; halves round up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
 | Null | `coalesce(x, …)` returns the first argument that is not `null` |
-| Graph | `id(node)`, `labels(node)`, `type(relationship)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
+| Graph | `id(entity)`, `labels(node)`, `type(relationship)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
 | Temporal | see [Temporal values](#temporal-values) |
 
-`id()` of a relationship is an error, because a relationship is identified by its source, target
-and type rather than by an id.
+Nodes and relationships have ids of their own, each counted from 0: a node and a relationship may
+have the same `id()`.
 
 ## Aggregation
 
@@ -399,8 +400,7 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
 - the regular-expression operator `=~`;
 - the function `exists(n.property)`; use `n.property IS NOT NULL` instead;
 - schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
-  already indexed for equality and ranges;
-- parallel relationships of the same type between the same two nodes.
+  already indexed for equality and ranges.
 
 The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`
 gives the current pass rate per area.

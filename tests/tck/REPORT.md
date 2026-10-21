@@ -6,16 +6,16 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 - **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
-**Positive: 3195/3202 (99.8%)** · Negative: 694/694 (100.0%)
+**Positive: 3201/3202 (100.0%)** · Negative: 694/694 (100.0%)
 
 | Area | Positive passing | Negative passing | Unsupported | Crash/timeout |
 | --- | --- | --- | --- | --- |
 | clauses/call | 36/36 (100.0%) | 16/16 (100.0%) | 0 | 0 |
-| clauses/create | 61/63 (96.8%) | 15/15 (100.0%) | 0 | 0 |
+| clauses/create | 63/63 (100.0%) | 15/15 (100.0%) | 0 | 0 |
 | clauses/delete | 36/36 (100.0%) | 5/5 (100.0%) | 0 | 0 |
-| clauses/match | 140/141 (99.3%) | 241/241 (100.0%) | 0 | 0 |
+| clauses/match | 141/141 (100.0%) | 241/241 (100.0%) | 0 | 0 |
 | clauses/match-where | 32/32 (100.0%) | 2/2 (100.0%) | 0 | 0 |
-| clauses/merge | 59/62 (95.2%) | 13/13 (100.0%) | 0 | 0 |
+| clauses/merge | 62/62 (100.0%) | 13/13 (100.0%) | 0 | 0 |
 | clauses/remove | 33/33 (100.0%) | – | 0 | 0 |
 | clauses/return | 52/52 (100.0%) | 11/11 (100.0%) | 0 | 0 |
 | clauses/return-orderby | 31/31 (100.0%) | 4/4 (100.0%) | 0 | 0 |
@@ -52,8 +52,6 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 
 | Scenarios | Reason |
 | --- | --- |
-| 3 | fail: side effects: expected other side effects |
-| 3 | fail: rows differ: expected other rows |
 | 1 | fail: unexpected error: expected '}', found WITH |
 
 1 scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.

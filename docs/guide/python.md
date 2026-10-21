@@ -81,16 +81,16 @@ Direct writes, each its own transaction unless inside `write()`:
 - `allocate_node_id() -> int` — a fresh node id, never handed out before.
 - `add_node(id, label="")` — a node with that id (and label), if it does not exist; adds the label
   if it does. Ids chosen by the caller are reserved: `allocate_node_id` will not return them.
-- `add_edge(source, target, type)` — a relationship from node `source` to node `target`; both
-  must exist (`NodeNotFoundError` otherwise). acmedb keeps one relationship per source, target and
-  type.
+- `add_edge(source, target, type) -> int` — a relationship from node `source` to node `target`,
+  and its id; both must exist (`NodeNotFoundError` otherwise). Each call adds one, even between
+  nodes already joined by a relationship of that type.
 - `set_property(id, name, value)` — sets a node's property to any [storable value](#values);
   `None` removes it.
 
 ### Other methods
 
 - `export_graph() -> dict` — the whole graph read straight from storage, as
-  `{"nodes": [{"id", "labels", "properties"}], "relationships": [{"source", "target", "type", "properties"}]}`.
+  `{"nodes": [{"id", "labels", "properties"}], "relationships": [{"id", "source", "target", "type", "properties"}]}`.
   Meant for tests and debugging; it reads everything.
 - `sync()` — writes every commit so far to disk (for `"deferred"` durability).
 - `close()` — releases the database. Using it afterwards raises `ClosedError`.

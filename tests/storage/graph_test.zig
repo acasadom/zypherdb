@@ -38,10 +38,10 @@ test "neighbours scans outgoing, incoming and type-filtered edges" {
     try g.addNode(reloaded, "");
     try g.addNode(wick, "");
 
-    try g.addEdge(keanu, matrix, "ACTED_IN");
-    try g.addEdge(keanu, reloaded, "ACTED_IN");
-    try g.addEdge(keanu, wick, "ACTED_IN");
-    try g.addEdge(lana, matrix, "DIRECTED");
+    _ = try g.addEdge(keanu, matrix, "ACTED_IN");
+    _ = try g.addEdge(keanu, reloaded, "ACTED_IN");
+    _ = try g.addEdge(keanu, wick, "ACTED_IN");
+    _ = try g.addEdge(lana, matrix, "DIRECTED");
 
     // Outgoing ACTED_IN of keanu, in ascending neighbour-id order.
     var iterator = try g.neighbours(keanu, .out, "ACTED_IN");
@@ -159,7 +159,7 @@ test "allocateNodeId and deleteNode detach edges" {
     try g.addNode(a, "Person");
     try g.setProperty(a, "name", .{ .string = "Neo" });
     try g.addNode(b, "Person");
-    try g.addEdge(a, b, "KNOWS");
+    _ = try g.addEdge(a, b, "KNOWS");
 
     try testing.expect(try g.hasLabel(a, "Person"));
     var iterator = try g.neighbours(a, .out, "KNOWS");
@@ -194,7 +194,7 @@ test "write transactions commit and abort atomically" {
     try testing.expect(a != b);
     try g.addNode(a, "Person");
     try g.setProperty(a, "name", .{ .string = "A" });
-    try g.addEdge(a, b, "KNOWS");
+    _ = try g.addEdge(a, b, "KNOWS");
     try g.commitWrite();
 
     try testing.expect(try g.hasNode(a));
@@ -265,17 +265,18 @@ test "edge properties round-trip and delete" {
 
     try g.addNode(1, "Person");
     try g.addNode(2, "Person");
-    try g.addEdge(1, 2, "KNOWS");
-    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 5 });
+    const knows = try g.addEdge(1, 2, "KNOWS");
+    try g.setEdgeProperty(knows, "weight", .{ .int = 5 });
 
-    const w = (try g.getEdgeProperty(1, 2, "KNOWS", "weight", testing.allocator)).?;
+    const w = (try g.getEdgeProperty(knows, "weight", testing.allocator)).?;
     try testing.expectEqual(@as(i64, 5), w.int);
-    try testing.expect((try g.getEdgeProperty(1, 2, "KNOWS", "nope", testing.allocator)) == null);
+    try testing.expect((try g.getEdgeProperty(knows, "nope", testing.allocator)) == null);
 
     // Detach-deleting a node removes its edge properties too.
     try g.deleteNodeDetach(1);
     try testing.expect(!try g.hasEdge(1, 2, "KNOWS"));
-    try testing.expect((try g.getEdgeProperty(1, 2, "KNOWS", "weight", testing.allocator)) == null);
+    try testing.expect(!try g.hasRelationship(knows));
+    try testing.expect((try g.getEdgeProperty(knows, "weight", testing.allocator)) == null);
 }
 
 test "edge-property index: seek, update and delete" {
@@ -290,22 +291,23 @@ test "edge-property index: seek, update and delete" {
     try g.addNode(1, "");
     try g.addNode(2, "");
     try g.addNode(3, "");
-    try g.addEdge(1, 2, "KNOWS");
-    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 5 });
-    try g.addEdge(1, 3, "KNOWS");
-    try g.setEdgeProperty(1, 3, "KNOWS", "weight", .{ .int = 9 });
+    const first = try g.addEdge(1, 2, "KNOWS");
+    try g.setEdgeProperty(first, "weight", .{ .int = 5 });
+    const second = try g.addEdge(1, 3, "KNOWS");
+    try g.setEdgeProperty(second, "weight", .{ .int = 9 });
 
-    // Index lookup returns the matching edge (src, dst, edge_type).
+    // Index lookup returns the matching relationship (id, src, dst, edge_type).
     var iterator = try g.edgesByProperty("weight", .{ .int = 5 });
     defer iterator.deinit();
     const e = (try iterator.next()).?;
+    try testing.expectEqual(first, e.id);
     try testing.expectEqual(@as(NodeId, 1), e.src);
     try testing.expectEqual(@as(NodeId, 2), e.dst);
     try testing.expectEqualStrings("KNOWS", e.edge_type);
     try testing.expect((try iterator.next()) == null);
 
     // Updating a value moves the index entry.
-    try g.setEdgeProperty(1, 2, "KNOWS", "weight", .{ .int = 9 });
+    try g.setEdgeProperty(first, "weight", .{ .int = 9 });
     var it2 = try g.edgesByProperty("weight", .{ .int = 5 });
     defer it2.deinit();
     try testing.expect((try it2.next()) == null);
@@ -316,7 +318,7 @@ test "edge-property index: seek, update and delete" {
     try testing.expect((try it3.next()) == null);
 
     // Removing a property removes its index entry.
-    try g.removeEdgeProperty(1, 2, "KNOWS", "weight");
+    try g.removeEdgeProperty(first, "weight");
     var it4 = try g.edgesByProperty("weight", .{ .int = 9 });
     defer it4.deinit();
     _ = (try it4.next()).?;
@@ -344,16 +346,16 @@ test "edge-type cardinality tracks add and delete" {
 
     try testing.expectEqual(@as(usize, 0), try g.edgeTypeCount("KNOWS"));
 
-    try g.addEdge(1, 2, "KNOWS");
+    _ = try g.addEdge(1, 2, "KNOWS");
     try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("KNOWS"));
 
-    // Re-adding the same edge is idempotent.
-    try g.addEdge(1, 2, "KNOWS");
-    try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("KNOWS"));
-
-    try g.addEdge(1, 3, "KNOWS");
-    try g.addEdge(2, 3, "LIKES");
+    // Adding it again adds a second, parallel relationship.
+    _ = try g.addEdge(1, 2, "KNOWS");
     try testing.expectEqual(@as(usize, 2), try g.edgeTypeCount("KNOWS"));
+
+    _ = try g.addEdge(1, 3, "KNOWS");
+    _ = try g.addEdge(2, 3, "LIKES");
+    try testing.expectEqual(@as(usize, 3), try g.edgeTypeCount("KNOWS"));
     try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
 
     // Detach-deleting a node decrements its edge types.
@@ -464,9 +466,9 @@ test "labelsOf, propertiesOf, edgePropertiesOf and edgesOf enumerate a node" {
     try g.setProperty(1, "age", .{ .int = 40 });
     try g.addNode(2, "");
     try g.addNode(3, "");
-    try g.addEdge(1, 2, "KNOWS");
-    try g.addEdge(1, 3, "OWNS");
-    try g.setEdgeProperty(1, 2, "KNOWS", "since", .{ .int = 2020 });
+    const knows = try g.addEdge(1, 2, "KNOWS");
+    _ = try g.addEdge(1, 3, "OWNS");
+    try g.setEdgeProperty(knows, "since", .{ .int = 2020 });
 
     var labels = try g.labelsOf(1);
     defer labels.deinit();
@@ -482,7 +484,7 @@ test "labelsOf, propertiesOf, edgePropertiesOf and edgesOf enumerate a node" {
     try testing.expectEqualStrings("name", (try properties.next()).?.name);
     try testing.expect((try properties.next()) == null);
 
-    var edge_properties = try g.edgePropertiesOf(1, 2, "KNOWS");
+    var edge_properties = try g.edgePropertiesOf(knows);
     defer edge_properties.deinit();
     try testing.expectEqualStrings("since", (try edge_properties.next()).?.name);
     try testing.expect((try edge_properties.next()) == null);
@@ -507,7 +509,7 @@ fn bigEndian(comptime T: type, n: T) [@sizeOf(T)]u8 {
     return bytes;
 }
 
-test "upgrade brings a database of the earlier format up to date" {
+test "upgrade brings a database of an earlier format up to date" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
 
@@ -519,15 +521,12 @@ test "upgrade brings a database of the earlier format up to date" {
     try g.addNode(1, "Person");
     try g.setProperty(1, "age", .{ .int = -5 });
     try g.addNode(2, "Team");
-    try g.addEdge(1, 2, "MEMBER_OF");
+    try g.addNode(3, "Team");
 
-    // Make it look written by the earlier format: edge keys without the
-    // neighbour's labels, no label counter, and the index key encoding a
-    // negative integer in two's complement.
-    const out_key = "e" ++ bigEndian(u64, 1) ++ "o\x00MEMBER_OF\x00" ++ bigEndian(u64, 2);
-    const in_key = "e" ++ bigEndian(u64, 2) ++ "i\x00MEMBER_OF\x00" ++ bigEndian(u64, 1);
-    try store.put(out_key, "");
-    try store.put(in_key, "");
+    // Make it look written before format 2: no label counter, the index key
+    // encoding a negative integer in two's complement, and relationships
+    // without ids (edge keys ending in the neighbour, without its labels;
+    // properties under `f | src | dst | 0x00 | type | 0x00 | name`).
     try store.del("cPerson");
     var index = try store.scanPrefix("page\x00");
     const current_key = try testing.allocator.dupe(u8, (try index.next()).?.key);
@@ -536,6 +535,15 @@ test "upgrade brings a database of the earlier format up to date" {
     try store.del(current_key);
     const old_key = "page\x00\x01" ++ bigEndian(i64, -5) ++ bigEndian(u64, 1);
     try store.put(old_key, "");
+    inline for (.{ 2, 3 }) |team| {
+        try store.put("e" ++ bigEndian(u64, 1) ++ "o\x00MEMBER_OF\x00" ++ bigEndian(u64, team), "");
+        try store.put("e" ++ bigEndian(u64, team) ++ "i\x00MEMBER_OF\x00" ++ bigEndian(u64, 1), "");
+    }
+    try store.put("tMEMBER_OF", &bigEndian(u64, 2));
+    var since = std.ArrayList(u8).empty;
+    defer since.deinit(testing.allocator);
+    try acmedb.value_encoding.encodeValue(&since, testing.allocator, .{ .int = 2020 });
+    try store.put("f" ++ bigEndian(u64, 1) ++ bigEndian(u64, 3) ++ "\x00MEMBER_OF\x00since", since.items);
 
     try g.upgrade();
 
@@ -548,11 +556,27 @@ test "upgrade brings a database of the earlier format up to date" {
     defer testing.allocator.free(in_range);
     try testing.expectEqualSlices(NodeId, &.{1}, in_range);
     try testing.expectEqual(@as(usize, 1), try g.labelCount("Person"));
-    // Edge keys carry the neighbour's labels again.
-    var edges = try g.edgesOf(2, .in);
-    const edge = (try edges.next()).?;
-    try testing.expect(edge.neighbour_labels != null);
+
+    // Each relationship has an id, in the order of the old keys, and its
+    // edge keys carry the neighbour's labels.
+    var edges = try g.edgesOf(1, .out);
+    const to_two = (try edges.next()).?;
+    const to_three = (try edges.next()).?;
+    try testing.expect((try edges.next()) == null);
     edges.deinit();
+    try testing.expectEqual(@as(u64, 0), to_two.relationship);
+    try testing.expectEqual(@as(u64, 1), to_three.relationship);
+    try testing.expect(to_three.neighbour_labels != null);
+    const stored = (try g.relationship(1, testing.allocator)).?;
+    defer testing.allocator.free(stored.edge_type);
+    try testing.expectEqual(@as(NodeId, 3), stored.dst);
+    // Its property moved to the new key, and the index finds it.
+    try testing.expectEqual(@as(i64, 2020), (try g.getEdgeProperty(1, "since", testing.allocator)).?.int);
+    var by_since = try g.edgesByProperty("since", .{ .int = 2020 });
+    try testing.expectEqual(@as(u64, 1), (try by_since.next()).?.id);
+    by_since.deinit();
+    // New relationships get ids after the old ones.
+    try testing.expectEqual(@as(u64, 2), try g.addEdge(1, 2, "MEMBER_OF"));
 
     // Upgrading an up-to-date database changes nothing.
     try store.put(old_key, "");

@@ -217,7 +217,7 @@ test "C ABI: export the whole graph as JSON" {
             "{\"id\":0,\"labels\":[\"Admin\",\"Person\"],\"properties\":{\"age\":40,\"name\":\"Ana\"}}," ++
             "{\"id\":1,\"labels\":[],\"properties\":{\"name\":\"Bo\"}}" ++
             "],\"relationships\":[" ++
-            "{\"source\":0,\"target\":1,\"type\":\"KNOWS\",\"properties\":{\"since\":2020}}" ++
+            "{\"id\":0,\"source\":0,\"target\":1,\"type\":\"KNOWS\",\"properties\":{\"since\":2020}}" ++
             "]}",
         json[0..length],
     );
@@ -244,7 +244,7 @@ test "C ABI: whole nodes and relationships in the JSON result" {
     const json = acmedb_result_to_json(result, &length);
     try testing.expectEqualStrings(
         "[[{\"~node\":{\"id\":0,\"labels\":[\"A\"],\"properties\":{\"k\":1}}}," ++
-            "{\"~relationship\":{\"source\":0,\"target\":1,\"type\":\"R\",\"properties\":{\"w\":2}}}]]",
+            "{\"~relationship\":{\"id\":0,\"source\":0,\"target\":1,\"type\":\"R\",\"properties\":{\"w\":2}}}]]",
         json[0..length],
     );
 }

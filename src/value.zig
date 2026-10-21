@@ -8,29 +8,25 @@
 const std = @import("std");
 const temporal = @import("temporal/types.zig");
 
-/// A reference to a stored relationship: its endpoints and type identify it
-/// (acmedb keeps one relationship per source, target and type). A regular type.
+/// A reference to a stored relationship: its id identifies it; its ends and
+/// type come with it, so a traversal needs no lookup. A regular type.
 pub const Relationship = struct {
+    id: u64,
     src: u64,
     dst: u64,
     edge_type: []const u8,
 
     pub fn eql(a: Relationship, b: Relationship) bool {
-        return a.src == b.src and a.dst == b.dst and std.mem.eql(u8, a.edge_type, b.edge_type);
+        return a.id == b.id;
     }
 
+    /// By id, as Neo4j orders relationships.
     pub fn order(a: Relationship, b: Relationship) std.math.Order {
-        const by_src = std.math.order(a.src, b.src);
-        if (by_src != .eq) return by_src;
-        const by_dst = std.math.order(a.dst, b.dst);
-        if (by_dst != .eq) return by_dst;
-        return std.mem.order(u8, a.edge_type, b.edge_type);
+        return std.math.order(a.id, b.id);
     }
 
     pub fn hash(self: Relationship, hasher: *std.hash.Wyhash) void {
-        hasher.update(std.mem.asBytes(&self.src));
-        hasher.update(std.mem.asBytes(&self.dst));
-        hasher.update(self.edge_type);
+        hasher.update(std.mem.asBytes(&self.id));
     }
 };
 
@@ -162,7 +158,7 @@ pub const Value = union(enum) {
             .int, .float, .boolean, .null, .node, .date, .local_time, .time, .local_date_time, .duration => self,
             .date_time => |d| .{ .date_time = .{ .seconds = d.seconds, .nanoseconds = d.nanoseconds, .offset = d.offset, .zone = try allocator.dupe(u8, d.zone) } },
             .string => |s| .{ .string = try allocator.dupe(u8, s) },
-            .relationship => |r| .{ .relationship = .{ .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) } },
+            .relationship => |r| .{ .relationship = .{ .id = r.id, .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) } },
             .list => |items| blk: {
                 const copies = try allocator.alloc(Value, items.len);
                 for (copies, items) |*copy, item| copy.* = try item.clone(allocator);
@@ -170,7 +166,7 @@ pub const Value = union(enum) {
             },
             .path => |p| blk: {
                 const relationships = try allocator.alloc(Relationship, p.relationships.len);
-                for (relationships, p.relationships) |*copy, r| copy.* = .{ .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) };
+                for (relationships, p.relationships) |*copy, r| copy.* = .{ .id = r.id, .src = r.src, .dst = r.dst, .edge_type = try allocator.dupe(u8, r.edge_type) };
                 break :blk .{ .path = .{ .nodes = try allocator.dupe(u64, p.nodes), .relationships = relationships } };
             },
             .map => |entries| blk: {
@@ -358,7 +354,7 @@ fn randomValue(random: std.Random, arena: std.mem.Allocator, depth: u8) !Value {
     const kinds: u8 = if (depth == 0) 6 else 8;
     return switch (random.uintLessThan(u8, kinds)) {
         4 => if (random.boolean()) .{ .node = random.uintLessThan(u64, 3) } else .{ .float = ([_]f64{ 1.0, 1.5, -2.0, std.math.nan(f64), 0.0 })[random.uintLessThan(usize, 5)] },
-        5 => .{ .relationship = .{ .src = random.uintLessThan(u64, 2), .dst = random.uintLessThan(u64, 2), .edge_type = strings[random.uintLessThan(usize, 3)] } },
+        5 => .{ .relationship = .{ .id = random.uintLessThan(u64, 3), .src = random.uintLessThan(u64, 2), .dst = random.uintLessThan(u64, 2), .edge_type = strings[random.uintLessThan(usize, 3)] } },
         0 => .{ .null = {} },
         1 => .{ .int = random.intRangeAtMost(i64, -2, 2) },
         2 => .{ .string = strings[random.uintLessThan(usize, strings.len)] },
@@ -434,7 +430,7 @@ test "order follows the openCypher global sort order" {
     const ascending = [_]Value{
         .{ .map = &.{} },
         .{ .node = 9 },
-        .{ .relationship = .{ .src = 0, .dst = 0, .edge_type = "R" } },
+        .{ .relationship = .{ .id = 0, .src = 0, .dst = 0, .edge_type = "R" } },
         .{ .list = &.{} },
         .{ .string = "a" },
         .{ .boolean = true },

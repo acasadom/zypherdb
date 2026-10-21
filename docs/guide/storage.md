@@ -6,10 +6,12 @@ and `src/storage/key_value_store.zig` (the LMDB wrapper).
 
 ## The model: everything is a key
 
-There are **no tables and no schema**. LMDB keeps two B+trees in one file:
+There are **no tables and no schema**. LMDB keeps three B+trees in one file:
 
 - the main one holds every fact as a key: edges, indexes, edge properties, counters;
-- `#nodes` holds the node records, keyed by the node id as a native integer (`MDB_INTEGERKEY`).
+- `#nodes` holds the node records, keyed by the node id as a native integer (`MDB_INTEGERKEY`);
+- `#relationships` holds the relationship records (`src | dst | type`), keyed the same way by the
+  relationship's id.
 
 LMDB iterates keys in **lexicographic byte order**, which is the whole trick: the layout is chosen
 so that *the order you get for free is the order you want*.
@@ -28,14 +30,16 @@ Two rules make that work:
 | Key | Meaning | Answering |
 | --- | --- | --- |
 | `id` in `#nodes` | the node record: labels and properties | `hasNode`, `labelsOf`, `propertiesOf`, `getProperty` |
-| `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour` | one stored direction of a typed edge (`dir` = `'o'` out / `'i'` in); its value is the neighbour's labels | `neighbours`, `hasEdge` |
-| `f \| src \| dst \| 0x00 \| type \| 0x00 \| prop` | an edge property, in the **canonical** `src -> dst` orientation | `getEdgeProperty` |
+| `e \| id \| dir \| 0x00 \| type \| 0x00 \| neighbour \| rel` | one stored direction of relationship `rel` (`dir` = `'o'` out / `'i'` in); its value is the neighbour's labels | `neighbours`, `edgesOf`, `edgesBetween`, `hasEdge` |
+| `rel` in `#relationships` | the relationship's record: `src \| dst \| type` | `relationship`, `hasRelationship` |
+| `f \| rel \| prop` | a relationship property | `getEdgeProperty`, `edgePropertiesOf` |
 | `l \| label \| 0x00 \| id` | label index | `nodesWithLabel` |
 | `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
-| `g \| prop \| 0x00 \| value \| src \| dst \| 0x00 \| type` | edge-property index | `edgesByProperty` (an equality seek) |
+| `g \| prop \| 0x00 \| value \| rel` | edge-property index | `edgesByProperty` (an equality seek) |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
 | `c \| label` | label cardinality counter (absent in databases written before it: the label index is counted) | `labelCount` (anchor selection) |
 | `!` | the next node id to allocate | `allocateNodeId` |
+| `!relationships` | the next relationship id to allocate | `addEdge` |
 
 Every "index" is just more keys, maintained by the same `put`/`del` primitives. There is no
 separate index structure — an index *is* a key range.
@@ -48,11 +52,14 @@ so that **"give me the neighbours of X" is a single prefix scan**:
 - Every directed, typed edge is stored **twice** — once keyed by its source (`'o'`) and once by its
   target (`'i'`). Both directions are therefore a prefix scan, with no reverse index to maintain
   separately.
-- Because the neighbour id is the **trailing** fixed-width field, the prefix scan returns
+- Because the neighbour id is the fixed-width field after the type, the prefix scan returns
   neighbours in ascending id order — the sort is free.
+- The relationship's own id comes last. Two relationships of one type between the same nodes
+  (parallel ones) are two keys that differ only there, so `e | a | 'o' | 0x00 | T | 0x00 | b` is
+  the prefix of every relationship `T` from `a` to `b` (`edgesBetween`).
 
 A traversal `(a)-[:ACTED_IN]->(b)` is literally: scan the range
-`e | a | 'o' | 0x00 | ACTED_IN | 0x00` and read the last 8 bytes of each key. That is the
+`e | a | 'o' | 0x00 | ACTED_IN | 0x00` and read the neighbour's 8 bytes of each key. That is the
 "index-free adjacency" (IFA) model — no pointer, no join, just locality in the key space.
 
 ## Value encoding
@@ -99,9 +106,12 @@ The key `!format` holds the format's version, `Graph.format_version`. When the C
 Python package opens a database, `Graph.upgrade` brings one of an earlier format up to date, in
 one write transaction:
 
-- it rebuilds the property indexes (`p`, `g`) in the current encoding;
-- it writes the neighbour labels on every edge key;
-- it counts every label.
+- to format 2: it rebuilds the node property index (`p`) in the ordered encoding, and counts
+  every label;
+- to format 3: it gives every relationship an id (in the order of its old outgoing key), rewrites
+  the edge keys with it and the neighbour labels, writes the relationship records, moves the
+  relationship properties to `f | rel | prop`, and rebuilds the edge-property index and the
+  full-text indexes of relationships.
 
 This costs O(N), once. A database already in the current format is left as it is.
 
@@ -137,8 +147,8 @@ A change to how keys or values are written raises the version, and adds its migr
 - **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProperty`
   and `deleteNode`. This is what turns `MATCH (p:Person {name: 'Keanu'})` from a scan into a point
   lookup.
-- **Edge-property index (`g`).** The same idea for edges, keyed `prop == value` then `(src, dst,
-  type)`. It lets `MATCH (a)-[r:TYPE {weight: 5}]->(b)` anchor on the edge itself when the endpoints
+- **Edge-property index (`g`).** The same idea for relationships, keyed `prop == value` then the
+  relationship's id, whose record gives its ends and type. It lets `MATCH (a)-[r:TYPE {weight: 5}]->(b)` anchor on the edge itself when the endpoints
   carry no selectivity.
 - **Edge-type counter (`t`).** A per-type cardinality, bumped by `addEdge` and decremented on
   delete, used by the planner to cap a node's cost estimate by the rarest incident edge type.
@@ -153,7 +163,7 @@ transaction could change it, and when it does it updates the memo too. A databas
 full-text indexes pays one read per write transaction.
 
 The postings live in four key spaces of their own, each after a marker byte, the index's name and a
-`0x00`. An entity is a node's id (8 bytes) or a relationship's `src | dst | type`.
+`0x00`. An entity is a node's or a relationship's id (8 bytes; an index holds one kind).
 
 | Key | Value |
 | --- | --- |

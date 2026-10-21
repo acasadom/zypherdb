@@ -86,7 +86,7 @@ pub fn loadMoviesGraph(g: *Graph) !void {
         .{ .a = 4, .b = 100, .t = "DIRECTED" },
         .{ .a = 4, .b = 101, .t = "DIRECTED" },
     };
-    for (edges) |e| try g.addEdge(e.a, e.b, e.t);
+    for (edges) |e| _ = try g.addEdge(e.a, e.b, e.t);
 }
 
 /// Asserts that `rows` equals `expected` as an unordered set of rows.

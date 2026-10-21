@@ -81,7 +81,7 @@ def _graph_state(db) -> dict[str, set]:
         for key, value in node["properties"].items():
             state["properties"].add(("node", node["id"], key, repr(cypher_values.from_python(value))))
     for rel in graph["relationships"]:
-        identity = (rel["source"], rel["target"], rel["type"])
+        identity = rel["id"]
         state["relationships"].add(identity)
         for key, value in rel["properties"].items():
             state["properties"].add(("relationship", identity, key, repr(cypher_values.from_python(value))))

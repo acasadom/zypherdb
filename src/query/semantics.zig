@@ -381,7 +381,6 @@ const Checker = struct {
         .{ .name = "startNode", .kind = .relationship },
         .{ .name = "endNode", .kind = .relationship },
         .{ .name = "labels", .kind = .node },
-        .{ .name = "id", .kind = .node },
         .{ .name = "length", .kind = .path },
         .{ .name = "nodes", .kind = .path },
         .{ .name = "relationships", .kind = .path },

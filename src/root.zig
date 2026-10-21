@@ -12,6 +12,7 @@ pub const PrefixIterator = key_value_store.PrefixIterator;
 pub const graph = @import("storage/graph.zig");
 
 pub const Graph = graph.Graph;
+pub const value_encoding = @import("storage/value_encoding.zig");
 pub const NodeId = graph.NodeId;
 pub const Direction = graph.Direction;
 pub const EdgeKey = graph.EdgeKey;
