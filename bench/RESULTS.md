@@ -41,7 +41,7 @@ expansion reaches), and edge properties, still one key each.
 
 ## libmdbx instead of LMDB (October 2026)
 
-The same code on each engine (`-Dstorage-engine`, before LMDB was removed), each loading its own
+The same code on each engine (`-Dstorage-engine`), each loading its own
 data; best median of four alternating rounds, `--people 100000 --runs 200`, full durability. The
 queries that differed most were then run again alone, five rounds each.
 

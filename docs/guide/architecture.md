@@ -27,13 +27,13 @@ acmedb is deliberately small and generic. Four decisions explain almost every fi
   Algorithms that apply to more than one type — deduplication, pagination, sorting by key,
   grouping — are written once over those operations (`sequence_algorithms.zig`,
   `aggregation.Grouping`, `projection.sortByKey`), never copied per type.
-- **libmdbx as the storage engine, behind a contract.** A graph is traversed by following
+- **LMDB or libmdbx as the storage engine, behind a contract.** A graph is traversed by following
   adjacencies, not by joining tables, so the storage is a key/value B+tree and *"neighbours of X"
-  is one prefix scan*. libmdbx (a descendant of LMDB) is single-writer / multi-reader across
-  processes, its lexicographic key order is what the adjacency encoding exploits, and its file
-  grows and shrinks on its own. The rest of acmedb sees it only through the engine contract
-  (`storage/engine/contract.zig`): another engine would be a new file next to `engine/mdbx.zig`,
-  chosen at build time (`-Dstorage-engine`). Every change goes through the write transaction of
+  is one prefix scan*. Both engines are single-writer / multi-reader across processes, and their
+  lexicographic key order is what the adjacency encoding exploits. The rest of acmedb sees the
+  engine only through its contract (`storage/engine/contract.zig`); the engine is chosen at build
+  time (`-Dstorage-engine=lmdb`, the default, or `mdbx`), and another one would be a new file next
+  to `engine/lmdb.zig` and `engine/mdbx.zig`. Every change goes through the write transaction of
   that contract, the one place a change log (for replication) would be taken.
 
 ## The components
@@ -62,7 +62,7 @@ flowchart TB
     Graph["graph.zig — graph operations and indexes"]
     Keys["key_encoding.zig + node_record.zig — key and record layout"]
     KV["key_value_store.zig — transactions, prefix scans"]
-    Engine["engine.zig + engine/ — the engine contract, libmdbx and its C bindings"]
+    Engine["engine.zig + engine/ — the engine contract, LMDB, libmdbx, C bindings"]
   end
   Shared["value.zig · temporal/ · sequence_algorithms.zig · diagnostics.zig"]
 
@@ -87,7 +87,9 @@ flowchart TB
 | `src/sequence_algorithms.zig` | Generic algorithms written once for any regular element type: `removeDuplicates`, `dropFirst`, `truncate`, and the hash-map contexts `ElementContext`/`SequenceContext`. |
 | `src/diagnostics.zig` | `Diagnostic`: an error code, a message and a byte offset — the error-reporting seam. |
 | `src/storage/engine/contract.zig` | What a storage engine provides: environment, read and write transactions, cursors, the three tables, and the rules every engine keeps (zero-copy reads, one writer, several processes). |
-| `src/storage/engine.zig` | The engine chosen at build time (`-Dstorage-engine`, `mdbx`): the only place that names one. |
+| `src/storage/engine.zig` | The engine chosen at build time (`-Dstorage-engine=lmdb\|mdbx`): the only place that names one. |
+| `src/storage/engine/lmdb.zig` | The LMDB engine (the default): map size, durability flags, renewed read transactions. |
+| `src/storage/engine/lmdb_bindings.zig` | Hand-written C bindings for LMDB (`MDB_env`/`MDB_txn`/`MDB_cursor`, `MDB_val`, the functions and constants used). |
 | `src/storage/engine/mdbx.zig` | The libmdbx engine: file geometry, durability flags, renewed read transactions. |
 | `src/storage/engine/mdbx_bindings.zig` | Hand-written C bindings for libmdbx: `opaque {}` handles for `MDBX_env`/`MDBX_txn`/`MDBX_cursor`, `extern struct MDBX_val`, the `extern "c" fn`s and constants. |
 | `src/storage/key_value_store.zig` | `KeyValueStore`, the graph's view of the engine: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix`, explicit write/read transactions, pooled cursors and the record cache. `scanPrefix` returns an **iterator**, not a callback. |

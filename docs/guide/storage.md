@@ -6,11 +6,11 @@ and `src/storage/key_value_store.zig` (the store over the storage engine).
 
 ## The model: everything is a key
 
-There are **no tables and no schema**. The storage engine, libmdbx, keeps three B+trees in one
-file:
+There are **no tables and no schema**. The storage engine (LMDB by default, or libmdbx with
+`-Dstorage-engine=mdbx`; see [the engines](#the-storage-engines)) keeps three B+trees in one file:
 
 - the main one holds every fact as a key: edges, indexes, edge properties, counters;
-- `#nodes` holds the node records, keyed by the node id as a native integer (`MDBX_INTEGERKEY`);
+- `#nodes` holds the node records, keyed by the node id as a native integer (an integer-key table);
 - `#relationships` holds the relationship records (`src | dst | type`), keyed the same way by the
   relationship's id.
 
@@ -119,7 +119,7 @@ the first release.
   One B-tree search reads everything about a node, and a change rewrites the record. In a read
   transaction, three things make reading records cheaper:
   - **A reused cursor.** Records are looked up through one cursor. When the next id is at most
-    four records ahead, the cursor steps forward (`MDBX_NEXT`) instead of searching. A scan's nodes
+    four records ahead, the cursor steps forward (a cursor `next`) instead of searching. A scan's nodes
     come in id order, so a scan reads records almost sequentially.
   - **A record cache** (`RecordCache`). It keeps the records found in the transaction as the
     engine's views, which stay valid until the transaction ends. It is direct-mapped by id with 4096 slots,
@@ -193,30 +193,46 @@ so the counter never hands out an id that is in use.
 - **Reads** are batched: a read-only query opens one read transaction (an MVCC snapshot,
   `beginRead`/`commitRead`) and all its reads run inside it — so a filtered scan is O(1)
   transactions, not one per `get`.
-- `MDBX_NOSTICKYTHREADS` is set on the environment, so a single thread may hold several read
-  transactions at once — the executor needs that to run a scan, then a neighbour scan *inside* it.
+- Read transactions are not tied to a thread (LMDB's `MDB_NOTLS`, libmdbx's
+  `MDBX_NOSTICKYTHREADS`), so a single thread may hold several at once — the executor needs that
+  to run a scan, then a neighbour scan *inside* it.
 - An ended read transaction is reset and kept (up to four per database) for the next one to
   renew (`Environment.endRead`): starting a read costs no allocation.
-- The file grows as data is written, in steps of 16 MiB, up to 1 TiB of address space
-  (`mdbx_env_set_geometry`), and gives the free space at its end back to the file system once it
-  passes 64 MiB.
 - An iterator returned by `scanPrefix` borrows its transaction; it must be `deinit`'d **before** the
   transaction ends (the cursor belongs to it). The executor scopes every iterator to its `runStep`
   frame, which is what makes this safe.
 
+## The storage engines
+
+The rest of acmedb sees the engine only through `src/storage/engine/contract.zig`; the engine is
+chosen at build time (`zig build -Dstorage-engine=lmdb|mdbx`), and both are kept until libmdbx
+builds everywhere LMDB does:
+
+| | LMDB (default) | libmdbx (`mdbx`) |
+| --- | --- | --- |
+| Sources | `vendor/lmdb/` | `vendor/libmdbx/` (0.14.4, local fixes in `PATCHES.md`) |
+| Files in the database directory | `data.mdb`, `lock.mdb` | `mdbx.dat`, `mdbx.lck` |
+| File size | grows as data is written, within a 1 TiB map; never shrinks | grows in 16 MiB steps, up to 1 TiB; gives back free space at its end past 64 MiB |
+| A second open in one process | not safe | refused (`StorageError`) |
+| Builds | every target | every target but Windows on ARM64 |
+| Speed ([bench/RESULTS.md](../../bench/RESULTS.md)) | | commits ~2x faster, point reads 5-15% faster, range-index scans 12-22% slower |
+
+The two write different files, so a database belongs to the engine that created it.
+
 ## Durability
 
-`KeyValueStore.openWithOptions` takes a durability mode, mapped to libmdbx flags:
+`KeyValueStore.openWithOptions` takes a durability mode, mapped to each engine's flags:
 
-| Mode | libmdbx flag | A commit returns when… |
-| --- | --- | --- |
-| `full` | `MDBX_SYNC_DURABLE` | data and metadata are flushed (`fsync`; `F_FULLFSYNC` on macOS) |
-| `relaxed` | `MDBX_NOMETASYNC` | data is flushed; the metadata page follows with the next commit |
-| `deferred` | `MDBX_SAFE_NOSYNC` | the write is in the page cache; `sync()` (`mdbx_env_sync_ex`) or the OS flushes it |
+| Mode | LMDB flag | libmdbx flag | A commit returns when… |
+| --- | --- | --- | --- |
+| `full` | none | `MDBX_SYNC_DURABLE` | data and metadata are flushed (`fsync`; `F_FULLFSYNC` on macOS) |
+| `relaxed` | `MDB_NOMETASYNC` | `MDBX_NOMETASYNC` | data is flushed; the metadata page follows with the next commit |
+| `deferred` | `MDB_NOSYNC` | `MDBX_SAFE_NOSYNC` | the write is in the page cache; `sync()` or the OS flushes it |
 
-Every process that opens a database at once must agree on `deferred`: libmdbx refuses to open a
-database in `deferred` mode that another process has open in `full` or `relaxed`, and the reverse.
+With libmdbx, every process that opens a database at once must agree on `deferred`: it refuses to
+open a database in `deferred` mode that another process has open in `full` or `relaxed`, and the
+reverse.
 
-libmdbx is copy-on-write and never overwrites live pages, so no mode can corrupt the database: a
+Both engines are copy-on-write and never overwrite live pages, so no mode can corrupt the database: a
 crash loses at most the commits that were not yet flushed, and the database opens at the last
 flushed one.

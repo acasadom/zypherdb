@@ -62,7 +62,9 @@ def main() -> None:
         # Bring the file into the OS page cache, as in a process that has been
         # running a while: otherwise the first reads of each page go to disk,
         # which measures the disk, not acmedb.
-        with open(Path(args.dir) / "mdbx.dat", "rb") as data:
+        # The data file of either engine: LMDB's data.mdb, libmdbx's mdbx.dat.
+        data_file = next(p for p in (Path(args.dir) / "data.mdb", Path(args.dir) / "mdbx.dat") if p.exists())
+        with open(data_file, "rb") as data:
             while data.read(1 << 24):
                 pass
 

@@ -1,14 +1,14 @@
 const std = @import("std");
 
 /// The storage engines acmedb can be built with (src/storage/engine/).
-const StorageEngine = enum { mdbx };
+const StorageEngine = enum { lmdb, mdbx };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     // The storage engine under the key-value store (src/storage/engine.zig).
-    const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine (default: mdbx)") orelse .mdbx;
+    const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine: lmdb (default) or mdbx") orelse .lmdb;
     const build_options = b.addOptions();
     build_options.addOption(StorageEngine, "storage_engine", storage_engine);
 
@@ -21,6 +21,13 @@ pub fn build(b: *std.Build) void {
     });
     acmedb.addOptions("build_options", build_options);
     switch (storage_engine) {
+        .lmdb => {
+            acmedb.addIncludePath(b.path("vendor/lmdb"));
+            acmedb.addCSourceFiles(.{
+                .files = &.{ "vendor/lmdb/mdb.c", "vendor/lmdb/midl.c" },
+                .flags = &.{"-O2"},
+            });
+        },
         .mdbx => {
             acmedb.addIncludePath(b.path("vendor/libmdbx"));
             // Only for Linux targets: see the shim's comment.

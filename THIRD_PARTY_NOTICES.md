@@ -4,6 +4,7 @@ acmedb includes, or is derived from, the following works. Their licenses are rep
 
 | Work | Where | License |
 | --- | --- | --- |
+| LMDB (Symas Corporation, OpenLDAP Foundation) | `vendor/lmdb/` | OpenLDAP Public License 2.8 (`vendor/lmdb/LICENSE`) |
 | libmdbx 0.14.4 (Leonid Yuriev), with the local change listed in `vendor/libmdbx/PATCHES.md` | `vendor/libmdbx/` | Apache License 2.0 (`vendor/libmdbx/LICENSE`; its NOTICE below) |
 | Unicode Character Database 16.0 (tables generated from it) | `src/text/unicode_tables.zig` | Unicode License v3 (below) |
 | Snowball stemming algorithms (English "Porter2", Spanish), translated to Zig; the Snowball Spanish stop-word list | `src/text/stem_english.zig`, `src/text/stem_spanish.zig`, `src/text/stop_words.zig` | BSD 3-Clause (below) |
@@ -14,7 +15,7 @@ The English stop words are Lucene's English stop set, a list of 33 common Englis
 
 ## libmdbx (Apache License 2.0)
 
-acmedb's builds contain libmdbx, compiled from
+acmedb's builds with the libmdbx engine (`-Dstorage-engine=mdbx`) contain libmdbx, compiled from
 `vendor/libmdbx/mdbx.c` as modified by acmedb (`vendor/libmdbx/PATCHES.md`). The
 attribution notice of its NOTICE file:
 

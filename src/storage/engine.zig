@@ -13,6 +13,7 @@ pub const Durability = contract.Durability;
 pub const Options = contract.Options;
 
 pub const Selected = switch (build_options.storage_engine) {
+    .lmdb => @import("engine/lmdb.zig"),
     .mdbx => @import("engine/mdbx.zig"),
 };
 

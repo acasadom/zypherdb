@@ -98,8 +98,8 @@ The style follows Alexander Stepanov's generic programming, within Zig's convent
   take it as the first parameter (`expressions.evaluate(executor, …)`). Calls go through the module
   name, so a call site says where the code lives.
 - **Descriptive names, no abbreviations** (`edge_type`, `variable_name`, `children`, `diagnostic`).
-  Kept on purpose: `id`, `src`/`dst`, std's own names (`tmpDir`), the libmdbx C API's own names inside
-  the bindings, and one-letter names in short loops.
+  Kept on purpose: `id`, `src`/`dst`, std's own names (`tmpDir`), the LMDB and libmdbx C APIs' own names
+  inside the bindings, and one-letter names in short loops.
 
 ## The recipes
 
@@ -151,7 +151,7 @@ Indexes are just more key ranges (see [storage](storage)):
 ## Zig 0.17 gotchas (rediscovered once, recorded here)
 
 - `@cImport` is removed → hand-written bindings: `extern "c" fn` + `opaque {}` (see
-  `src/storage/engine/mdbx_bindings.zig`), or `b.addTranslateC` in `build.zig` for a large header (the
+  `src/storage/engine/lmdb_bindings.zig`), or `b.addTranslateC` in `build.zig` for a large header (the
   Python module translates `python/native/python.h`).
 - `@intFromEnum` became `@backingInt` (`zig fmt` rewrites it); a struct's field names are
   `@typeInfo(T).@"struct".field_names`.

@@ -62,7 +62,7 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   records; slow for nodes with very large documents (map properties) updated often.
 - **Map properties (documents) are indexed whole.** A filter on a field inside one
   (`n.doc.city = 'x'`) reads every candidate's record. Fix: indexes on document paths.
-- **Cold reads go to disk.** libmdbx maps the file into memory; the first read of each page in a
+- **Cold reads go to disk.** The storage engine maps the file into memory; the first read of each page in a
   process whose file is not in the operating system's cache is a disk read (about 200 µs per
   point query on a laptop SSD, until the pages a query needs are cached). Normal for a disk
   database, but it makes the first queries after a start slow. Fix if needed: an optional warm-up

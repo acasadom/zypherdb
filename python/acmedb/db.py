@@ -24,7 +24,7 @@ def _check_node_id(id: int) -> int:
 
 
 class Database:
-    """A handle to one acmedb database (a libmdbx environment in directory `path`).
+    """A handle to one acmedb database (a storage-engine environment in directory `path`).
 
     The directory must exist. Use it as a context manager to close on exit::
 
@@ -40,9 +40,9 @@ class Database:
         the last commit, never corrupt the database) or "deferred" (commits are
         written by the operating system or by `sync()`; a power failure can lose
         the recent ones, hundreds of times faster for many small writes).
-        Processes that have the database open at once must agree on
-        "deferred": one cannot open it "deferred" while another has it open
-        "full" or "relaxed", nor the reverse.
+        With the libmdbx engine, processes that have the database open at
+        once must agree on "deferred": one cannot open it "deferred" while
+        another has it open "full" or "relaxed", nor the reverse.
 
         `temporals` is how query results return dates, times and durations:
         "python" as `datetime`-module values (microsecond precision, years

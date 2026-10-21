@@ -1,10 +1,10 @@
 # acmedb
 
-*An embedded graph database in Zig, speaking openCypher, on libmdbx.*
+*An embedded graph database in Zig, speaking openCypher, on LMDB or libmdbx.*
 
 A small, embeddable **graph database**: link it into your process, or load the shared library from
 Python, write nodes and edges, and answer queries in a subset of **openCypher** — over an
-**index-free adjacency** graph stored in **libmdbx**. No server, no configuration, one binary
+**index-free adjacency** graph stored in **LMDB** (or **libmdbx**). No server, no configuration, one binary
 toolchain.
 
 ---
@@ -14,12 +14,13 @@ toolchain.
 - **Zig 0.17.0** — a fast, self-contained, single-binary toolchain: no Docker, no CMake, no
   vcpkg. Pre-1.0 (breaking changes until 1.0) and a small ecosystem, but `comptime` generics map
   cleanly onto the generic-programming style the project uses throughout.
-- **libmdbx** as the storage engine — not RocksDB, not SQLite. A graph is traversed by following
-  adjacencies, not by joining tables: acmedb encodes its own keys and exploits the engine's
-  lexicographic iteration so *"give me the neighbours of X"* is one prefix scan. libmdbx, a
-  descendant of LMDB, is single-writer / multi-reader across processes, its file grows and shrinks
-  on its own, and it runs on Windows as well. It sits behind an engine contract
-  (`src/storage/engine/contract.zig`), so another engine would be one more file.
+- **LMDB or libmdbx** as the storage engine — not RocksDB, not SQLite. A graph is traversed by
+  following adjacencies, not by joining tables: acmedb encodes its own keys and exploits the
+  engine's lexicographic iteration so *"give me the neighbours of X"* is one prefix scan. Both are
+  single-writer / multi-reader across processes. The engine sits behind a contract
+  (`src/storage/engine/contract.zig`) and is chosen at build time: `-Dstorage-engine=lmdb` (the
+  default) or `mdbx` (libmdbx, a descendant of LMDB: faster commits, a file that grows and shrinks
+  on its own; see [bench/RESULTS.md](bench/RESULTS.md)).
 - **Generic programming (Stepanov).** Data as concrete types, algorithms as free functions, errors
   as values. The core types are *regular* (equality, a total order and a hash, with their laws
   tested), and algorithms shared by several types — deduplication, sorting, grouping, pagination —
@@ -34,7 +35,7 @@ zig build test    # build and run the test suite
 zig build         # build the static + shared libraries into zig-out/
 ```
 
-The libmdbx C sources under `vendor/libmdbx/` are vendored and compiled by the build. `zig build` also
+The LMDB and libmdbx C sources under `vendor/` are vendored; the build compiles the chosen one. `zig build` also
 produces `libacmedb.dylib` (`.so` on Linux) and the header `zig-out/include/acmedb.h`, for embedding
 acmedb from C, C++ or any language with a C FFI (see `docs/guide/c-api.md`).
 
@@ -140,4 +141,4 @@ what acmedb does not implement. See `STATUS.md` (kept out of git) for the workin
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). acmedb includes libmdbx and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT (see [LICENSE](LICENSE)). acmedb includes LMDB, libmdbx and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

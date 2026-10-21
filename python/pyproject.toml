@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "acmedb"
 version = "0.1.0"
-description = "Python bindings for acmedb, an embedded graph database (openCypher on libmdbx)"
+description = "Python bindings for acmedb, an embedded graph database (openCypher on LMDB or libmdbx)"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 
