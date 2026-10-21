@@ -144,6 +144,7 @@ pub const NodeKind = enum {
     pattern_predicate, // `(a)-->(b)` in a WHERE: children [pattern, true literal]
     pattern_comprehension, // `[p = (a)-->(b) WHERE w | e]`: children [pattern, w, e]
     exists_subquery, // `EXISTS { ... }`: one child, the subquery (a `query` node)
+    count_subquery, // `COUNT { ... }`: one child, the subquery (a `query` node)
     case_expression, // children [condition, result]..., optional else
     simple_case_expression, // children [subject, (value, result)..., optional else]
     binary_operation,
@@ -193,6 +194,12 @@ pub const NodeKind = enum {
     /// `SHOW [FULLTEXT] INDEXES`: data.boolean is true for FULLTEXT only.
     show_indexes,
 };
+
+/// True for the expressions that hold a query of their own (`EXISTS { ... }`,
+/// `COUNT { ... }`): what is inside them, aggregates included, is theirs.
+pub fn isSubquery(kind: NodeKind) bool {
+    return kind == .exists_subquery or kind == .count_subquery;
+}
 
 /// Node payload. The active variant is determined by the node's `kind`; kinds
 /// that carry no extra data use `none`.

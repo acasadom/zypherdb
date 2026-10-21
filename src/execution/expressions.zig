@@ -109,6 +109,7 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             break :blk .{ .boolean = (try clauses.nestedMatches(self, children[0..1], children[1], bindings.*)).len > 0 };
         },
         .exists_subquery => .{ .boolean = (try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len > 0 },
+        .count_subquery => .{ .int = @intCast((try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len) },
         .pattern_comprehension => blk: {
             const children = self.ast.nodeChildren(expr);
             const matches = try clauses.nestedMatches(self, children[0..1], children[1], bindings.*);

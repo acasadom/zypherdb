@@ -1,6 +1,6 @@
-//! Subqueries: `EXISTS { ... }` with a whole read-only query inside (MATCH,
-//! OPTIONAL MATCH, UNWIND, WITH, RETURN), the scope it sees and keeps, and
-//! aggregates that belong to it.
+//! Subqueries: `EXISTS { ... }` and `COUNT { ... }` with a pattern or a whole
+//! read-only query inside (MATCH, OPTIONAL MATCH, UNWIND, WITH, RETURN), the
+//! scope they see and keep, and aggregates that belong to them.
 
 const std = @import("std");
 const testing = std.testing;
@@ -114,4 +114,38 @@ test "an EXISTS subquery's aggregates and variables stay inside it" {
     try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "MATCH (p) WHERE EXISTS { } RETURN p", null));
     // Nothing above wrote.
     try expectQuery(&ast, &g, "MATCH (n) WHERE n.seen IS NOT NULL RETURN n", &.{});
+}
+
+test "COUNT counts the rows of a pattern or a read-only subquery" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try createGroups(&ast, &g);
+
+    const int = struct {
+        fn of(n: i64) Value {
+            return .{ .int = n };
+        }
+    }.of;
+    // The short form: a pattern, with an optional WHERE.
+    try expectQuery(&ast, &g,
+        \\MATCH (p:Person) RETURN p.name, COUNT { (p)-[:MEMBER_OF]->() } AS groups ORDER BY p.name
+    , &.{ &.{ string("Ana"), int(2) }, &.{ string("Bo"), int(1) }, &.{ string("Cy"), int(0) } });
+    try expectQuery(&ast, &g,
+        \\MATCH (p:Person) WHERE COUNT { (p)-->(g) WHERE g.name <> 'security' } = 1 RETURN p.name ORDER BY p.name
+    , &.{ &.{string("Ana")}, &.{string("Bo")} });
+    // A whole subquery: its rows after UNWIND, WITH DISTINCT and RETURN.
+    try expectQuery(&ast, &g,
+        \\MATCH (p:Person {name: 'Ana'})
+        \\RETURN COUNT { MATCH (p)-->(g) UNWIND [g.name, g.name] AS name RETURN DISTINCT name } AS names
+    , &.{&.{int(2)}});
+    // `count(...)` stays the aggregate; COUNT { } is per row, so it can be a grouping key.
+    try expectQuery(&ast, &g,
+        \\MATCH (p:Person) RETURN COUNT { (p)-->() } AS groups, count(*) AS people ORDER BY groups
+    , &.{ &.{ int(0), int(1) }, &.{ int(1), int(1) }, &.{ int(2), int(1) } });
 }

@@ -21,6 +21,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("ast.zig").Ast;
 const Index = @import("ast.zig").Index;
 const NodeKind = @import("ast.zig").NodeKind;
+const isSubquery = @import("ast.zig").isSubquery;
 const BinaryOperator = @import("ast.zig").BinaryOperator;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const procedures = @import("procedures.zig");
@@ -223,7 +224,7 @@ const Checker = struct {
                 }
             },
             .pattern_comprehension => return self.checkWithLocals(&.{children[0]}, children),
-            .exists_subquery => return self.checkSubquery(children[0]),
+            .exists_subquery, .count_subquery => return self.checkSubquery(children[0]),
             .aggregate => {
                 if (self.iteration_depth > 0) return self.fail("an aggregate cannot be used inside a list comprehension or quantifier", .{});
                 // Aggregating values that change from call to call is meaningless.
@@ -687,7 +688,7 @@ fn expandStar(ast: *Ast, query: Index, star: Star) Allocator.Error!void {
 
 fn containsAggregate(ast: *const Ast, expression: Index) bool {
     if (ast.kind(expression) == .aggregate) return true;
-    if (ast.kind(expression) == .exists_subquery) return false; // its aggregates are its own
+    if (isSubquery(ast.kind(expression))) return false; // its aggregates are its own
     for (ast.nodeChildren(expression)) |child| if (containsAggregate(ast, child)) return true;
     return false;
 }
