@@ -103,6 +103,9 @@ table_procedures: []const procedure_signatures.TableProcedure = &.{},
 /// Relationship uniqueness: the edges bound on the current search branch of
 /// the MATCH being run.
 used_edges: std.ArrayList(Relationship),
+/// How many matches have passed their MATCH's WHERE so far (a shortest-path
+/// search that tests the WHERE stops at the length where one did).
+accepted_matches: usize = 0,
 
 // RETURN aggregation.
 has_aggregates: bool,
@@ -246,6 +249,7 @@ pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) Exe
 /// run: keeps it, as a row of its own, if it passes the MATCH's WHERE.
 pub fn matchFound(self: *Executor, bindings: *Bindings) ExecutionError!void {
     if (self.where_expression != no_where and !try expressions.evaluateBool(self, self.where_expression, bindings)) return;
+    self.accepted_matches += 1;
     if (self.matches) |output| return output.append(self.allocator, try clauses.copyRow(self, bindings.*));
     const pipeline = self.pipeline orelse return;
     self.stream_emitted += 1;

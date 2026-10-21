@@ -80,6 +80,8 @@ its own rows on; the first clause receives one empty row.
 -[:A|B]->                                          one of several types
 -[*]->  -[*2]->  -[*1..3]->  -[*..3]->  -[*0..]->  variable length: 1+, exactly 2, 1 to 3, up to 3, 0+
 path = (a)-[:TYPE*]->(b)                           a path variable
+path = shortestPath((a)-[:TYPE*]-(b))              only a shortest path between a and b
+path = allShortestPaths((a)-[*..10]->(b))          every shortest path between them
 ```
 
 - Every part is optional: `()` is a node with no variable, label or properties, and a relationship
@@ -93,6 +95,13 @@ path = (a)-[:TYPE*]->(b)                           a path variable
   same relationship.
 - Each relationship has an id of its own (`id(r)`), so two nodes may be joined by several
   relationships of one type (parallel ones), each matched, changed and deleted on its own.
+- `shortestPath` and `allShortestPaths` take a pattern of one variable-length relationship
+  (`*`, `*..n`, or `*0..` to include the start). For each pair of end nodes they keep one
+  shortest path, or every path of the shortest length; an unbound end gets a path to each node
+  reached. When the `WHERE` reads the path (its variable, or the relationship list), the result
+  is the shortest path the `WHERE` keeps: paths are then tried by increasing length, which
+  explores every path up to that length (bound it with `*..n` on large graphs). Otherwise a
+  breadth-first search finds them, in time proportional to the part of the graph it reaches.
 
 ## Expressions
 
@@ -398,7 +407,6 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
 
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
   inside `CALL { … }`; `LOAD CSV`;
-- `shortestPath` and `allShortestPaths`;
 - the regular-expression operator `=~`;
 - schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
   already indexed for equality and ranges.

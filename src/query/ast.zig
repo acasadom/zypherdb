@@ -277,6 +277,11 @@ pub const EdgePatternData = struct {
     variable_length: bool = false,
     min_hops: u32 = 1,
     max_hops: ?u32 = 1,
+    /// `shortestPath(...)` / `allShortestPaths(...)` around the pattern: only
+    /// the shortest of its paths between two nodes (one, or all of them).
+    shortest: Shortest = .none,
+
+    pub const Shortest = enum { none, one, all };
 
     /// The single type a written edge must have, if there is exactly one.
     pub fn singleType(self: EdgePatternData) ?[]const u8 {

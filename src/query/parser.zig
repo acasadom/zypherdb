@@ -12,6 +12,7 @@ const Ast = @import("ast.zig").Ast;
 const Index = @import("ast.zig").Index;
 const NodeKind = @import("ast.zig").NodeKind;
 const EdgeDirection = @import("ast.zig").EdgeDirection;
+const EdgePatternData = @import("ast.zig").EdgePatternData;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const lexer = @import("lexer.zig");
 const call_parser = @import("call_parser.zig");
@@ -696,10 +697,38 @@ pub const Parser = struct {
             _ = self.advance(); // `=`
         }
 
+        // `shortestPath((a)-[*]-(b))` / `allShortestPaths(...)`.
+        const shortest: EdgePatternData.Shortest = if (self.at(.identifier) and self.peekAhead(1).kind == .left_paren)
+            if (std.ascii.eqlIgnoreCase(self.peek().text, "shortestPath")) .one else if (std.ascii.eqlIgnoreCase(self.peek().text, "allShortestPaths")) .all else .none
+        else
+            .none;
+        if (shortest != .none) {
+            _ = self.advance();
+            _ = self.advance(); // `(`
+        }
+
         try children.append(self.ast.allocator, try self.parseNodePattern());
         while (self.at(.minus) or self.at(.arrow_left)) {
             try children.append(self.ast.allocator, try self.parseEdgePattern());
             try children.append(self.ast.allocator, try self.parseNodePattern());
+        }
+        if (shortest != .none) {
+            try self.expect(.right_paren);
+            const function = if (shortest == .one) "shortestPath" else "allShortestPaths";
+            if (children.items.len != 3) {
+                self.fail("{s} takes a pattern of one relationship, as in {s}((a)-[*]-(b))", .{ function, function });
+                return error.UnexpectedToken;
+            }
+            const edge = &self.ast.nodes.items[children.items[1]].data.edge_pattern;
+            if (!edge.variable_length) {
+                self.fail("{s} needs a relationship of variable length, as in -[*]- or -[:R*..5]-", .{function});
+                return error.UnexpectedToken;
+            }
+            if (edge.min_hops > 1) {
+                self.fail("{s} finds paths of at least 0 or 1 relationships, not {d}", .{ function, edge.min_hops });
+                return error.UnexpectedToken;
+            }
+            edge.shortest = shortest;
         }
         return self.ast.addNode(.pattern, .{ .text = path_variable }, children.items);
     }
