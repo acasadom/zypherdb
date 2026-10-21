@@ -1,4 +1,4 @@
-//! Key encoding: how graph data is laid out as LMDB keys.
+//! Key encoding: how graph data is laid out as keys of the key-value store.
 //!
 //! Keys are byte strings laid out so that "give me the neighbours of node X"
 //! is a single prefix scan. Every key starts with a one-byte marker naming
@@ -67,7 +67,7 @@ pub const node_id_length: usize = @sizeOf(NodeId);
 pub const counter_key: []const u8 = "!";
 /// Key storing the next relationship id to allocate (8-byte big-endian counter).
 pub const relationship_counter_key: []const u8 = "!relationships";
-/// The storage format's version (see `Graph.upgrade`).
+/// The storage format's version (see `Graph.checkFormat`).
 pub const format_key: []const u8 = "!format";
 
 // ---------------------------------------------------------------------------

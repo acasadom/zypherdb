@@ -5,13 +5,13 @@
 //! its source (outgoing) and by its target (incoming), so the neighbours of a
 //! node in either direction are one prefix scan.
 //!
-//! Costs. With N keys in the store, a point lookup or write is one LMDB
-//! B+-tree descent, O(log N); a scan yielding k entries is O(log N + k). Each
+//! Costs. With N keys in the store, a point lookup or write is one B+-tree
+//! descent in the storage engine, O(log N); a scan yielding k entries is O(log N + k). Each
 //! operation below states its cost in those terms.
 //!
 //! Iterators (`NodeIdIterator`, `EdgeIterator`) share one concept:
 //! `next() StorageError!?T` yields the next item or null at the end, and
-//! `deinit()` releases the LMDB cursor. Slices inside a yielded item (an edge
+//! `deinit()` releases the engine's cursor. Slices inside a yielded item (an edge
 //! type) are views into the store, valid only until the next `next` call.
 //! Iterators opened inside a transaction must be `deinit`ed before it ends.
 
@@ -55,158 +55,23 @@ pub const Graph = struct {
         return .{ .store = store, .allocator = allocator };
     }
 
-    /// The storage format this code writes. 2 (October 2026): index keys
-    /// order numbers and dates (range lookups), edge keys carry the
-    /// neighbour's labels, labels have counters. 3 (October 2026): every
-    /// relationship has an id of its own, so parallel relationships are
-    /// kept. Databases without a format key were written before 2.
-    pub const format_version: u32 = 3;
+    /// The storage format this code writes and reads. A database in another
+    /// format is refused: acmedb has no users yet, so formats change without
+    /// migrations until the first release.
+    pub const format_version: u32 = 1;
 
-    /// Brings a database written by an earlier format up to this one, in one
-    /// write transaction, one format step after another. O(N) once; a
-    /// database in this format is left as it is. Call it after opening,
-    /// before anything else.
-    pub fn upgrade(self: *Graph) StorageError!void {
-        var scratch = std.heap.ArenaAllocator.init(self.allocator);
-        defer scratch.deinit();
-        const arena = scratch.allocator();
-        var version: u32 = 1;
+    /// Stamps a new database with this code's format, and refuses one
+    /// written in another (`error.IncompatibleFormat`). Call it after
+    /// opening, before anything else.
+    pub fn checkFormat(self: *Graph) StorageError!void {
         if (try self.store.get(key_encoding.format_key)) |raw| {
             defer self.store.allocator.free(raw);
-            if (raw.len == 4) version = std.mem.readInt(u32, raw[0..4], .big);
+            if (raw.len != 4 or std.mem.readInt(u32, raw[0..4], .big) != format_version) return error.IncompatibleFormat;
+            return;
         }
-        if (version >= format_version) return;
-        try self.beginWrite();
-        errdefer self.abortWrite();
-        if (version < 2) try self.upgradeNodeIndexes(arena);
-        if (version < 3) try self.upgradeRelationships(arena);
         var bytes: [4]u8 = undefined;
         std.mem.writeInt(u32, &bytes, format_version, .big);
         try self.store.put(key_encoding.format_key, &bytes);
-        try self.commitWrite();
-    }
-
-    /// To format 2, for nodes: rebuilds the property index in the ordered
-    /// encoding and counts labels. (Its relationship changes are in format 3's.)
-    fn upgradeNodeIndexes(self: *Graph, arena: Allocator) StorageError!void {
-        // The old index keys go: collect first, so no scan is open across the deletes.
-        var stale = std.ArrayList([]const u8).empty;
-        for ([_]u8{ key_encoding.index_marker, key_encoding.label_count_marker }) |marker| {
-            var keys = try self.store.scanPrefix(&.{marker});
-            defer keys.deinit();
-            while (try keys.next()) |entry| try stale.append(arena, try arena.dupe(u8, entry.key));
-        }
-        for (stale.items) |key| try self.store.del(key);
-
-        const Node = struct { id: NodeId, record: NodeRecord };
-        var nodes = std.ArrayList(Node).empty;
-        {
-            var all = try self.allNodes();
-            defer all.deinit();
-            while (try all.next()) |id| {
-                const record = try self.readRecord(id, arena) orelse continue;
-                try nodes.append(arena, .{ .id = id, .record = .{ .bytes = try arena.dupe(u8, record.bytes) } });
-            }
-        }
-        var label_counts = std.StringHashMapUnmanaged(u64).empty;
-        for (nodes.items) |node| {
-            var properties = node.record.properties();
-            while (properties.next()) |property| {
-                try self.putIndexEntry(node.id, property.name, try value_encoding.decodeValue(property.encoded_value, arena));
-            }
-            var labels = node.record.labels();
-            while (labels.next()) |label| {
-                const entry = try label_counts.getOrPut(arena, label);
-                entry.value_ptr.* = if (entry.found_existing) entry.value_ptr.* + 1 else 1;
-            }
-        }
-        var counts = label_counts.iterator();
-        while (counts.next()) |entry| {
-            var key = std.ArrayList(u8).empty;
-            try appendLabelCountKey(&key, arena, entry.key_ptr.*);
-            var buffer: [8]u8 = undefined;
-            std.mem.writeInt(u64, &buffer, entry.value_ptr.*, .big);
-            try self.store.put(key.items, &buffer);
-        }
-    }
-
-    /// To format 3: gives every relationship an id. Before it, a relationship
-    /// was its (src, dst, type), in edge keys `e | node | dir | 0x00 | type |
-    /// 0x00 | neighbour` and properties `f | src | dst | 0x00 | type | 0x00 |
-    /// name`. Rewrites those keys, writes the relationship records, rebuilds
-    /// the edge-property index and the relationship full-text indexes.
-    fn upgradeRelationships(self: *Graph, arena: Allocator) StorageError!void {
-        const Ends = struct { src: NodeId, dst: NodeId, edge_type: []const u8 };
-        const OldProperty = struct { ends: Ends, name: []const u8, value: []const u8 };
-        var outgoing = std.ArrayList(Ends).empty;
-        var properties = std.ArrayList(OldProperty).empty;
-        var stale = std.ArrayList([]const u8).empty;
-        {
-            var keys = try self.store.scanPrefix(&.{key_encoding.edge_marker});
-            defer keys.deinit();
-            while (try keys.next()) |entry| {
-                try stale.append(arena, try arena.dupe(u8, entry.key));
-                const id = key_encoding.readNodeId(entry.key[1..][0..key_encoding.node_id_length]);
-                if (entry.key[1 + key_encoding.node_id_length] != @backingInt(Direction.out)) continue;
-                const type_start = 1 + key_encoding.node_id_length + 2;
-                const neighbour_start = entry.key.len - key_encoding.node_id_length;
-                try outgoing.append(arena, .{
-                    .src = id,
-                    .dst = key_encoding.readNodeId(entry.key[neighbour_start..]),
-                    .edge_type = try arena.dupe(u8, entry.key[type_start .. neighbour_start - 1]),
-                });
-            }
-        }
-        {
-            var keys = try self.store.scanPrefix(&.{key_encoding.edge_property_marker});
-            defer keys.deinit();
-            while (try keys.next()) |entry| {
-                try stale.append(arena, try arena.dupe(u8, entry.key));
-                const rest = entry.key[1 + 2 * key_encoding.node_id_length + 1 ..];
-                const end = std.mem.indexOfScalar(u8, rest, key_encoding.separator) orelse continue;
-                try properties.append(arena, .{
-                    .ends = .{
-                        .src = key_encoding.readNodeId(entry.key[1..][0..key_encoding.node_id_length]),
-                        .dst = key_encoding.readNodeId(entry.key[1 + key_encoding.node_id_length ..][0..key_encoding.node_id_length]),
-                        .edge_type = try arena.dupe(u8, rest[0..end]),
-                    },
-                    .name = try arena.dupe(u8, rest[end + 1 ..]),
-                    .value = try arena.dupe(u8, entry.value),
-                });
-            }
-        }
-        {
-            var keys = try self.store.scanPrefix(&.{key_encoding.edge_index_marker});
-            defer keys.deinit();
-            while (try keys.next()) |entry| try stale.append(arena, try arena.dupe(u8, entry.key));
-        }
-        for (stale.items) |key| try self.store.del(key);
-
-        // A relationship's id is its position among the old outgoing keys.
-        var ids = std.StringHashMapUnmanaged(RelationshipId).empty;
-        var key = std.ArrayList(u8).empty;
-        for (outgoing.items, 0..) |ends, position| {
-            const id: RelationshipId = position;
-            try self.writeRelationship(id, ends.src, ends.dst, ends.edge_type, arena);
-            key.clearRetainingCapacity();
-            try key_encoding.appendRelationshipRecord(&key, arena, ends.src, ends.dst, ends.edge_type);
-            try ids.put(arena, try arena.dupe(u8, key.items), id);
-        }
-        try self.setCounter(key_encoding.relationship_counter_key, outgoing.items.len);
-        for (properties.items) |property| {
-            key.clearRetainingCapacity();
-            try key_encoding.appendRelationshipRecord(&key, arena, property.ends.src, property.ends.dst, property.ends.edge_type);
-            const id = ids.get(key.items) orelse continue; // a property of no relationship
-            key.clearRetainingCapacity();
-            try key_encoding.appendEdgePropertyKey(&key, arena, id, property.name);
-            try self.store.put(key.items, property.value);
-            try self.putEdgeIndexEntry(property.name, try value_encoding.decodeValue(property.value, arena), id);
-        }
-        for (try fulltext.all(self, arena)) |definition| {
-            if (definition.entity != .relationships) continue;
-            try fulltext_postings.clear(self, definition.name);
-            try fulltext_postings.populate(self, definition);
-        }
     }
 
     /// Begins an atomic write transaction; see `commitWrite`/`abortWrite`. All
@@ -891,7 +756,7 @@ pub const Graph = struct {
     }
 
     /// Iterates the neighbours of `id` in the given `direction` and `edge_type`,
-    /// in ascending neighbour-id order (LMDB's lexicographic order).
+    /// in ascending neighbour-id order (the store's lexicographic order).
     /// O(log N + degree).
     pub fn neighbours(self: *Graph, id: NodeId, direction: Direction, edge_type: []const u8) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
@@ -1044,7 +909,7 @@ pub const Graph = struct {
 };
 
 /// Iterator over node ids decoded from the trailing 8 bytes of scanned keys
-/// (edge keys or label-index keys). Owns the underlying LMDB
+/// (edge keys or label-index keys). Owns the underlying engine
 /// transaction/cursor; `deinit` releases them.
 pub const NodeIdIterator = struct {
     inner: PrefixIterator,
@@ -1086,7 +951,7 @@ pub const NodeIdIterator = struct {
 pub const NeighbourIterator = NodeIdIterator;
 
 /// Iterator over directed edges (`src`, `dst`) decoded from edge-property index
-/// keys. Owns the underlying LMDB transaction/cursor.
+/// keys. Owns the underlying engine transaction/cursor.
 /// An iterator over the keys under one prefix that yields `decode(entry,
 /// prefix_length)` for each. It follows the module's iterator contract.
 fn KeyRangeIterator(comptime Item: type, comptime decode: fn (PrefixIterator.Entry, usize) Item) type {

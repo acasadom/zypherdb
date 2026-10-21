@@ -27,7 +27,7 @@ with Database(path) as db:
 
 
 def test_two_writers_serialize(tmp_path):
-    path = str(tmp_path)  # a directory: LMDB creates data.mdb/lock.mdb inside
+    path = str(tmp_path)  # a directory: the engine creates its data and lock files inside
     with Database(path):
         pass  # create the file
 

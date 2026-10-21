@@ -168,7 +168,7 @@ sequenceDiagram
   R->>D: ENTER / LEAVE …
 ```
 
-The controllers' writes and the monitor's take turns: LMDB lets one write transaction run at a
+The controllers' writes and the monitor's take turns: the storage engine lets one write transaction run at a
 time, across processes. The monitor's reads see a consistent snapshot, never half of a swipe. In
 production the two would run independently on the clock. Here the readers wait for each check, so
 every run prints the same day.

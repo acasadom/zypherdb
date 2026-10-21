@@ -110,9 +110,12 @@ Reads in different processes run in parallel and never wait for each other or fo
 are serialized across all processes: one write transaction at a time, the others wait their turn.
 Two rules:
 
-- **Open the database once per process.** Opening the same directory twice in one process is not
-  safe (a limit of LMDB, the storage engine underneath). Share the one `Database` among the
-  process's threads instead.
+- **Open the database once per process.** The storage engine allows one open per process: with
+  LMDB (the default) a second one is not safe, with libmdbx it raises `StorageError`. Share the
+  one `Database` among the process's threads instead.
+- **With libmdbx, agree on `deferred` durability.** A process cannot open the database with
+  `durability="deferred"` while another has it open with `"full"` or `"relaxed"`, nor the
+  reverse: the open raises `StorageError`.
 - **Do not hand a `Database` to another process** (for example across `fork`): open it in the
   process that uses it.
 
