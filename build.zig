@@ -1,21 +1,34 @@
 const std = @import("std");
 
+/// The storage engines acmedb can be built with (src/storage/engine/).
+const StorageEngine = enum { lmdb };
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Single acmedb module: engine logic + vendored LMDB (C) linked in.
+    // The storage engine under the key-value store (src/storage/engine.zig).
+    const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine (default: lmdb)") orelse .lmdb;
+    const build_options = b.addOptions();
+    build_options.addOption(StorageEngine, "storage_engine", storage_engine);
+
+    // Single acmedb module: engine logic + the vendored storage engine (C) linked in.
     const acmedb = b.addModule("acmedb", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    acmedb.addIncludePath(b.path("vendor/lmdb"));
-    acmedb.addCSourceFiles(.{
-        .files = &.{ "vendor/lmdb/mdb.c", "vendor/lmdb/midl.c" },
-        .flags = &.{"-O2"},
-    });
+    acmedb.addOptions("build_options", build_options);
+    switch (storage_engine) {
+        .lmdb => {
+            acmedb.addIncludePath(b.path("vendor/lmdb"));
+            acmedb.addCSourceFiles(.{
+                .files = &.{ "vendor/lmdb/mdb.c", "vendor/lmdb/midl.c" },
+                .flags = &.{"-O2"},
+            });
+        },
+    }
 
     // Static library: the embeddable artifact, with the C ABI of src/c_api.zig.
     const lib = b.addLibrary(.{

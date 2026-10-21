@@ -1,27 +1,28 @@
-//! KeyValueStore: a minimal RAII wrapper over LMDB.
+//! KeyValueStore: the graph's view of the storage engine (engine.zig).
 //!
-//! Deliberately NO class hierarchy: a single concrete type, movable (through
-//! pointers to LMDB opaques) and non-copyable, with errors modeled as values
-//! (`error union`, the analogue of `std::expected`) rather than exceptions.
-//! This is the first building block of the storage layer on which the key
-//! encoding for nodes, edges and properties will later be built.
+//! It holds the active transaction (one read or one write), runs a single
+//! operation in a transaction of its own when none is active, and keeps
+//! what makes the graph's access patterns cheap: reused cursors, the record
+//! cache, and a scan's prefix bounds. It knows nothing of the engine beyond
+//! the contract in engine/contract.zig.
+//!
+//! Deliberately NO class hierarchy: a single concrete type, non-copyable,
+//! with errors modeled as values (`error union`, the analogue of
+//! `std::expected`) rather than exceptions.
 
 const std = @import("std");
 
-const c = @import("lmdb_bindings.zig");
+const engine = @import("engine.zig");
 
-pub const StorageError = error{
-    OpenFailed,
-    WriteFailed,
-    ReadFailed,
-    DeleteFailed,
+const Table = engine.Table;
+
+pub const StorageError = engine.Error || error{
     IteratorFailed,
-    OutOfMemory,
     NodeStillConnected,
 };
 
-/// The node records read in a read transaction, kept as the views LMDB gives
-/// (valid until the transaction ends), so reading a node again costs no
+/// The node records read in a read transaction, kept as the views the engine
+/// gives (valid until the transaction ends), so reading a node again costs no
 /// B-tree search: queries reach the same nodes many times (every member
 /// reaches their team), and read several properties of each.
 ///
@@ -66,27 +67,27 @@ pub const WriteTransactionMemo = struct {
 };
 
 pub const KeyValueStore = struct {
-    environment: *c.MDB_env,
-    database: c.MDB_dbi,
-    node_database: c.MDB_dbi,
-    /// Relationship records (`src | dst | type`), keyed by the id as an integer.
-    relationship_database: c.MDB_dbi,
-    node_cursor: ?*c.MDB_cursor = null,
+    environment: engine.Environment,
+    allocator: std.mem.Allocator,
+    active_write_transaction: ?engine.Transaction = null,
+    active_read_transaction: ?engine.Transaction = null,
+    /// Counts the read transactions begun, so a scan's cursor goes back to
+    /// the pool only of the transaction it was opened in.
+    read_transaction_number: u64 = 0,
+    /// A cursor on the node table of the active read transaction.
+    node_cursor: ?engine.Cursor = null,
     /// The id `node_cursor` is positioned on, if it is.
     node_cursor_id: ?u64 = null,
-    allocator: std.mem.Allocator,
-    active_write_transaction: ?*c.MDB_txn,
-    active_read_transaction: ?*c.MDB_txn,
-    /// A cursor of the active read transaction that `view` reuses: LMDB
+    /// A cursor of the active read transaction that `view` reuses: the engine
     /// finds a key near the cursor's last one without searching down from
     /// the root, so reads in key order (a scan's nodes) are cheaper.
-    read_cursor: ?*c.MDB_cursor = null,
+    read_cursor: ?engine.Cursor = null,
     /// Cursors of the active read transaction that finished prefix scans
     /// gave back, reused by the next scans (last in, first out): a nested
     /// scan gets the cursor the scan at its depth used before, which is near
-    /// where it starts now (the next node's edges), so LMDB repositions it
-    /// without searching from the root.
-    cursor_pool: [16]*c.MDB_cursor = undefined,
+    /// where it starts now (the next node's edges), so the engine
+    /// repositions it without searching from the root.
+    cursor_pool: [16]engine.Cursor = undefined,
     pooled_cursors: usize = 0,
     /// Node records found in the active read transaction (see `RecordCache`).
     records: *RecordCache,
@@ -95,97 +96,39 @@ pub const KeyValueStore = struct {
     /// starts or ends.
     write_transaction_memo: WriteTransactionMemo = .{},
 
-    /// How much a commit waits for the disk.
-    pub const Durability = enum {
-        /// Each commit is on disk when it returns (the default).
-        full,
-        /// Each commit's data is on disk, its metadata page is flushed with
-        /// the next one: a power failure can lose the last commit, never
-        /// corrupt the database.
-        relaxed,
-        /// Commits are left to the operating system to write (or to `sync`):
-        /// a power failure can lose the recent commits; the database stays
-        /// consistent where the file system keeps writes in order.
-        deferred,
-    };
+    pub const Durability = engine.Durability;
+    pub const Options = engine.Options;
 
-    pub const Options = struct { durability: Durability = .full };
-
-    /// Opens (or creates) an LMDB environment at `path`. The directory must exist.
+    /// Opens (or creates) a database at `path`. The directory must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8) StorageError!KeyValueStore {
         return openWithOptions(allocator, path, .{});
     }
 
     pub fn openWithOptions(allocator: std.mem.Allocator, path: []const u8, options: Options) StorageError!KeyValueStore {
-        var environment: ?*c.MDB_env = null;
-        if (c.mdb_env_create(&environment) != 0) return error.OpenFailed;
-        errdefer c.mdb_env_close(environment.?);
-
-        // LMDB requires setting a maximum map size. This is a virtual
-        // address-space reservation (sparse mmap), not RAM: the file grows as
-        // pages are written. 1 TiB is plenty for an embedded graph DB on 64-bit.
-        if (c.mdb_env_set_mapsize(environment.?, 1 << 40) != 0) return error.OpenFailed;
-        if (c.mdb_env_set_maxdbs(environment.?, 3) != 0) return error.OpenFailed;
-
-        const c_path = allocator.dupeSentinel(u8, path, 0) catch return error.OutOfMemory;
-        defer allocator.free(c_path);
-
-        // MDB_NOTLS: without it a thread may hold only one read transaction at
-        // a time, which would forbid the nested prefix scans a graph executor
-        // needs. With it, each read transaction owns its reader slot until aborted.
-        const durability_flags: c_uint = switch (options.durability) {
-            .full => 0,
-            .relaxed => c.MDB_NOMETASYNC,
-            .deferred => c.MDB_NOSYNC,
-        };
-        if (c.mdb_env_open(environment.?, c_path.ptr, c.MDB_NOTLS | durability_flags, 0o644) != 0) return error.OpenFailed;
-
-        // Opens the default (unnamed) database inside a transaction.
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(environment.?, null, 0, &transaction) != 0) return error.OpenFailed;
-        errdefer _ = c.mdb_txn_abort(transaction.?);
-
-        var database: c.MDB_dbi = 0;
-        if (c.mdb_dbi_open(transaction.?, null, 0, &database) != 0) return error.OpenFailed;
-        // Node records live in a table of their own, keyed by the id as an
-        // integer: a smaller tree than the one holding every other key, and
-        // integer comparisons instead of byte-string ones. (Its name is a key
-        // of the main table; `#` starts no key the graph writes.)
-        var node_database: c.MDB_dbi = 0;
-        if (c.mdb_dbi_open(transaction.?, "#nodes", c.MDB_CREATE | c.MDB_INTEGERKEY, &node_database) != 0) return error.OpenFailed;
-        // Relationship records too: the main tree keeps only what is scanned
-        // by prefix.
-        var relationship_database: c.MDB_dbi = 0;
-        if (c.mdb_dbi_open(transaction.?, "#relationships", c.MDB_CREATE | c.MDB_INTEGERKEY, &relationship_database) != 0) return error.OpenFailed;
-        if (c.mdb_txn_commit(transaction.?) != 0) {
-            _ = c.mdb_txn_abort(transaction.?);
-            return error.OpenFailed;
-        }
-
+        var environment = try engine.Environment.open(allocator, path, options);
+        errdefer environment.close();
         const records = allocator.create(RecordCache) catch return error.OutOfMemory;
         records.* = .{};
-        return .{ .environment = environment.?, .database = database, .node_database = node_database, .relationship_database = relationship_database, .allocator = allocator, .active_write_transaction = null, .active_read_transaction = null, .records = records };
+        return .{ .environment = environment, .allocator = allocator, .records = records };
     }
 
     /// Writes every commit so far to disk (what `full` durability does at
     /// each commit).
     pub fn sync(self: *KeyValueStore) StorageError!void {
-        if (c.mdb_env_sync(self.environment, 1) != 0) return error.WriteFailed;
+        return self.environment.sync();
     }
 
     pub fn deinit(self: *KeyValueStore) void {
-        c.mdb_env_close(self.environment);
+        self.environment.close();
         self.allocator.destroy(self.records);
     }
 
     /// Begins an explicit write transaction. Until `commitWrite`/`abortWrite`,
     /// `put`/`del`/`get`/`exists`/`scanPrefix` run on this transaction (and see
-    /// its uncommitted writes). Not reentrant (LMDB is single-writer anyway).
+    /// its uncommitted writes). Not reentrant (there is a single writer anyway).
     pub fn beginWrite(self: *KeyValueStore) StorageError!void {
-        if (self.active_write_transaction != null or self.active_read_transaction != null) return error.WriteFailed;
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, 0, &transaction) != 0) return error.WriteFailed;
-        self.active_write_transaction = transaction.?;
+        if (self.inTransaction()) return error.WriteFailed;
+        self.active_write_transaction = try self.environment.beginWrite();
         self.write_transaction_memo = .{};
     }
 
@@ -193,15 +136,12 @@ pub const KeyValueStore = struct {
         const transaction = self.active_write_transaction orelse return error.WriteFailed;
         self.active_write_transaction = null;
         self.write_transaction_memo = .{};
-        if (c.mdb_txn_commit(transaction) != 0) {
-            _ = c.mdb_txn_abort(transaction);
-            return error.WriteFailed;
-        }
+        try transaction.commit();
     }
 
     pub fn abortWrite(self: *KeyValueStore) void {
         if (self.active_write_transaction) |transaction| {
-            _ = c.mdb_txn_abort(transaction);
+            transaction.abort();
             self.active_write_transaction = null;
         }
         self.write_transaction_memo = .{};
@@ -213,10 +153,9 @@ pub const KeyValueStore = struct {
     /// of one per read. Reads see the committed state as of `beginRead`
     /// (snapshot isolation), not writes committed afterwards.
     pub fn beginRead(self: *KeyValueStore) StorageError!void {
-        if (self.active_write_transaction != null or self.active_read_transaction != null) return error.ReadFailed;
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.ReadFailed;
-        self.active_read_transaction = transaction.?;
+        if (self.inTransaction()) return error.ReadFailed;
+        self.active_read_transaction = try self.environment.beginRead();
+        self.read_transaction_number += 1;
         self.records.startTransaction();
     }
 
@@ -227,186 +166,30 @@ pub const KeyValueStore = struct {
     }
 
     pub fn abortRead(self: *KeyValueStore) void {
-        for (self.cursor_pool[0..self.pooled_cursors]) |cursor| c.mdb_cursor_close(cursor);
+        for (self.cursor_pool[0..self.pooled_cursors]) |cursor| cursor.close();
         self.pooled_cursors = 0;
         if (self.node_cursor) |cursor| {
-            c.mdb_cursor_close(cursor);
+            cursor.close();
             self.node_cursor = null;
             self.node_cursor_id = null;
         }
         if (self.read_cursor) |cursor| {
-            c.mdb_cursor_close(cursor);
+            cursor.close();
             self.read_cursor = null;
         }
         if (self.active_read_transaction) |transaction| {
-            _ = c.mdb_txn_abort(transaction);
+            transaction.abort();
             self.active_read_transaction = null;
         }
     }
 
-    pub fn put(self: *KeyValueStore, key: []const u8, value: []const u8) StorageError!void {
-        if (self.active_write_transaction) |transaction| return self.putIn(transaction, key, value);
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, 0, &transaction) != 0) return error.WriteFailed;
-        errdefer _ = c.mdb_txn_abort(transaction.?);
-        try self.putIn(transaction.?, key, value);
-        if (c.mdb_txn_commit(transaction.?) != 0) {
-            _ = c.mdb_txn_abort(transaction.?);
-            return error.WriteFailed;
-        }
+    /// The active transaction, read or write.
+    fn activeTransaction(self: *const KeyValueStore) ?engine.Transaction {
+        return self.active_write_transaction orelse self.active_read_transaction;
     }
 
-    /// An absent key is a normal result: `null`, not an error.
-    /// The returned value is an owned copy for the caller (free with
-    /// `self.allocator.free`).
-    pub fn get(self: *KeyValueStore, key: []const u8) StorageError!?[]u8 {
-        if (self.active_write_transaction) |transaction| return self.getIn(transaction, key);
-        if (self.active_read_transaction) |transaction| return self.getIn(transaction, key);
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.ReadFailed;
-        defer _ = c.mdb_txn_abort(transaction.?);
-        return self.getIn(transaction.?, key);
-    }
-
-    /// The value of `key` without copying it, inside the active transaction
-    /// (null without one, or if the key is absent: callers then use `get`).
-    /// The bytes are LMDB's own: valid until the transaction ends or writes.
-    pub fn view(self: *KeyValueStore, key: []const u8) StorageError!?[]const u8 {
-        var key_val = makeVal(key);
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = if (self.active_read_transaction) |transaction| rc: {
-            if (self.read_cursor == null) {
-                if (c.mdb_cursor_open(transaction, self.database, &self.read_cursor) != 0) return error.ReadFailed;
-            }
-            break :rc c.mdb_cursor_get(self.read_cursor.?, &key_val, &data_val, c.MDB_SET_KEY);
-        } else if (self.active_write_transaction) |transaction|
-            c.mdb_get(transaction, self.database, &key_val, &data_val)
-        else
-            return null;
-        if (rc == c.MDB_NOTFOUND) return null;
-        if (rc != 0) return error.ReadFailed;
-        return valSlice(data_val);
-    }
-
-    // --- The node table: one record per node id ------------------------------
-
-    /// How far ahead of the node cursor `viewNode` walks instead of searching.
-    const max_node_steps = 4;
-
-    /// Moves the node cursor forward to `id` if it is a few records ahead
-    /// (a scan reads nodes in id order, and the label index interleaves
-    /// labels only lightly): `MDB_NEXT` costs no B-tree search. True with the
-    /// record in `data` if found, false if `id` is absent (the cursor passed
-    /// it), null if `id` is not just ahead (search instead).
-    fn stepToNode(self: *KeyValueStore, id: u64, data: *c.MDB_val) ?bool {
-        const at = self.node_cursor_id orelse return null;
-        if (id <= at or id - at > max_node_steps) return null;
-        var key_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        for (0..max_node_steps) |_| {
-            if (c.mdb_cursor_get(self.node_cursor.?, &key_val, data, c.MDB_NEXT) != 0) {
-                self.node_cursor_id = null;
-                return null;
-            }
-            const found = std.mem.bytesToValue(u64, valSlice(key_val)[0..@sizeOf(u64)]);
-            self.node_cursor_id = found;
-            if (found == id) return true;
-            if (found > id) return false;
-        }
-        return null;
-    }
-
-    /// The record of node `id` in the active transaction, without copying
-    /// (null if absent, or outside a transaction: then use `getNode`).
-    pub fn viewNode(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
-        var key = id;
-        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = if (self.active_read_transaction) |transaction| rc: {
-            if (self.records.find(id)) |bytes| return bytes;
-            if (self.node_cursor == null) {
-                if (c.mdb_cursor_open(transaction, self.node_database, &self.node_cursor) != 0) return error.ReadFailed;
-            }
-            if (self.stepToNode(id, &data_val)) |found| {
-                if (!found) return null;
-                break :rc 0;
-            }
-            const rc = c.mdb_cursor_get(self.node_cursor.?, &key_val, &data_val, c.MDB_SET_KEY);
-            self.node_cursor_id = if (rc == 0) id else null;
-            break :rc rc;
-        } else if (self.active_write_transaction) |transaction|
-            c.mdb_get(transaction, self.node_database, &key_val, &data_val)
-        else
-            return null;
-        if (rc == c.MDB_NOTFOUND) return null;
-        if (rc != 0) return error.ReadFailed;
-        const bytes = valSlice(data_val);
-        if (self.active_read_transaction != null) self.records.keep(id, bytes);
-        return bytes;
-    }
-
-    /// A copy of the record of node `id`, allocated with the store's allocator.
-    pub fn getNode(self: *KeyValueStore, id: u64) StorageError!?[]u8 {
-        if (self.inTransaction()) {
-            const bytes = (try self.viewNode(id)) orelse return null;
-            return self.allocator.dupe(u8, bytes) catch error.OutOfMemory;
-        }
-        try self.beginRead();
-        defer self.abortRead();
-        const bytes = (try self.viewNode(id)) orelse return null;
-        return self.allocator.dupe(u8, bytes) catch error.OutOfMemory;
-    }
-
-    pub fn putNode(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
-        var key = id;
-        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
-        var data_val = makeVal(record);
-        const transaction = self.active_write_transaction orelse return self.autocommit(putNodeIn, .{ self, id, record });
-        if (c.mdb_put(transaction, self.node_database, &key_val, &data_val, 0) != 0) return error.WriteFailed;
-    }
-
-    fn putNodeIn(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
-        return self.putNode(id, record);
-    }
-
-    pub fn deleteNode(self: *KeyValueStore, id: u64) StorageError!void {
-        var key = id;
-        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
-        const transaction = self.active_write_transaction orelse return self.autocommit(deleteNodeIn, .{ self, id });
-        const rc = c.mdb_del(transaction, self.node_database, &key_val, null);
-        if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
-    }
-
-    fn deleteNodeIn(self: *KeyValueStore, id: u64) StorageError!void {
-        return self.deleteNode(id);
-    }
-
-    /// The record of relationship `id` in the active transaction, without
-    /// copying (null if absent, or outside a transaction).
-    pub fn viewRelationship(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
-        const transaction = self.active_read_transaction orelse self.active_write_transaction orelse return null;
-        var key = id;
-        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_get(transaction, self.relationship_database, &key_val, &data_val);
-        if (rc == c.MDB_NOTFOUND) return null;
-        if (rc != 0) return error.ReadFailed;
-        return valSlice(data_val);
-    }
-
-    pub fn putRelationship(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
-        var key = id;
-        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
-        var data_val = makeVal(record);
-        const transaction = self.active_write_transaction orelse return self.autocommit(putRelationship, .{ self, id, record });
-        if (c.mdb_put(transaction, self.relationship_database, &key_val, &data_val, 0) != 0) return error.WriteFailed;
-    }
-
-    pub fn deleteRelationship(self: *KeyValueStore, id: u64) StorageError!void {
-        var key = id;
-        var key_val = c.MDB_val{ .mv_size = @sizeOf(u64), .mv_data = &key };
-        const transaction = self.active_write_transaction orelse return self.autocommit(deleteRelationship, .{ self, id });
-        const rc = c.mdb_del(transaction, self.relationship_database, &key_val, null);
-        if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
+    pub fn inTransaction(self: *const KeyValueStore) bool {
+        return self.activeTransaction() != null;
     }
 
     /// Runs `operation` in a write transaction of its own, committed at once.
@@ -417,45 +200,167 @@ pub const KeyValueStore = struct {
         try self.commitWrite();
     }
 
-    /// Iterates every node id, in ascending order (the keys yielded are the
-    /// ids in native byte order).
-    pub fn scanNodes(self: *KeyValueStore) StorageError!PrefixIterator {
-        if (self.active_write_transaction) |transaction| return self.scanIn(transaction, self.node_database, "", "", null, false);
-        if (self.active_read_transaction) |transaction| return self.scanIn(transaction, self.node_database, "", "", null, false);
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.IteratorFailed;
-        errdefer _ = c.mdb_txn_abort(transaction.?);
-        return self.scanIn(transaction.?, self.node_database, "", "", null, true);
+    /// The write transaction, or null if a new one must be made for one change.
+    fn writer(self: *const KeyValueStore) ?engine.Transaction {
+        return self.active_write_transaction;
     }
 
-    pub fn inTransaction(self: *const KeyValueStore) bool {
-        return self.active_write_transaction != null or self.active_read_transaction != null;
+    // --- The main table: byte-string keys -----------------------------------
+
+    /// Outside a write transaction it commits at once, even while a read
+    /// transaction is active (which keeps its snapshot).
+    pub fn put(self: *KeyValueStore, key: []const u8, value: []const u8) StorageError!void {
+        if (self.writer()) |transaction| return transaction.put(.main, key, value);
+        const transaction = try self.environment.beginWrite();
+        transaction.put(.main, key, value) catch |err| {
+            transaction.abort();
+            return err;
+        };
+        try transaction.commit();
+    }
+
+    /// Idempotent: deleting a missing key is a success. Commits at once
+    /// outside a write transaction, like `put`.
+    pub fn del(self: *KeyValueStore, key: []const u8) StorageError!void {
+        if (self.writer()) |transaction| return transaction.delete(.main, key);
+        const transaction = self.environment.beginWrite() catch return error.DeleteFailed;
+        transaction.delete(.main, key) catch |err| {
+            transaction.abort();
+            return err;
+        };
+        transaction.commit() catch return error.DeleteFailed;
+    }
+
+    /// An absent key is a normal result: `null`, not an error.
+    /// The returned value is an owned copy for the caller (free with
+    /// `self.allocator.free`).
+    pub fn get(self: *KeyValueStore, key: []const u8) StorageError!?[]u8 {
+        if (self.activeTransaction()) |transaction| return self.copy(try transaction.get(.main, key));
+        const transaction = try self.environment.beginRead();
+        defer transaction.abort();
+        return self.copy(try transaction.get(.main, key));
     }
 
     pub fn exists(self: *KeyValueStore, key: []const u8) StorageError!bool {
-        if (self.active_write_transaction) |transaction| return self.existsIn(transaction, key);
-        if (self.active_read_transaction) |transaction| return self.existsIn(transaction, key);
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.ReadFailed;
-        defer _ = c.mdb_txn_abort(transaction.?);
-        return self.existsIn(transaction.?, key);
+        if (self.activeTransaction()) |transaction| return try transaction.get(.main, key) != null;
+        const transaction = try self.environment.beginRead();
+        defer transaction.abort();
+        return try transaction.get(.main, key) != null;
     }
 
-    /// Idempotent: deleting a missing key is a success.
-    pub fn del(self: *KeyValueStore, key: []const u8) StorageError!void {
-        if (self.active_write_transaction) |transaction| return self.delIn(transaction, key);
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, 0, &transaction) != 0) return error.DeleteFailed;
-        errdefer _ = c.mdb_txn_abort(transaction.?);
-        try self.delIn(transaction.?, key);
-        if (c.mdb_txn_commit(transaction.?) != 0) {
-            _ = c.mdb_txn_abort(transaction.?);
-            return error.DeleteFailed;
+    /// The value of `key` without copying it, inside the active transaction
+    /// (null without one, or if the key is absent: callers then use `get`).
+    /// The bytes are the engine's own: valid until the transaction ends or writes.
+    pub fn view(self: *KeyValueStore, key: []const u8) StorageError!?[]const u8 {
+        if (self.active_read_transaction) |transaction| {
+            if (self.read_cursor == null) self.read_cursor = try transaction.openCursor(.main);
+            return self.read_cursor.?.find(key);
         }
+        const transaction = self.active_write_transaction orelse return null;
+        return transaction.get(.main, key);
     }
+
+    fn copy(self: *KeyValueStore, bytes: ?[]const u8) StorageError!?[]u8 {
+        return self.allocator.dupe(u8, bytes orelse return null) catch error.OutOfMemory;
+    }
+
+    // --- The node table: one record per node id ------------------------------
+
+    /// How far ahead of the node cursor `viewNode` walks instead of searching.
+    const max_node_steps = 4;
+
+    /// Moves the node cursor forward to `id` if it is a few records ahead
+    /// (a scan reads nodes in id order, and the label index interleaves
+    /// labels only lightly): a step costs no B-tree search. The record if
+    /// found, `absent` if `id` is not there (the cursor passed it), `far` if
+    /// `id` is not just ahead (search instead).
+    fn stepToNode(self: *KeyValueStore, id: u64) StorageError!Step {
+        const at = self.node_cursor_id orelse return .far;
+        if (id <= at or id - at > max_node_steps) return .far;
+        for (0..max_node_steps) |_| {
+            const entry = try self.node_cursor.?.next() orelse {
+                self.node_cursor_id = null;
+                return .far;
+            };
+            const found = std.mem.bytesToValue(u64, entry.key[0..@sizeOf(u64)]);
+            self.node_cursor_id = found;
+            if (found == id) return .{ .found = entry.value };
+            if (found > id) return .absent;
+        }
+        return .far;
+    }
+
+    const Step = union(enum) { found: []const u8, absent, far };
+
+    /// The record of node `id` in the active transaction, without copying
+    /// (null if absent, or outside a transaction: then use `getNode`).
+    pub fn viewNode(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
+        const transaction = self.active_read_transaction orelse {
+            const writing = self.active_write_transaction orelse return null;
+            return writing.get(.nodes, std.mem.asBytes(&id));
+        };
+        if (self.records.find(id)) |bytes| return bytes;
+        if (self.node_cursor == null) self.node_cursor = try transaction.openCursor(.nodes);
+        const bytes = switch (try self.stepToNode(id)) {
+            .found => |bytes| bytes,
+            .absent => return null,
+            .far => found: {
+                const found = try self.node_cursor.?.find(std.mem.asBytes(&id));
+                self.node_cursor_id = if (found != null) id else null;
+                break :found found orelse return null;
+            },
+        };
+        self.records.keep(id, bytes);
+        return bytes;
+    }
+
+    /// A copy of the record of node `id`, allocated with the store's allocator.
+    pub fn getNode(self: *KeyValueStore, id: u64) StorageError!?[]u8 {
+        if (self.inTransaction()) return self.copy(try self.viewNode(id));
+        try self.beginRead();
+        defer self.abortRead();
+        return self.copy(try self.viewNode(id));
+    }
+
+    pub fn putNode(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
+        const transaction = self.writer() orelse return self.autocommit(putNode, .{ self, id, record });
+        try transaction.put(.nodes, std.mem.asBytes(&id), record);
+    }
+
+    pub fn deleteNode(self: *KeyValueStore, id: u64) StorageError!void {
+        const transaction = self.writer() orelse return self.autocommit(deleteNode, .{ self, id });
+        try transaction.delete(.nodes, std.mem.asBytes(&id));
+    }
+
+    /// Iterates every node id, in ascending order (the keys yielded are the
+    /// ids in native byte order).
+    pub fn scanNodes(self: *KeyValueStore) StorageError!PrefixIterator {
+        return self.scan(.nodes, "", "", null);
+    }
+
+    // --- The relationship table: one record per relationship id --------------
+
+    /// The record of relationship `id` in the active transaction, without
+    /// copying (null if absent, or outside a transaction).
+    pub fn viewRelationship(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
+        const transaction = self.activeTransaction() orelse return null;
+        return transaction.get(.relationships, std.mem.asBytes(&id));
+    }
+
+    pub fn putRelationship(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
+        const transaction = self.writer() orelse return self.autocommit(putRelationship, .{ self, id, record });
+        try transaction.put(.relationships, std.mem.asBytes(&id), record);
+    }
+
+    pub fn deleteRelationship(self: *KeyValueStore, id: u64) StorageError!void {
+        const transaction = self.writer() orelse return self.autocommit(deleteRelationship, .{ self, id });
+        try transaction.delete(.relationships, std.mem.asBytes(&id));
+    }
+
+    // --- Scans ---------------------------------------------------------------
 
     /// Iterator over all key/value pairs whose key starts with `prefix`, in
-    /// lexicographic order (LMDB's natural order).
+    /// lexicographic order.
     pub fn scanPrefix(self: *KeyValueStore, prefix: []const u8) StorageError!PrefixIterator {
         return self.scanRange(prefix, prefix, null);
     }
@@ -463,12 +368,7 @@ pub const KeyValueStore = struct {
     /// The keys with `prefix` from `start` (the first at or after it) to
     /// `upper` (inclusive; null: to the end of the prefix), in key order.
     pub fn scanRange(self: *KeyValueStore, prefix: []const u8, start: []const u8, upper: ?[]const u8) StorageError!PrefixIterator {
-        if (self.active_write_transaction) |transaction| return self.scanIn(transaction, self.database, prefix, start, upper, false);
-        if (self.active_read_transaction) |transaction| return self.scanIn(transaction, self.database, prefix, start, upper, false);
-        var transaction: ?*c.MDB_txn = null;
-        if (c.mdb_txn_begin(self.environment, null, c.MDB_RDONLY, &transaction) != 0) return error.IteratorFailed;
-        errdefer _ = c.mdb_txn_abort(transaction.?);
-        return self.scanIn(transaction.?, self.database, prefix, start, upper, true);
+        return self.scan(.main, prefix, start, upper);
     }
 
     /// True if some key starts with `prefix`. In a read transaction it only
@@ -476,12 +376,8 @@ pub const KeyValueStore = struct {
     /// cheap as a point lookup.
     pub fn hasPrefix(self: *KeyValueStore, prefix: []const u8) StorageError!bool {
         if (self.active_read_transaction != null and self.pooled_cursors > 0) {
-            var key_val = makeVal(prefix);
-            var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-            const rc = c.mdb_cursor_get(self.cursor_pool[self.pooled_cursors - 1], &key_val, &data_val, c.MDB_SET_RANGE);
-            if (rc == c.MDB_NOTFOUND) return false;
-            if (rc != 0) return error.ReadFailed;
-            return std.mem.startsWith(u8, valSlice(key_val), prefix);
+            const entry = try self.cursor_pool[self.pooled_cursors - 1].seek(prefix) orelse return false;
+            return std.mem.startsWith(u8, entry.key, prefix);
         }
         var iterator = try self.scanPrefix(prefix);
         defer iterator.deinit();
@@ -497,46 +393,23 @@ pub const KeyValueStore = struct {
         return count;
     }
 
-    fn putIn(self: *KeyValueStore, transaction: *c.MDB_txn, key: []const u8, value: []const u8) StorageError!void {
-        var key_val = makeVal(key);
-        var data_val = makeVal(value);
-        if (c.mdb_put(transaction, self.database, &key_val, &data_val, 0) != 0) return error.WriteFailed;
+    /// A scan of `table` in the active transaction, or in a read transaction
+    /// of its own that the iterator ends.
+    fn scan(self: *KeyValueStore, table: Table, prefix: []const u8, start: []const u8, upper: ?[]const u8) StorageError!PrefixIterator {
+        if (self.activeTransaction()) |transaction| return self.scanIn(transaction, false, table, prefix, start, upper);
+        const transaction = self.environment.beginRead() catch return error.IteratorFailed;
+        errdefer transaction.abort();
+        return self.scanIn(transaction, true, table, prefix, start, upper);
     }
 
-    fn getIn(self: *KeyValueStore, transaction: *c.MDB_txn, key: []const u8) StorageError!?[]u8 {
-        var key_val = makeVal(key);
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_get(transaction, self.database, &key_val, &data_val);
-        if (rc == c.MDB_NOTFOUND) return null;
-        if (rc != 0) return error.ReadFailed;
-        const bytes = valSlice(data_val);
-        return self.allocator.dupe(u8, bytes) catch error.OutOfMemory;
-    }
-
-    fn existsIn(self: *KeyValueStore, transaction: *c.MDB_txn, key: []const u8) StorageError!bool {
-        var key_val = makeVal(key);
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_get(transaction, self.database, &key_val, &data_val);
-        if (rc == c.MDB_NOTFOUND) return false;
-        if (rc != 0) return error.ReadFailed;
-        return true;
-    }
-
-    fn delIn(self: *KeyValueStore, transaction: *c.MDB_txn, key: []const u8) StorageError!void {
-        var key_val = makeVal(key);
-        const rc = c.mdb_del(transaction, self.database, &key_val, null);
-        if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
-    }
-
-    fn scanIn(self: *KeyValueStore, transaction: *c.MDB_txn, database: c.MDB_dbi, prefix: []const u8, start: []const u8, upper: ?[]const u8, owns_txn: bool) StorageError!PrefixIterator {
-        // Only main-table cursors are pooled.
-        const reusable = !owns_txn and transaction == self.active_read_transaction and database == self.database;
-        var cursor: ?*c.MDB_cursor = null;
-        if (reusable and self.pooled_cursors > 0) {
+    fn scanIn(self: *KeyValueStore, transaction: engine.Transaction, owns_transaction: bool, table: Table, prefix: []const u8, start: []const u8, upper: ?[]const u8) StorageError!PrefixIterator {
+        // Only main-table cursors of the active read transaction are pooled.
+        const reusable = !owns_transaction and self.active_read_transaction != null and table == .main;
+        const cursor = if (reusable and self.pooled_cursors > 0) cursor: {
             self.pooled_cursors -= 1;
-            cursor = self.cursor_pool[self.pooled_cursors];
-        } else if (c.mdb_cursor_open(transaction, database, &cursor) != 0) return error.IteratorFailed;
-        errdefer c.mdb_cursor_close(cursor.?);
+            break :cursor self.cursor_pool[self.pooled_cursors];
+        } else transaction.openCursor(table) catch return error.IteratorFailed;
+        errdefer cursor.close();
 
         var iterator_prefix = Prefix{};
         if (prefix.len <= iterator_prefix.inline_bytes.len) {
@@ -549,85 +422,72 @@ pub const KeyValueStore = struct {
         const owned_upper = if (upper) |bytes| self.allocator.dupe(u8, bytes) catch return error.OutOfMemory else null;
         errdefer if (owned_upper) |bytes| self.allocator.free(bytes);
 
-        var key_val = makeVal(start);
-        var data_val = c.MDB_val{ .mv_size = 0, .mv_data = null };
-        const rc = c.mdb_cursor_get(cursor.?, &key_val, &data_val, if (start.len == 0) c.MDB_FIRST else c.MDB_SET_RANGE);
-        const finished = rc == c.MDB_NOTFOUND;
-        if (rc != 0 and rc != c.MDB_NOTFOUND) return error.IteratorFailed;
-
+        const current = (if (start.len == 0) cursor.first() else cursor.seek(start)) catch return error.IteratorFailed;
         return .{
             .store = self,
-            .transaction = if (owns_txn) transaction else null,
-            .pool_transaction = if (reusable) transaction else null,
-            .cursor = cursor.?,
+            .transaction = if (owns_transaction) transaction else null,
+            .pool_read_transaction = if (reusable) self.read_transaction_number else null,
+            .cursor = cursor,
             .prefix_storage = iterator_prefix,
             .upper = owned_upper,
-            .key = key_val,
-            .data = data_val,
-            .finished = finished,
+            .current = current orelse .{ .key = "", .value = "" },
+            .finished = current == null,
         };
     }
 };
 
-/// Single-pass iterator over a prefix scan. Owns the cursor; aborts the
-/// transaction only if it owns one (a scan over a borrowed write transaction must not
-/// abort it).
+/// Single-pass iterator over a prefix scan. Owns the cursor; ends the
+/// transaction only if it owns one (a scan over a borrowed transaction must
+/// not end it).
 pub const PrefixIterator = struct {
     store: *KeyValueStore,
-    transaction: ?*c.MDB_txn, // null = borrowed from an active write/read transaction
-    /// The read transaction whose cursor pool the cursor goes back to.
-    pool_transaction: ?*c.MDB_txn,
-    cursor: *c.MDB_cursor,
+    /// null = borrowed from the active write/read transaction.
+    transaction: ?engine.Transaction,
+    /// The number of the read transaction whose cursor pool the cursor goes
+    /// back to (see `KeyValueStore.read_transaction_number`).
+    pool_read_transaction: ?u64,
+    cursor: engine.Cursor,
     prefix_storage: Prefix,
     /// The last key in range (inclusive), owned; null: the prefix's end.
     upper: ?[]u8 = null,
-    key: c.MDB_val,
-    data: c.MDB_val,
+    /// The entry `next` returns, unless `finished`. (Not an optional: the
+    /// optional's padding, copied at every step, stalled the next read.)
+    current: Entry,
     finished: bool,
 
-    pub const Entry = struct { key: []const u8, value: []const u8 };
+    pub const Entry = engine.Entry;
 
     pub fn deinit(self: *PrefixIterator) void {
         const store = self.store;
-        const back_to_pool = self.pool_transaction != null and self.pool_transaction == store.active_read_transaction and
-            store.pooled_cursors < store.cursor_pool.len;
+        const back_to_pool = self.pool_read_transaction != null and store.active_read_transaction != null and
+            self.pool_read_transaction == store.read_transaction_number and store.pooled_cursors < store.cursor_pool.len;
         if (back_to_pool) {
             store.cursor_pool[store.pooled_cursors] = self.cursor;
             store.pooled_cursors += 1;
-        } else c.mdb_cursor_close(self.cursor);
-        if (self.transaction) |t| _ = c.mdb_txn_abort(t);
+        } else self.cursor.close();
+        if (self.transaction) |transaction| transaction.abort();
         if (self.prefix_storage.heap) |bytes| store.allocator.free(bytes);
         if (self.upper) |bytes| store.allocator.free(bytes);
     }
 
-    fn inRange(self: *const PrefixIterator) bool {
-        if (self.finished or self.key.mv_data == null) return false;
-        const prefix = self.prefix_storage.bytes();
-        const k: [*]const u8 = @ptrCast(self.key.mv_data.?);
-        if (self.key.mv_size < prefix.len) return false;
-        if (!std.mem.eql(u8, k[0..prefix.len], prefix)) return false;
-        if (self.upper) |upper| return std.mem.order(u8, k[0..self.key.mv_size], upper) != .gt;
+    fn inRange(self: *const PrefixIterator, key: []const u8) bool {
+        if (!std.mem.startsWith(u8, key, self.prefix_storage.bytes())) return false;
+        if (self.upper) |upper| return std.mem.order(u8, key, upper) != .gt;
         return true;
     }
 
     /// Returns the next key/value pair, or `null` at the end. The returned
-    /// views point into LMDB memory and are only valid until the next call to
-    /// `next`.
+    /// views point into the engine's memory and are only valid until the
+    /// next call to `next`.
     pub fn next(self: *PrefixIterator) StorageError!?Entry {
-        if (!self.inRange()) {
+        if (self.finished or !self.inRange(self.current.key)) {
             self.finished = true;
             return null;
         }
-        const k: [*]const u8 = @ptrCast(self.key.mv_data.?);
-        const v: [*]const u8 = @ptrCast(self.data.mv_data.?);
-        const entry = Entry{ .key = k[0..self.key.mv_size], .value = v[0..self.data.mv_size] };
-
-        const rc = c.mdb_cursor_get(self.cursor, &self.key, &self.data, c.MDB_NEXT);
-        if (rc == c.MDB_NOTFOUND) {
-            self.finished = true;
-        } else if (rc != 0) {
-            return error.IteratorFailed;
-        }
+        const entry = self.current;
+        if (self.cursor.next() catch return error.IteratorFailed) |following| {
+            self.current = following;
+        } else self.finished = true;
         return entry;
     }
 };
@@ -642,14 +502,3 @@ const Prefix = struct {
         return self.heap orelse self.inline_bytes[0..self.length];
     }
 };
-
-fn makeVal(bytes: []const u8) c.MDB_val {
-    const ptr: *anyopaque = @ptrCast(@constCast(bytes.ptr));
-    return .{ .mv_size = bytes.len, .mv_data = ptr };
-}
-
-fn valSlice(v: c.MDB_val) []const u8 {
-    if (v.mv_size == 0) return &.{};
-    const p: [*]const u8 = @ptrCast(v.mv_data.?);
-    return p[0..v.mv_size];
-}

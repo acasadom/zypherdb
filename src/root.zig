@@ -1,7 +1,8 @@
 //! Root of the `acmedb` library.
 //!
 //! Embedded graph database engine (a subset of openCypher).
-//! First building block: the storage layer (`KeyValueStore` over LMDB).
+//! First building block: the storage layer (`KeyValueStore` over the
+//! storage engine of src/storage/engine.zig).
 
 pub const key_value_store = @import("storage/key_value_store.zig");
 
@@ -85,6 +86,7 @@ test {
     // Modules with unit tests that no declaration above reaches yet.
     _ = @import("storage/value_encoding.zig");
     _ = @import("storage/node_record.zig");
+    _ = @import("storage/engine/contract.zig");
     _ = @import("temporal/calendar.zig");
     _ = @import("temporal/zones.zig");
     _ = @import("temporal/types.zig");
