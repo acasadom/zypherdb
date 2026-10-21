@@ -325,8 +325,10 @@ takes arguments then takes each one from the query parameter of the same name.
 
 ## Schema commands
 
-Every property is indexed for equality and ranges without being asked. The one kind of index a
-command creates is a full-text index. Each schema command is a statement of its own:
+Every property is indexed for equality and ranges without being asked. The kind of index a
+command adds that changes anything is a full-text index; `CREATE INDEX` is accepted, so that
+Neo4j's scripts run, and changes nothing. Constraints keep values unique. Each schema command is
+a statement of its own:
 
 ```text
 CREATE FULLTEXT INDEX name [IF NOT EXISTS]
@@ -337,21 +339,44 @@ CREATE FULLTEXT INDEX name [IF NOT EXISTS]
   FOR ()-[r:TYPE1|TYPE2]-() ON EACH [r.property]
   [OPTIONS {...}]
 
-DROP INDEX name [IF EXISTS]
+CREATE [RANGE | TEXT] INDEX [name] [IF NOT EXISTS]
+  FOR (n:Label) ON (n.property, …)          -- or FOR ()-[r:TYPE]-() ON (r.property)
 
-SHOW [FULLTEXT] INDEXES
+CREATE CONSTRAINT [name] [IF NOT EXISTS]
+  FOR (n:Label) REQUIRE n.property IS UNIQUE  -- or REQUIRE (n.a, n.b) IS UNIQUE
+
+DROP INDEX name [IF EXISTS]
+DROP CONSTRAINT name [IF EXISTS]
+
+SHOW [FULLTEXT | RANGE] INDEXES
+SHOW CONSTRAINTS
 ```
 
-- A node index covers the nodes with any of the labels. A relationship index covers the
-  relationships of any of the types.
-- `CREATE` indexes what the graph holds already. From then on, every change keeps the index
-  current, in the transaction that makes it.
+- Indexes and constraints share one namespace of names. Without a name, `CREATE INDEX` and
+  `CREATE CONSTRAINT` make one of what they are on (`index_Card_number`,
+  `constraint_Door_building_number`).
 - `IF NOT EXISTS` makes `CREATE` do nothing when the name is taken. Otherwise a taken name is an
-  error. `IF EXISTS` does the same for `DROP`.
-- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT`), `entityType` (`NODE` or
-  `RELATIONSHIP`), `labelsOrTypes`, `properties`, `options`.
-- `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since acmedb's
+  error. `IF EXISTS` does the same for `DROP`. `DROP INDEX` of a constraint (or `DROP CONSTRAINT`
+  of an index) is an error.
+- A full-text node index covers the nodes with any of the labels; a relationship index covers
+  the relationships of any of the types. `CREATE` indexes what the graph holds already. From then
+  on, every change keeps the index current, in the transaction that makes it.
+  `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since acmedb's
   indexes are always current.
+- A `RANGE` or `TEXT` index (or one with no kind) is recorded and listed, and every query runs as
+  before: the property index already answers equality and range lookups. Its `OPTIONS` are
+  ignored.
+- **Uniqueness constraints** are on one node label, and one property or several together. A
+  write that would give a node of that label the same values as another (by `CREATE`, `SET`,
+  `MERGE`, a new label, or the Python and C write functions) fails with a constraint violation
+  (`ConstraintViolationError` in Python, error code 10), and its query writes nothing. A node
+  without one of the properties is not concerned. The check is made at each write, so swapping
+  two nodes' values in one query fails. `CREATE CONSTRAINT` fails if the graph already has
+  duplicates. Neo4j 4's `CREATE CONSTRAINT ON (n:Label) ASSERT n.p IS UNIQUE` is accepted too.
+  Other constraints (`IS NOT NULL`, `IS NODE KEY`, on relationships) are not supported.
+- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT` or `RANGE`), `entityType`
+  (`NODE` or `RELATIONSHIP`), `labelsOrTypes`, `properties`, `options`. `SHOW CONSTRAINTS`
+  returns `name`, `type` (`UNIQUENESS`), `entityType`, `labelsOrTypes`, `properties`.
 
 ## Full-text search
 
@@ -408,8 +433,8 @@ acmedb does not implement these parts of openCypher (and of common Neo4j extensi
 
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
   inside `CALL { … }`; `LOAD CSV`;
-- schema commands other than full-text indexes (`CREATE INDEX`, constraints): every property is
-  already indexed for equality and ranges.
+- constraints other than uniqueness on nodes (`IS NOT NULL`, `IS NODE KEY`, relationship
+  constraints); indexes other than full-text change nothing (every property is already indexed).
 
 The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`
 gives the current pass rate per area.

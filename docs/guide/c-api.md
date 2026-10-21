@@ -101,6 +101,7 @@ message stays valid until the next call on the context.
 | 7 | `ACMEDB_ERROR_STORAGE` | the storage failed |
 | 8 | `ACMEDB_ERROR_PARAMETER_MISSING` | a `$parameter` was not given |
 | 9 | `ACMEDB_ERROR_ARITHMETIC` | integer overflow or division by zero |
+| 10 | `ACMEDB_ERROR_CONSTRAINT_VIOLATION` | a write would break a uniqueness constraint |
 
 Code 3 is reserved: it was once "missing property", and a missing property now reads as `null`.
 
@@ -243,7 +244,9 @@ These functions write without parsing a query, for loading data in bulk:
   between nodes already joined by a relationship of that type.
 - `acmedb_set_property_*` set a node's property.
 
-Each function returns `ACMEDB_OK`, `ACMEDB_STORAGE_ERROR`, or `ACMEDB_NODE_NOT_FOUND` when a node
+Each function returns `ACMEDB_OK`, `ACMEDB_STORAGE_ERROR`, `ACMEDB_CONSTRAINT_VIOLATION` when a
+uniqueness constraint refuses the write (`acmedb_last_error` says which), or
+`ACMEDB_NODE_NOT_FOUND` when a node
 it names does not exist.
 
 On its own, each call is a transaction that waits for the disk. Between `acmedb_begin_write` and

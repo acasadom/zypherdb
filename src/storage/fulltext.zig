@@ -1,10 +1,13 @@
-//! Full-text indexes: their definitions (this file), and, in the same keys'
-//! space, their postings.
+//! Schema definitions: full-text indexes (whose postings live in the same
+//! keys' space, fulltext_postings.zig), declared indexes that change nothing
+//! (every property is indexed already), and uniqueness constraints
+//! (constraints.zig). One namespace for their names, as in Neo4j.
 //!
 //! A definition is stored under `i | name`:
 //!
+//!     kind: u8                   0 full-text, 1 range (declared), 2 unique
 //!     entity: u8                 0 nodes, 1 relationships
-//!     analyzer: u16 length, bytes
+//!     analyzer: u16 length, bytes (empty but for full-text)
 //!     labels or types: u16 count, each u16 length, bytes
 //!     properties: u16 count, each u16 length, bytes
 //!
@@ -22,8 +25,11 @@ pub const schema_version_key: []const u8 = "!schema";
 
 pub const Entity = enum(u8) { nodes = 0, relationships = 1 };
 
+pub const Kind = enum(u8) { fulltext = 0, range = 1, unique = 2 };
+
 pub const Definition = struct {
     name: []const u8,
+    kind: Kind = .fulltext,
     entity: Entity,
     analyzer: []const u8,
     labels_or_types: []const []const u8,
@@ -31,6 +37,7 @@ pub const Definition = struct {
 
     fn encode(self: Definition, allocator: Allocator) Allocator.Error![]u8 {
         var bytes = std.ArrayList(u8).empty;
+        try bytes.append(allocator, @intFromEnum(self.kind));
         try bytes.append(allocator, @intFromEnum(self.entity));
         try appendString(&bytes, allocator, self.analyzer);
         for ([_][]const []const u8{ self.labels_or_types, self.properties }) |list| {
@@ -43,6 +50,7 @@ pub const Definition = struct {
     /// The definition `name` stored as `bytes`, its strings copied with `allocator`.
     fn decode(name: []const u8, bytes: []const u8, allocator: Allocator) Allocator.Error!Definition {
         var reader = Reader{ .bytes = bytes };
+        const kind: Kind = @enumFromInt(reader.byte());
         const entity: Entity = @enumFromInt(reader.byte());
         const analyzer = try allocator.dupe(u8, reader.string());
         var lists: [2][]const []const u8 = undefined;
@@ -51,7 +59,7 @@ pub const Definition = struct {
             for (items) |*item| item.* = try allocator.dupe(u8, reader.string());
             list.* = items;
         }
-        return .{ .name = try allocator.dupe(u8, name), .entity = entity, .analyzer = analyzer, .labels_or_types = lists[0], .properties = lists[1] };
+        return .{ .name = try allocator.dupe(u8, name), .kind = kind, .entity = entity, .analyzer = analyzer, .labels_or_types = lists[0], .properties = lists[1] };
     }
 };
 
@@ -65,12 +73,21 @@ pub fn find(graph: *Graph, name: []const u8, allocator: Allocator) StorageError!
     return try Definition.decode(name, raw, allocator);
 }
 
-/// Every index's definition, in name order (copied with `allocator`).
+/// Every definition, in name order (copied with `allocator`).
 pub fn all(graph: *Graph, allocator: Allocator) StorageError![]const Definition {
     var definitions = std.ArrayList(Definition).empty;
     var keys = try graph.store.scanPrefix(&.{definition_marker});
     defer keys.deinit();
     while (try keys.next()) |entry| try definitions.append(allocator, try Definition.decode(entry.key[1..], entry.value, allocator));
+    return definitions.items;
+}
+
+/// The definitions of one kind, in name order.
+pub fn allOfKind(graph: *Graph, allocator: Allocator, kind: Kind) StorageError![]const Definition {
+    var definitions = std.ArrayList(Definition).empty;
+    for (try all(graph, allocator)) |definition| {
+        if (definition.kind == kind) try definitions.append(allocator, definition);
+    }
     return definitions.items;
 }
 

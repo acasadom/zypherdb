@@ -186,6 +186,7 @@ Every exception is an `acmedb.AcmedbError`. A failed query raises a `QueryError`
 | `TypeMismatchError` | 4 | an operator or function gets a value of the wrong type |
 | `InvalidExpressionError` | 5 | an expression is not allowed where it is |
 | `NodeStillConnectedError` | 6 | `DELETE` of a node that still has relationships |
+| `ConstraintViolationError` | 10 | a write would break a uniqueness constraint (also from `add_node` / `set_property`) |
 | `ParameterMissingError` | 8 | a `$parameter` was not passed |
 | `ArithmeticQueryError` | 9 | integer overflow or division by zero (also an `ArithmeticError`) |
 

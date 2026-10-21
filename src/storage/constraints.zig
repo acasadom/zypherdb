@@ -1,0 +1,80 @@
+//! Uniqueness constraints (`REQUIRE n.p IS UNIQUE`): no two nodes with the
+//! constraint's label have the same values of its properties. A node that
+//! lacks one of them is not concerned (as in Neo4j).
+//!
+//! A write is checked before it is made, against the property index: a node
+//! that would get a label or a property value another node of that label
+//! already has fails with `error.ConstraintViolation`, and nothing is
+//! written. Each check is O(log N + nodes with that value). Checking before
+//! writing is stricter than at commit: swapping two nodes' values in one
+//! query fails.
+
+const std = @import("std");
+
+const Graph = @import("graph.zig").Graph;
+const NodeId = @import("graph.zig").NodeId;
+const StorageError = @import("key_value_store.zig").StorageError;
+const fulltext = @import("fulltext.zig");
+const NodeRecord = @import("node_record.zig").NodeRecord;
+const value_encoding = @import("value_encoding.zig");
+
+/// Fails with `error.ConstraintViolation` (and the graph's violation
+/// message) if node `id`, with `record` as its new record, would break a
+/// uniqueness constraint.
+pub fn checkNode(graph: *Graph, id: NodeId, record: NodeRecord) StorageError!void {
+    if (try fulltext.schemaVersion(graph) == 0) return; // no definition was ever made
+    var scratch = std.heap.ArenaAllocator.init(graph.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    for (try fulltext.allOfKind(graph, arena, .unique)) |definition| {
+        const other = try duplicateOf(graph, arena, definition, id, record) orelse continue;
+        graph.setViolation("node {d} cannot have the same {s} as node {d}: constraint '{s}' makes it unique for :{s}", .{ id, propertyList(arena, definition) catch "properties", other, definition.name, definition.labels_or_types[0] });
+        return error.ConstraintViolation;
+    }
+}
+
+/// Fails with `error.ConstraintViolation` if the graph already breaks
+/// `definition` (a constraint about to be created). O(nodes with its label).
+pub fn checkExisting(graph: *Graph, definition: fulltext.Definition) StorageError!void {
+    var scratch = std.heap.ArenaAllocator.init(graph.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    var nodes = try graph.nodesWithLabel(definition.labels_or_types[0]);
+    defer nodes.deinit();
+    while (try nodes.next()) |id| {
+        const record = NodeRecord{ .bytes = try graph.recordCopy(id, arena) };
+        const other = try duplicateOf(graph, arena, definition, id, record) orelse continue;
+        graph.setViolation("cannot create constraint '{s}': nodes {d} and {d} have the same {s}", .{ definition.name, @min(id, other), @max(id, other), propertyList(arena, definition) catch "properties" });
+        return error.ConstraintViolation;
+    }
+}
+
+/// Another node of the constraint's label with the same values as `record`
+/// (the record node `id` has or would have), if there is one.
+fn duplicateOf(graph: *Graph, arena: std.mem.Allocator, definition: fulltext.Definition, id: NodeId, record: NodeRecord) StorageError!?NodeId {
+    const label = definition.labels_or_types[0];
+    if (!record.hasLabel(label)) return null;
+    const values = try arena.alloc([]const u8, definition.properties.len);
+    for (values, definition.properties) |*value, property| value.* = record.property(property) orelse return null;
+
+    var candidates = try graph.nodesByProperty(definition.properties[0], try value_encoding.decodeValue(values[0], arena));
+    defer candidates.deinit();
+    candidate: while (try candidates.next()) |other| {
+        if (other == id) continue;
+        const other_record = NodeRecord{ .bytes = try graph.recordCopy(other, arena) };
+        if (!other_record.hasLabel(label)) continue;
+        for (definition.properties[1..], values[1..]) |property, value| {
+            const other_value = other_record.property(property) orelse continue :candidate;
+            if (!std.mem.eql(u8, other_value, value)) continue :candidate;
+        }
+        return other;
+    }
+    return null;
+}
+
+/// `a` or `(a, b)`: the constraint's properties, for a message.
+fn propertyList(arena: std.mem.Allocator, definition: fulltext.Definition) std.mem.Allocator.Error![]const u8 {
+    if (definition.properties.len == 1) return definition.properties[0];
+    const joined = try std.mem.join(arena, ", ", definition.properties);
+    return std.fmt.allocPrint(arena, "({s})", .{joined});
+}

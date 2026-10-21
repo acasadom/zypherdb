@@ -179,7 +179,10 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     var result = std.ArrayList(Row).empty;
     for (queries) |query| {
         self.reset();
-        if (has_writes) try self.runClauses(query) else try Pipeline.run(self, query);
+        if (has_writes) self.runClauses(query) catch |err| {
+            if (err == error.ConstraintViolation) self.fail(.constraint_violation, "{s}", .{self.graph.violationMessage()});
+            return err;
+        } else try Pipeline.run(self, query);
         for (self.rows.items) |sortable| try result.append(self.allocator, sortable.item);
     }
     // UNION (not UNION ALL) keeps one of each row.

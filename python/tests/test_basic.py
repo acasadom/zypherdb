@@ -12,6 +12,7 @@ from acmedb import (
     AcmedbError,
     ArithmeticQueryError,
     ClosedError,
+    ConstraintViolationError,
     Database,
     Duration,
     NodeNotFoundError,
@@ -71,6 +72,19 @@ def test_errors(db):
         db.query("RETURN n.name")
     with pytest.raises(TypeMismatchError):
         db.query("RETURN size(1)")
+
+
+def test_uniqueness_constraint(db):
+    db.query("CREATE CONSTRAINT card_number FOR (c:Card) REQUIRE c.number IS UNIQUE")
+    db.query("CREATE (:Card {number: 1})")
+    with pytest.raises(ConstraintViolationError, match="card_number") as caught:
+        db.query("CREATE (:Card {number: 1})")
+    assert caught.value.code == 10
+    # The direct API is held to it too.
+    db.add_node(50, "Card")
+    with pytest.raises(ConstraintViolationError):
+        db.set_property(50, "number", 1)
+    assert db.query("MATCH (c:Card {number: 1}) RETURN count(c)") == [[1]]
 
 
 def test_json_roundtrip(db):

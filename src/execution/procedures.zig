@@ -147,7 +147,8 @@ fn queryIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, ar
         return error.TypeMismatch;
     }
     const index_name = arguments[0].string;
-    const definition = try fulltext.find(executor.graph, index_name, executor.allocator) orelse {
+    const found = try fulltext.find(executor.graph, index_name, executor.allocator);
+    const definition = if (found != null and found.?.kind == .fulltext) found.? else {
         executor.fail(.invalid_expression, "there is no full-text index named '{s}'", .{index_name});
         return error.InvalidExpression;
     };

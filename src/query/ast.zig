@@ -198,12 +198,22 @@ pub const NodeKind = enum {
     /// One `YIELD column [AS alias]`: data.yield_.
     yield_item,
     /// `CREATE FULLTEXT INDEX name FOR (n:L) ON EACH [n.p, ...] [OPTIONS {...}]`:
-    /// data.fulltext_index; children: the OPTIONS map, if any.
+    /// data.schema_definition; children: the OPTIONS map, if any.
     create_fulltext_index,
+    /// `CREATE [RANGE|TEXT] INDEX [name] FOR (n:L) ON (n.p, ...)`: recorded,
+    /// with no effect (every property is indexed already); data.schema_definition.
+    create_index,
+    /// `CREATE CONSTRAINT [name] FOR (n:L) REQUIRE n.p IS UNIQUE`:
+    /// data.schema_definition.
+    create_constraint,
     /// `DROP INDEX name [IF EXISTS]`: data.drop_index.
     drop_index,
-    /// `SHOW [FULLTEXT] INDEXES`: data.boolean is true for FULLTEXT only.
+    /// `DROP CONSTRAINT name [IF EXISTS]`: data.drop_index.
+    drop_constraint,
+    /// `SHOW [FULLTEXT|RANGE] INDEXES`: data.show_indexes.
     show_indexes,
+    /// `SHOW CONSTRAINTS`.
+    show_constraints,
 };
 
 /// True for the expressions that hold a query of their own (`EXISTS { ... }`,
@@ -253,14 +263,17 @@ pub const Data = union(enum) {
         implicit_arguments: bool = false,
     },
     yield_: struct { column: []const u8, alias: []const u8 },
-    fulltext_index: struct {
+    /// An index or constraint to create.
+    schema_definition: struct {
         name: []const u8,
-        /// Indexes relationships of these types, not nodes with these labels.
+        /// Of relationships of these types, not nodes with these labels.
         relationships: bool,
         labels_or_types: []const []const u8,
         properties: []const []const u8,
         if_not_exists: bool,
     },
+    /// Which indexes SHOW INDEXES lists.
+    show_indexes: enum { all, fulltext, range },
     drop_index: struct { name: []const u8, if_exists: bool },
     labels: []const []const u8,
 };

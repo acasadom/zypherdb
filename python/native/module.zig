@@ -589,6 +589,14 @@ fn storageFailure() ?*py.PyObject {
     return raise(classes.storage_error, "write failed", .{});
 }
 
+/// The exception for a failed write: a constraint it would break
+/// (ConstraintViolationError), or a storage failure.
+fn writeFailure(database: *Database, err: anyerror) ?*py.PyObject {
+    if (err != error.ConstraintViolation) return storageFailure();
+    database.diagnostic.set(.constraint_violation, 0, "{s}", .{database.graph.violationMessage()});
+    return raiseQueryError(database);
+}
+
 fn beginWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = parseDatabase(args) orelse return null;
     database.graph.beginWrite() catch return storageFailure();
@@ -641,7 +649,7 @@ fn addNode(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var label_length: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "OKs#", &capsule, &id, &label_pointer, &label_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
-    writing(database, Graph.addNode, .{ &database.graph, id, label_pointer[0..@intCast(label_length)] }) catch return storageFailure();
+    writing(database, Graph.addNode, .{ &database.graph, id, label_pointer[0..@intCast(label_length)] }) catch |err| return writeFailure(database, err);
     return none();
 }
 
@@ -692,7 +700,7 @@ fn setProperty(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     const value = valueOf(value_object.?, arena_state.allocator(), false) orelse return null;
     writing(database, Graph.setProperty, .{ &database.graph, id, name_pointer[0..@intCast(name_length)], value }) catch |err| switch (err) {
         error.UnsupportedPropertyType => return raise(py.PyExc_TypeError, "this value cannot be stored as a property", .{}),
-        else => return storageFailure(),
+        else => return writeFailure(database, err),
     };
     return none();
 }

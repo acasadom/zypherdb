@@ -93,7 +93,7 @@ test "schema commands create, list and drop full-text indexes" {
     try expectQueryError(&ast, &g, "CREATE FULLTEXT INDEX other FOR (n:X) ON EACH [n.y] OPTIONS {size: 3}", error.InvalidExpression);
     try expectParseError(&ast, "CREATE FULLTEXT INDEX FOR (n:X) ON EACH [n.y]");
     try expectParseError(&ast, "CREATE FULLTEXT INDEX other FOR (n:X) ON EACH [m.y]");
-    try expectParseError(&ast, "CREATE INDEX other FOR (n:X) ON (n.y)");
+    try expectParseError(&ast, "CREATE INDEX other FOR (n:X) ON (m.y)");
     try expectParseError(&ast, "SHOW INDEXES RETURN 1");
 
     try expectQuery(&ast, &g, "DROP INDEX remarks", &.{});

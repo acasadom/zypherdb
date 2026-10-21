@@ -28,6 +28,7 @@ typedef struct acmedb_result acmedb_result;
 #define ACMEDB_OK 0
 #define ACMEDB_STORAGE_ERROR 1
 #define ACMEDB_NODE_NOT_FOUND 2
+#define ACMEDB_CONSTRAINT_VIOLATION 3 /* acmedb_last_error says which constraint */
 
 /* Error codes reported by acmedb_error_code. */
 #define ACMEDB_ERROR_NONE 0
@@ -39,6 +40,7 @@ typedef struct acmedb_result acmedb_result;
 #define ACMEDB_ERROR_STORAGE 7
 #define ACMEDB_ERROR_PARAMETER_MISSING 8
 #define ACMEDB_ERROR_ARITHMETIC 9
+#define ACMEDB_ERROR_CONSTRAINT_VIOLATION 10
 
 /* Cell types reported by acmedb_result_type and acmedb_result_list_item_type. */
 #define ACMEDB_TYPE_INT64 0
