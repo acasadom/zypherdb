@@ -203,29 +203,6 @@ const analyzers = [_]struct { []const u8, []const u8 }{
     .{ "spanish", "Like standard, without Spanish stop words, and with Spanish stemming." },
 };
 
-/// A CALL in a query that writes (rows materialized between clauses): the
-/// rows of every input row, or, for a CALL without YIELD that ends the query,
-/// its result rows in `executor.rows`.
-pub fn runCall(executor: *Executor, clause: Index, input: []Bindings, ends_query: bool) ExecutionError![]Bindings {
-    const Collector = struct {
-        executor: *Executor,
-        output: std.ArrayList(Bindings) = .empty,
-
-        fn extended(context: *anyopaque, row: *Bindings) ExecutionError!void {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            try self.output.append(self.executor.allocator, try clauses.copyRow(self.executor, row.*));
-        }
-
-        fn result(context: *anyopaque, values: []const Value) ExecutionError!void {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            try appendResult(self.executor, values);
-        }
-    };
-    var collector = Collector{ .executor = executor };
-    for (input) |*row| try callRow(executor, clause, row, ends_query, .{ .context = &collector, .extended = Collector.extended, .result = Collector.result });
-    return collector.output.items;
-}
-
 /// Adds `values` to the query's result rows (a CALL without YIELD).
 pub fn appendResult(executor: *Executor, values: []const Value) ExecutionError!void {
     var row = Executor.Row.empty;
@@ -233,4 +210,3 @@ pub fn appendResult(executor: *Executor, values: []const Value) ExecutionError!v
     try executor.rows.append(executor.allocator, .{ .item = row, .sort_key = &.{} });
 }
 
-const clauses = @import("clauses.zig");

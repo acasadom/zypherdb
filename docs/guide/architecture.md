@@ -54,9 +54,13 @@ flowchart TB
     AST["ast.zig — arena AST"]
     Semantics["semantics.zig — static checks"]
   end
-  subgraph execution["execution/ — AST to rows"]
-    Executor["Executor.zig — state, run(), phases"]
-    Steps["planner · pattern_matching · expressions · aggregation · projection · writes"]
+  subgraph planning["planning/ — AST to plan"]
+    Builder["builder.zig + patterns.zig — clauses and patterns to operators"]
+    PlanIR["Plan.zig — operators in chains"]
+  end
+  subgraph execution["execution/ — plan to rows"]
+    Executor["Executor.zig — state, run()"]
+    Steps["operators · pattern_matching · expressions · aggregation · projection · writes"]
   end
   subgraph storage["storage/ — graph on a key-value engine"]
     Graph["graph.zig — graph operations and indexes"]
@@ -71,7 +75,11 @@ flowchart TB
   PyNative --> Executor
   PyNative --> Graph
   Semantics --> AST
+  Executor --> Builder
+  Builder --> PlanIR
+  Builder --> AST
   Executor --> Steps
+  Steps --> PlanIR
   Steps --> AST
   Steps --> Graph
   Parser --> Lexer
@@ -108,13 +116,17 @@ flowchart TB
 | `src/query/call_parser.zig`, `src/query/schema_parser.zig` | The CALL clause, and the schema commands (`CREATE FULLTEXT INDEX`, `DROP INDEX`, `SHOW INDEXES`). |
 | `src/query/procedures.zig` | The procedures' signatures (arguments, columns and their kinds), shared by the semantic checks and the executor. |
 | `src/query/semantics.zig` | Static checks before a query runs: each variable is used as one kind (node, relationship or value), literal operands have types their operators accept, no aggregates inside comprehensions. |
-| `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, then the clauses as a pipeline of rows. |
+| `src/planning/Plan.zig` | The plan: operators (a tagged union) in chains, and each pattern's planned nodes and edges. Built once, never changed while it runs. |
+| `src/planning/builder.zig` | Builds the plan: each clause's operators, the chains of subqueries and of patterns in expressions, the variables in scope. |
+| `src/planning/patterns.zig` | Pattern planning: predicate pushdown (seeks and ranges), the estimates, anchor choice, the pattern's operators. |
+| `src/planning/scope.zig` | The variables in scope at a point of a query, as the planner knows them. |
+| `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, the plan, then its main chains. |
+| `src/execution/operators.zig` | Runs a plan's chains: `feed` hands a row to an operator, which passes its rows on to the next one; the operators that keep rows pass them on when their chain is done. |
 | `src/execution/procedures.zig` | The procedures CALL runs, and how their rows extend the query's (YIELD, WHERE). |
 | `src/execution/schema.zig` | The schema commands, each a statement of its own. |
-| `src/execution/pipeline.zig` | Streaming execution of read-only queries: rows go through the clauses one at a time, and a `LIMIT` stops the work early. |
-| `src/execution/clauses.zig` | The pipeline's MATCH / OPTIONAL MATCH, UNWIND and write clauses: rows in, rows out. |
-| `src/execution/planner.zig` | Pattern planning: the chain of `PatternNode`s/`PatternEdge`s, predicate pushdown, anchor choice, `PlanStep`s. |
-| `src/execution/pattern_matching.zig` | Runs the steps (`scanNodes`, `scanEdgeIndex`, `expandEdge`) of one pattern. |
+| `src/execution/clauses.zig` | What the writing clauses do to one row, and the null bindings of an unmatched OPTIONAL MATCH. |
+| `src/execution/pattern_matching.zig` | The pattern operators (`checkBoundNode`, `scanNodes`, `scanEdgeIndex`, `expand`, `projectPath`). |
+| `src/execution/shortest_paths.zig` | `shortestPath` and `allShortestPaths`: breadth-first, or by increasing length when the WHERE reads the path. |
 | `src/execution/expressions.zig` | Expression evaluation and operators, with three-valued null logic. |
 | `src/execution/aggregation.zig` | Aggregate states and the generic `Grouping(Key, KeyContext)`. |
 | `src/execution/projection.zig` | WITH and RETURN: projection, DISTINCT, ORDER BY, SKIP, LIMIT (`Sortable(T)`, `sortByKey`). |
@@ -150,7 +162,7 @@ sequenceDiagram
   P->>A: recursive descent → arena AST
   P-->>C: AST (root query node)
   C->>E: Executor.run(query AST)
-  E->>E: plan: choose anchor, push predicates, build steps
+  E->>E: plan: choose anchors, push predicates, chain operators
   loop scan / expand
     E->>G: nodesWithLabel / neighbours / nodesByProperty
     G->>S: scanPrefix(...)
@@ -166,17 +178,16 @@ sequenceDiagram
 2. **Check** — `Executor.run` first rejects queries that are well-formed but meaningless:
    `semantics.check` (a node used as a relationship, `1 IN true`) and `functions.checkCalls` (an
    unknown function, a wrong number of arguments). Nothing has touched storage yet.
-3. **Plan** — the executor reads the AST and, for each `MATCH` pattern, builds a plan: a chain of
-   `PatternNode`s/`PatternEdge`s, an anchor choice, and a list of `PlanStep`s. This is where the
-   optimizations live. See [planning & execution](planning-execution).
-4. **Execute** — a recursive function (`runStep`) walks the steps; each step is a graph operation
-   (a scan or an expansion) backed by a `scanPrefix` iterator. See [storage](storage) for what those
-   operations *mean*.
+3. **Plan** — `planning/builder.zig` turns the checked AST into a plan: chains of operators, one
+   or more per clause, with each `MATCH` pattern planned (predicates pushed down, an anchor
+   chosen). This is where the optimizations live. See [planning & execution](planning-execution).
+4. **Execute** — `operators.feed` pushes rows through the chains; each pattern operator is a graph
+   operation (a scan or an expansion) backed by a `scanPrefix` iterator. See [storage](storage)
+   for what those operations *mean*.
 5. **Return** — rows are projected; before the transaction ends, `EntitySnapshot.capture` reads
    the nodes and relationships the rows mention; then the rows are handed back, through the C ABI
    or the Python module.
 
-There is deliberately **no intermediate representation** between the AST and the plan: the plan
-structures are built directly inside the executor, and the optimizations are the anchor selection
-and the predicate pushdown, applied inline. See [planning & execution](planning-execution) for *why
-that's fine at the current language surface* and *when a real IR would start to pay*.
+The plan is built once per query and does not change while it runs: what a run needs besides it
+is the executor's. See [planning & execution](planning-execution) for its operators, and *why there
+is no cost-based optimizer yet*.

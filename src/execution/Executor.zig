@@ -1,16 +1,17 @@
-//! The query executor: runs a parsed query as a pipeline of clauses.
+//! The query executor: plans a parsed query (src/planning/) and runs the
+//! plan's chains of operators (`operators.zig`).
 //!
-//! A query is a sequence of clauses. Each one turns the list of rows (the
-//! variable bindings) it receives into the list the next clause receives,
-//! starting from one empty row: MATCH and OPTIONAL MATCH extend each row with
-//! every match (OPTIONAL keeps an unmatched row, with nulls), UNWIND with each
-//! list element, WITH projects / groups / filters, the write clauses apply to
+//! A query is a sequence of clauses. Each one turns the rows (the variable
+//! bindings) it receives into the rows the next clause receives, starting
+//! from one empty row: MATCH and OPTIONAL MATCH extend each row with every
+//! match (OPTIONAL keeps an unmatched row, with nulls), UNWIND with each list
+//! element, WITH projects / groups / filters, the write clauses apply to
 //! every row in turn, and RETURN projects the final result. Each clause sees
-//! the effects of the clauses before it (see `clauses.zig`, `projection.zig`).
+//! the effects of the clauses before it: in a query that writes, every row
+//! goes through a clause before any goes on to the next one.
 //!
 //! The whole query runs in one transaction: a write transaction if any clause
-//! writes, else one consistent read snapshot. A read-only query streams its
-//! rows through the clauses instead (`pipeline.zig`).
+//! writes, else one consistent read snapshot.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,15 +31,15 @@ const AggregationPlan = @import("aggregation.zig").AggregationPlan;
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
 const EntitySnapshot = @import("entities.zig").EntitySnapshot;
 const Bindings = @import("bindings.zig").Bindings;
-const PlanStep = @import("planner.zig").PlanStep;
-const PatternEdge = @import("planner.zig").PatternEdge;
-const PatternNode = @import("planner.zig").PatternNode;
+const NodeId = @import("../storage/graph.zig").NodeId;
+const Plan = @import("../planning/Plan.zig");
+const builder = @import("../planning/builder.zig");
 
 const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
 const functions = @import("functions.zig");
 const projection = @import("projection.zig");
-const Pipeline = @import("pipeline.zig");
+const operators = @import("operators.zig");
 const procedures = @import("procedures.zig");
 const schema = @import("schema.zig");
 const temporal_functions = @import("temporal_functions.zig");
@@ -54,7 +55,7 @@ pub const ExecutionError = StorageError || error{
     UnknownVariable,
     InvalidExpression,
     TypeMismatch,
-    /// Internal: a streamed RETURN has every row it keeps (see `pipeline.zig`).
+    /// Internal: a streamed RETURN has every row it keeps (see `operators.zig`).
     LimitReached,
     /// LOAD CSV could not read its file (load_csv.zig).
     ExternalResourceFailed,
@@ -66,8 +67,10 @@ pub const Row = std.ArrayList(Value);
 /// Query parameters (`$name`), by name.
 pub const Parameters = std.StringHashMapUnmanaged(Value);
 
-/// A `where_expression` that keeps every match (a MERGE's pattern has no WHERE).
+/// A `where_expression` that keeps every row (a subquery's RETURN has no WHERE).
 pub const no_where: Index = std.math.maxInt(Index);
+
+pub const UsedEdge = struct { match: Plan.MatchIndex, relationship: Relationship };
 
 pub const no_aggregation = AggregationPlan{ .keys = &.{}, .aggregates = &.{}, .kinds = &.{} };
 
@@ -84,27 +87,24 @@ rows: std.ArrayList(projection.Sortable(Row)),
 /// read before the query's transaction ends (see `entities.zig`).
 entities: EntitySnapshot,
 
-// The MATCH (or OPTIONAL MATCH) being run: its patterns, WHERE, the plan of
-// the pattern being matched, and where complete matches go.
-patterns: []const Index,
-where_expression: Index,
-nodes: std.ArrayList(PatternNode),
-edges: std.ArrayList(PatternEdge),
-steps: std.ArrayList(PlanStep),
-matches: ?*std.ArrayList(Bindings),
-/// The streaming pipeline of a read-only query, and the stage the MATCH
-/// being run hands its matches to (when `matches` is null), with how many it
-/// handed on so far.
-pipeline: ?*Pipeline,
-pipeline_stage: usize,
-stream_emitted: usize,
-/// The path variable of the pattern being matched (`p = ...`), or empty.
-path_variable: []const u8,
+/// The plan being run, and what the run keeps for it: each operator's state,
+/// where the rows of each chain go, and what each pattern node and edge is
+/// matched to on the current search branch (see operators.zig).
+plan: *const Plan = undefined,
+operator_states: []operators.OperatorState = &.{},
+chain_sinks: []?operators.Sink = &.{},
+node_ids: []NodeId = &.{},
+matched_edges: [][]const Relationship = &.{},
+single_matches: []Relationship = &.{},
+/// The RETURN of the main chain being run, and how many rows it keeps if it
+/// can stop early.
+return_info: projection.ReturnClauseParts = undefined,
+rows_needed: ?usize = null,
 /// Procedures defined besides the built-in ones (the TCK's test procedures).
 table_procedures: []const procedure_signatures.TableProcedure = &.{},
-/// Relationship uniqueness: the edges bound on the current search branch of
-/// the MATCH being run.
-used_edges: std.ArrayList(Relationship),
+/// Relationship uniqueness: the relationships bound on the current search
+/// branch, each with its MATCH (one MATCH never uses one twice).
+used_edges: std.ArrayList(UsedEdge),
 /// The directory LOAD CSV reads from; null: LOAD CSV is off.
 import_directory: ?[]const u8 = null,
 /// The patterns of `=~` compiled in this query, by their text.
@@ -134,16 +134,6 @@ pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
         .parameters = .empty,
         .rows = .empty,
         .entities = .{},
-        .patterns = &.{},
-        .where_expression = 0,
-        .nodes = .empty,
-        .edges = .empty,
-        .steps = .empty,
-        .matches = null,
-        .pipeline = null,
-        .pipeline_stage = 0,
-        .stream_emitted = 0,
-        .path_variable = "",
         .used_edges = .empty,
         .has_aggregates = false,
         .projection_items = .empty,
@@ -180,13 +170,16 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
     errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
 
+    const plan = try builder.build(.{ .ast = self.ast, .graph = self.graph, .allocator = self.allocator }, root);
+    try self.start(&plan);
+
     var result = std.ArrayList(Row).empty;
-    for (queries) |query| {
+    for (plan.main_chains) |chain| {
         self.reset();
-        if (has_writes) self.runClauses(query) catch |err| {
+        operators.runMain(self, chain) catch |err| {
             if (err == error.ConstraintViolation) self.fail(.constraint_violation, "{s}", .{self.graph.violationMessage()});
             return err;
-        } else try Pipeline.run(self, query);
+        };
         for (self.rows.items) |sortable| try result.append(self.allocator, sortable.item);
     }
     // UNION (not UNION ALL) keeps one of each row.
@@ -200,27 +193,15 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     return result.items;
 }
 
-/// Runs one query's clauses as a pipeline; its RETURN rows go to `self.rows`.
-fn runClauses(self: *Executor, query: Index) ExecutionError!void {
-    const query_clauses = self.ast.nodeChildren(query);
-    var rows: []Bindings = try self.allocator.alloc(Bindings, 1);
-    rows[0] = .{ .entries = .empty };
-    for (query_clauses, 0..) |clause, position| {
-        rows = switch (self.ast.kind(clause)) {
-            .match_clause => try clauses.runMatch(self, clause, rows, false),
-            .optional_match_clause => try clauses.runMatch(self, clause, rows, true),
-            .unwind_clause => try clauses.runUnwind(self, clause, rows),
-            .load_csv_clause => try clauses.runLoadCsv(self, clause, rows),
-            .with_clause => try projection.applyWith(self, clause, rows),
-            .call_clause => try procedures.runCall(self, clause, rows, position + 1 == query_clauses.len),
-            .call_subquery => try clauses.runCallSubquery(self, clause, rows),
-            .return_clause => {
-                try projection.applyReturn(self, clause, rows);
-                break;
-            },
-            else => try clauses.runWrite(self, clause, rows),
-        };
-    }
+/// Prepares the run state of `plan`.
+fn start(self: *Executor, plan: *const Plan) ExecutionError!void {
+    self.plan = plan;
+    self.operator_states = try operators.initialStates(self);
+    self.chain_sinks = try self.allocator.alloc(?operators.Sink, plan.chains.len);
+    @memset(self.chain_sinks, null);
+    self.node_ids = try self.allocator.alloc(NodeId, plan.node_count);
+    self.matched_edges = try self.allocator.alloc([]const Relationship, plan.edge_count);
+    self.single_matches = try self.allocator.alloc(Relationship, plan.edge_count);
 }
 
 /// Clears the state of the query part last run.
@@ -246,23 +227,4 @@ pub fn projectedExpressions(self: *Executor, projection_node: Index) ExecutionEr
     const expressions_list = try self.allocator.alloc(Index, items.len);
     for (expressions_list, items) |*expr, item| expr.* = self.ast.nodeChildren(item)[0];
     return expressions_list;
-}
-
-/// The edge type to bind for a matched edge: the pattern's own (owned by the
-/// AST) when it names one, else a copy of the stored type (a view into the
-/// store that does not outlive the scan).
-pub fn ownedEdgeType(self: *Executor, edge: PatternEdge, stored: []const u8) ExecutionError![]const u8 {
-    if (edge.singleType()) |edge_type| return edge_type;
-    return self.allocator.dupe(u8, stored);
-}
-
-/// Called by pattern matching for every complete match of the MATCH being
-/// run: keeps it, as a row of its own, if it passes the MATCH's WHERE.
-pub fn matchFound(self: *Executor, bindings: *Bindings) ExecutionError!void {
-    if (self.where_expression != no_where and !try expressions.evaluateBool(self, self.where_expression, bindings)) return;
-    self.accepted_matches += 1;
-    if (self.matches) |output| return output.append(self.allocator, try clauses.copyRow(self, bindings.*));
-    const pipeline = self.pipeline orelse return;
-    self.stream_emitted += 1;
-    try pipeline.feed(self.pipeline_stage, bindings);
 }

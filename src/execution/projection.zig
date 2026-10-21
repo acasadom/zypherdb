@@ -333,15 +333,6 @@ pub fn returnClauseParts(self: *Executor, return_clause: Index) ReturnClausePart
     return info;
 }
 
-/// RETURN: projects every row (or folds it into its group when the
-/// projection aggregates), then aggregates, applies DISTINCT, ORDER BY, SKIP
-/// and LIMIT. The rows go to `self.rows`.
-pub fn applyReturn(self: *Executor, return_clause: Index, input: []Bindings) ExecutionError!void {
-    const info = try beginReturn(self, return_clause);
-    for (input) |*row| try returnRow(self, info, row);
-    try endReturn(self, info);
-}
-
 /// Starts a RETURN: plans its projection and aggregation. Then each row goes
 /// to `returnRow`, and `endReturn` produces the result in `self.rows`.
 pub fn beginReturn(self: *Executor, return_clause: Index) ExecutionError!ReturnClauseParts {

@@ -70,6 +70,31 @@ commit 10x faster, but on macOS it flushes with `msync` and no `F_FULLFSYNC`, wh
 durable: not used. `MDBX_LIFORECLAIM` changed nothing measurable. Renewing read transactions
 instead of making them made short reads 2-3% faster.
 
+## A plan built once per query (October 2026)
+
+Queries planned once into chains of operators (`src/planning/`) instead of each pattern being
+planned again for every row that reaches it. `main` against the branch, LMDB, each loading its own
+data; best median of three alternating rounds, `--people 100000 --runs 200`, full durability.
+
+| Query | per-row planning | plan once | |
+| --- | ---: | ---: | ---: |
+| card lookup | 4.8 µs | 4.7 µs | −2% |
+| person's groups (1 hop) | 9.1 µs | 8.1 µs | −11% |
+| colleagues (2 hops, `count(DISTINCT)`) | 101 µs | 77 µs | −24% |
+| may this card open this door? (MATCH) | 38.7 µs | 33.4 µs | −14% |
+| same, with `EXISTS` | 41.4 µs | 38.3 µs | −8% |
+| doors of a person's zones (`*1..3`) | 122 µs | 119 µs | −3% |
+| people over 60 (range index + records) | 4.6 ms | 4.3 ms | −8% |
+| oldest 10 (`ORDER BY … LIMIT`) | 25.0 ms | 25.6 ms | +2% (noise: 25-30 ms in both) |
+| group sizes (expand 200k edges + aggregate) | 25.1 ms | 23.5 ms | −6% |
+| department counts (scan + group) | 13.3 ms | 12.4 ms | −7% |
+| return 100k rows (3 columns) | 17.7 ms | 16.7 ms | −6% |
+| create one node (one commit) | 8.0 ms | 8.1 ms | 0% |
+| create 1000 nodes (`UNWIND`, one commit) | 14.0 ms | 13.0 ms | −7% |
+
+The gain is in the patterns reached by many rows: the second pattern of `colleagues` was planned
+(allocations, label and edge-type counts read) once per group of the person, now once per query.
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

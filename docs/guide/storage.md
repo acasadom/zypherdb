@@ -206,8 +206,8 @@ so the counter never hands out an id that is in use.
 - An ended read transaction is reset and kept (up to four per database) for the next one to
   renew (`Environment.endRead`): starting a read costs no allocation.
 - An iterator returned by `scanPrefix` borrows its transaction; it must be `deinit`'d **before** the
-  transaction ends (the cursor belongs to it). The executor scopes every iterator to its `runStep`
-  frame, which is what makes this safe.
+  transaction ends (the cursor belongs to it). The executor scopes every iterator to the operator
+  call that opened it, which is what makes this safe.
 
 ## The storage engines
 

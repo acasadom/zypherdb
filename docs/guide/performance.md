@@ -7,9 +7,10 @@ happens, when it matters, and the fix being considered. Measured numbers are in
 ## Execution
 
 - **Queries that write materialize rows between clauses.** Read-only queries stream rows through
-  their clauses (`pipeline.zig`). A query with a writing clause still makes each clause produce
-  all its rows before the next starts, so its memory grows with the intermediate result. Fix:
-  stream the clauses before the first write, and materialize only there (an "eager" boundary).
+  their clauses (`operators.zig`). A query with a writing clause has an `eager` between each two
+  clauses, so each clause produces all its rows before the next starts, and its memory grows with
+  the intermediate result. Fix: keep the `eager` only where a clause reads what an earlier one
+  writes (before the first write, and between conflicting clauses).
 - **Some stages still need every row:**
   - `RETURN` holds all the rows it returns, so the caller gets nothing until the query ends.
     Fix: hand rows to the caller as they come (an iterator in the bindings).

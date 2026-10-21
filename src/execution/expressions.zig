@@ -12,7 +12,7 @@ const mapOf = @import("../value.zig").mapOf;
 const formatFloat = @import("../value.zig").formatFloat;
 const comparison = @import("comparison.zig");
 const temporal_functions = @import("temporal_functions.zig");
-const clauses = @import("clauses.zig");
+const operators = @import("operators.zig");
 
 const Executor = @import("Executor.zig");
 const functions = @import("functions.zig");
@@ -105,15 +105,11 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             }
             break :blk .{ .null = {} };
         },
-        .pattern_predicate => blk: {
-            const children = self.ast.nodeChildren(expr);
-            break :blk .{ .boolean = (try clauses.nestedMatches(self, children[0..1], children[1], bindings.*)).len > 0 };
-        },
-        .exists_subquery => .{ .boolean = (try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len > 0 },
-        .count_subquery => .{ .int = @intCast((try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len) },
+        .pattern_predicate, .exists_subquery => .{ .boolean = (try operators.expressionRows(self, expr, bindings)).len > 0 },
+        .count_subquery => .{ .int = @intCast((try operators.expressionRows(self, expr, bindings)).len) },
         .pattern_comprehension => blk: {
             const children = self.ast.nodeChildren(expr);
-            const matches = try clauses.nestedMatches(self, children[0..1], children[1], bindings.*);
+            const matches = try operators.expressionRows(self, expr, bindings);
             const items = try self.allocator.alloc(Value, matches.len);
             for (items, matches) |*item, *match| item.* = try evaluate(self, children[2], match);
             break :blk .{ .list = items };
