@@ -133,6 +133,11 @@ its result, or `NULL` if it fails. The result owns all of its values; it stays v
 JSON numbers without a fraction or exponent are integers; the rest are floats. Temporal values are
 tagged objects, the same as in [JSON results](#results-as-json).
 
+**Plans.** `EXPLAIN query` and `PROFILE query` are queries too: their result is the plan, one row
+per operator, with the columns `depth`, `operator`, `details`, `estimated_rows`, `rows` and
+`time_ms` (see [EXPLAIN and PROFILE](cypher.md#explain-and-profile)). `PROFILE` runs the query and
+commits its writes; its own rows are not returned.
+
 ## Reading a result
 
 ### Cell by cell

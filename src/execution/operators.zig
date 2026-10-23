@@ -31,6 +31,7 @@ const pattern_matching = @import("pattern_matching.zig");
 const procedures = @import("procedures.zig");
 const projection = @import("projection.zig");
 const writes = @import("writes.zig");
+const profiling = @import("profiling.zig");
 
 /// Where the rows of a chain run by an operator or an expression go.
 pub const Sink = struct {
@@ -86,6 +87,16 @@ pub fn runMain(executor: *Executor, chain: Plan.ChainIndex) ExecutionError!void 
         else => |other| return other,
     };
     if (return_info) |info| try projection.endReturn(executor, info);
+    if (executor.profile) |profile| {
+        // The query's rows: its RETURN's, or those of a CALL that ends it.
+        for (range.first..range.end) |index| switch (plan.operators[index]) {
+            .return_ => profile.returned[index] = executor.rows.items.len,
+            .procedure_call => |call| if (call.ends_query) {
+                profile.returned[index] = executor.rows.items.len;
+            },
+            else => {},
+        };
+    }
 }
 
 /// Runs `chain` from `start`; each row its `output` gets goes to `sink`.
@@ -111,19 +122,42 @@ fn runOperators(executor: *Executor, range: Plan.Chain, start: *Bindings) Execut
             .kept => |*state| {
                 const kept = state.items;
                 state.* = .empty;
-                const rows = switch (executor.plan.operators[index]) {
-                    .with_collecting => |clause| try projection.applyWith(executor, clause, kept),
-                    else => kept,
-                };
-                for (rows) |*row| try feed(executor, @intCast(index + 1), row);
+                for (try keptRows(executor, @intCast(index), kept)) |*row| try feed(executor, @intCast(index + 1), row);
             },
             else => {},
         }
     }
 }
 
+/// The rows a collecting operator passes on, made from those it kept.
+fn keptRows(executor: *Executor, index: Plan.OperatorIndex, kept: []Bindings) ExecutionError![]Bindings {
+    const clause = switch (executor.plan.operators[index]) {
+        .with_collecting => |clause| clause,
+        else => return kept,
+    };
+    const profile = executor.profile orelse return projection.applyWith(executor, clause, kept);
+    const previous = profile.enter(index);
+    defer profile.leave(previous);
+    return projection.applyWith(executor, clause, kept);
+}
+
 /// Hands `row` to operator `index`.
 pub fn feed(executor: *Executor, index: Plan.OperatorIndex, row: *Bindings) ExecutionError!void {
+    if (executor.profile) |profile| {
+        @branchHint(.cold);
+        return feedProfiled(executor, profile, index, row);
+    }
+    return run(executor, index, row);
+}
+
+fn feedProfiled(executor: *Executor, profile: *profiling.Profile, index: Plan.OperatorIndex, row: *Bindings) ExecutionError!void {
+    profile.rows_in[index] += 1;
+    const previous = profile.enter(index);
+    defer profile.leave(previous);
+    return run(executor, index, row);
+}
+
+inline fn run(executor: *Executor, index: Plan.OperatorIndex, row: *Bindings) ExecutionError!void {
     const next = index + 1;
     switch (executor.plan.operators[index]) {
         .bound_node => |reference| try pattern_matching.checkBoundNode(executor, reference, next, row),

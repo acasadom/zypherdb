@@ -428,6 +428,60 @@ indexed when it holds a string or a list of strings; other values are skipped.
 
 Results come best first.
 
+## EXPLAIN and PROFILE
+
+`EXPLAIN query` returns the plan of the query without running it; `PROFILE query` runs the query
+(its writes commit, as they would without `PROFILE`) and returns the plan with what each operator
+did. Both take a query or a `UNION`, not a schema command. The result is one row per operator:
+
+| Column | What it holds |
+| --- | --- |
+| `depth` | how deep the operator is: the chain an operator runs (an `OPTIONAL MATCH`'s, a subquery's) is one level deeper than the operator |
+| `operator` | its name (below) |
+| `details` | what it works on, as Cypher: a pattern, a predicate, a projection |
+| `estimated_rows` | how many rows it makes per run of its chain: a guess from the label and relationship-type counts, `null` when they say nothing |
+| `rows` | `PROFILE`: how many rows it made, over all runs; `null` in `EXPLAIN` |
+| `time_ms` | `PROFILE`: the time spent in the operator itself (not in the ones it hands rows to), in milliseconds; `null` in `EXPLAIN` |
+
+The first row is the result; each operator gets its rows from the one below it, down to where
+they start. A chain an operator runs follows it, one level deeper; a pattern or subquery inside an
+expression follows the operator that evaluates it, under a row naming it (`Exists`, `Count`,
+`PatternPredicate`, `PatternComprehension`). On a graph where a person is in five groups on
+average (and `g` has no label to count by):
+
+```text
+MATCH (p:Person {id: $id})-[:MEMBER_OF]->(g)<-[:MEMBER_OF]-(q) RETURN count(DISTINCT q)
+
+depth  operator        details                                    estimated_rows
+0      Return          count(DISTINCT q)                          1
+0      Expand(All)     (g)<-[:MEMBER_OF]-(q)                      null
+0      Expand(All)     (p:Person {id: $id})-[:MEMBER_OF]->(g)     5
+0      NodeIndexSeek   (p:Person {id: $id})                       1
+```
+
+| Operator | What it does |
+| --- | --- |
+| `NodeIndexSeek` | finds a pattern's first node by an equality on a property (`{id: $id}`, `WHERE n.id = $id`) |
+| `NodeIndexRangeSeek` | finds it by a range of a number or date property (`WHERE n.age > 60`) |
+| `NodeByLabelScan`, `AllNodesScan` | reads every node with the label, or every node |
+| `RelationshipIndexSeek` | finds a single relationship's ends by an equality on its property |
+| `BoundNode` | a node bound before the pattern: checks its labels and properties |
+| `Expand(All)`, `Expand(Into)` | follows a relationship to each neighbour, or to a node bound already |
+| `VarLengthExpand(All)`, `VarLengthExpand(Into)` | follows a variable-length relationship (`*1..3`) |
+| `ShortestPath`, `AllShortestPaths` | `shortestPath(...)`, `allShortestPaths(...)` |
+| `ProjectPath` | binds a path variable (`p = ...`) |
+| `Filter` | keeps the rows its predicate holds for (a `WHERE`) |
+| `Optional` | `OPTIONAL MATCH`: runs its chain from each row |
+| `Apply` | `CALL { }`: runs the subquery from each row |
+| `Unwind`, `LoadCSV`, `ProcedureCall` | `UNWIND`, `LOAD CSV`, `CALL procedure` |
+| `Projection` | a `WITH` that only projects and filters |
+| `Aggregation`, `Distinct`, `Sort`, `Top`, `Skip`, `Limit` | a `WITH` that needs every row first, by the first thing it does (`Top`: a sort that keeps its `LIMIT`); `details` shows all of it |
+| `Return` | the `RETURN`: projects, aggregates, sorts and pages, as its `details` say |
+| `Create`, `Merge`, `Set`, `Delete`, `DetachDelete`, `Remove`, `Foreach` | the writing clauses |
+| `Eager` | in a query that writes: every row goes through the clause before it before any goes on |
+| `EmptyResult` | the end of a query without `RETURN` |
+| `Union`, `UnionAll` | the parts of a `UNION`, one level deeper |
+
 ## Not supported
 
 acmedb does not implement these parts of openCypher (and of common Neo4j extensions):

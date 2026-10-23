@@ -7,7 +7,8 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("../query/ast.zig").Ast;
 const Index = @import("../query/ast.zig").Index;
 const Direction = @import("../storage/graph.zig").Direction;
-const Graph = @import("../storage/graph.zig").Graph;
+const Statistics = @import("statistics.zig").Statistics;
+const unknown = @import("statistics.zig").unknown;
 
 const Plan = @import("Plan.zig");
 const Operator = Plan.Operator;
@@ -20,7 +21,7 @@ const Scope = @import("scope.zig").Scope;
 /// What planning a pattern reads: the query and the graph's counts.
 pub const Context = struct {
     ast: *const Ast,
-    graph: *Graph,
+    statistics: *Statistics,
     allocator: Allocator,
 };
 
@@ -50,7 +51,7 @@ pub fn plan(context: Context, pattern: Index, where: ?Index, scope: *const Scope
     if (planner.shouldEdgeAnchor()) {
         try operators.append(allocator, .{ .edge_index_scan = .{ .pattern = index, .edge = 0 } });
     } else {
-        const anchor = planner.chooseAnchor();
+        const anchor = try planner.chooseAnchor();
         // A bound anchor needs no scan: expand straight from its known value.
         if (!planner.nodes.items[anchor].node.bound) {
             try operators.append(allocator, .{ .node_scan = .{ .pattern = index, .node = @intCast(anchor) } });
@@ -242,39 +243,35 @@ const Planner = struct {
     }
 
     /// How many candidates node `position` would produce as the anchor.
-    fn estimate(self: *const Planner, position: usize) usize {
-        const graph = self.context.graph;
+    fn estimate(self: *const Planner, position: usize) Allocator.Error!usize {
         const draft = self.nodes.items[position];
         if (draft.node.bound) return 0; // already known: a free start
         if (draft.seeks.items.len > 0) return 1;
-        var best: usize = std.math.maxInt(usize);
-        for (draft.node.labels) |label| {
-            const count = graph.labelCount(label) catch std.math.maxInt(usize);
-            if (count < best) best = count;
-        }
+        var best: usize = unknown;
+        for (draft.node.labels) |label| best = @min(best, try self.context.statistics.labelCount(label));
         // A range keeps some of the nodes: a guess, without statistics, that is
         // enough to prefer it to a scan of the whole label.
         if (draft.ranges.items.len > 0) best = best / 4;
         if (draft.node.labels.len == 0 and draft.ranges.items.len == 0) return best;
         // Cap by the rarest incident edge type: the number of results is bounded
         // by the number of edges of that type, not just the label size.
-        if (position > 0) best = @min(best, self.edgeTypeCap(position - 1));
-        if (position < self.edges.items.len) best = @min(best, self.edgeTypeCap(position));
+        if (position > 0) best = @min(best, try self.edgeTypeCap(position - 1));
+        if (position < self.edges.items.len) best = @min(best, try self.edgeTypeCap(position));
         return best;
     }
 
-    fn edgeTypeCap(self: *const Planner, edge_position: usize) usize {
+    fn edgeTypeCap(self: *const Planner, edge_position: usize) Allocator.Error!usize {
         const edge = self.edges.items[edge_position].edge;
-        const edge_type = edge.singleType() orelse return std.math.maxInt(usize);
-        if (edge.variable_length) return std.math.maxInt(usize);
-        return self.context.graph.edgeTypeCount(edge_type) catch std.math.maxInt(usize);
+        const edge_type = edge.singleType() orelse return unknown;
+        if (edge.variable_length) return unknown;
+        return self.context.statistics.edgeTypeCount(edge_type);
     }
 
-    fn chooseAnchor(self: *const Planner) usize {
+    fn chooseAnchor(self: *const Planner) Allocator.Error!usize {
         var best: usize = 0;
-        var best_estimate = self.estimate(0);
+        var best_estimate = try self.estimate(0);
         for (1..self.nodes.items.len) |position| {
-            const candidate = self.estimate(position);
+            const candidate = try self.estimate(position);
             if (candidate < best_estimate) {
                 best = position;
                 best_estimate = candidate;

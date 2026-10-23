@@ -95,6 +95,12 @@ data; best median of three alternating rounds, `--people 100000 --runs 200`, ful
 The gain is in the patterns reached by many rows: the second pattern of `colleagues` was planned
 (allocations, label and edge-type counts read) once per group of the person, now once per query.
 
+PROFILE then added one test per operator call (is a profile being taken?). Against the plan above,
+best of three rounds: the short queries unchanged (±2%); the queries that push 100k-300k rows
+through the operators 1-2.5% slower (group sizes 23.4 → 24.0 ms with 100 runs per round), about
+the noise between rounds on this laptop (±0.3 ms). With the test removed entirely they measured
+the same within that noise, so it stays (a cold branch, the operator switch inlined into `feed`).
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

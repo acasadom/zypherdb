@@ -34,12 +34,14 @@ const Bindings = @import("bindings.zig").Bindings;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Plan = @import("../planning/Plan.zig");
 const builder = @import("../planning/builder.zig");
+const Statistics = @import("../planning/statistics.zig").Statistics;
 
 const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
 const functions = @import("functions.zig");
 const projection = @import("projection.zig");
 const operators = @import("operators.zig");
+const profiling = @import("profiling.zig");
 const procedures = @import("procedures.zig");
 const schema = @import("schema.zig");
 const temporal_functions = @import("temporal_functions.zig");
@@ -100,6 +102,12 @@ single_matches: []Relationship = &.{},
 /// can stop early.
 return_info: projection.ReturnClauseParts = undefined,
 rows_needed: ?usize = null,
+/// While PROFILE runs the query: what each operator does. The query's own
+/// rows, which PROFILE returns the plan instead of, are kept here.
+profile: ?*profiling.Profile = null,
+profiled_rows: []const Row = &.{},
+/// After EXPLAIN or PROFILE: the line each line of the plan is part of.
+plan_parents: []const ?usize = &.{},
 /// Procedures defined besides the built-in ones (the TCK's test procedures).
 table_procedures: []const procedure_signatures.TableProcedure = &.{},
 /// Relationship uniqueness: the relationships bound on the current search
@@ -152,26 +160,50 @@ pub fn fail(self: *Executor, code: ErrorCode, comptime fmt: []const u8, args: an
 /// returns its RETURN rows (none without RETURN). All writes of the query
 /// commit or abort together; a read-only query reads one consistent snapshot.
 pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
+    if (self.ast.kind(root) == .explain) return profiling.run(self, root);
     if (schema.isSchemaCommand(self, root)) return schema.run(self, root);
-    const is_union = self.ast.kind(root) == .union_query;
-    const queries: []const Index = if (is_union) self.ast.nodeChildren(root) else &.{root};
-    for (queries) |query| {
-        try semantics.check(self.ast, query, self.allocator, self.diagnostic, self.table_procedures);
-        try functions.checkCalls(self.ast, query, self.diagnostic);
+    try self.check(root);
+    const has_writes = self.writes(root);
+    if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
+    errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
+
+    var statistics = Statistics{ .graph = self.graph, .allocator = self.allocator };
+    const plan = try builder.build(.{ .ast = self.ast, .statistics = &statistics, .allocator = self.allocator }, root);
+    const result = try self.execute(&plan, root);
+
+    if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
+    return result;
+}
+
+/// The semantic checks of `root` (a query or a UNION), before it is planned.
+pub fn check(self: *Executor, root: Index) ExecutionError!void {
+    if (self.ast.kind(root) != .union_query) return self.checkQuery(root);
+    for (self.ast.nodeChildren(root)) |query| try self.checkQuery(query);
+}
+
+fn checkQuery(self: *Executor, query: Index) ExecutionError!void {
+    try semantics.check(self.ast, query, self.allocator, self.diagnostic, self.table_procedures);
+    try functions.checkCalls(self.ast, query, self.diagnostic);
+}
+
+/// True if a part of `root` writes: it runs in a write transaction.
+pub fn writes(self: *Executor, root: Index) bool {
+    if (self.ast.kind(root) != .union_query) return self.ast.queryWrites(root);
+    for (self.ast.nodeChildren(root)) |query| {
+        if (self.ast.queryWrites(query)) return true;
     }
+    return false;
+}
+
+/// Runs `plan`, the plan of `root`, in the transaction the caller opened:
+/// its main chains one after the other, then a UNION's duplicates removed.
+/// Reads the entities the rows refer to before returning them.
+pub fn execute(self: *Executor, plan: *const Plan, root: Index) ExecutionError![]const Row {
     self.reset();
     self.entities = .{};
     self.statement_time = null;
     self.regexes = .empty;
-
-    const has_writes = writes: for (queries) |query| {
-        if (self.ast.queryWrites(query)) break :writes true;
-    } else false;
-    if (has_writes) try self.graph.beginWrite() else try self.graph.beginRead();
-    errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
-
-    const plan = try builder.build(.{ .ast = self.ast, .graph = self.graph, .allocator = self.allocator }, root);
-    try self.start(&plan);
+    try self.start(plan);
 
     var result = std.ArrayList(Row).empty;
     for (plan.main_chains) |chain| {
@@ -183,13 +215,11 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
         for (self.rows.items) |sortable| try result.append(self.allocator, sortable.item);
     }
     // UNION (not UNION ALL) keeps one of each row.
-    if (is_union and !self.ast.data(root).boolean) {
+    if (self.ast.kind(root) == .union_query and !self.ast.data(root).boolean) {
         try sequence_algorithms.removeDuplicates(Row, self.allocator, &result, projection.RowContext{});
     }
     // Read the entities the rows refer to while the transaction still holds.
     for (result.items) |row| try self.entities.capture(self.graph, self.allocator, row.items);
-
-    if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();
     return result.items;
 }
 

@@ -44,16 +44,18 @@ in the repository.)
 
 ## What scans
 
-Conditions other than equality — `<`, `>`, `STARTS WITH`, `CONTAINS`, `IN` a list — do not use the
-index: they are checked node by node on whatever the anchor produced. So:
+An equality uses the property's index, and so does a range of numbers or dates (`<`, `<=`, `>`,
+`>=`): the engine reads the part of the index in range. Other conditions — `STARTS WITH`,
+`CONTAINS`, `IN` a list, a range of strings — do not use the index: they are checked node by node
+on whatever the anchor produced. So:
 
 ```python
 fast = "MATCH (p:Person {employee_id: $id}) RETURN p.name"            # index seek
-slow = "MATCH (p:Person) WHERE p.employee_id > $id RETURN p.name"     # every Person
+slow = "MATCH (p:Person) WHERE p.name STARTS WITH $prefix RETURN p"   # every Person
 ```
 
 Both are right; the second costs time in proportion to the number of `Person` nodes — fine for the
-lab's dozens, noticeable for millions. When a range query must be fast on a large set, give it a
+lab's dozens, noticeable for millions. When such a query must be fast on a large set, give it a
 better anchor: start from something selective and filter what it reaches.
 
 ## Rules of thumb
@@ -76,18 +78,39 @@ better anchor: start from something selective and filter what it reaches.
 
 ## Watching it
 
-A quick way to see where time goes is to time the query alone, then its pieces: the anchor
-(`MATCH (b:Badge {number: $badge}) RETURN b`), then each step added. A step that is much slower
-than the others is usually an anchor-less scan or a pattern that reaches many more nodes than it
-needed to.
+`db.explain(query)` shows what the engine will do, without running the query: its **plan**, a tree
+of operators, each getting its rows from its first child. A small helper prints it:
 
 ```python
-print(f"all badges: {timed(lambda: db.query('MATCH (b:Badge) RETURN count(b)')):.0f} µs")
-print(f"one badge:  {timed(lambda: db.query('MATCH (b:Badge {number: 70013}) RETURN count(b)')):.0f} µs")
+def show(plan, depth=0):
+    made = "" if plan["rows"] is None else f"  ({plan['rows']} rows)"
+    print("  " * depth + f"{plan['operator']} {plan['details']}{made}")
+    for child in plan["children"]:
+        show(child, depth + 1)
+
+show(db.explain("MATCH (b:Badge {number: $badge})-[:ISSUED_TO]->(p:Person) RETURN p.name", badge=70013))
 ```
 
-With a handful of badges the two are close; with a million, the first grows a million-fold and the
-second does not. The [performance notes](../guide/performance) list what the engine does not do
+```text
+Return p.name
+  Expand(All) (b:Badge {number: $badge})-[:ISSUED_TO]->(p:Person)
+    NodeIndexSeek (b:Badge {number: $badge})
+```
+
+Read it from the bottom: an index seek finds the badge (the anchor), one step reaches the person,
+and the result projects the name. `NodeByLabelScan` or `AllNodesScan` at the bottom means the
+query reads every node of a label, or of the database.
+
+`db.profile(query)` runs the query and returns its rows with the plan, each operator showing how
+many rows it made (and, in `time_ms`, the time spent in it):
+
+```python
+rows, plan = db.profile("MATCH (b:Badge) WHERE b.number > 70010 RETURN count(b)")
+show(plan)
+```
+
+An operator that makes many more rows than the ones above it keep is where a query does more work
+than it needs. The [performance notes](../guide/performance) list what the engine does not do
 well yet.
 
 All the pieces are in place. [Next](18-door-controller), they come together: the door controller.

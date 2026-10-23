@@ -121,6 +121,9 @@ pub const EdgeDirection = enum {
 };
 
 pub const NodeKind = enum {
+    /// `EXPLAIN query` or `PROFILE query`: data.explain; one child, the
+    /// query (or UNION) whose plan is shown.
+    explain,
     query,
     union_query, // children: the queries; data.boolean: UNION ALL (keep duplicates)
     pattern,
@@ -281,7 +284,12 @@ pub const Data = union(enum) {
     show_indexes: enum { all, fulltext, range },
     drop_index: struct { name: []const u8, if_exists: bool },
     labels: []const []const u8,
+    explain: ExplainMode,
 };
+
+/// EXPLAIN shows the plan without running it; PROFILE runs the query and
+/// shows the plan with what each operator did.
+pub const ExplainMode = enum { explain, profile };
 
 pub const QuantifierKind = enum { any, all, none, single };
 

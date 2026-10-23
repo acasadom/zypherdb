@@ -23,6 +23,26 @@ def _check_node_id(id: int) -> int:
     return id
 
 
+def _plan_tree(lines: list[list], parents: list) -> dict:
+    """The plan's lines (`[depth, operator, details, estimated_rows, rows, time_ms]`) as a tree."""
+    nodes = [
+        {"operator": operator, "details": details, "estimated_rows": estimated, "rows": rows, "time_ms": time_ms, "children": []}
+        for _, operator, details, estimated, rows, time_ms in lines
+    ]
+    root = nodes[0]
+    for index, parent in enumerate(parents):
+        if parent is None:
+            continue
+        # An operator's input is at its own depth, and goes first; the chains
+        # it runs are one level deeper.
+        children = nodes[parent]["children"]
+        if lines[index][0] == lines[parent][0]:
+            children.insert(0, nodes[index])
+        else:
+            children.append(nodes[index])
+    return root
+
+
 class Database:
     """A handle to one acmedb database (a storage-engine environment in directory `path`).
 
@@ -120,6 +140,48 @@ class Database:
             if self._in_write:
                 raise AcmedbError("query() cannot run inside a write() block")
             return native.query(db, text, values)
+
+    def explain(self, text: str, parameters: dict | None = None, /, **named) -> dict:
+        """Return the plan of a query, without running it, as a tree of operators.
+
+        Each operator is a dict: ``operator`` (its name), ``details`` (what it
+        works on, as Cypher), ``estimated_rows`` (how many rows it makes per
+        run of its chain, a guess from the label and relationship-type counts;
+        None when they say nothing), ``rows`` and ``time_ms`` (None here; see
+        :meth:`profile`) and ``children``: the operator whose rows it gets
+        first, then the chains it runs (an OPTIONAL MATCH's, a subquery's, a
+        pattern's inside an expression)::
+
+            plan = db.explain("MATCH (p:Person {id: $id})-[:KNOWS]->(f) RETURN f.name", id=1)
+            plan["operator"]                 # 'Return'
+            plan["children"][0]["operator"]  # 'Expand(All)'
+
+        The same plan as rows comes from ``db.query("EXPLAIN " + text)``.
+        """
+        values = {**parameters, **named} if parameters else named
+        with self._lock:
+            db = self._handle()
+            if self._in_write:
+                raise AcmedbError("explain() cannot run inside a write() block")
+            _, lines, parents = native.plan(db, "EXPLAIN " + text, values)
+        return _plan_tree(lines, parents)
+
+    def profile(self, text: str, parameters: dict | None = None, /, **named) -> tuple[list[list], dict]:
+        """Run a query and return its rows and its plan, with what each operator did.
+
+        The plan is the tree :meth:`explain` returns, with ``rows`` (how many
+        rows each operator made) and ``time_ms`` (the time spent in the
+        operator itself, in milliseconds) filled in. The query runs as
+        :meth:`query` runs it: its writes commit. ``db.query("PROFILE " +
+        text)`` gives the plan as rows, without the query's own.
+        """
+        values = {**parameters, **named} if parameters else named
+        with self._lock:
+            db = self._handle()
+            if self._in_write:
+                raise AcmedbError("profile() cannot run inside a write() block")
+            rows, lines, parents = native.plan(db, "PROFILE " + text, values)
+        return rows, _plan_tree(lines, parents)
 
     def export_graph(self) -> dict:
         """Return the whole graph, read straight from storage (not through the

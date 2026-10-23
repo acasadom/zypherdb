@@ -526,17 +526,17 @@ fn parseDatabase(args: ?*py.PyObject) ?*Database {
 
 // --- Queries -----------------------------------------------------------------------
 
-fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+/// What a query call takes: the database, the query's text and its parameters.
+const QueryCall = struct { database: *Database, text: []const u8, parameters: Executor.Parameters };
+
+/// The arguments `(db, text, parameters)`, converted into `arena`.
+fn queryCall(args: ?*py.PyObject, arena: std.mem.Allocator) ?QueryCall {
     var capsule: ?*py.PyObject = null;
     var text_pointer: [*c]const u8 = undefined;
     var text_length: py.Py_ssize_t = 0;
     var parameters_object: ?*py.PyObject = null;
     if (py.PyArg_ParseTuple(args, "Os#O", &capsule, &text_pointer, &text_length, &parameters_object) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
-
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
 
     var parameters = Executor.Parameters.empty;
     if (parameters_object) |object| if (object != @as(*py.PyObject, @ptrCast(&py._Py_NoneStruct))) {
@@ -546,24 +546,70 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
         while (py.PyDict_Next(object, &position, &key, &value) != 0) {
             const name = stringOf(key.?, arena) orelse return null;
             const converted = valueOf(value.?, arena, false) orelse return null;
-            parameters.put(arena, name, converted) catch return py.PyErr_NoMemory();
+            parameters.put(arena, name, converted) catch return noMemory(QueryCall);
         }
     };
-    const text = arena.dupe(u8, text_pointer[0..@intCast(text_length)]) catch return py.PyErr_NoMemory();
+    const text = arena.dupe(u8, text_pointer[0..@intCast(text_length)]) catch return noMemory(QueryCall);
+    return .{ .database = database, .text = text, .parameters = parameters };
+}
 
-    // The engine runs without the GIL: other Python threads go on meanwhile.
+/// Runs the call's query with the GIL released (other Python threads go on
+/// meanwhile); null on failure, with the diagnostic set.
+fn execute(call: QueryCall, ast: *acmedb.Ast, executor: *Executor) ?[]const acmedb.Row {
+    const database = call.database;
     database.diagnostic.clear();
-    var ast = acmedb.Ast.init(arena);
-    var executor = Executor.init(&ast, &database.graph, arena);
     executor.diagnostic = &database.diagnostic;
-    executor.parameters = parameters;
+    executor.parameters = call.parameters;
     executor.table_procedures = database.table_procedures.items;
     executor.import_directory = database.import_directory;
     const thread_state = py.PyEval_SaveThread();
-    const outcome = run(&executor, &ast, text, &database.diagnostic);
-    py.PyEval_RestoreThread(thread_state);
-    const rows = outcome orelse return raiseQueryError(database);
+    defer py.PyEval_RestoreThread(thread_state);
+    return run(executor, ast, call.text, &database.diagnostic);
+}
 
+/// `query(db, text, parameters)`: the rows of one query, as lists of cells.
+fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const call = queryCall(args, arena) orelse return null;
+    var ast = acmedb.Ast.init(arena);
+    var executor = Executor.init(&ast, &call.database.graph, arena);
+    const rows = execute(call, &ast, &executor) orelse return raiseQueryError(call.database);
+    return rowsObject(rows, &executor, call.database);
+}
+
+/// `plan(db, text, parameters)`: runs an EXPLAIN or PROFILE statement and
+/// returns `(rows, lines, parents)`: the query's own rows (PROFILE runs it),
+/// the plan's lines, and the index of each line's parent (None at the root).
+fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const call = queryCall(args, arena) orelse return null;
+    var ast = acmedb.Ast.init(arena);
+    var executor = Executor.init(&ast, &call.database.graph, arena);
+    const lines = execute(call, &ast, &executor) orelse return raiseQueryError(call.database);
+
+    const rows = rowsObject(executor.profiled_rows, &executor, call.database) orelse return null;
+    const plan_lines = rowsObject(lines, &executor, call.database) orelse {
+        py.Py_DecRef(rows);
+        return null;
+    };
+    const parents = py.PyList_New(@intCast(executor.plan_parents.len)) orelse {
+        py.Py_DecRef(rows);
+        py.Py_DecRef(plan_lines);
+        return null;
+    };
+    for (executor.plan_parents, 0..) |parent, position| {
+        const object = if (parent) |index| py.PyLong_FromSsize_t(@intCast(index)) else none();
+        _ = py.PyList_SetItem(parents, @intCast(position), object);
+    }
+    return py.Py_BuildValue("(NNN)", rows, plan_lines, parents);
+}
+
+/// `rows` as a list of lists of Python values.
+fn rowsObject(rows: []const acmedb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
     // Building a large result makes thousands of containers, which would set
     // off Python's cycle collector over and over; none of them can be part of
     // a cycle yet, so it is paused meanwhile.
@@ -818,6 +864,7 @@ var methods = [_]py.PyMethodDef{
     method("close", close),
     method("sync", sync),
     method("query", query),
+    method("plan", plan),
     method("begin_write", beginWrite),
     method("commit_write", commitWrite),
     method("abort_write", abortWrite),

@@ -115,12 +115,16 @@ flowchart TB
 | `src/query/ast.zig` | The arena AST: `NodeKind` tags, a `Data` payload union, `addNode`/`nodeChildren`/`intern`, `sameExpression`. |
 | `src/query/call_parser.zig`, `src/query/schema_parser.zig` | The CALL clause, and the schema commands (`CREATE FULLTEXT INDEX`, `DROP INDEX`, `SHOW INDEXES`). |
 | `src/query/procedures.zig` | The procedures' signatures (arguments, columns and their kinds), shared by the semantic checks and the executor. |
+| `src/query/printer.zig` | Cypher text of an expression, a pattern or a clause's items (EXPLAIN's details). |
 | `src/query/semantics.zig` | Static checks before a query runs: each variable is used as one kind (node, relationship or value), literal operands have types their operators accept, no aggregates inside comprehensions. |
 | `src/planning/Plan.zig` | The plan: operators (a tagged union) in chains, and each pattern's planned nodes and edges. Built once, never changed while it runs. |
 | `src/planning/builder.zig` | Builds the plan: each clause's operators, the chains of subqueries and of patterns in expressions, the variables in scope. |
 | `src/planning/patterns.zig` | Pattern planning: predicate pushdown (seeks and ranges), the estimates, anchor choice, the pattern's operators. |
 | `src/planning/scope.zig` | The variables in scope at a point of a query, as the planner knows them. |
+| `src/planning/statistics.zig` | The label and relationship-type counts the planner reads, once per plan, recorded in the plan. |
+| `src/planning/explain.zig` | A plan as EXPLAIN's lines: the result first, inner chains one level deeper, with estimated rows. |
 | `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, the plan, then its main chains. |
+| `src/execution/profiling.zig` | EXPLAIN and PROFILE: plans (and runs) the query, measures each operator's rows and exclusive time, returns the plan's lines as rows. |
 | `src/execution/operators.zig` | Runs a plan's chains: `feed` hands a row to an operator, which passes its rows on to the next one; the operators that keep rows pass them on when their chain is done. |
 | `src/execution/procedures.zig` | The procedures CALL runs, and how their rows extend the query's (YIELD, WHERE). |
 | `src/execution/schema.zig` | The schema commands, each a statement of its own. |

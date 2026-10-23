@@ -44,6 +44,7 @@ pub fn build(context: Context, root: Index) Allocator.Error!Plan {
         .expression_chains = builder.expression_chains,
         .node_count = builder.node_count,
         .edge_count = builder.edge_count,
+        .statistics = context.statistics.used.items,
     };
 }
 

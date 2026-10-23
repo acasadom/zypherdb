@@ -175,6 +175,28 @@ return_   → project the row (or fold it into its group)
 row and gets `ON MATCH SET`. If not, `writes.createPattern` creates the pattern's unbound nodes and
 its relationships, and binds their variables for `ON CREATE SET`.
 
+## EXPLAIN and PROFILE
+
+`EXPLAIN` plans the query and returns the plan's lines without running it; `PROFILE` also runs it
+(`execution/profiling.zig`). `planning/explain.zig` makes the lines: each chain from its last
+operator to its first (the result on top, as Neo4j shows a plan), a chain run by an operator right
+after it, one level deeper, and the chain of an expression's pattern or subquery after the operator
+that evaluates it, under a line naming the expression. Each line knows its parent, so the Python
+API can rebuild the tree; `query/printer.zig` writes the details back as Cypher.
+
+**Estimates** are per run of a chain, from the counts the planner reads (`statistics.zig`, which
+reads each label or relationship-type count once per plan and records it in the plan): a scan
+makes the label's count (a quarter of it for a range, one for an equality); an expansion multiplies
+by the relationships of its type per node of the start's label; a `LIMIT` caps, an aggregation
+without grouping keys makes one row. A filter is not assumed to drop anything, and what the counts
+cannot tell (an unlabeled start, a variable-length expansion, the groups of an aggregation) is
+`null`.
+
+**PROFILE** counts the rows handed to each operator (an operator's rows are those its successor
+was handed) and times each one exclusively: `feed` switches the clock to the operator it enters
+and back to its caller when it returns, so the time an operator spends handing rows on belongs to
+the operators it hands them to. Without `PROFILE` the cost is one test per `feed`.
+
 ## Transactions, the read cache and the entity snapshot
 
 `Executor.run` opens one transaction for the whole query: a write transaction if any clause writes,

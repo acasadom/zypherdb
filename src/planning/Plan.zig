@@ -18,6 +18,7 @@ const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
 const Shortest = @import("../query/ast.zig").EdgePatternData.Shortest;
 const Direction = @import("../storage/graph.zig").Direction;
+const Count = @import("statistics.zig").Count;
 
 const Plan = @This();
 
@@ -41,6 +42,8 @@ expression_chains: std.AutoHashMapUnmanaged(Index, ChainIndex),
 /// keeps what each is matched to on the current branch.
 node_count: u32,
 edge_count: u32,
+/// The graph's counts the plan was built on.
+statistics: []const Count,
 
 /// A run of consecutive operators: `first` up to, not including, `end`.
 pub const Chain = struct {

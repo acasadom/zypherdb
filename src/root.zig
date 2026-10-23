@@ -58,6 +58,8 @@ pub const AggregateKind = ast.AggregateKind;
 pub const EdgeDirection = ast.EdgeDirection;
 
 pub const parser = @import("query/parser.zig");
+/// Cypher text of an AST part (EXPLAIN's details).
+pub const printer = @import("query/printer.zig");
 
 pub const ParseError = parser.ParseError;
 pub const lexer = @import("query/lexer.zig");
