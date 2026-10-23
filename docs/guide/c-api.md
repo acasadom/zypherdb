@@ -133,6 +133,28 @@ its result, or `NULL` if it fails. The result owns all of its values; it stays v
 JSON numbers without a fraction or exponent are integers; the rest are floats. Temporal values are
 tagged objects, the same as in [JSON results](#results-as-json).
 
+**Prepared statements.** `acmedb_query` keeps what it prepares (parse, checks, plan) for the 64
+query texts used most recently, so a text run again with other parameters skips that work. To keep
+one regardless, prepare it:
+
+```c
+acmedb_statement *acmedb_prepare(acmedb_context *context, const char *query, size_t query_len);
+acmedb_result *acmedb_statement_query(acmedb_context *context, acmedb_statement *statement,
+                                      const char *parameters_json, size_t parameters_len);
+void acmedb_statement_free(acmedb_statement *statement);
+size_t acmedb_statement_column_count(const acmedb_statement *statement);
+const char *acmedb_statement_column_name(const acmedb_statement *statement, size_t column, size_t *out_len);
+size_t acmedb_statement_parameter_count(const acmedb_statement *statement);
+const char *acmedb_statement_parameter_name(const acmedb_statement *statement, size_t parameter, size_t *out_len);
+```
+
+`acmedb_prepare` returns `NULL` when the query does not parse or check (the error is the
+context's). `acmedb_statement_query` runs it as `acmedb_query_with_parameters` would
+(`parameters_json` may be `NULL`); a statement is planned again when the label or relationship-type
+counts it was planned on change at least twofold (and by 100 or more). A statement belongs to the
+context it was prepared with: free it before closing that context, and use it from one thread at a
+time, as the context.
+
 **Plans.** `EXPLAIN query` and `PROFILE query` are queries too: their result is the plan, one row
 per operator, with the columns `depth`, `operator`, `details`, `estimated_rows`, `rows` and
 `time_ms` (see [EXPLAIN and PROFILE](cypher.md#explain-and-profile)). `PROFILE` runs the query and

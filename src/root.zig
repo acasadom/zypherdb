@@ -71,6 +71,10 @@ pub const Executor = @import("execution/Executor.zig");
 pub const ExecutionError = Executor.ExecutionError;
 pub const Row = Executor.Row;
 
+/// Prepared statements, and the cache of those `query` calls prepare.
+pub const Statement = @import("statement/Statement.zig");
+pub const StatementCache = @import("statement/Cache.zig");
+
 pub const diagnostics = @import("diagnostics.zig");
 
 pub const Diagnostic = diagnostics.Diagnostic;

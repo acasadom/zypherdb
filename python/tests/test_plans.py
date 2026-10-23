@@ -73,3 +73,44 @@ def test_plan_errors(db):
     with db.write():
         with pytest.raises(AcmedbError):
             db.explain("MATCH (n) RETURN n")
+
+
+def test_prepared_query_runs_with_new_parameters(db):
+    lookup = db.prepare("MATCH (p:Person {id: $id})-[:KNOWS]->(f) RETURN f.id AS friend")
+    assert lookup.parameters == ("id",)
+    assert lookup.columns == ("friend",)
+    assert lookup.query(id=1) == [[2]]
+    assert lookup.query({"id": 5}) == [[6]]
+    assert lookup.query(id=10) == []
+    assert "MATCH" in repr(lookup)
+
+
+def test_prepared_query_sees_later_writes(db):
+    count = db.prepare("MATCH (e:Event) RETURN count(e)")
+    create = db.prepare("CREATE (:Event {n: $n})")
+    for n in range(3):
+        create.query(n=n)
+    assert count.query() == [[3]]
+
+
+def test_prepare_fails_on_a_bad_query(db):
+    with pytest.raises(ParseError):
+        db.prepare("MATCH (n RETURN n")
+
+
+def test_prepared_query_after_close(tmp_path):
+    database = Database(str(tmp_path))
+    lookup = database.prepare("RETURN 1")
+    database.close()
+    with pytest.raises(AcmedbError):
+        lookup.query()
+
+
+def test_query_reuses_statements_and_their_plans_stay_right(db):
+    # The same text, run again after the graph grew: the cached plan is
+    # planned again when its counts drift, and the rows stay right.
+    text = "MATCH (p:Person)-[:KNOWS]->(q:Person) WHERE p.id = $id RETURN q.id"
+    assert db.query(text, id=3) == [[4]]
+    db.query("UNWIND range(100, 400) AS i CREATE (:Person {id: i})")
+    assert db.query(text, id=3) == [[4]]
+    assert db.query(text, id=100) == []

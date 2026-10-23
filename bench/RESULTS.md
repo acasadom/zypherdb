@@ -101,6 +101,28 @@ through the operators 1-2.5% slower (group sizes 23.4 → 24.0 ms with 100 runs 
 the noise between rounds on this laptop (±0.3 ms). With the test removed entirely they measured
 the same within that noise, so it stays (a cold branch, the operator switch inlined into `feed`).
 
+## Prepared statements (October 2026)
+
+`--prepared` runs each query as a statement prepared once (`acmedb.Statement`), the way the C and
+Python `query` calls now run a text they have seen before. Same build, same data, best median of
+three alternating rounds, `--people 100000 --runs 200`:
+
+| Query | parse + check + plan each run | prepared | |
+| --- | ---: | ---: | ---: |
+| card lookup | 5.1 µs | 3.7 µs | −27% |
+| person's groups (1 hop) | 8.3 µs | 6.6 µs | −20% |
+| colleagues (2 hops, `count(DISTINCT)`) | 80 µs | 74 µs | −8% |
+| may this card open this door? (MATCH) | 32.8 µs | 29.0 µs | −12% |
+| same, with `EXISTS` | 40.7 µs | 35.5 µs | −13% |
+| doors of a person's zones (`*1..3`) | 124 µs | 117 µs | −6% |
+| the scans and aggregations (4-24 ms) | | | within ±2% (noise), but `department counts` −6% |
+
+Each run of a prepared statement reads again the counts its plan was built on (one key lookup per
+count) to plan again if they drifted; with the reads taken out, the card lookup measured the same
+(2.7 µs with 2000 runs, both ways). The writing queries measured the same too: `create 1000 nodes`
+first looked 11% slower prepared, but each run adds 1000 nodes and the prepared runs came second;
+run first, they were the faster ones.
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

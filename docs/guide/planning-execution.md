@@ -197,6 +197,23 @@ was handed) and times each one exclusively: `feed` switches the clock to the ope
 and back to its caller when it returns, so the time an operator spends handing rows on belongs to
 the operators it hands them to. Without `PROFILE` the cost is one test per `feed`.
 
+## Prepared statements and the statement cache
+
+A `Statement` (`src/statement/Statement.zig`) is a query parsed, checked and planned once. Its
+arena owns the text and the AST (the semantic checks rewrite the AST once, at preparation); a
+second arena owns the plan, so planning again frees the old one. A plan depends on what kind each
+predicate's value is (a literal, a parameter), never on the values, so parameters are bound when it
+runs. EXPLAIN, PROFILE and schema commands keep no plan: they are parsed again on each run.
+
+Each run opens the transaction, then reads again the counts the plan was built on
+(`Plan.statistics`): when one has changed to `drift_factor` (2) times what it was, or half, and by
+at least `drift_floor` (100), the statement plans again before it runs. Reading the counts costs a
+key lookup each, too little to see next to a 3 µs point query.
+
+The C context and the Python database keep the statements their `query` calls prepare in a
+`StatementCache` (`Cache.zig`), by text, the 64 used most recently. The checks depend on the
+procedures defined besides the text, so defining one clears the cache.
+
 ## Transactions, the read cache and the entity snapshot
 
 `Executor.run` opens one transaction for the whole query: a write transaction if any clause writes,

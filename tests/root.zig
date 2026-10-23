@@ -31,5 +31,6 @@ test {
     _ = @import("end_to_end/paths_test.zig");
     _ = @import("end_to_end/procedures_test.zig");
     _ = @import("end_to_end/explain_test.zig");
+    _ = @import("end_to_end/statement_test.zig");
     _ = @import("c_api_test.zig");
 }

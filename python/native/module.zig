@@ -29,6 +29,7 @@ const Graph = acmedb.Graph;
 const KeyValueStore = acmedb.KeyValueStore;
 const Executor = acmedb.Executor;
 const Diagnostic = acmedb.Diagnostic;
+const Statement = acmedb.Statement;
 const EntitySnapshot = @FieldType(Executor, "entities");
 
 const allocator = std.heap.c_allocator;
@@ -46,10 +47,13 @@ const Database = struct {
     procedure_arena: std.heap.ArenaAllocator,
     /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
     import_directory: ?[]u8 = null,
+    /// The statements `query` prepared, by text.
+    statements: acmedb.StatementCache,
 };
 
 /// Frees what an open database holds, and the database.
 fn release(database: *Database) void {
+    database.statements.deinit();
     database.store.deinit();
     database.procedure_arena.deinit();
     if (database.import_directory) |directory| allocator.free(directory);
@@ -451,6 +455,8 @@ fn defineProcedure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyOb
         .signature = .{ .name = name, .min_arguments = arguments.len, .max_arguments = arguments.len, .columns = columns, .arguments = arguments },
         .rows = rows,
     }) catch return py.PyErr_NoMemory();
+    // The statements kept were checked without it.
+    database.statements.clear();
     return none();
 }
 
@@ -501,6 +507,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     database.table_procedures = .empty;
     database.procedure_arena = std.heap.ArenaAllocator.init(allocator);
     database.import_directory = null;
+    database.statements = acmedb.StatementCache.init(allocator);
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
         release(database);
         return null;
@@ -537,25 +544,36 @@ fn queryCall(args: ?*py.PyObject, arena: std.mem.Allocator) ?QueryCall {
     var parameters_object: ?*py.PyObject = null;
     if (py.PyArg_ParseTuple(args, "Os#O", &capsule, &text_pointer, &text_length, &parameters_object) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
-
-    var parameters = Executor.Parameters.empty;
-    if (parameters_object) |object| if (object != @as(*py.PyObject, @ptrCast(&py._Py_NoneStruct))) {
-        var position: py.Py_ssize_t = 0;
-        var key: ?*py.PyObject = null;
-        var value: ?*py.PyObject = null;
-        while (py.PyDict_Next(object, &position, &key, &value) != 0) {
-            const name = stringOf(key.?, arena) orelse return null;
-            const converted = valueOf(value.?, arena, false) orelse return null;
-            parameters.put(arena, name, converted) catch return noMemory(QueryCall);
-        }
-    };
+    const parameters = parametersOf(parameters_object, arena) orelse return null;
     const text = arena.dupe(u8, text_pointer[0..@intCast(text_length)]) catch return noMemory(QueryCall);
     return .{ .database = database, .text = text, .parameters = parameters };
 }
 
-/// Runs the call's query with the GIL released (other Python threads go on
-/// meanwhile); null on failure, with the diagnostic set.
-fn execute(call: QueryCall, ast: *acmedb.Ast, executor: *Executor) ?[]const acmedb.Row {
+/// A dict of parameters (or None: none) as Values, converted into `arena`.
+fn parametersOf(parameters_object: ?*py.PyObject, arena: std.mem.Allocator) ?Executor.Parameters {
+    var parameters = Executor.Parameters.empty;
+    const object = parameters_object orelse return parameters;
+    if (object == @as(*py.PyObject, @ptrCast(&py._Py_NoneStruct))) return parameters;
+    var position: py.Py_ssize_t = 0;
+    var key: ?*py.PyObject = null;
+    var value: ?*py.PyObject = null;
+    while (py.PyDict_Next(object, &position, &key, &value) != 0) {
+        const name = stringOf(key.?, arena) orelse return null;
+        const converted = valueOf(value.?, arena, false) orelse return null;
+        parameters.put(arena, name, converted) catch return noMemory(Executor.Parameters);
+    }
+    return parameters;
+}
+
+/// The environment a database's statements are prepared in.
+fn environmentOf(database: *Database) Statement.Environment {
+    return .{ .graph = &database.graph, .diagnostic = &database.diagnostic, .table_procedures = database.table_procedures.items };
+}
+
+/// Runs `statement` with the call's parameters, with the GIL released
+/// (other Python threads go on meanwhile); null on failure, with the
+/// diagnostic set. `executor` is the statement's, allocating in the call's arena.
+fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]const acmedb.Row {
     const database = call.database;
     database.diagnostic.clear();
     executor.diagnostic = &database.diagnostic;
@@ -564,7 +582,32 @@ fn execute(call: QueryCall, ast: *acmedb.Ast, executor: *Executor) ?[]const acme
     executor.import_directory = database.import_directory;
     const thread_state = py.PyEval_SaveThread();
     defer py.PyEval_RestoreThread(thread_state);
-    return run(executor, ast, call.text, &database.diagnostic);
+    return statement.run(executor) catch |err| {
+        noteFailure(&database.diagnostic, err);
+        return null;
+    };
+}
+
+fn noteFailure(diagnostic: *Diagnostic, err: anyerror) void {
+    if (diagnostic.message().len == 0) diagnostic.set(acmedb.diagnostics.codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
+}
+
+/// The statement prepared for the call's text: the cached one, or a new one
+/// (cached if it has a plan to keep; else the caller's, in `owned`). Null on
+/// failure, with the diagnostic set.
+fn statementFor(call: QueryCall, owned: *?*Statement) ?*Statement {
+    const database = call.database;
+    if (database.statements.get(call.text)) |statement| return statement;
+    database.diagnostic.clear();
+    const thread_state = py.PyEval_SaveThread();
+    const prepared = Statement.prepare(allocator, call.text, environmentOf(database));
+    py.PyEval_RestoreThread(thread_state);
+    const statement = prepared catch |err| {
+        noteFailure(&database.diagnostic, if (err == error.ParseFailed) error.InvalidExpression else err);
+        return null;
+    };
+    if (statement.is_query) database.statements.put(statement) else owned.* = statement;
+    return statement;
 }
 
 /// `query(db, text, parameters)`: the rows of one query, as lists of cells.
@@ -573,10 +616,86 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const call = queryCall(args, arena) orelse return null;
-    var ast = acmedb.Ast.init(arena);
-    var executor = Executor.init(&ast, &call.database.graph, arena);
-    const rows = execute(call, &ast, &executor) orelse return raiseQueryError(call.database);
+    var owned: ?*Statement = null;
+    defer if (owned) |statement| statement.destroy();
+    const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
+    var executor = statement.executorFor(&call.database.graph, arena);
+    const rows = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
     return rowsObject(rows, &executor, call.database);
+}
+
+/// `prepare(db, text)`: `(statement, parameters, columns)`: a prepared
+/// statement (a capsule, freed with it) and the names of its parameters and
+/// of its result's columns.
+fn prepare(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var text_pointer: [*c]const u8 = undefined;
+    var text_length: py.Py_ssize_t = 0;
+    if (py.PyArg_ParseTuple(args, "Os#", &capsule, &text_pointer, &text_length) == 0) return null;
+    const database = databaseOf(capsule) orelse return null;
+    database.diagnostic.clear();
+    const thread_state = py.PyEval_SaveThread();
+    const prepared = Statement.prepare(allocator, text_pointer[0..@intCast(text_length)], environmentOf(database));
+    py.PyEval_RestoreThread(thread_state);
+    const statement = prepared catch |err| {
+        noteFailure(&database.diagnostic, if (err == error.ParseFailed) error.InvalidExpression else err);
+        return raiseQueryError(database);
+    };
+    const statement_capsule = py.PyCapsule_New(statement, statement_capsule_name, destroyStatementCapsule) orelse {
+        statement.destroy();
+        return null;
+    };
+    const parameters = stringTuple(statement.parameter_names) orelse {
+        py.Py_DecRef(statement_capsule);
+        return null;
+    };
+    const columns = stringTuple(statement.columns) orelse {
+        py.Py_DecRef(statement_capsule);
+        py.Py_DecRef(parameters);
+        return null;
+    };
+    return py.Py_BuildValue("(NNN)", statement_capsule, parameters, columns);
+}
+
+/// `statement_query(db, statement, parameters)`: the rows of a prepared statement.
+fn statementQuery(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var statement_capsule: ?*py.PyObject = null;
+    var parameters_object: ?*py.PyObject = null;
+    if (py.PyArg_ParseTuple(args, "OOO", &capsule, &statement_capsule, &parameters_object) == 0) return null;
+    const pointer = py.PyCapsule_GetPointer(statement_capsule, statement_capsule_name) orelse return null;
+    const statement: *Statement = @ptrCast(@alignCast(pointer));
+
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const database = databaseOf(capsule) orelse return null;
+    const parameters = parametersOf(parameters_object, arena) orelse return null;
+    const call = QueryCall{ .database = database, .text = statement.text, .parameters = parameters };
+    var executor = statement.executorFor(&database.graph, arena);
+    const rows = runStatement(call, statement, &executor) orelse return raiseQueryError(database);
+    return rowsObject(rows, &executor, database);
+}
+
+const statement_capsule_name = "acmedb.Statement";
+
+fn destroyStatementCapsule(capsule: ?*py.PyObject) callconv(.c) void {
+    const pointer = py.PyCapsule_GetPointer(capsule, statement_capsule_name) orelse return;
+    const statement: *Statement = @ptrCast(@alignCast(pointer));
+    statement.destroy();
+}
+
+/// `names` as a tuple of str.
+fn stringTuple(names: []const []const u8) ?*py.PyObject {
+    const tuple = py.PyTuple_New(@intCast(names.len)) orelse return null;
+    for (names, 0..) |name, position| {
+        const object = string(name) orelse {
+            py.Py_DecRef(tuple);
+            return null;
+        };
+        _ = py.PyTuple_SetItem(tuple, @intCast(position), object);
+    }
+    return tuple;
 }
 
 /// `plan(db, text, parameters)`: runs an EXPLAIN or PROFILE statement and
@@ -587,9 +706,11 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const call = queryCall(args, arena) orelse return null;
-    var ast = acmedb.Ast.init(arena);
-    var executor = Executor.init(&ast, &call.database.graph, arena);
-    const lines = execute(call, &ast, &executor) orelse return raiseQueryError(call.database);
+    var owned: ?*Statement = null;
+    defer if (owned) |statement| statement.destroy();
+    const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
+    var executor = statement.executorFor(&call.database.graph, arena);
+    const lines = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
 
     const rows = rowsObject(executor.profiled_rows, &executor, call.database) orelse return null;
     const plan_lines = rowsObject(lines, &executor, call.database) orelse {
@@ -633,18 +754,6 @@ fn rowsObject(rows: []const acmedb.Row, executor: *Executor, database: *Database
         }
     }
     return result;
-}
-
-/// Parses and runs `text`; null on failure, with the diagnostic set.
-fn run(executor: *Executor, ast: *acmedb.Ast, text: []const u8, diagnostic: *Diagnostic) ?[]const acmedb.Row {
-    const parsed = acmedb.parser.parse(ast, text, diagnostic) catch |err| {
-        if (diagnostic.message().len == 0) diagnostic.set(.parse, 0, "parse failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    return executor.run(parsed) catch |err| {
-        if (diagnostic.message().len == 0) diagnostic.set(acmedb.diagnostics.codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
-        return null;
-    };
 }
 
 // --- Writes ------------------------------------------------------------------------
@@ -865,6 +974,8 @@ var methods = [_]py.PyMethodDef{
     method("sync", sync),
     method("query", query),
     method("plan", plan),
+    method("prepare", prepare),
+    method("statement_query", statementQuery),
     method("begin_write", beginWrite),
     method("commit_write", commitWrite),
     method("abort_write", abortWrite),

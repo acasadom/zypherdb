@@ -43,6 +43,29 @@ def _plan_tree(lines: list[list], parents: list) -> dict:
     return root
 
 
+class PreparedQuery:
+    """A query prepared by :meth:`Database.prepare`: run it with :meth:`query`."""
+
+    def __init__(self, database: "Database", text: str):
+        self._database = database
+        self.text = text
+        with database._lock:
+            self._statement, self.parameters, self.columns = native.prepare(database._handle(), text)
+
+    def query(self, parameters: dict | None = None, /, **named) -> list[list]:
+        """Run the query with these parameters; the rows are as :meth:`Database.query` returns them."""
+        values = {**parameters, **named} if parameters else named
+        database = self._database
+        with database._lock:
+            db = database._handle()
+            if database._in_write:
+                raise AcmedbError("query() cannot run inside a write() block")
+            return native.statement_query(db, self._statement, values)
+
+    def __repr__(self) -> str:
+        return f"PreparedQuery({self.text!r})"
+
+
 class Database:
     """A handle to one acmedb database (a storage-engine environment in directory `path`).
 
@@ -140,6 +163,24 @@ class Database:
             if self._in_write:
                 raise AcmedbError("query() cannot run inside a write() block")
             return native.query(db, text, values)
+
+    def prepare(self, text: str) -> "PreparedQuery":
+        """Parse, check and plan a query once, to run it again and again with new parameters.
+
+        ::
+
+            lookup = db.prepare("MATCH (c:Card {number: $number}) RETURN c.holder")
+            lookup.query(number=123)
+            lookup.parameters   # ('number',)
+            lookup.columns      # ('c.holder',)
+
+        `query` keeps the queries it prepares too, by their text (the 64 used
+        most recently), so a query run again is not planned again; `prepare`
+        saves the lookup and keeps the statement as long as the object lives.
+        Either way, a plan is made again when the graph's label or
+        relationship-type counts it was made on have changed a lot.
+        """
+        return PreparedQuery(self, text)
 
     def explain(self, text: str, parameters: dict | None = None, /, **named) -> dict:
         """Return the plan of a query, without running it, as a tree of operators.

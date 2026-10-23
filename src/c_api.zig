@@ -28,6 +28,8 @@ const Row = Executor.Row;
 const Diagnostic = @import("diagnostics.zig").Diagnostic;
 const ErrorCode = @import("diagnostics.zig").ErrorCode;
 const parser = @import("query/parser.zig");
+const Statement = @import("statement/Statement.zig");
+const StatementCache = @import("statement/Cache.zig");
 
 pub const Context = struct {
     store: KeyValueStore,
@@ -38,6 +40,8 @@ pub const Context = struct {
     export_json: []u8 = &.{},
     /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
     import_directory: ?[]u8 = null,
+    /// The statements `acmedb_query` prepared, by text.
+    statements: StatementCache,
 };
 
 const Result = struct {
@@ -105,6 +109,7 @@ pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize
     context.diagnostic = Diagnostic.init();
     context.export_json = &.{};
     context.import_directory = null;
+    context.statements = StatementCache.init(allocator);
     return context;
 }
 
@@ -115,6 +120,7 @@ pub export fn acmedb_sync(context: *Context) c_int {
 }
 
 pub export fn acmedb_close(context: *Context) void {
+    context.statements.deinit();
     allocator.free(context.export_json);
     if (context.import_directory) |directory| allocator.free(directory);
     context.store.deinit();
@@ -253,24 +259,38 @@ pub export fn acmedb_query_with_parameters(context: *Context, query_ptr: [*]cons
 
 fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) ?*Result {
     context.diagnostic.clear();
+    const statement = context.statements.get(query) orelse prepared: {
+        const statement = Statement.prepare(allocator, query, .{ .graph = &context.graph, .diagnostic = &context.diagnostic }) catch |err| {
+            noteFailure(&context.diagnostic, err);
+            return null;
+        };
+        // Kept only if it has a plan to reuse; the rest are parsed per run.
+        if (!statement.is_query) {
+            defer statement.destroy();
+            return runStatement(context, statement, parameters_json);
+        }
+        context.statements.put(statement);
+        break :prepared statement;
+    };
+    return runStatement(context, statement, parameters_json);
+}
+
+/// Runs `statement` with the parameters in `parameters_json` (none: null),
+/// into a self-contained result.
+fn runStatement(context: *Context, statement: *Statement, parameters_json: ?[]const u8) ?*Result {
+    context.diagnostic.clear();
     var scratch = std.heap.ArenaAllocator.init(context.allocator);
     defer scratch.deinit();
     const parameters = if (parameters_json) |json|
         parseParameters(scratch.allocator(), json, &context.diagnostic) catch return null
     else
         Executor.Parameters.empty;
-    var ast = Ast.init(scratch.allocator());
-    const q = parser.parse(&ast, query, &context.diagnostic) catch |err| {
-        if (context.diagnostic.message().len == 0) context.diagnostic.set(.parse, 0, "parse failed: {s}", .{@errorName(err)});
-        return null;
-    };
-    var executor = Executor.init(&ast, &context.graph, scratch.allocator());
+    var executor = statement.executorFor(&context.graph, scratch.allocator());
     executor.diagnostic = &context.diagnostic;
     executor.parameters = parameters;
     executor.import_directory = context.import_directory;
-    const rows = executor.run(q) catch |err| {
-        // A bare runtime error that didn't set a message gets a generic one.
-        if (context.diagnostic.message().len == 0) noteError(&context.diagnostic, err);
+    const rows = statement.run(&executor) catch |err| {
+        noteFailure(&context.diagnostic, err);
         return null;
     };
 
@@ -287,6 +307,60 @@ fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) 
         return null;
     };
     return result;
+}
+
+/// A failure that set no message gets a generic one.
+fn noteFailure(diagnostic: *Diagnostic, err: anyerror) void {
+    if (diagnostic.message().len > 0) return;
+    if (err == error.ParseFailed) return diagnostic.set(.parse, 0, "parse failed", .{});
+    noteError(diagnostic, err);
+}
+
+/// Prepares a query to run again and again (`acmedb_statement_query`): it is
+/// parsed, checked and planned once. NULL on failure (the error is the
+/// context's, as for `acmedb_query`). Free it with `acmedb_statement_free`
+/// before closing its context.
+pub export fn acmedb_prepare(context: *Context, query_ptr: [*]const u8, query_len: usize) ?*Statement {
+    context.diagnostic.clear();
+    return Statement.prepare(allocator, query_ptr[0..query_len], .{ .graph = &context.graph, .diagnostic = &context.diagnostic }) catch |err| {
+        noteFailure(&context.diagnostic, err);
+        return null;
+    };
+}
+
+/// Runs a prepared statement, with its parameters as a JSON object
+/// (`parameters_ptr` NULL: none), as `acmedb_query_with_parameters` runs a query.
+pub export fn acmedb_statement_query(context: *Context, statement: *Statement, parameters_ptr: ?[*]const u8, parameters_len: usize) ?*Result {
+    const json: ?[]const u8 = if (parameters_ptr) |pointer| pointer[0..parameters_len] else null;
+    return runStatement(context, statement, json);
+}
+
+pub export fn acmedb_statement_free(statement: *Statement) void {
+    statement.destroy();
+}
+
+/// How many columns the statement's result has (0 without RETURN).
+pub export fn acmedb_statement_column_count(statement: *const Statement) usize {
+    return statement.columns.len;
+}
+
+/// The name of column `column` (its alias, or the expression as Cypher).
+pub export fn acmedb_statement_column_name(statement: *const Statement, column: usize, out_len: *usize) [*]const u8 {
+    const name = statement.columns[column];
+    out_len.* = name.len;
+    return name.ptr;
+}
+
+/// How many `$name` parameters the statement reads.
+pub export fn acmedb_statement_parameter_count(statement: *const Statement) usize {
+    return statement.parameter_names.len;
+}
+
+/// The name of parameter `parameter` (without the `$`), in the order they appear.
+pub export fn acmedb_statement_parameter_name(statement: *const Statement, parameter: usize, out_len: *usize) [*]const u8 {
+    const name = statement.parameter_names[parameter];
+    out_len.* = name.len;
+    return name.ptr;
 }
 
 /// Reads a JSON object of parameters into Values (allocated in `arena`).
@@ -803,4 +877,11 @@ comptime {
     _ = acmedb_result_list_item_string;
     _ = acmedb_export_json;
     _ = acmedb_query_with_parameters;
+    _ = acmedb_prepare;
+    _ = acmedb_statement_query;
+    _ = acmedb_statement_free;
+    _ = acmedb_statement_column_count;
+    _ = acmedb_statement_column_name;
+    _ = acmedb_statement_parameter_count;
+    _ = acmedb_statement_parameter_name;
 }
