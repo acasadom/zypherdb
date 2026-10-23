@@ -12,8 +12,9 @@
 //! - a pattern or subquery inside an expression gets a chain too, found by
 //!   the expression's AST node (`Plan.expression_chains`).
 //!
-//! The planner follows the variables in scope (`scope.zig`): a pattern node
-//! bound before its pattern is checked, not scanned.
+//! The planner follows the variables in scope (`scope.zig`) and gives each
+//! a slot of the row (`Plan.slot_of`); a pattern node bound before its
+//! pattern is checked, not scanned.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -25,14 +26,18 @@ const Plan = @import("Plan.zig");
 const Operator = Plan.Operator;
 const ChainIndex = Plan.ChainIndex;
 const Scope = @import("scope.zig").Scope;
+const Slot = @import("../execution/bindings.zig").Slot;
+const no_slot = @import("../execution/bindings.zig").no_slot;
 const patterns = @import("patterns.zig");
 
 pub const Context = patterns.Context;
 
 /// The plan of `root`: a query, or a UNION of queries.
 pub fn build(context: Context, root: Index) Allocator.Error!Plan {
-    var builder = Builder{ .context = context };
     const ast = context.ast;
+    const slot_of = try context.allocator.alloc(Slot, ast.nodes.items.len);
+    @memset(slot_of, no_slot);
+    var builder = Builder{ .context = context, .slot_of = slot_of };
     const queries: []const Index = if (ast.kind(root) == .union_query) ast.nodeChildren(root) else &.{root};
     const main_chains = try context.allocator.alloc(ChainIndex, queries.len);
     for (main_chains, queries) |*chain, query| chain.* = try builder.buildChain(query, .{}, .main);
@@ -45,12 +50,19 @@ pub fn build(context: Context, root: Index) Allocator.Error!Plan {
         .node_count = builder.node_count,
         .edge_count = builder.edge_count,
         .statistics = context.statistics.used.items,
+        .slot_count = builder.slot_count,
+        .slot_of = slot_of,
     };
 }
 
 /// A main chain runs a query and ends with its RETURN (or nothing); an inner
 /// one hands its rows back through `output`.
 const ChainKind = enum { main, inner };
+
+/// What a projection's items bind: a WITH (and a subquery's RETURN, which
+/// makes rows as a WITH does) binds every item in a new scope; the query's
+/// RETURN binds its aliases, for its ORDER BY.
+const ProjectionKind = enum { with, query_return };
 
 const Builder = struct {
     context: Context,
@@ -61,6 +73,36 @@ const Builder = struct {
     match_count: u32 = 0,
     node_count: u32 = 0,
     edge_count: u32 = 0,
+    slot_count: u32 = 0,
+    slot_of: []Slot,
+
+    /// A new slot for `name`, bound in `scope`, and recorded as `node`'s.
+    fn declare(self: *Builder, scope: *Scope, name: []const u8, node: Index) Allocator.Error!Slot {
+        const slot = self.slot_count;
+        self.slot_count += 1;
+        try scope.bind(self.context.allocator, name, slot);
+        self.slot_of[node] = slot;
+        return slot;
+    }
+
+    /// The slot of each variable of `pattern` (path, nodes, edges): the one
+    /// in scope, or a new one. A path variable is always new.
+    fn declarePattern(self: *Builder, pattern: Index, scope: *Scope) Allocator.Error!void {
+        const ast = self.context.ast;
+        const path_variable = ast.data(pattern).text;
+        if (path_variable.len > 0) _ = try self.declare(scope, path_variable, pattern);
+        for (ast.nodeChildren(pattern)) |element| {
+            const name = switch (ast.kind(element)) {
+                .node_pattern => ast.data(element).node_pattern.variable_name,
+                .edge_pattern => ast.data(element).edge_pattern.variable_name,
+                else => continue,
+            };
+            if (name.len == 0) continue;
+            if (scope.slotOf(name)) |slot| {
+                self.slot_of[element] = slot;
+            } else _ = try self.declare(scope, name, element);
+        }
+    }
 
     /// The chain of the clauses of `query`, from the variables in `scope`.
     fn buildChain(self: *Builder, query: Index, initial_scope: Scope, kind: ChainKind) Allocator.Error!ChainIndex {
@@ -97,57 +139,62 @@ const Builder = struct {
     fn planClause(self: *Builder, clause_index: Index, scope: *Scope, operators: *std.ArrayList(Operator), kind: ChainKind, last: bool) Allocator.Error!void {
         const ast = self.context.ast;
         const allocator = self.context.allocator;
+        const children = ast.nodeChildren(clause_index);
         switch (ast.kind(clause_index)) {
-            .match_clause => try self.planMatch(clause_index, scope, operators),
+            .match_clause => try self.patternOperators(matchPatterns(ast, clause_index), whereOf(ast, children[children.len - 1]), scope, operators),
             .optional_match_clause => {
-                const inner = try self.matchChain(clause_index, try scope.clone(allocator));
+                // Its chain binds the clause's variables, in the slots the
+                // rest of the query reads.
+                var inner_scope = try scope.clone(allocator);
+                const inner = try self.patternChain(matchPatterns(ast, clause_index), whereOf(ast, children[children.len - 1]), &inner_scope);
                 try operators.append(allocator, .{ .optional = .{ .clause = clause_index, .chain = inner } });
-                try addPatternVariables(ast, allocator, matchPatterns(ast, clause_index), scope);
+                scope.* = inner_scope;
             },
             .unwind_clause => {
                 try self.planExpressions(clause_index, scope);
                 try operators.append(allocator, .{ .unwind = clause_index });
-                try scope.add(allocator, ast.data(clause_index).unwind.variable_name);
+                _ = try self.declare(scope, ast.data(clause_index).unwind.variable_name, clause_index);
             },
             .load_csv_clause => {
                 try self.planExpressions(clause_index, scope);
                 try operators.append(allocator, .{ .load_csv = clause_index });
-                try scope.add(allocator, ast.data(clause_index).load_csv.variable_name);
+                _ = try self.declare(scope, ast.data(clause_index).load_csv.variable_name, clause_index);
             },
             .with_clause => try self.planProjection(clause_index, scope, operators),
             .return_clause => if (kind == .main) {
-                try self.projectionExpressions(clause_index, scope);
+                _ = try self.projectionExpressions(clause_index, scope, .query_return);
                 try operators.append(allocator, .{ .return_ = clause_index });
             } else try self.planProjection(clause_index, scope, operators),
             .call_clause => {
-                try self.planExpressions(clause_index, scope);
+                const call = ast.data(clause_index).call;
+                for (children[0..call.argument_count]) |argument| try self.planExpressions(argument, scope);
                 try operators.append(allocator, .{ .procedure_call = .{ .clause = clause_index, .ends_query = kind == .main and last } });
-                for (ast.nodeChildren(clause_index)) |child| {
-                    if (ast.kind(child) != .yield_item) continue;
-                    const yielded = ast.data(child).yield_;
-                    try scope.add(allocator, if (yielded.alias.len > 0) yielded.alias else yielded.column);
+                for (children[call.argument_count .. children.len - 1]) |item| {
+                    const yielded = ast.data(item).yield_;
+                    _ = try self.declare(scope, if (yielded.alias.len > 0) yielded.alias else yielded.column, item);
                 }
+                try self.planExpressions(children[children.len - 1], scope);
             },
             .call_subquery => try self.planCallSubquery(clause_index, scope, operators),
             .merge_clause => {
-                const children = ast.nodeChildren(clause_index);
-                const inner = try self.patternChain(children[0..1], null, try scope.clone(allocator));
+                var inner_scope = try scope.clone(allocator);
+                const inner = try self.patternChain(children[0..1], null, &inner_scope);
                 try operators.append(allocator, .{ .merge = .{ .clause = clause_index, .chain = inner } });
-                try addPatternVariables(ast, allocator, children[0..1], scope);
+                scope.* = inner_scope;
                 for (children[1..]) |set_clause| try self.planExpressions(set_clause, scope);
             },
             .foreach_clause => {
-                const children = ast.nodeChildren(clause_index);
                 try self.planExpressions(children[0], scope);
                 var inner_scope = try scope.clone(allocator);
-                try inner_scope.add(allocator, ast.data(clause_index).text);
+                _ = try self.declare(&inner_scope, ast.data(clause_index).text, clause_index);
                 const inner = try self.buildChain(children[1], inner_scope, .inner);
                 try operators.append(allocator, .{ .foreach = .{ .clause = clause_index, .chain = inner } });
             },
             .create_clause => {
+                // A pattern's properties may read what an earlier element of it created.
+                for (children) |pattern| try self.declarePattern(pattern, scope);
                 try self.planExpressions(clause_index, scope);
                 try operators.append(allocator, .{ .write = clause_index });
-                try addPatternVariables(ast, allocator, ast.nodeChildren(clause_index), scope);
             },
             else => { // SET, DELETE, REMOVE
                 try self.planExpressions(clause_index, scope);
@@ -156,22 +203,16 @@ const Builder = struct {
         }
     }
 
-    /// MATCH: each pattern's operators, then the WHERE.
-    fn planMatch(self: *Builder, clause_index: Index, scope: *Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
-        const ast = self.context.ast;
-        const children = ast.nodeChildren(clause_index);
-        try self.patternOperators(matchPatterns(ast, clause_index), whereOf(ast, children[children.len - 1]), scope, operators);
-    }
-
     /// The operators of `pattern_list` (one MATCH), whose WHERE is `where`
     /// (null: none), bound from `scope`, which gains their variables.
     fn patternOperators(self: *Builder, pattern_list: []const Index, where: ?Index, scope: *Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
-        const ast = self.context.ast;
         const allocator = self.context.allocator;
         const match_index = self.match_count;
         self.match_count += 1;
         for (pattern_list) |pattern| {
-            // Its properties are read before its own variables are bound.
+            const before = try scope.clone(allocator);
+            try self.declarePattern(pattern, scope);
+            // Its properties may read its own earlier elements.
             try self.planExpressions(pattern, scope);
             const placement = patterns.Placement{
                 .index = @intCast(self.patterns.items.len),
@@ -179,11 +220,10 @@ const Builder = struct {
                 .first_node = self.node_count,
                 .first_edge = self.edge_count,
             };
-            const pattern_plan = try patterns.plan(self.context, pattern, where, scope, placement, operators);
+            const pattern_plan = try patterns.plan(self.context, pattern, where, &before, scope, placement, operators);
             self.node_count += @intCast(pattern_plan.nodes.len);
             self.edge_count += @intCast(pattern_plan.edges.len);
             try self.patterns.append(allocator, pattern_plan);
-            try addPatternVariables(ast, allocator, &.{pattern}, scope);
         }
         if (where) |predicate| {
             try self.planExpressions(predicate, scope);
@@ -191,17 +231,11 @@ const Builder = struct {
         }
     }
 
-    /// The chain of an OPTIONAL MATCH: its patterns and WHERE, run from a row.
-    fn matchChain(self: *Builder, clause_index: Index, scope: Scope) Allocator.Error!ChainIndex {
-        const ast = self.context.ast;
-        const children = ast.nodeChildren(clause_index);
-        return self.patternChain(matchPatterns(ast, clause_index), whereOf(ast, children[children.len - 1]), scope);
-    }
-
-    fn patternChain(self: *Builder, pattern_list: []const Index, where: ?Index, initial_scope: Scope) Allocator.Error!ChainIndex {
-        var scope = initial_scope;
+    /// An inner chain of `pattern_list` and its WHERE, run from a row; `scope`
+    /// gains the patterns' variables.
+    fn patternChain(self: *Builder, pattern_list: []const Index, where: ?Index, scope: *Scope) Allocator.Error!ChainIndex {
         var operators = std.ArrayList(Operator).empty;
-        try self.patternOperators(pattern_list, where, &scope, &operators);
+        try self.patternOperators(pattern_list, where, scope, &operators);
         return self.finish(&operators, .inner);
     }
 
@@ -209,18 +243,18 @@ const Builder = struct {
     /// one operator, and the scope becomes the projected names.
     fn planProjection(self: *Builder, clause_index: Index, scope: *Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
         const ast = self.context.ast;
-        const allocator = self.context.allocator;
-        try self.projectionExpressions(clause_index, scope);
+        const projected = try self.projectionExpressions(clause_index, scope, .with);
         const operator: Operator = if (projectionStreams(ast, clause_index)) .{ .with_streaming = clause_index } else .{ .with_collecting = clause_index };
-        try operators.append(allocator, operator);
-        scope.* = .{};
-        for (ast.nodeChildren(ast.nodeChildren(clause_index)[0])) |item| try scope.add(allocator, projectedName(ast, item));
+        try operators.append(self.context.allocator, operator);
+        scope.* = projected;
     }
 
-    /// Plans the expressions of a WITH or RETURN. The projection sees the
-    /// variables before it; ORDER BY and WHERE also see the projected names,
-    /// and, unless the projection aggregates, the variables before it.
-    fn projectionExpressions(self: *Builder, clause_index: Index, scope: *const Scope) Allocator.Error!void {
+    /// Plans the expressions of a WITH or RETURN, gives its items their
+    /// slots, and returns the scope of the projected names. The projection
+    /// sees the variables before it; ORDER BY and WHERE also see the
+    /// projected names, and, unless the projection aggregates, the
+    /// variables before it.
+    fn projectionExpressions(self: *Builder, clause_index: Index, scope: *const Scope, kind: ProjectionKind) Allocator.Error!Scope {
         const ast = self.context.ast;
         const allocator = self.context.allocator;
         const children = ast.nodeChildren(clause_index);
@@ -230,9 +264,19 @@ const Builder = struct {
             try self.planExpressions(item, scope);
             if (containsAggregate(ast, ast.nodeChildren(item)[0])) aggregates = true;
         }
+        var projected = Scope{};
+        for (items) |item| {
+            const named = switch (kind) {
+                .with => true,
+                .query_return => ast.data(item).text.len > 0,
+            };
+            if (named) _ = try self.declare(&projected, projectedName(ast, item), item);
+        }
         var after = if (aggregates) Scope{} else try scope.clone(allocator);
-        for (items) |item| try after.add(allocator, projectedName(ast, item));
+        var names = projected.names.iterator();
+        while (names.next()) |entry| try after.bind(allocator, entry.key_ptr.*, entry.value_ptr.*);
         for (children[1..]) |child| try self.planExpressions(child, &after);
+        return projected;
     }
 
     fn planCallSubquery(self: *Builder, clause_index: Index, scope: *Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
@@ -243,28 +287,36 @@ const Builder = struct {
         const imports = ast.importsVariables(query);
         const returns = ast.kind(body[body.len - 1]) == .return_clause;
         const inner = try self.buildChain(query, if (imports) try scope.clone(allocator) else .{}, .inner);
-        try operators.append(allocator, .{ .call_subquery = .{ .clause = clause_index, .chain = inner, .imports = imports, .returns = returns } });
+        // The row takes the slots the subquery's RETURN binds.
+        var returned_slots = std.ArrayList(Slot).empty;
         if (returns) {
-            for (ast.nodeChildren(ast.nodeChildren(body[body.len - 1])[0])) |item| try scope.add(allocator, projectedName(ast, item));
+            for (ast.nodeChildren(ast.nodeChildren(body[body.len - 1])[0])) |item| {
+                const slot = self.slot_of[item];
+                try returned_slots.append(allocator, slot);
+                try scope.bind(allocator, projectedName(ast, item), slot);
+            }
         }
+        try operators.append(allocator, .{ .call_subquery = .{ .clause = clause_index, .chain = inner, .imports = imports, .returns = returns, .returned_slots = returned_slots.items } });
     }
 
-    /// Plans the patterns and subqueries inside the expressions under `node`,
-    /// with `scope` the variables bound where they are evaluated.
+    /// Resolves the variables under `node` to their slots, and plans the
+    /// patterns and subqueries inside its expressions, with `scope` the
+    /// variables bound where they are evaluated.
     fn planExpressions(self: *Builder, node: Index, scope: *const Scope) Allocator.Error!void {
         const ast = self.context.ast;
         const allocator = self.context.allocator;
         const children = ast.nodeChildren(node);
         switch (ast.kind(node)) {
+            .variable => self.slot_of[node] = scope.slotOf(ast.data(node).text) orelse no_slot,
             .pattern_predicate => {
-                const inner = try self.patternChain(children[0..1], whereOf(ast, children[1]), try scope.clone(allocator));
+                var inside = try scope.clone(allocator);
+                const inner = try self.patternChain(children[0..1], whereOf(ast, children[1]), &inside);
                 try self.expression_chains.put(allocator, node, inner);
             },
             .pattern_comprehension => {
-                const inner = try self.patternChain(children[0..1], whereOf(ast, children[1]), try scope.clone(allocator));
-                try self.expression_chains.put(allocator, node, inner);
                 var inside = try scope.clone(allocator);
-                try addPatternVariables(ast, allocator, children[0..1], &inside);
+                const inner = try self.patternChain(children[0..1], whereOf(ast, children[1]), &inside);
+                try self.expression_chains.put(allocator, node, inner);
                 try self.planExpressions(children[2], &inside);
             },
             .exists_subquery, .count_subquery => {
@@ -274,7 +326,7 @@ const Builder = struct {
             .list_comprehension, .quantifier => {
                 try self.planExpressions(children[0], scope);
                 var inside = try scope.clone(allocator);
-                try inside.add(allocator, if (ast.kind(node) == .quantifier) ast.data(node).quantifier.variable_name else ast.data(node).text);
+                _ = try self.declare(&inside, if (ast.kind(node) == .quantifier) ast.data(node).quantifier.variable_name else ast.data(node).text, node);
                 for (children[1..]) |child| try self.planExpressions(child, &inside);
             },
             else => for (children) |child| try self.planExpressions(child, scope),
@@ -292,18 +344,6 @@ fn matchPatterns(ast: *const Ast, clause_index: Index) []const Index {
 fn whereOf(ast: *const Ast, where: Index) ?Index {
     if (ast.kind(where) == .boolean_literal and ast.data(where).boolean) return null;
     return where;
-}
-
-/// Adds the variables of `pattern_list` (path, node and edge variables) to `scope`.
-fn addPatternVariables(ast: *const Ast, allocator: Allocator, pattern_list: []const Index, scope: *Scope) Allocator.Error!void {
-    for (pattern_list) |pattern| {
-        try scope.add(allocator, ast.data(pattern).text);
-        for (ast.nodeChildren(pattern)) |element| switch (ast.kind(element)) {
-            .node_pattern => try scope.add(allocator, ast.data(element).node_pattern.variable_name),
-            .edge_pattern => try scope.add(allocator, ast.data(element).edge_pattern.variable_name),
-            else => {},
-        };
-    }
 }
 
 /// The name a projection item binds: its alias, or the variable it projects.

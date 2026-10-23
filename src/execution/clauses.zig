@@ -10,28 +10,22 @@ const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
 const writes = @import("writes.zig");
 
-/// A copy of a row whose entries the next clause may extend independently.
+/// A copy of a row whose bindings the next clause may change independently.
 pub fn copyRow(self: *Executor, row: Bindings) ExecutionError!Bindings {
-    var copy = Bindings{ .entries = .empty };
-    try copy.entries.appendSlice(self.allocator, row.entries.items);
-    return copy;
+    return row.copy(self.allocator);
 }
 
 /// Binds every variable of `patterns` that `row` does not bind yet to null.
 pub fn bindNewVariablesToNull(self: *Executor, patterns: []const Index, row: *Bindings) ExecutionError!void {
     for (patterns) |pattern| {
         // A named path (`p = (a)-->(b)`) is null as well.
-        const path_name = self.ast.data(pattern).text;
-        if (path_name.len > 0 and row.get(path_name) == null) try row.put(self.allocator, path_name, .null);
-        for (self.ast.nodeChildren(pattern)) |element| {
-            const name = switch (self.ast.kind(element)) {
-                .node_pattern => self.ast.data(element).node_pattern.variable_name,
-                .edge_pattern => self.ast.data(element).edge_pattern.variable_name,
-                else => continue,
-            };
-            if (name.len > 0 and row.get(name) == null) try row.put(self.allocator, name, .null);
-        }
+        try bindNullIfUnbound(self, self.slotOf(pattern), row);
+        for (self.ast.nodeChildren(pattern)) |element| try bindNullIfUnbound(self, self.slotOf(element), row);
     }
+}
+
+fn bindNullIfUnbound(self: *Executor, slot: @import("bindings.zig").Slot, row: *Bindings) ExecutionError!void {
+    if (slot != @import("bindings.zig").no_slot and row.get(slot) == null) try row.put(self.allocator, slot, .null);
 }
 
 /// CREATE, SET, DELETE or REMOVE for one row (each row sees the writes made

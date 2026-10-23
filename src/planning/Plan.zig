@@ -19,6 +19,7 @@ const Index = @import("../query/ast.zig").Index;
 const Shortest = @import("../query/ast.zig").EdgePatternData.Shortest;
 const Direction = @import("../storage/graph.zig").Direction;
 const Count = @import("statistics.zig").Count;
+const Slot = @import("../execution/bindings.zig").Slot;
 
 const Plan = @This();
 
@@ -44,6 +45,13 @@ node_count: u32,
 edge_count: u32,
 /// The graph's counts the plan was built on.
 statistics: []const Count,
+/// How many slots a row has: one per variable of the query.
+slot_count: u32,
+/// The slot of each AST node that reads or binds a variable (a variable,
+/// a node or edge pattern, a named pattern, a projection item, UNWIND,
+/// LOAD CSV, FOREACH, a comprehension, a YIELD item); `no_slot` for the
+/// others. Indexed by AST node.
+slot_of: []const Slot,
 
 /// A run of consecutive operators: `first` up to, not including, `end`.
 pub const Chain = struct {
@@ -125,6 +133,8 @@ pub const CallSubquery = struct {
     imports: bool,
     /// It has a RETURN, whose columns extend the row; else the row goes on.
     returns: bool,
+    /// The slots its RETURN binds, which the row takes from each of its rows.
+    returned_slots: []const Slot,
 };
 
 pub const Merge = struct { clause: Index, chain: ChainIndex };
@@ -136,8 +146,9 @@ pub const Foreach = struct { clause: Index, chain: ChainIndex };
 pub const PatternPlan = struct {
     nodes: []const PatternNode,
     edges: []const PatternEdge,
-    /// `p = ...`, or empty.
+    /// `p = ...`, or empty, and its slot.
     path_variable: []const u8,
+    path_slot: Slot,
     /// The MATCH it is part of.
     match: MatchIndex,
     /// Where its nodes' and edges' run state starts in the executor's.
@@ -162,6 +173,7 @@ pub const RangeSeek = struct {
 
 pub const PatternNode = struct {
     variable_name: []const u8,
+    slot: Slot,
     labels: []const []const u8,
     seeks: []const Seek,
     ranges: []const RangeSeek,
@@ -185,6 +197,7 @@ pub const PatternEdge = struct {
     /// Bound before the pattern or not, the variable takes the edge only if
     /// it is not bound to another one (`Bindings.bindValue`).
     variable_name: []const u8,
+    slot: Slot,
     seeks: []const Seek, // inline property equality filters
 
     /// True if an edge of type `edge_type` fits the pattern.

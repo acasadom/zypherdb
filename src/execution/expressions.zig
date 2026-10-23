@@ -22,7 +22,7 @@ const Bindings = @import("bindings.zig").Bindings;
 
 /// Evaluates a SKIP or LIMIT count: a non-negative integer, else an error.
 pub fn evaluateCount(self: *Executor, expr: Index) ExecutionError!usize {
-    var empty = Bindings{ .entries = .empty };
+    var empty = try Bindings.init(self.allocator, 0);
     return switch (try evaluate(self, expr, &empty)) {
         .int => |n| if (n >= 0) @intCast(n) else {
             self.fail(.invalid_expression, "SKIP and LIMIT need a non-negative integer, got {d}", .{n});
@@ -127,8 +127,8 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             break :blk .{ .null = {} };
         },
         .variable => blk: {
-            const name = self.ast.data(expr).text;
-            break :blk bindings.get(name) orelse {
+            break :blk bindings.get(self.slotOf(expr)) orelse {
+                const name = self.ast.data(expr).text;
                 self.fail(.unknown_variable, "unknown variable '{s}'", .{name});
                 return error.UnknownVariable;
             };
@@ -228,25 +228,20 @@ fn iterationList(self: *Executor, list_expression: Index, bindings: *Bindings) E
     };
 }
 
-/// A scope for the iteration variable: a copy of the bindings, so the
-/// variable may shadow an outer one without touching it.
-fn iterationScope(self: *Executor, bindings: *const Bindings) ExecutionError!Bindings {
-    var scope = Bindings{ .entries = .empty };
-    try scope.entries.appendSlice(self.allocator, bindings.entries.items);
-    return scope;
-}
-
 /// `[x IN list WHERE predicate | projection]`.
 fn listComprehension(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
     const children = self.ast.nodeChildren(expr);
     const items = try iterationList(self, children[0], bindings) orelse return .{ .null = {} };
-    const variable_name = self.ast.data(expr).text;
-    var scope = try iterationScope(self, bindings);
+    // The iteration variable has a slot of its own, bound in the row while
+    // the comprehension runs.
+    const slot = self.slotOf(expr);
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
     var output = std.ArrayList(Value).empty;
     for (items) |item| {
-        try scope.put(self.allocator, variable_name, item);
-        if (!try evaluateBool(self, children[1], &scope)) continue;
-        try output.append(self.allocator, try evaluate(self, children[2], &scope));
+        try bindings.put(self.allocator, slot, item);
+        if (!try evaluateBool(self, children[1], bindings)) continue;
+        try output.append(self.allocator, try evaluate(self, children[2], bindings));
     }
     return .{ .list = output.items };
 }
@@ -258,12 +253,14 @@ fn quantifier(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!
     const children = self.ast.nodeChildren(expr);
     const items = try iterationList(self, children[0], bindings) orelse return .{ .null = {} };
     const data = self.ast.data(expr).quantifier;
-    var scope = try iterationScope(self, bindings);
+    const slot = self.slotOf(expr);
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
     var trues: usize = 0;
     var nulls: usize = 0;
     for (items) |item| {
-        try scope.put(self.allocator, data.variable_name, item);
-        switch (try evaluate(self, children[1], &scope)) {
+        try bindings.put(self.allocator, slot, item);
+        switch (try evaluate(self, children[1], bindings)) {
             .boolean => |b| if (b) {
                 trues += 1;
             },

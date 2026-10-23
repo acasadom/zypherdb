@@ -23,6 +23,7 @@ const Plan = @import("../planning/Plan.zig");
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
+const Slot = @import("bindings.zig").Slot;
 const Value = @import("../value.zig").Value;
 const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
@@ -81,7 +82,7 @@ pub fn runMain(executor: *Executor, chain: Plan.ChainIndex) ExecutionError!void 
     if (return_info) |info| executor.return_info = info;
     executor.rows_needed = rows_needed;
 
-    var start = Bindings{ .entries = .empty };
+    var start = try executor.newRow();
     runOperators(executor, range, &start) catch |err| switch (err) {
         error.LimitReached => {}, // the RETURN has every row it keeps
         else => |other| return other,
@@ -178,15 +179,17 @@ inline fn run(executor: *Executor, index: Plan.OperatorIndex, row: *Bindings) Ex
                 .null => &.{},
                 else => &.{value},
             };
-            try feedEach(executor, next, row, executor.ast.data(clause).unwind.variable_name, items);
+            try feedEach(executor, next, row, executor.slotOf(clause), items);
         },
-        .load_csv => |clause| try feedEach(executor, next, row, executor.ast.data(clause).load_csv.variable_name, try load_csv.records(executor, clause, row)),
+        .load_csv => |clause| try feedEach(executor, next, row, executor.slotOf(clause), try load_csv.records(executor, clause, row)),
         .procedure_call => |call| try runProcedure(executor, call, next, row),
         .call_subquery => |call| try runCallSubquery(executor, call, next, row),
         .with_streaming => {
             const state = executor.operator_states[index].with_streaming;
-            var projected = try projection.withRow(executor, state.info, state.items, row) orelse return;
-            try feed(executor, next, &projected);
+            const saved = row.mark();
+            defer row.restore(saved);
+            if (!try projection.project(executor, state.info, state.items, row)) return;
+            try feed(executor, next, row);
         },
         .with_collecting, .eager => try executor.operator_states[index].kept.append(executor.allocator, try clauses.copyRow(executor, row.*)),
         .return_ => {
@@ -209,12 +212,12 @@ inline fn run(executor: *Executor, index: Plan.OperatorIndex, row: *Bindings) Ex
     }
 }
 
-/// Binds `variable_name` to each of `items` in turn, feeding `next`.
-fn feedEach(executor: *Executor, next: Plan.OperatorIndex, row: *Bindings, variable_name: []const u8, items: []const Value) ExecutionError!void {
+/// Binds `slot` to each of `items` in turn, feeding `next`.
+fn feedEach(executor: *Executor, next: Plan.OperatorIndex, row: *Bindings, slot: Slot, items: []const Value) ExecutionError!void {
     for (items) |item| {
         const saved = row.mark();
         defer row.restore(saved);
-        try row.put(executor.allocator, variable_name, item);
+        try row.put(executor.allocator, slot, item);
         try feed(executor, next, row);
     }
 }
@@ -293,18 +296,18 @@ fn runCallSubquery(executor: *Executor, call: Plan.CallSubquery, next: Plan.Oper
         executor: *Executor,
         next: Plan.OperatorIndex,
         row: *Bindings,
+        slots: []const Slot,
 
         fn take(context: *anyopaque, result: *Bindings) ExecutionError!void {
             const self: *@This() = @ptrCast(@alignCast(context));
             const saved = self.row.mark();
             defer self.row.restore(saved);
-            for (result.entries.items) |entry| try self.row.put(self.executor.allocator, entry.name, entry.value);
+            for (self.slots) |slot| try self.row.put(self.executor.allocator, slot, result.get(slot) orelse .null);
             try feed(self.executor, self.next, self.row);
         }
-
     };
-    var start = if (call.imports) try clauses.copyRow(executor, row.*) else Bindings{ .entries = .empty };
-    var extend = Extend{ .executor = executor, .next = next, .row = row };
+    var start = if (call.imports) try clauses.copyRow(executor, row.*) else try executor.newRow();
+    var extend = Extend{ .executor = executor, .next = next, .row = row, .slots = call.returned_slots };
     try runChain(executor, call.chain, &start, .{ .context = &extend, .take = if (call.returns) Extend.take else ignoreRow });
     if (!call.returns) try feed(executor, next, row);
 }
@@ -345,7 +348,7 @@ fn runForeach(executor: *Executor, foreach: Plan.Foreach, next: Plan.OperatorInd
     };
     for (items) |item| {
         var scope = try clauses.copyRow(executor, row.*);
-        try scope.put(executor.allocator, executor.ast.data(foreach.clause).text, item);
+        try scope.put(executor.allocator, executor.slotOf(foreach.clause), item);
         try runChain(executor, foreach.chain, &scope, .{ .context = executor, .take = ignoreRow });
     }
     try feed(executor, next, row);

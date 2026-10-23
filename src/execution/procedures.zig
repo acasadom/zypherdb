@@ -87,8 +87,7 @@ const Binder = struct {
                 if (std.mem.eql(u8, column.name, yield_item.column)) break i;
             } else unreachable; // checked by the semantic checks
             value.* = values[position];
-            const name = if (yield_item.alias.len > 0) yield_item.alias else yield_item.column;
-            try self.row.put(self.executor.allocator, name, value.*);
+            try self.row.put(self.executor.allocator, self.executor.slotOf(item), value.*);
         }
         if (!try expressions.evaluateBool(self.executor, self.where_expression, self.row)) return;
         if (self.ends_query) return self.consumer.result(self.consumer.context, yielded);

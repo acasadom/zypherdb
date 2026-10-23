@@ -31,6 +31,8 @@ const AggregationPlan = @import("aggregation.zig").AggregationPlan;
 const ProjectionItem = @import("aggregation.zig").ProjectionItem;
 const EntitySnapshot = @import("entities.zig").EntitySnapshot;
 const Bindings = @import("bindings.zig").Bindings;
+const Slot = @import("bindings.zig").Slot;
+const no_slot = @import("bindings.zig").no_slot;
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Plan = @import("../planning/Plan.zig");
 const builder = @import("../planning/builder.zig");
@@ -96,6 +98,9 @@ plan: *const Plan = undefined,
 operator_states: []operators.OperatorState = &.{},
 chain_sinks: []?operators.Sink = &.{},
 node_ids: []NodeId = &.{},
+/// The plan's `slot_of`, and how many slots its rows have.
+slot_of: []const Slot = &.{},
+row_width: usize = 0,
 matched_edges: [][]const Relationship = &.{},
 single_matches: []Relationship = &.{},
 /// The RETURN of the main chain being run, and how many rows it keeps if it
@@ -226,6 +231,8 @@ pub fn execute(self: *Executor, plan: *const Plan, root: Index) ExecutionError![
 /// Prepares the run state of `plan`.
 fn start(self: *Executor, plan: *const Plan) ExecutionError!void {
     self.plan = plan;
+    self.slot_of = plan.slot_of;
+    self.row_width = plan.slot_count;
     self.operator_states = try operators.initialStates(self);
     self.chain_sinks = try self.allocator.alloc(?operators.Sink, plan.chains.len);
     @memset(self.chain_sinks, null);
@@ -243,6 +250,16 @@ fn reset(self: *Executor) void {
     self.return_aggregation = no_aggregation;
     self.groups = .{};
     self.expression_overrides = null;
+}
+
+/// The slot of the AST node `node` (a variable or what binds one).
+pub fn slotOf(self: *const Executor, node: Index) Slot {
+    return if (node < self.slot_of.len) self.slot_of[node] else no_slot;
+}
+
+/// A row of the plan's width, nothing bound.
+pub fn newRow(self: *const Executor) ExecutionError!Bindings {
+    return Bindings.init(self.allocator, self.row_width);
 }
 
 /// The statement's time, in nanoseconds since the epoch.

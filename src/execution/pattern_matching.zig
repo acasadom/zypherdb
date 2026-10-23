@@ -29,6 +29,7 @@ const OperatorIndex = Plan.OperatorIndex;
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const Bindings = @import("bindings.zig").Bindings;
+const no_slot = @import("bindings.zig").no_slot;
 const expressions = @import("expressions.zig");
 const operators = @import("operators.zig");
 const shortest_paths = @import("shortest_paths.zig");
@@ -68,7 +69,7 @@ fn nodeId(self: *Executor, pattern: *const PatternPlan, position: usize) NodeId 
 pub fn checkBoundNode(self: *Executor, reference: Plan.NodeReference, next: OperatorIndex, bindings: *Bindings) ExecutionError!void {
     const pattern = patternOf(self, reference.pattern);
     const node = pattern.nodes[reference.node];
-    const id = bindings.getNode(node.variable_name) orelse return;
+    const id = bindings.getNode(node.slot) orelse return;
     setNode(self, pattern, reference.node, id);
     if (!try hasAllLabels(self, id, node.labels)) return;
     if (!try nodeSeeksMatch(self, node, id, bindings)) return;
@@ -98,7 +99,7 @@ pub fn scanNodes(self: *Executor, reference: Plan.NodeReference, next: OperatorI
         if (!(try hasAllLabels(self, id, unchecked_labels))) continue;
         const saved = bindings.mark();
         defer bindings.restore(saved);
-        if (!try bindings.bindNode(self.allocator, node.variable_name, id)) continue;
+        if (!try bindings.bindNode(self.allocator, node.slot, id)) continue;
         setNode(self, pattern, reference.node, id);
         if (!try nodeSeeksMatch(self, node, id, bindings)) continue;
         try operators.feed(self, next, bindings);
@@ -150,8 +151,8 @@ fn bindEdgeEndpoints(self: *Executor, pattern: *const PatternPlan, edge_index: u
     defer bindings.restore(saved);
     const left = pattern.nodes[edge_index];
     const right = pattern.nodes[edge_index + 1];
-    if (!try bindings.bindNode(self.allocator, left.variable_name, left_id)) return;
-    if (!try bindings.bindNode(self.allocator, right.variable_name, right_id)) return;
+    if (!try bindings.bindNode(self.allocator, left.slot, left_id)) return;
+    if (!try bindings.bindNode(self.allocator, right.slot, right_id)) return;
     setNode(self, pattern, edge_index, left_id);
     setNode(self, pattern, edge_index + 1, right_id);
     if (!try nodeSeeksMatch(self, left, left_id, bindings)) return;
@@ -216,7 +217,7 @@ fn tryNeighbour(self: *Executor, pattern: *const PatternPlan, to: usize, edge_in
     defer bindings.restore(saved);
     // A `to` variable bound already (earlier in the pattern or the query)
     // must be this neighbour; otherwise bind it.
-    if (!try bindings.bindNode(self.allocator, to_node.variable_name, neighbour)) return;
+    if (!try bindings.bindNode(self.allocator, to_node.slot, neighbour)) return;
     setNode(self, pattern, to, neighbour);
     if (!try nodeSeeksMatch(self, to_node, neighbour, bindings)) return;
     const owned = Relationship{ .id = ref.id, .src = ref.src, .dst = ref.dst, .edge_type = try ownedEdgeType(self, pattern.edges[edge_index], ref.edge_type) };
@@ -231,7 +232,7 @@ const max_indexed_candidates = 8;
 /// (Only for edges that name their types: an edge test needs the type.)
 fn indexedCandidates(self: *Executor, node: PatternNode, bindings: *Bindings) ExecutionError!?[]const NodeId {
     if (node.bound or node.seeks.len == 0) return null;
-    if (node.variable_name.len > 0 and bindings.getNode(node.variable_name) != null) return null;
+    if (bindings.getNode(node.slot) != null) return null;
     const seek = node.seeks[0];
     var iterator = try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
     defer iterator.deinit();
@@ -271,7 +272,7 @@ fn followEdge(self: *Executor, pattern: *const PatternPlan, edge_index: usize, r
     if (edgeUsed(self, pattern.match, ref)) return;
     const saved = bindings.mark();
     defer bindings.restore(saved);
-    if (!try bindings.bindValue(self.allocator, edge.variable_name, .{ .relationship = ref })) return;
+    if (!try bindings.bindValue(self.allocator, edge.slot, .{ .relationship = ref })) return;
     if (!try edgeSeeksMatch(self, edge, ref, bindings)) return;
     const slot = pattern.first_edge + edge_index;
     self.single_matches[slot] = ref;
@@ -350,7 +351,7 @@ pub fn reachEnd(self: *Executor, expansion: Expansion, end: NodeId, trail: []con
     if (!try hasAllLabels(self, end, to_node.labels)) return;
     const saved = bindings.mark();
     defer bindings.restore(saved);
-    if (!try bindings.bindNode(self.allocator, to_node.variable_name, end)) return;
+    if (!try bindings.bindNode(self.allocator, to_node.slot, end)) return;
     setNode(self, pattern, expansion.to, end);
     if (!try nodeSeeksMatch(self, to_node, end, bindings)) return;
 
@@ -358,11 +359,11 @@ pub fn reachEnd(self: *Executor, expansion: Expansion, end: NodeId, trail: []con
     const ordered = try self.allocator.dupe(Relationship, trail);
     if (expansion.from > expansion.to) std.mem.reverse(Relationship, ordered);
     self.matched_edges[pattern.first_edge + expansion.edge_index] = ordered;
-    const variable_name = expansion.edge().variable_name;
-    if (variable_name.len > 0) {
+    const slot = expansion.edge().slot;
+    if (slot != no_slot) {
         const relationships = try self.allocator.alloc(Value, ordered.len);
         for (relationships, ordered) |*value, relationship| value.* = .{ .relationship = relationship };
-        if (!try bindings.bindValue(self.allocator, variable_name, .{ .list = relationships })) return;
+        if (!try bindings.bindValue(self.allocator, slot, .{ .list = relationships })) return;
     }
     try operators.feed(self, expansion.next, bindings);
 }
@@ -385,7 +386,7 @@ pub fn projectPath(self: *Executor, index: Plan.PatternIndex, next: OperatorInde
     }
     const saved = bindings.mark();
     defer bindings.restore(saved);
-    if (!try bindings.bindValue(self.allocator, pattern.path_variable, .{ .path = .{ .nodes = nodes.items, .relationships = relationships.items } })) return;
+    if (!try bindings.bindValue(self.allocator, pattern.path_slot, .{ .path = .{ .nodes = nodes.items, .relationships = relationships.items } })) return;
     try operators.feed(self, next, bindings);
 }
 

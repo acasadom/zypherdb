@@ -1,106 +1,142 @@
 //! Variable bindings: the `Value` each query variable is bound to while a
 //! query runs — a node or relationship of a pattern, or a projected value.
+//!
+//! The planner gives every variable of a query a slot (`Plan.slot_of`), so
+//! a row is a fixed array, one value per slot, and reading a variable is an
+//! index. Binding records what it changed (the trail), so a search branch is
+//! undone exactly by `restore`ing to a `mark`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const sequence_algorithms = @import("../sequence_algorithms.zig");
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 const Relationship = @import("../value.zig").Relationship;
+const sequence_algorithms = @import("../sequence_algorithms.zig");
 
-/// Dynamic variable-name -> value bindings, in binding order. A regular type
-/// (`eql` + `hash`), so bindings can be deduplicated by `sequence_algorithms`.
+/// A variable's place in a row.
+pub const Slot = u32;
+
+/// The slot of no variable: an anonymous pattern element, or a name the
+/// planner did not resolve (reading it fails as an unknown variable).
+pub const no_slot: Slot = std.math.maxInt(Slot);
+
 pub const Bindings = struct {
-    entries: std.ArrayList(struct { name: []const u8, value: Value }),
+    values: []Value,
+    bound: []bool,
+    /// What each binding since the row was made changed, to undo it: the
+    /// slot, and whether it held a value then (kept in `overwritten`).
+    trail: std.ArrayList(Undo) = .empty,
+    overwritten: std.ArrayList(Value) = .empty,
 
-    pub fn get(self: *const Bindings, name: []const u8) ?Value {
-        for (self.entries.items) |e| {
-            if (std.mem.eql(u8, e.name, name)) return e.value;
-        }
-        return null;
+    const Undo = struct { slot: Slot, overwrote: bool };
+
+    /// A row of `width` slots, none bound.
+    pub fn init(allocator: Allocator, width: usize) Allocator.Error!Bindings {
+        const bound = try allocator.alloc(bool, width);
+        @memset(bound, false);
+        return .{ .values = try allocator.alloc(Value, width), .bound = bound };
     }
 
-    pub fn put(self: *Bindings, allocator: Allocator, name: []const u8, value: Value) !void {
-        for (self.entries.items) |*e| {
-            if (std.mem.eql(u8, e.name, name)) {
-                e.value = value;
-                return;
-            }
-        }
-        try self.entries.append(allocator, .{ .name = name, .value = value });
+    /// A copy whose bindings change independently (with no trail).
+    pub fn copy(self: *const Bindings, allocator: Allocator) Allocator.Error!Bindings {
+        return .{ .values = try allocator.dupe(Value, self.values), .bound = try allocator.dupe(bool, self.bound) };
     }
 
-    pub fn remove(self: *Bindings, name: []const u8) void {
-        for (self.entries.items, 0..) |e, i| {
-            if (std.mem.eql(u8, e.name, name)) {
-                _ = self.entries.swapRemove(i);
-                return;
-            }
+    pub fn get(self: *const Bindings, slot: Slot) ?Value {
+        if (slot >= self.values.len or !self.bound[slot]) return null;
+        return self.values[slot];
+    }
+
+    /// Binds `slot` to `value`, whatever it was bound to (undone by `restore`).
+    pub fn put(self: *Bindings, allocator: Allocator, slot: Slot, value: Value) Allocator.Error!void {
+        if (slot == no_slot) return;
+        if (self.bound[slot]) {
+            try self.overwritten.append(allocator, self.values[slot]);
+            try self.trail.append(allocator, .{ .slot = slot, .overwrote = true });
+            self.values[slot] = value;
+            return;
         }
+        try self.bindFree(allocator, slot, value);
+    }
+
+    /// Binds `slot`, which is not bound.
+    fn bindFree(self: *Bindings, allocator: Allocator, slot: Slot, value: Value) Allocator.Error!void {
+        try self.trail.append(allocator, .{ .slot = slot, .overwrote = false });
+        self.values[slot] = value;
+        self.bound[slot] = true;
     }
 
     /// The current extent of the bindings, to `restore` on backtracking.
     pub fn mark(self: *const Bindings) usize {
-        return self.entries.items.len;
+        return self.trail.items.len;
     }
 
-    /// Unbinds every variable bound since `saved` (a `mark`). Matching only
-    /// appends new bindings, so this undoes exactly one search branch.
+    /// Undoes every binding made since `saved` (a `mark`), latest first.
     pub fn restore(self: *Bindings, saved: usize) void {
-        self.entries.shrinkRetainingCapacity(saved);
+        while (self.trail.items.len > saved) {
+            const undo = self.trail.pop().?;
+            if (undo.overwrote) {
+                self.values[undo.slot] = self.overwritten.pop().?;
+            } else self.bound[undo.slot] = false;
+        }
     }
 
-    /// Binds node variable `name` to `id`, or, if `name` is already bound
+    /// Binds node variable `slot` to `id`, or, if it is bound already
     /// (earlier in the pattern or the query), checks that it is that node.
-    /// An anonymous node (empty name) always fits.
-    pub fn bindNode(self: *Bindings, allocator: Allocator, name: []const u8, id: NodeId) !bool {
-        if (name.len == 0) return true;
-        if (self.get(name)) |bound| return bound == .node and bound.node == id;
-        try self.entries.append(allocator, .{ .name = name, .value = .{ .node = id } });
+    /// An anonymous node (no slot) always fits.
+    pub fn bindNode(self: *Bindings, allocator: Allocator, slot: Slot, id: NodeId) Allocator.Error!bool {
+        if (slot == no_slot) return true;
+        if (self.bound[slot]) return self.values[slot] == .node and self.values[slot].node == id;
+        try self.bindFree(allocator, slot, .{ .node = id });
         return true;
     }
 
-    /// Binds `name` to `value`, or, if `name` is already bound, checks that
-    /// it is bound to an equal value. An empty name always fits.
-    pub fn bindValue(self: *Bindings, allocator: Allocator, name: []const u8, value: Value) !bool {
-        if (name.len == 0) return true;
-        if (self.get(name)) |bound| return bound.eql(value);
-        try self.entries.append(allocator, .{ .name = name, .value = value });
+    /// Binds `slot` to `value`, or, if it is bound already, checks that it
+    /// is bound to an equal value. No slot always fits.
+    pub fn bindValue(self: *Bindings, allocator: Allocator, slot: Slot, value: Value) Allocator.Error!bool {
+        if (slot == no_slot) return true;
+        if (self.bound[slot]) return self.values[slot].eql(value);
+        try self.bindFree(allocator, slot, value);
         return true;
     }
 
-    /// The node `name` is bound to, if it is bound to a node.
-    pub fn getNode(self: *const Bindings, name: []const u8) ?NodeId {
-        return switch (self.get(name) orelse return null) {
+    /// The node `slot` is bound to, if it is bound to a node.
+    pub fn getNode(self: *const Bindings, slot: Slot) ?NodeId {
+        return switch (self.get(slot) orelse return null) {
             .node => |id| id,
             else => null,
         };
     }
 
-    /// The relationship `name` is bound to, if it is bound to one.
-    pub fn getRelationship(self: *const Bindings, name: []const u8) ?Relationship {
-        return switch (self.get(name) orelse return null) {
+    /// The relationship `slot` is bound to, if it is bound to one.
+    pub fn getRelationship(self: *const Bindings, slot: Slot) ?Relationship {
+        return switch (self.get(slot) orelse return null) {
             .relationship => |relationship| relationship,
             else => null,
         };
     }
+};
 
-    /// Equal when both bind the same names, in the same order, to equal
-    /// values (rows of one WITH projection always share their name order).
-    pub fn eql(a: Bindings, b: Bindings) bool {
-        if (a.entries.items.len != b.entries.items.len) return false;
-        for (a.entries.items, b.entries.items) |x, y| {
-            if (!std.mem.eql(u8, x.name, y.name) or !x.value.eql(y.value)) return false;
-        }
-        return true;
-    }
+/// Rows equal in some slots (a projection's): a std.HashMap context, so
+/// rows can be deduplicated by them (`sequence_algorithms.removeDuplicates`).
+pub const SlotsContext = struct {
+    slots: []const Slot,
 
-    pub fn hash(self: Bindings) u64 {
-        var result = sequence_algorithms.hashWord(self.entries.items.len);
-        for (self.entries.items) |entry| {
-            result = sequence_algorithms.combineHashes(result, sequence_algorithms.hashBytes(0, entry.name));
-            result = sequence_algorithms.combineHashes(result, entry.value.hash());
+    pub fn hash(self: SlotsContext, row: Bindings) u64 {
+        var result = sequence_algorithms.hashWord(self.slots.len);
+        for (self.slots) |slot| {
+            const value = row.get(slot) orelse Value.null;
+            result = sequence_algorithms.combineHashes(result, value.hash());
         }
         return result;
+    }
+
+    pub fn eql(self: SlotsContext, a: Bindings, b: Bindings) bool {
+        for (self.slots) |slot| {
+            const x = a.get(slot) orelse Value.null;
+            const y = b.get(slot) orelse Value.null;
+            if (!x.eql(y)) return false;
+        }
+        return true;
     }
 };

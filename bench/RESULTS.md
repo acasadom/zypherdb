@@ -149,6 +149,27 @@ rounds gave 36.5 µs after against 39.4 µs before. The laptop was busy during t
 average 3-8, rounds of 180-340 µs discarded as such), so differences of a few percent here are
 not established either way.
 
+## Rows as slots (October 2026)
+
+Each variable resolved by the planner to a slot, rows as fixed arrays (`bindings.zig`), instead of
+a list of (name, value) searched by name. Against the commit before, both `--prepared`, 1000
+runs (50 for the heavy queries), best of three rounds at load average < 3.5:
+
+| Query | names | slots | |
+| --- | ---: | ---: | ---: |
+| may this card open this door? | 28.9 µs | 27.0 µs | −7% |
+| colleagues | 53.6 µs | 52.6 µs | −2% |
+| oldest 10 (`ORDER BY … LIMIT`) | 23.3 ms | 20.5 ms | −12% |
+| department counts | 10.7 ms | 10.7 ms | 0% |
+| return 100k rows (3 columns) | 15.9 ms | 16.2 ms | +2% |
+
+The first version recorded the previous value of every binding (a 64-byte undo record, and a read
+of the slot) and was 4-12% slower on most queries; recording a slot and whether it was bound
+(values kept aside only when one is overwritten) gave the numbers above. `oldest 10` gains because
+the RETURN's sort key no longer copies the row to add the aliases. `return 100k rows` stays about
+3 ns a row slower, consistently over the rounds: reading a variable is now two lookups (the AST
+node's slot, then the row's value), which compiled expressions will make one.
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

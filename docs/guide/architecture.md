@@ -22,7 +22,7 @@ acmedb is deliberately small and generic. Four decisions explain almost every fi
 - **An arena AST.** Nodes live in one `std.ArrayList`, children are a separate index array, and
   strings are interned into the arena. No pointers, no inheritance, one `deinit` frees the whole
   tree. This is the same shape Zig itself uses for its AST.
-- **Regular types and generic algorithms.** `Value`, `Binding` and `Bindings` define equality, a
+- **Regular types and generic algorithms.** `Value`, `Relationship` and `Path` define equality, a
   total order (where meaningful) and a hash that obey their laws, checked by property tests.
   Algorithms that apply to more than one type — deduplication, pagination, sorting by key,
   grouping — are written once over those operations (`sequence_algorithms.zig`,
@@ -139,7 +139,7 @@ flowchart TB
 | `src/execution/temporal_functions.zig` | The temporal functions, components and arithmetic, on `Value`s. |
 | `src/temporal/` | The calendar (`calendar.zig`), time zones (`zones.zig`), the temporal types (`types.zig`), ISO 8601 parsing (`parse.zig`), durations (`durations.zig`) and building values from fields (`selection.zig`). |
 | `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE. |
-| `src/execution/bindings.zig` | `Binding`/`Bindings`: what each query variable is bound to (regular types). |
+| `src/execution/bindings.zig` | `Bindings`: a row, one value per slot (each query variable's place, given by the planner), with a trail so `restore` undoes a branch; `SlotsContext` compares rows by some slots. |
 | `src/execution/entities.zig` | `EntitySnapshot`: the labels and properties of every node and relationship a result mentions, read before the transaction ends. |
 | `src/statement/Statement.zig` | A prepared statement: parsed, checked and planned once; each run binds the parameters and plans again if the counts drifted. |
 | `src/statement/Cache.zig` | The statements `query` calls prepared, by text, least recently used out first. |

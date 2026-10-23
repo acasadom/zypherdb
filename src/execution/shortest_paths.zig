@@ -34,8 +34,7 @@ pub fn expand(self: *Executor, expansion: Expansion, bindings: *Bindings) Execut
 
 /// The node the `to` end must be, if the row binds it already.
 fn boundTarget(expansion: Expansion, bindings: *Bindings) ?NodeId {
-    const name = expansion.pattern.nodes[expansion.to].variable_name;
-    return if (name.len > 0) bindings.getNode(name) else null;
+    return bindings.getNode(expansion.pattern.nodes[expansion.to].slot);
 }
 
 /// The node the expansion starts from.

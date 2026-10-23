@@ -38,10 +38,14 @@ and end with `output`, which hands their rows back:
 A query that writes gets an `eager` between each two clauses: every row goes through a clause
 before any goes on to the next one, so a clause sees the effect of the one before it on every row.
 
-The builder follows the **variables in scope** (`scope.zig`): a pattern node bound before its
-pattern (by an earlier pattern or clause) is checked, not scanned. A scope may leave a bound
-variable out (the node is then scanned and compared with the row's binding: slower, same matches),
-never include one that is not bound.
+The builder follows the **variables in scope** (`scope.zig`), exactly as the semantic checks do,
+and gives each variable a **slot**: its place in a row. Every binding site gets a new slot (a
+pattern variable seen first, an `UNWIND` or `FOREACH` variable, a `YIELD`, each item of a `WITH`,
+a comprehension's variable), and every variable the query reads is resolved to the slot in scope
+there (`Plan.slot_of`, indexed by AST node). A `WITH` starts a new scope: its items get new slots,
+so its `WHERE` and `ORDER BY` can read both the projected names and, unless it aggregates, the
+variables before it. A pattern node bound before its pattern (by an earlier pattern or clause) is
+checked, not scanned.
 
 The optimizations are three, all made when a pattern is planned (`patterns.zig`):
 
@@ -148,9 +152,12 @@ filter    → if the predicate holds: feed(next)
 return_   → project the row (or fold it into its group)
 ```
 
-- **Rows are extended in place.** A row passed to an operator is the caller's: the operator binds
-  with `bindings.mark()` and `restore`s on the way out, so a branch leaves no trace in its
-  siblings, and copies the row only to keep it.
+- **Rows are slots, extended in place.** A row (`bindings.zig`) is an array of values, one per
+  slot, so reading a variable is an index. A row passed to an operator is the caller's: the
+  operator binds with `bindings.mark()` and `restore`s on the way out (each binding records what
+  it changed), so a branch leaves no trace in its siblings, and copies the row only to keep it. A
+  `WITH` that only projects writes its slots into the row it gets: the slots it leaves behind are
+  still there, but nothing after it reads them; its `DISTINCT` compares its own slots only.
 - **Operators that need every row first** (`with_collecting`, `eager`) keep copies. When the chain's
   first operator returns, `runOperators` lets each of them, in chain order, pass its rows on.
 - **A plan does not change while it runs.** What a run needs besides it is the executor's: each

@@ -23,6 +23,8 @@ const ExecutionError = Executor.ExecutionError;
 const Row = Executor.Row;
 
 const Bindings = @import("bindings.zig").Bindings;
+const Slot = @import("bindings.zig").Slot;
+const SlotsContext = @import("bindings.zig").SlotsContext;
 
 /// An item paired with its ORDER BY key. The key is evaluated alongside the
 /// item because ORDER BY may use variables that are not projected.
@@ -55,12 +57,14 @@ fn keyLessThan(directions: []const bool, a: []const Value, b: []const Value) boo
 /// `Inner` is a hash-map context for `T`.
 fn SortableContext(comptime T: type, comptime Inner: type) type {
     return struct {
-        pub fn hash(_: @This(), row: Sortable(T)) u64 {
-            return Inner.hash(.{}, row.item);
+        inner: Inner,
+
+        pub fn hash(self: @This(), row: Sortable(T)) u64 {
+            return self.inner.hash(row.item);
         }
 
-        pub fn eql(_: @This(), a: Sortable(T), b: Sortable(T)) bool {
-            return Inner.eql(.{}, a.item, b.item);
+        pub fn eql(self: @This(), a: Sortable(T), b: Sortable(T)) bool {
+            return self.inner.eql(a.item, b.item);
         }
     };
 }
@@ -117,15 +121,12 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     var rows = std.ArrayList(Sortable(Bindings)).empty;
     if (aggregating.items.len == 0) {
         // No aggregates: project each row (no grouping, so no deduplication).
+        // The projected slots are new, so the copy holds what the ORDER BY
+        // sees: the projected names and the variables from before the WITH.
         for (input) |*input_row| {
-            const row = try withRow(self, info, items, input_row) orelse continue;
-            // Without grouping, the ORDER BY also sees the variables from
-            // before the WITH (the projected names win).
-            const sort_key = if (info.order_by) |order_by| key: {
-                var scope = try clauses.copyRow(self, input_row.*);
-                for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
-                break :key try orderByKey(self, order_by, &scope);
-            } else &.{};
+            var row = try clauses.copyRow(self, input_row.*);
+            if (!try project(self, info, items, &row)) continue;
+            const sort_key = if (info.order_by) |order_by| try orderByKey(self, order_by, &row) else &.{};
             try rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
         }
     } else {
@@ -138,7 +139,7 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
         for (input) |*input_row| try aggregation.accumulateRow(self, &groups, aggregation_plan, input_row);
         try aggregation.ensureGroupWithoutKeys(self, &groups, aggregation_plan);
         for (groups.keys.items, groups.states.items) |key_values, states| {
-            var row = Bindings{ .entries = .empty };
+            var row = try self.newRow();
             var values = std.ArrayList(Value).empty;
             var key_index: usize = 0;
             for (items) |item| {
@@ -148,7 +149,7 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
                     key_index += 1;
                     break :value key_values[key_index - 1];
                 };
-                try row.put(self.allocator, item.name, value);
+                try row.put(self.allocator, item.slot, value);
                 try values.append(self.allocator, value);
             }
             if (info.where_expression != Executor.no_where and !try expressions.evaluateBool(self, info.where_expression, &row)) continue;
@@ -158,7 +159,9 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     }
 
     if (info.distinct) {
-        try sequence_algorithms.removeDuplicates(Sortable(Bindings), self.allocator, &rows, SortableContext(Bindings, ElementContext(Bindings)){});
+        const slots = try self.allocator.alloc(Slot, items.len);
+        for (slots, items) |*slot, item| slot.* = item.slot;
+        try sequence_algorithms.removeDuplicates(Sortable(Bindings), self.allocator, &rows, SortableContext(Bindings, SlotsContext){ .inner = .{ .slots = slots } });
     }
     try orderAndPaginate(self, Bindings, &rows, info.order_by, info.skip, info.limit);
 
@@ -167,19 +170,15 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     return output;
 }
 
-/// One input row of a WITH without aggregates, projected into the new scope,
-/// or null if the WITH's WHERE drops it.
-pub fn withRow(self: *Executor, info: WithClauseParts, items: []const WithItem, input_row: *Bindings) ExecutionError!?Bindings {
-    var row = Bindings{ .entries = .empty };
-    for (items) |item| try row.put(self.allocator, item.name, try expressions.evaluate(self, item.expr, input_row));
-    // The WHERE also sees the variables from before the WITH (the projected
-    // names win): `WITH x[i] AS v WHERE i > 0`.
-    if (info.where_expression != Executor.no_where) {
-        var scope = try clauses.copyRow(self, input_row.*);
-        for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
-        if (!try expressions.evaluateBool(self, info.where_expression, &scope)) return null;
-    }
-    return row;
+/// Projects one row of a WITH without aggregates: binds each item's slot in
+/// `row` (the caller marks it, to restore), then applies the WHERE. False if
+/// the WHERE drops the row. Each item reads the variables from before the
+/// WITH, and its slot is new, so the WHERE sees both, the projected names
+/// winning: `WITH x[i] AS v WHERE i > 0`.
+pub fn project(self: *Executor, info: WithClauseParts, items: []const WithItem, row: *Bindings) ExecutionError!bool {
+    for (items) |item| try row.put(self.allocator, item.slot, try expressions.evaluate(self, item.expr, row));
+    if (info.where_expression == Executor.no_where) return true;
+    return expressions.evaluateBool(self, info.where_expression, row);
 }
 
 /// Whether a WITH can pass its rows on one at a time: it neither groups,
@@ -204,7 +203,7 @@ pub fn withItems(self: *Executor, info: WithClauseParts) ExecutionError![]const 
             self.fail(.invalid_expression, "WITH expression requires an alias", .{});
             return error.InvalidExpression;
         };
-        try items.append(self.allocator, .{ .name = name, .expr = expr, .aggregating = aggregation.containsAggregate(self, expr) });
+        try items.append(self.allocator, .{ .name = name, .slot = self.slotOf(item), .expr = expr, .aggregating = aggregation.containsAggregate(self, expr) });
     }
     return items.items;
 }
@@ -224,23 +223,21 @@ fn orderByKey(self: *Executor, order_by: Index, bindings: *Bindings) ExecutionEr
 /// expression that repeats a projected expression reuses that column;
 /// otherwise it is evaluated with the RETURN aliases in scope, on top of the
 /// row's variables (`bindings`, null for an aggregated row, which has none).
-pub fn returnSortKey(self: *Executor, info: ReturnClauseParts, row: []const Value, bindings: *const Bindings) ExecutionError![]const Value {
+pub fn returnSortKey(self: *Executor, info: ReturnClauseParts, row: []const Value, bindings: *Bindings) ExecutionError![]const Value {
     const order_by = info.order_by orelse return &.{};
     const items = self.ast.nodeChildren(info.projection);
 
-    var scope = Bindings{ .entries = .empty };
-    try scope.entries.appendSlice(self.allocator, bindings.entries.items);
-    for (items, row) |item, value| {
-        const alias = self.ast.data(item).text;
-        if (alias.len > 0) try scope.put(self.allocator, alias, value);
-    }
+    // The aliases' slots (an item without one has none) on top of the row's.
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
+    for (items, row) |item, value| try bindings.put(self.allocator, self.slotOf(item), value);
 
     const projected = try self.projectedExpressions(info.projection);
     const order_items = self.ast.nodeChildren(order_by);
     const key = try self.allocator.alloc(Value, order_items.len);
     for (key, order_items) |*value, order_item| {
         const expr = self.ast.nodeChildren(order_item)[0];
-        value.* = if (projectedColumn(self, projected, expr)) |column| row[column] else try expressions.evaluate(self, expr, &scope);
+        value.* = if (projectedColumn(self, projected, expr)) |column| row[column] else try expressions.evaluate(self, expr, bindings);
     }
     return key;
 }
@@ -359,7 +356,7 @@ pub fn returnRow(self: *Executor, info: ReturnClauseParts, row: *Bindings) Execu
 pub fn endReturn(self: *Executor, info: ReturnClauseParts) ExecutionError!void {
     if (self.has_aggregates) try aggregation.aggregate(self, info);
     if (info.distinct) {
-        try sequence_algorithms.removeDuplicates(Sortable(Row), self.allocator, &self.rows, SortableContext(Row, RowContext){});
+        try sequence_algorithms.removeDuplicates(Sortable(Row), self.allocator, &self.rows, SortableContext(Row, RowContext){ .inner = .{} });
     }
     try orderAndPaginate(self, Row, &self.rows, info.order_by, info.skip, info.limit);
 }
@@ -408,10 +405,10 @@ fn projectionNames(self: *Executor, projection_node: Index) ExecutionError![]con
     return names.items;
 }
 
-/// One WITH projection item: `name` is the variable it binds in the new scope
-/// (its alias, or the variable it projects); an `aggregating` item contains
-/// aggregates and is computed per group.
-pub const WithItem = struct { name: []const u8, expr: Index, aggregating: bool };
+/// One WITH projection item: `name` is the variable it binds in the new
+/// scope (its alias, or the variable it projects), in slot `slot`; an
+/// `aggregating` item contains aggregates and is computed per group.
+pub const WithItem = struct { name: []const u8, slot: Slot, expr: Index, aggregating: bool };
 
 pub const WithClauseParts = struct {
     projection: Index,

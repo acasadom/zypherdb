@@ -324,7 +324,7 @@ pub fn aggregate(self: *Executor, info: projection.ReturnClauseParts) ExecutionE
     for (self.groups.keys.items, self.groups.states.items) |keys, states| {
         var row = std.ArrayList(Value).empty;
         var key_index: usize = 0;
-        var scope = Bindings{ .entries = .empty };
+        var scope = try self.newRow();
         for (self.projection_items.items, self.ast.nodeChildren(info.projection)) |item, item_node| {
             const value = switch (item) {
                 .key => value: {
@@ -334,8 +334,8 @@ pub fn aggregate(self: *Executor, info: projection.ReturnClauseParts) ExecutionE
                 .aggregating => |expr| try evaluateAggregating(self, expr, self.return_aggregation, keys, states, &scope),
             };
             try row.append(self.allocator, value);
-            const alias = self.ast.data(item_node).text;
-            if (alias.len > 0) try scope.put(self.allocator, alias, value);
+            // An aliased item has a slot, for the ORDER BY.
+            try scope.put(self.allocator, self.slotOf(item_node), value);
         }
         const sort_key = try projection.groupSortKey(self, info.order_by, projected, row.items, &scope, self.return_aggregation, keys, states);
         try self.rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });

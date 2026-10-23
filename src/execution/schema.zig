@@ -102,7 +102,7 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
 
 /// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.
 fn analyzerOption(executor: *Executor, options_expression: Index) ExecutionError![]const u8 {
-    var empty = Bindings{ .entries = .empty };
+    var empty = try Bindings.init(executor.allocator, 0);
     const options = try expressions.evaluate(executor, options_expression, &empty);
     var analyzer: []const u8 = "standard";
     for (options.map) |option| {

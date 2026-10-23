@@ -17,6 +17,7 @@ const PatternEdge = Plan.PatternEdge;
 const Seek = Plan.Seek;
 const RangeSeek = Plan.RangeSeek;
 const Scope = @import("scope.zig").Scope;
+const no_slot = @import("../execution/bindings.zig").no_slot;
 
 /// What planning a pattern reads: the query and the graph's counts.
 pub const Context = struct {
@@ -34,11 +35,12 @@ pub const Placement = struct {
 };
 
 /// Plans `pattern` (a `pattern` AST node), whose MATCH has the WHERE `where`
-/// (null: none), with `scope` the variables bound before it. Appends the
-/// operators that match it to `operators` and returns its plan.
-pub fn plan(context: Context, pattern: Index, where: ?Index, scope: *const Scope, placement: Placement, operators: *std.ArrayList(Operator)) Allocator.Error!Plan.PatternPlan {
+/// (null: none): `before` holds the variables bound before it, `after` the
+/// same with its own (their slots). Appends the operators that match it to
+/// `operators` and returns its plan.
+pub fn plan(context: Context, pattern: Index, where: ?Index, before: *const Scope, after: *const Scope, placement: Placement, operators: *std.ArrayList(Operator)) Allocator.Error!Plan.PatternPlan {
     var planner = Planner{ .context = context };
-    try planner.collectElements(pattern, scope);
+    try planner.collectElements(pattern, before, after);
     if (where) |expression| try planner.collectWhereSeeks(expression);
     const path_variable = context.ast.data(pattern).text;
     if (where) |expression| planner.markPathReads(expression, path_variable);
@@ -71,6 +73,7 @@ pub fn plan(context: Context, pattern: Index, where: ?Index, scope: *const Scope
         .nodes = try planner.frozenNodes(),
         .edges = try planner.frozenEdges(),
         .path_variable = path_variable,
+        .path_slot = after.slotOf(path_variable) orelse no_slot,
         .match = placement.match,
         .first_node = placement.first_node,
         .first_edge = placement.first_edge,
@@ -94,7 +97,7 @@ const Planner = struct {
     nodes: std.ArrayList(NodeDraft) = .empty,
     edges: std.ArrayList(EdgeDraft) = .empty,
 
-    fn collectElements(self: *Planner, pattern: Index, scope: *const Scope) Allocator.Error!void {
+    fn collectElements(self: *Planner, pattern: Index, before: *const Scope, after: *const Scope) Allocator.Error!void {
         const ast = self.context.ast;
         const allocator = self.context.allocator;
         const chain = ast.nodeChildren(pattern);
@@ -104,10 +107,11 @@ const Planner = struct {
             const node_pattern = ast.data(node_pattern_index).node_pattern;
             var draft = NodeDraft{ .node = .{
                 .variable_name = node_pattern.variable_name,
+                .slot = after.slotOf(node_pattern.variable_name) orelse no_slot,
                 .labels = node_pattern.labels,
                 .seeks = &.{},
                 .ranges = &.{},
-                .bound = scope.contains(node_pattern.variable_name),
+                .bound = before.contains(node_pattern.variable_name),
             } };
             try appendPropertySeeks(self.context, node_pattern_index, &draft.seeks);
             try self.nodes.append(allocator, draft);
@@ -127,6 +131,7 @@ const Planner = struct {
                 },
                 .undirected = edge_pattern.direction == .undirected,
                 .variable_name = edge_pattern.variable_name,
+                .slot = after.slotOf(edge_pattern.variable_name) orelse no_slot,
                 .seeks = &.{},
             } };
             try appendPropertySeeks(self.context, edge_pattern_index, &edge_draft.seeks);
