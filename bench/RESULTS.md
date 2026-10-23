@@ -123,6 +123,32 @@ count) to plan again if they drifted; with the reads taken out, the card lookup 
 first looked 11% slower prepared, but each run adds 1000 nodes and the prepared runs came second;
 run first, they were the faster ones.
 
+## Cheaper hashing and a reused run arena (October 2026)
+
+Profiles (`sample`) of the prepared runs showed `count(DISTINCT q)` spending about 30% of
+`colleagues` in streaming Wyhash (several tiny updates per value) and set growth, and every run
+mapping and unmapping its arena (about 7%). Two changes: the regular-type hash became a value's
+own `u64` (a scalar is one multiply-mix of its bits, a string one Wyhash pass, a composite folds
+its parts'), and the bindings keep one arena per database, reset after each query keeping up to
+1 MiB (the benchmark does the same). Against the prepared statements above, both `--prepared`,
+best of three alternating rounds:
+
+| Query | before | after | |
+| --- | ---: | ---: | ---: |
+| card lookup | 5.0 µs | 3.9 µs | −22% |
+| person's groups (1 hop) | 7.8 µs | 6.7 µs | −14% |
+| colleagues (2 hops, `count(DISTINCT)`) | 80 µs | 57 µs | −29% |
+| may this card open this door? | 30.2 µs | 29.2 µs | −3% |
+| doors of a person's zones (`*1..3`, `count(DISTINCT)`) | 117 µs | 90 µs | −24% |
+| group sizes (expand + aggregate) | 24.0 ms | 21.7 ms | −10% |
+| department counts (scan + group) | 12.2 ms | 10.8 ms | −12% |
+| the other scans, writes | | | within ±2%, `create 1000` −6% |
+
+`same, with EXISTS` measured 14% slower in that series, but not again: alone, 1000 runs, its clean
+rounds gave 36.5 µs after against 39.4 µs before. The laptop was busy during these runs (load
+average 3-8, rounds of 180-340 µs discarded as such), so differences of a few percent here are
+not established either way.
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

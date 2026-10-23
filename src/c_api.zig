@@ -42,7 +42,13 @@ pub const Context = struct {
     import_directory: ?[]u8 = null,
     /// The statements `acmedb_query` prepared, by text.
     statements: StatementCache,
+    /// The memory a query runs in, kept from one query to the next (up to
+    /// `retained_scratch` bytes) instead of asked for again each time.
+    scratch: std.heap.ArenaAllocator,
 };
+
+/// How much of a query's memory the next one reuses.
+pub const retained_scratch = 1 << 20;
 
 const Result = struct {
     arena: std.heap.ArenaAllocator,
@@ -110,6 +116,7 @@ pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize
     context.export_json = &.{};
     context.import_directory = null;
     context.statements = StatementCache.init(allocator);
+    context.scratch = std.heap.ArenaAllocator.init(allocator);
     return context;
 }
 
@@ -121,6 +128,7 @@ pub export fn acmedb_sync(context: *Context) c_int {
 
 pub export fn acmedb_close(context: *Context) void {
     context.statements.deinit();
+    context.scratch.deinit();
     allocator.free(context.export_json);
     if (context.import_directory) |directory| allocator.free(directory);
     context.store.deinit();
@@ -279,13 +287,13 @@ fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) 
 /// into a self-contained result.
 fn runStatement(context: *Context, statement: *Statement, parameters_json: ?[]const u8) ?*Result {
     context.diagnostic.clear();
-    var scratch = std.heap.ArenaAllocator.init(context.allocator);
-    defer scratch.deinit();
+    const scratch = context.scratch.allocator();
+    defer _ = context.scratch.reset(.{ .retain_with_limit = retained_scratch });
     const parameters = if (parameters_json) |json|
-        parseParameters(scratch.allocator(), json, &context.diagnostic) catch return null
+        parseParameters(scratch, json, &context.diagnostic) catch return null
     else
         Executor.Parameters.empty;
-    var executor = statement.executorFor(&context.graph, scratch.allocator());
+    var executor = statement.executorFor(&context.graph, scratch);
     executor.diagnostic = &context.diagnostic;
     executor.parameters = parameters;
     executor.import_directory = context.import_directory;

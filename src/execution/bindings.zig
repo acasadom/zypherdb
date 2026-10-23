@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Wyhash = std.hash.Wyhash;
+const sequence_algorithms = @import("../sequence_algorithms.zig");
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Value = @import("../value.zig").Value;
 const Relationship = @import("../value.zig").Relationship;
@@ -95,11 +95,12 @@ pub const Bindings = struct {
         return true;
     }
 
-    pub fn hash(self: Bindings, hasher: *Wyhash) void {
-        hasher.update(std.mem.asBytes(&self.entries.items.len));
+    pub fn hash(self: Bindings) u64 {
+        var result = sequence_algorithms.hashWord(self.entries.items.len);
         for (self.entries.items) |entry| {
-            hasher.update(entry.name);
-            entry.value.hash(hasher);
+            result = sequence_algorithms.combineHashes(result, sequence_algorithms.hashBytes(0, entry.name));
+            result = sequence_algorithms.combineHashes(result, entry.value.hash());
         }
+        return result;
     }
 };

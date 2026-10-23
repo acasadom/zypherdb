@@ -49,11 +49,27 @@ const Database = struct {
     import_directory: ?[]u8 = null,
     /// The statements `query` prepared, by text.
     statements: acmedb.StatementCache,
+    /// The memory a query runs in, kept from one query to the next (up to
+    /// `retained_scratch` bytes) instead of asked for again each time.
+    scratch: std.heap.ArenaAllocator,
 };
+
+const retained_scratch = 1 << 20;
+
+/// The database's scratch memory for one call; `doneWith` gives it back.
+fn scratchOf(args: ?*py.PyObject) ?*std.heap.ArenaAllocator {
+    const database = parseDatabase(args) orelse return null;
+    return &database.scratch;
+}
+
+fn doneWith(scratch: *std.heap.ArenaAllocator) void {
+    _ = scratch.reset(.{ .retain_with_limit = retained_scratch });
+}
 
 /// Frees what an open database holds, and the database.
 fn release(database: *Database) void {
     database.statements.deinit();
+    database.scratch.deinit();
     database.store.deinit();
     database.procedure_arena.deinit();
     if (database.import_directory) |directory| allocator.free(directory);
@@ -508,6 +524,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     database.procedure_arena = std.heap.ArenaAllocator.init(allocator);
     database.import_directory = null;
     database.statements = acmedb.StatementCache.init(allocator);
+    database.scratch = std.heap.ArenaAllocator.init(allocator);
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
         release(database);
         return null;
@@ -612,9 +629,9 @@ fn statementFor(call: QueryCall, owned: *?*Statement) ?*Statement {
 
 /// `query(db, text, parameters)`: the rows of one query, as lists of cells.
 fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    const scratch = scratchOf(args) orelse return null;
+    defer doneWith(scratch);
+    const arena = scratch.allocator();
     const call = queryCall(args, arena) orelse return null;
     var owned: ?*Statement = null;
     defer if (owned) |statement| statement.destroy();
@@ -666,10 +683,9 @@ fn statementQuery(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
     const pointer = py.PyCapsule_GetPointer(statement_capsule, statement_capsule_name) orelse return null;
     const statement: *Statement = @ptrCast(@alignCast(pointer));
 
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
     const database = databaseOf(capsule) orelse return null;
+    const arena = database.scratch.allocator();
+    defer doneWith(&database.scratch);
     const parameters = parametersOf(parameters_object, arena) orelse return null;
     const call = QueryCall{ .database = database, .text = statement.text, .parameters = parameters };
     var executor = statement.executorFor(&database.graph, arena);
@@ -702,9 +718,9 @@ fn stringTuple(names: []const []const u8) ?*py.PyObject {
 /// returns `(rows, lines, parents)`: the query's own rows (PROFILE runs it),
 /// the plan's lines, and the index of each line's parent (None at the root).
 fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
-    var arena_state = std.heap.ArenaAllocator.init(allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
+    const scratch = scratchOf(args) orelse return null;
+    defer doneWith(scratch);
+    const arena = scratch.allocator();
     const call = queryCall(args, arena) orelse return null;
     var owned: ?*Statement = null;
     defer if (owned) |statement| statement.destroy();

@@ -3,8 +3,11 @@
 //! The element types used here are *regular*: they provide
 //!
 //!   fn eql(a: T, b: T) bool                     an equivalence relation
-//!   fn hash(self: T, hasher: *std.hash.Wyhash)   consistent with it
+//!   fn hash(self: T) u64                        consistent with it
 //!                                                (`eql(a, b)` implies equal hashes)
+//!
+//! A composite's hash folds its parts' with `combineHashes`; a scalar's is
+//! `hashWord` of its bits, a byte string's `hashBytes`.
 //!
 //! `ElementContext(T)` and `SequenceContext(T)` adapt such a type to the
 //! std.HashMap context protocol (`hash(context, K) u64`, `eql(context, K, K) bool`),
@@ -19,9 +22,7 @@ const Wyhash = std.hash.Wyhash;
 pub fn ElementContext(comptime T: type) type {
     return struct {
         pub fn hash(_: @This(), item: T) u64 {
-            var hasher = Wyhash.init(0);
-            item.hash(&hasher);
-            return hasher.final();
+            return item.hash();
         }
 
         pub fn eql(_: @This(), a: T, b: T) bool {
@@ -35,9 +36,7 @@ pub fn ElementContext(comptime T: type) type {
 pub fn SequenceContext(comptime T: type) type {
     return struct {
         pub fn hash(_: @This(), items: []const T) u64 {
-            var hasher = Wyhash.init(0);
-            hashSequence(T, items, &hasher);
-            return hasher.final();
+            return hashSequence(T, items);
         }
 
         pub fn eql(_: @This(), a: []const T, b: []const T) bool {
@@ -55,10 +54,27 @@ pub fn eqlSequence(comptime T: type, a: []const T, b: []const T) bool {
     return true;
 }
 
-/// Feeds a sequence (its length, then each element) into `hasher`. O(n).
-pub fn hashSequence(comptime T: type, items: []const T, hasher: *Wyhash) void {
-    hasher.update(std.mem.asBytes(&items.len));
-    for (items) |item| item.hash(hasher);
+/// The hash of a sequence: its length, then each element's, folded. O(n).
+pub fn hashSequence(comptime T: type, items: []const T) u64 {
+    var result = hashWord(items.len);
+    for (items) |item| result = combineHashes(result, item.hash());
+    return result;
+}
+
+/// The hash of a 64-bit word: every input bit affects every output bit.
+pub fn hashWord(word: u64) u64 {
+    return std.hash.int(word);
+}
+
+/// The hash of a byte string, seeded so strings of different kinds differ.
+pub fn hashBytes(seed: u64, bytes: []const u8) u64 {
+    return Wyhash.hash(seed, bytes);
+}
+
+/// Folds the hash of the next part into the hash so far. Order matters:
+/// (a, b) and (b, a) hash differently.
+pub fn combineHashes(so_far: u64, next: u64) u64 {
+    return hashWord(so_far *% 0x9e3779b97f4a7c15 ^ next);
 }
 
 /// Removes every element equal (under `context`) to an earlier one, keeping
@@ -109,8 +125,8 @@ const Tagged = struct {
         return a.key == b.key;
     }
 
-    fn hash(self: Tagged, hasher: *Wyhash) void {
-        hasher.update(&.{self.key});
+    fn hash(self: Tagged) u64 {
+        return hashWord(self.key);
     }
 };
 

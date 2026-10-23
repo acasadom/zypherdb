@@ -279,9 +279,11 @@ fn measure(io: std.Io, graph: *Graph, query: Query, counts: Counts, random: std.
     const statement: ?*acmedb.Statement = if (prepared) try acmedb.Statement.prepare(std.heap.smp_allocator, query.text, .{ .graph = graph }) else null;
     defer if (statement) |prepared_statement| prepared_statement.destroy();
     var rows: usize = 0;
+    // One arena for every run, as the C and Python bindings keep one per database.
+    var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+    defer arena.deinit();
     for (0..runs + 2) |run| { // two warm-up runs
-        var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
-        defer arena.deinit();
+        defer _ = arena.reset(.{ .retain_with_limit = 1 << 20 });
         var ast = acmedb.Ast.init(arena.allocator());
         var executor = if (statement) |prepared_statement| prepared_statement.executorFor(graph, arena.allocator()) else acmedb.Executor.init(&ast, graph, arena.allocator());
         for (query.parameters) |parameter| {
