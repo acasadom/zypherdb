@@ -122,6 +122,11 @@ const char *acmedb_result_list_item_string(const acmedb_result *result, size_t r
 /* The whole graph as JSON; the buffer belongs to the context. */
 const char *acmedb_export_json(acmedb_context *context, size_t *out_len);
 
+/* A diagnostic, not a routine call: checks that every index and counter agrees with the stored
+ * records, reading the whole database. JSON {"ok", "problem_count", "problems"}; the buffer
+ * belongs to the context. See docs/guide/c-api.md. */
+const char *acmedb_check(acmedb_context *context, size_t *out_len);
+
 #ifdef __cplusplus
 }
 #endif

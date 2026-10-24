@@ -19,6 +19,7 @@ const SnapshotProperty = @import("execution/entities.zig").Property;
 const PropertyIterator = @import("storage/graph.zig").PropertyIterator;
 const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
 const StorageError = @import("storage/key_value_store.zig").StorageError;
+const integrity = @import("storage/integrity.zig");
 const Value = @import("value.zig").Value;
 const MapEntry = @import("value.zig").MapEntry;
 const formatFloat = @import("value.zig").formatFloat;
@@ -38,6 +39,8 @@ pub const Context = struct {
     diagnostic: Diagnostic,
     /// The last `acmedb_export_json` document, owned by the context.
     export_json: []u8 = &.{},
+    /// The last `acmedb_check` report, owned by the context.
+    check_json: []u8 = &.{},
     /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
     import_directory: ?[]u8 = null,
     /// The statements `acmedb_query` prepared, by text.
@@ -114,6 +117,7 @@ pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize
     context.allocator = allocator;
     context.diagnostic = Diagnostic.init();
     context.export_json = &.{};
+    context.check_json = &.{};
     context.import_directory = null;
     context.statements = StatementCache.init(allocator);
     context.scratch = std.heap.ArenaAllocator.init(allocator);
@@ -130,6 +134,7 @@ pub export fn acmedb_close(context: *Context) void {
     context.statements.deinit();
     context.scratch.deinit();
     allocator.free(context.export_json);
+    allocator.free(context.check_json);
     if (context.import_directory) |directory| allocator.free(directory);
     context.store.deinit();
     allocator.destroy(context);
@@ -477,6 +482,37 @@ pub export fn acmedb_export_json(context: *Context, out_len: *usize) ?[*]const u
     context.export_json = json;
     out_len.* = json.len;
     return json.ptr;
+}
+
+/// Checks that every structure derived from the stored records agrees with
+/// them (src/storage/integrity.zig), and returns the report as JSON:
+///
+///   {"ok": false, "problem_count": 2, "problems": ["missing key ...", ...]}
+///
+/// `problems` describes the first 32. A diagnostic for a suspected bug, not a
+/// routine call: it reads the whole database and holds memory in proportion
+/// to it. The buffer belongs to the context and stays valid until the next
+/// check or `acmedb_close`. Returns null on failure.
+pub export fn acmedb_check(context: *Context, out_len: *usize) ?[*]const u8 {
+    const json = checkJson(context) catch return null;
+    allocator.free(context.check_json);
+    context.check_json = json;
+    out_len.* = json.len;
+    return json.ptr;
+}
+
+fn checkJson(context: *Context) (StorageError || Allocator.Error)![]u8 {
+    var report = try integrity.check(&context.graph, allocator);
+    defer report.deinit();
+    var buffer = std.ArrayList(u8).empty;
+    errdefer buffer.deinit(allocator);
+    try buffer.print(allocator, "{{\"ok\":{},\"problem_count\":{d},\"problems\":[", .{ report.ok(), report.count });
+    for (report.problems.items, 0..) |problem, i| {
+        if (i > 0) try buffer.append(allocator, ',');
+        try appendJsonString(&buffer, allocator, problem);
+    }
+    try buffer.appendSlice(allocator, "]}");
+    return buffer.toOwnedSlice(allocator);
 }
 
 fn exportGraph(context: *Context) (StorageError || Allocator.Error)![]u8 {
@@ -884,6 +920,7 @@ comptime {
     _ = acmedb_result_list_item_bool;
     _ = acmedb_result_list_item_string;
     _ = acmedb_export_json;
+    _ = acmedb_check;
     _ = acmedb_query_with_parameters;
     _ = acmedb_prepare;
     _ = acmedb_statement_query;

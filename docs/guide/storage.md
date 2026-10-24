@@ -220,6 +220,9 @@ checks that every uniqueness constraint holds, that the id counters are above ev
 that each record is well formed, and that the main table holds no key of any other kind. It
 returns a `Report` with the first problems found, described, and their count.
 
+Users can run it too, as `Database.check()` in Python and `acmedb_check` in C: a diagnostic for
+a suspected bug, documented as such, not a routine call.
+
 It runs in one read transaction, or in the active one (a write transaction is seen with its
 uncommitted changes), in O(database) time and memory. Two differences are not problems: a counter
 of something no longer there may stay at zero, and an edge key may keep a neighbour's labels as an

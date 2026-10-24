@@ -282,6 +282,12 @@ def test_export_graph(db):
     }
 
 
+def test_check(db):
+    db.query("CREATE (a:Person {name: 'Ana'})-[:KNOWS {note: 'from school'}]->(:Person {name: 'Bo'})")
+    db.query("CREATE FULLTEXT INDEX notes FOR ()-[r:KNOWS]-() ON EACH [r.note]")
+    assert db.check() == {"ok": True, "problem_count": 0, "problems": []}
+
+
 def test_returns_whole_nodes_and_relationships(db):
     db.query("CREATE (:Person:Admin {name: 'Ana'})-[:KNOWS {since: 2020}]->(:Person {name: 'Bo'})")
     rows = db.query("MATCH (a {name: 'Ana'})-[r]->(b) RETURN a, r, [b]")

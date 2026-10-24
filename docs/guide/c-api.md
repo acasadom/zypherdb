@@ -303,6 +303,29 @@ This function returns the whole graph as JSON, read straight from storage, or `N
 The text belongs to the context, and stays valid until the next export or `acmedb_close`. It is
 meant for tests and debugging, since it reads everything.
 
+## Checking the database
+
+```c
+const char *acmedb_check(acmedb_context *context, size_t *out_len);
+```
+
+This function checks that every index, adjacency key and counter agrees with the stored records
+(see [storage](storage.md#checking-integrity)), and returns the report as JSON, or `NULL` on
+failure:
+
+```json
+{"ok": false, "problem_count": 1, "problems": ["missing key lDoor\\x00..."]}
+```
+
+`problems` describes the first 32 problems found. The text belongs to the context, and stays
+valid until the next check or `acmedb_close`.
+
+> **Warning.** It is **a diagnostic, not a routine call**. Run it only with a reason: a query that misses
+> data it should find or counts that do not add up (a suspected bug in acmedb), to be sure after a
+> crash, or to attach its output to a bug report. It reads the whole database and holds memory in
+> proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
+> reports is a bug in acmedb: please report it with the output.
+
 ## Threads and processes
 
 A context is not thread-safe, so serialize the calls on one context. Each process opens the
