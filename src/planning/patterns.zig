@@ -19,11 +19,37 @@ const RangeSeek = Plan.RangeSeek;
 const Scope = @import("scope.zig").Scope;
 const no_slot = @import("../execution/bindings.zig").no_slot;
 
-/// What planning a pattern reads: the query and the graph's counts.
+/// What planning a pattern reads: the query, the graph's counts and the
+/// planner's options.
 pub const Context = struct {
     ast: *const Ast,
     statistics: *Statistics,
     allocator: Allocator,
+    options: Options = .{},
+};
+
+/// Switches for the planner's choices. The defaults make the fastest plan;
+/// any other setting makes a slower plan with the same results, which the
+/// query fuzzer compares.
+pub const Options = struct {
+    /// Pull equalities and ranges out of the WHERE as seeks on the pattern's
+    /// nodes (the WHERE is still evaluated whole).
+    where_seeks: bool = true,
+    /// Look nodes and relationships up in the property indexes; off: scan
+    /// labels or every node, and check the seeks on each.
+    index_lookups: bool = true,
+    /// Which node a pattern starts from.
+    anchor: Anchor = .cheapest,
+    /// ORDER BY with LIMIT keeps only the first rows (`Top`); off: sort all
+    /// of them, then skip and limit.
+    top: bool = true,
+
+    pub const Anchor = union(enum) {
+        /// The node with the fewest estimated candidates.
+        cheapest,
+        /// This position in the pattern (the last node if it is shorter).
+        position: u32,
+    };
 };
 
 /// Where the pattern sits in the plan being built.
@@ -41,7 +67,7 @@ pub const Placement = struct {
 pub fn plan(context: Context, pattern: Index, where: ?Index, before: *const Scope, after: *const Scope, placement: Placement, operators: *std.ArrayList(Operator)) Allocator.Error!Plan.PatternPlan {
     var planner = Planner{ .context = context };
     try planner.collectElements(pattern, before, after);
-    if (where) |expression| try planner.collectWhereSeeks(expression);
+    if (where) |expression| if (context.options.where_seeks) try planner.collectWhereSeeks(expression);
     const path_variable = context.ast.data(pattern).text;
     if (where) |expression| planner.markPathReads(expression, path_variable);
 
@@ -171,6 +197,7 @@ const Planner = struct {
     /// single edge with an equality seek and both endpoints are unbound and
     /// unselective.
     fn shouldEdgeAnchor(self: *const Planner) bool {
+        if (!self.context.options.index_lookups) return false;
         if (self.nodes.items.len != 2 or self.edges.items.len != 1) return false;
         const edge = self.edges.items[0];
         if (edge.seeks.items.len == 0 or edge.edge.variable_length) return false;
@@ -273,6 +300,10 @@ const Planner = struct {
     }
 
     fn chooseAnchor(self: *const Planner) Allocator.Error!usize {
+        switch (self.context.options.anchor) {
+            .cheapest => {},
+            .position => |position| return @min(position, self.nodes.items.len - 1),
+        }
         var best: usize = 0;
         var best_estimate = try self.estimate(0);
         for (1..self.nodes.items.len) |position| {

@@ -147,6 +147,9 @@ statement_time: ?i128,
 /// `realtime` ones too; null: the system clock. Fuzzers and tests set it so a
 /// run repeats.
 fixed_time: ?i128 = null,
+/// The planner's options for the plans `run` builds; the defaults make the
+/// fastest plan. Fuzzers turn optimizations off to compare results.
+plan_options: builder.Options = .{},
 /// The generator `rand()` draws from; null: the system's random source.
 /// Fuzzers and tests set it so a run repeats.
 random: ?std.Random = null,
@@ -186,7 +189,7 @@ pub fn run(self: *Executor, root: Index) ExecutionError![]const Row {
     errdefer if (has_writes) self.graph.abortWrite() else self.graph.abortRead();
 
     var statistics = Statistics{ .graph = self.graph, .allocator = self.allocator };
-    const plan = try builder.build(.{ .ast = self.ast, .statistics = &statistics, .allocator = self.allocator }, root);
+    const plan = try builder.build(.{ .ast = self.ast, .statistics = &statistics, .allocator = self.allocator, .options = self.plan_options }, root);
     const result = try self.execute(&plan, root);
 
     if (has_writes) try self.graph.commitWrite() else self.graph.commitRead();

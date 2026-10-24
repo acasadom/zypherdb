@@ -81,7 +81,7 @@ pub fn run(executor: *Executor, statement: Index) ExecutionError![]const Row {
     errdefer if (writes) executor.graph.abortWrite() else executor.graph.abortRead();
 
     var statistics = Statistics{ .graph = executor.graph, .allocator = executor.allocator };
-    const plan = try builder.build(.{ .ast = ast, .statistics = &statistics, .allocator = executor.allocator }, root);
+    const plan = try builder.build(.{ .ast = ast, .statistics = &statistics, .allocator = executor.allocator, .options = executor.plan_options }, root);
     var profile: ?Profile = null;
     if (profiling) {
         profile = try Profile.init(executor.allocator, plan.operators.len);

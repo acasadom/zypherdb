@@ -84,7 +84,7 @@ pub fn scanNodes(self: *Executor, reference: Plan.NodeReference, next: OperatorI
     const pattern = patternOf(self, reference.pattern);
     const node = pattern.nodes[reference.node];
     var from_label_index = false;
-    var iterator = if (node.seeks.len > 0) seek: {
+    var iterator = if (node.seeks.len > 0 and self.plan.index_lookups) seek: {
         const seek = node.seeks[0];
         break :seek try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
     } else if (try rangeCandidates(self, node, bindings)) |in_range| in_range else label: {
@@ -110,7 +110,7 @@ pub fn scanNodes(self: *Executor, reference: Plan.NodeReference, next: OperatorI
 /// bounds of every range seek on that property, or null when the bounds do
 /// not allow a range lookup (strings, booleans, a null): scan instead.
 fn rangeCandidates(self: *Executor, node: PatternNode, bindings: *Bindings) ExecutionError!?NodeIdIterator {
-    if (node.ranges.len == 0) return null;
+    if (node.ranges.len == 0 or !self.plan.index_lookups) return null;
     const property = node.ranges[0].property;
     var lower: ?Value = null;
     var upper: ?Value = null;
@@ -231,7 +231,7 @@ const max_indexed_candidates = 8;
 /// if it has one and they are few; null to scan the neighbours instead.
 /// (Only for edges that name their types: an edge test needs the type.)
 fn indexedCandidates(self: *Executor, node: PatternNode, bindings: *Bindings) ExecutionError!?[]const NodeId {
-    if (node.bound or node.seeks.len == 0) return null;
+    if (node.bound or node.seeks.len == 0 or !self.plan.index_lookups) return null;
     if (bindings.getNode(node.slot) != null) return null;
     const seek = node.seeks[0];
     var iterator = try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));

@@ -76,6 +76,9 @@ pub const Token = lexer.Token;
 pub const Executor = @import("execution/Executor.zig");
 pub const ExecutionError = Executor.ExecutionError;
 pub const Row = Executor.Row;
+/// The planner's switches (`Executor.plan_options`): the query fuzzer turns
+/// optimizations off to compare results.
+pub const PlanOptions = @import("planning/builder.zig").Options;
 
 /// Prepared statements, and the cache of those `query` calls prepare.
 pub const Statement = @import("statement/Statement.zig");
