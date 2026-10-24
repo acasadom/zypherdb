@@ -42,6 +42,42 @@ fn fail(self: *Executor, err: TemporalError) ExecutionError {
     return error.InvalidExpression;
 }
 
+/// What a constructor builds: its function's name, the value's name and a
+/// value written as the constructor reads it.
+const Described = struct { function: []const u8, noun: []const u8, example: []const u8 };
+
+fn described(kind: ?Kind) Described {
+    const k = kind orelse return .{ .function = "duration", .noun = "duration", .example = "P1Y2M3DT4H5M6S" };
+    return switch (k) {
+        .date => .{ .function = "date", .noun = "date", .example = "2026-10-24" },
+        .local_time => .{ .function = "localtime", .noun = "local time", .example = "12:30:00" },
+        .time => .{ .function = "time", .noun = "time", .example = "12:30:00+01:00" },
+        .local_date_time => .{ .function = "localdatetime", .noun = "local date-time", .example = "2026-10-24T12:30:00" },
+        .date_time => .{ .function = "datetime", .noun = "date-time", .example = "2026-10-24T12:30:00Z" },
+    };
+}
+
+/// Like `fail`, naming the text that does not spell a value of `kind`
+/// (null: a duration).
+fn failText(self: *Executor, kind: ?Kind, text: []const u8, err: TemporalError) ExecutionError {
+    const d = described(kind);
+    switch (err) {
+        error.InvalidTemporal => self.fail(.invalid_expression, "{s}('{s}'): not a valid {s} (written like '{s}')", .{ d.function, text, d.noun, d.example }),
+        error.UnknownTimeZone => self.fail(.invalid_expression, "{s}('{s}'): unknown time zone", .{ d.function, text }),
+        error.InvalidOffset => self.fail(.invalid_expression, "{s}('{s}'): invalid time zone offset", .{ d.function, text }),
+        else => return fail(self, err),
+    }
+    return error.InvalidExpression;
+}
+
+/// Like `fail`, for fields of a map that do not make a value of `kind`.
+fn failFields(self: *Executor, kind: Kind, err: TemporalError) ExecutionError {
+    if (err != error.InvalidTemporal) return fail(self, err);
+    const d = described(kind);
+    self.fail(.invalid_expression, "{s}(): the map's fields do not make a valid {s} (a field out of range, or a smaller unit without the larger one)", .{ d.function, d.noun });
+    return error.InvalidExpression;
+}
+
 fn typeError(self: *Executor, comptime message: []const u8) ExecutionError {
     self.fail(.type_mismatch, message, .{});
     return error.TypeMismatch;
@@ -104,7 +140,7 @@ pub fn construct(self: *Executor, kind: Kind, arguments: []const Value, realtime
     if (arguments.len == 0) return converted(self, kind, nowParts(self, realtime));
     return switch (arguments[0]) {
         .null => .{ .null = {} },
-        .string => |text| parseText(kind, text) catch |err| fail(self, err),
+        .string => |text| parseText(kind, text) catch |err| failText(self, kind, text, err),
         .map => |entries| fromMap(self, kind, entries, realtime),
         else => if (partsOf(arguments[0])) |parts| converted(self, kind, parts) else typeError(self, "a temporal function takes a string, a map or a temporal value"),
     };
@@ -155,8 +191,8 @@ fn fromMap(self: *Executor, kind: Kind, entries: []const MapEntry, realtime: boo
             return converted(self, kind, now);
         }
     }
-    const built = selection.build(kind, fields, nowSeconds(self)) catch |err| return fail(self, err);
-    return valueOf(kind, built) catch |err| fail(self, err);
+    const built = selection.build(kind, fields, nowSeconds(self)) catch |err| return failFields(self, kind, err);
+    return valueOf(kind, built) catch |err| failFields(self, kind, err);
 }
 
 fn onlyTimezone(entries: []const MapEntry) bool {
@@ -261,7 +297,7 @@ const duration_units = [_]struct { []const u8, durations.Unit }{
 pub fn duration(self: *Executor, arguments: []const Value) ExecutionError!Value {
     switch (arguments[0]) {
         .null => return .{ .null = {} },
-        .string => |text| return .{ .duration = parse.duration(text) catch |err| return fail(self, err) },
+        .string => |text| return .{ .duration = parse.duration(text) catch |err| return failText(self, null, text, err) },
         .map => |entries| {
             var builder = durations.Builder{};
             entries: for (entries) |entry| {

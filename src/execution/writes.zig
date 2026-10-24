@@ -297,7 +297,7 @@ fn setEdgeProperty(self: *Executor, id: u64, name: []const u8, value: Value) Exe
 
 fn reportPropertyError(self: *Executor, name: []const u8, err: GraphError) ExecutionError {
     if (err == error.UnsupportedPropertyType) {
-        self.fail(.type_mismatch, "property '{s}': only integers, strings and booleans can be stored (not lists or maps)", .{name});
+        self.fail(.type_mismatch, "property '{s}': this value cannot be stored (a list must hold values of one kind and no nulls; nodes, relationships and paths are never stored)", .{name});
     }
     return err;
 }

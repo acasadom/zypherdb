@@ -328,9 +328,8 @@ const Explainer = struct {
         const edge_type = edge.singleType() orelse return null;
         const relationships = try self.statistics.edgeTypeCount(edge_type);
         if (relationships == unknown) return null;
-        const start = pattern.nodes[from];
-        if (start.labels.len == 0) return null;
-        const nodes = try self.statistics.labelCount(start.labels[0]);
+        const label = startLabel(self.plan, pattern.nodes[from]) orelse return null;
+        const nodes = try self.statistics.labelCount(label);
         if (nodes == unknown or nodes == 0) return null;
         var per_node = @as(f64, @floatFromInt(relationships)) / @as(f64, @floatFromInt(nodes));
         if (edge.undirected) per_node *= 2;
@@ -340,6 +339,18 @@ const Explainer = struct {
     }
 
 };
+
+/// A label of `node`: its own, or, for a node bound before its pattern
+/// (`OPTIONAL MATCH (p)-->(m)` after `MATCH (p:Person)`), the one it was
+/// matched with where it was bound.
+fn startLabel(plan: *const Plan, node: Plan.PatternNode) ?[]const u8 {
+    if (node.labels.len > 0) return node.labels[0];
+    if (!node.bound) return null;
+    for (plan.patterns) |pattern| for (pattern.nodes) |other| {
+        if (!other.bound and other.slot == node.slot and std.mem.eql(u8, other.variable_name, node.variable_name) and other.labels.len > 0) return other.labels[0];
+    };
+    return null;
+}
 
 /// Whether a WITH's or RETURN's items aggregate.
 fn containsAggregates(ast: *const Ast, clause: Index) bool {

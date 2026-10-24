@@ -325,6 +325,12 @@ pub const Parser = struct {
                 after_update = true;
                 last_reads = false;
             } else {
+                // `WHERE RETURN n` reads RETURN as a variable (keywords may name
+                // variables) and fails at `n`: name the missing expression instead.
+                if (self.pos > 0 and isClauseKeyword(self.tokens[self.pos - 1])) {
+                    self.fail("expected an expression, found {s}", .{self.tokens[self.pos - 1].text});
+                    return error.UnexpectedToken;
+                }
                 self.fail("unexpected {s} (unsupported syntax or missing clause)", .{describeToken(self.peek())});
                 return error.UnexpectedToken;
             }
@@ -987,3 +993,13 @@ pub const Parser = struct {
         return self.ast.addNode(.order_by, .{ .none = {} }, items.items);
     }
 };
+
+/// Whether `t` is an unquoted keyword that starts a clause or a part of one.
+fn isClauseKeyword(t: Token) bool {
+    if (t.kind != .identifier or t.quoted) return false;
+    const keywords = [_][]const u8{ "MATCH", "OPTIONAL", "WHERE", "WITH", "RETURN", "CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE", "UNWIND", "CALL", "FOREACH", "UNION", "ORDER", "SKIP", "LIMIT", "LOAD" };
+    for (keywords) |keyword| {
+        if (std.ascii.eqlIgnoreCase(t.text, keyword)) return true;
+    }
+    return false;
+}
