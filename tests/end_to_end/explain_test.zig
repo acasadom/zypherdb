@@ -34,12 +34,19 @@ fn planText(ast: *Ast, g: *Graph, src: []const u8) ![]const u8 {
         for (0..@intCast(cells[0].int)) |_| try text.writer.writeAll("    ");
         try text.writer.writeAll(cells[1].string);
         if (cells[2].string.len > 0) try text.writer.print(" {s}", .{cells[2].string});
-        if (cells[3] == .int) try text.writer.print("  [estimated {d}", .{cells[3].int}) else try text.writer.writeAll("  [estimated -");
+        // `  [estimated 6, rows 4]`, each part only when known.
+        var separator: []const u8 = "  [";
+        if (cells[3] == .int) {
+            try text.writer.print("{s}estimated {d}", .{ separator, cells[3].int });
+            separator = ", ";
+        }
         if (cells[4] == .int) {
             try testing.expect(cells[5] == .float and cells[5].float >= 0);
-            try text.writer.print(", rows {d}", .{cells[4].int});
+            try text.writer.print("{s}rows {d}", .{ separator, cells[4].int });
+            separator = ", ";
         }
-        try text.writer.writeAll("]\n");
+        if (separator.len == 2) try text.writer.writeAll("]");
+        try text.writer.writeAll("\n");
     }
     return text.toOwnedSlice();
 }
@@ -130,20 +137,20 @@ test "EXPLAIN shows the chains an operator runs one level deeper" {
     try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m) RETURN p.name, m.title", snap(@src(),
         \\Return p.name, m.title  [estimated 5]
         \\Optional (p)-[:DIRECTED]->(m)  [estimated 5]
-        \\    Expand(All) (p)-[:DIRECTED]->(m)  [estimated -]
+        \\    Expand(All) (p)-[:DIRECTED]->(m)  [estimated 0]
         \\    BoundNode (p)  [estimated 1]
         \\NodeByLabelScan (p:Person)  [estimated 5]
     ));
     try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:ACTED_IN]->(:Movie {released: 1999}) } RETURN p.name", snap(@src(),
         \\Return p.name  [estimated 5]
         \\Filter EXISTS {…}  [estimated 5]
-        \\    Exists EXISTS {…}  [estimated -]
-        \\        Expand(All) (p)-[:ACTED_IN]->(:Movie {released: 1999})  [estimated -]
+        \\    Exists EXISTS {…}
+        \\        Expand(All) (p)-[:ACTED_IN]->(:Movie {released: 1999})  [estimated 1]
         \\        BoundNode (p)  [estimated 1]
         \\NodeByLabelScan (p:Person)  [estimated 5]
     ));
     try expectPlan(&ast, &g, "EXPLAIN MATCH (m:Movie) RETURN m.title AS name UNION ALL MATCH (p:Person) RETURN p.name AS name", snap(@src(),
-        \\UnionAll  [estimated -]
+        \\UnionAll
         \\    Return m.title AS name  [estimated 4]
         \\    NodeByLabelScan (m:Movie)  [estimated 4]
         \\    Return p.name AS name  [estimated 5]
@@ -174,7 +181,7 @@ test "PROFILE runs the query and counts each operator's rows" {
         \\Return count(m) AS directed  [estimated 1, rows 1]
         \\Aggregation count(m) AS directed  [estimated 1, rows 1]
         \\Optional (p)-[:DIRECTED]->(m)  [estimated 5, rows 6]
-        \\    Expand(All) (p)-[:DIRECTED]->(m)  [estimated -, rows 2]
+        \\    Expand(All) (p)-[:DIRECTED]->(m)  [estimated 0, rows 2]
         \\    BoundNode (p)  [estimated 1, rows 5]
         \\NodeByLabelScan (p:Person)  [estimated 5, rows 5]
     ));
