@@ -37,13 +37,18 @@ pub fn build(b: *std.Build) void {
             // `__cpu_model`, which Zig's compiler-rt lacks, and libmdbx uses it
             // only to pick SIMD for its page lists (on macOS it never does);
             // the target's own CPU features apply instead. Debug builds keep
-            // libmdbx's cheap checks, and drop the alignment sanitizer:
-            // libmdbx reads and writes unaligned words on purpose where the
-            // CPU allows it.
+            // libmdbx's cheap checks. Builds with safety checks (Debug,
+            // ReleaseSafe) sanitize C code too: they drop the alignment
+            // sanitizer, as libmdbx reads and writes unaligned words on
+            // purpose where the CPU allows it.
             const common = .{ "-O2", "-DNDEBUG", "-DMDBX_BUILD_SHARED_LIBRARY=0", "-DMDBX_HAVE_BUILTIN_CPU_SUPPORTS=0", "-DMDBX_BUILD_TIMESTAMP=\"unknown\"", "-DMDBX_BUILD_FLAGS=\"acmedb\"" };
             acmedb.addCSourceFiles(.{
                 .files = &.{"vendor/libmdbx/mdbx.c"},
-                .flags = if (optimize == .debug) &(common ++ .{ "-DMDBX_CHECKING=1", "-fno-sanitize=alignment" }) else &common,
+                .flags = switch (optimize) {
+                    .debug => &(common ++ .{ "-DMDBX_CHECKING=1", "-fno-sanitize=alignment" }),
+                    .safe => &(common ++ .{"-fno-sanitize=alignment"}),
+                    .fast, .small => &common,
+                },
             });
         },
     }
@@ -105,6 +110,21 @@ pub fn build(b: *std.Build) void {
         const install_native = b.addInstallFileWithDir(native.getEmittedBin(), .{ .custom = "python" }, "_native.abi3.so");
         b.step("python", "Build the Python extension module into zig-out/python").dependOn(&install_native.step);
     }
+
+    // Fuzzers: `zig build fuzz -- storage [--seed N] [--steps N] [--seeds N]`
+    // (tests/fuzz/main.zig); `zig build test` runs a few fixed seeds.
+    const fuzz = b.addExecutable(.{
+        .name = "fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+        }),
+    });
+    const run_fuzz = b.addRunArtifact(fuzz);
+    run_fuzz.addPassthruArgs();
+    b.step("fuzz", "Run a fuzzer: zig build fuzz -- storage [--seed N] [--steps N] [--seeds N]").dependOn(&run_fuzz.step);
 
     // Benchmark: `zig build bench -Doptimize=ReleaseFast -- --people 100000`.
     const bench = b.addExecutable(.{

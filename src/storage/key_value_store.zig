@@ -363,6 +363,17 @@ pub const KeyValueStore = struct {
         try transaction.delete(.relationships, std.mem.asBytes(&id));
     }
 
+    /// Iterates every relationship id, in ascending order (the keys yielded
+    /// are the ids in native byte order, the values their records).
+    pub fn scanRelationships(self: *KeyValueStore) StorageError!PrefixIterator {
+        return self.scan(.relationships, "", "", null);
+    }
+
+    /// Iterates every key of the main table, in key order.
+    pub fn scanAll(self: *KeyValueStore) StorageError!PrefixIterator {
+        return self.scan(.main, "", "", null);
+    }
+
     // --- Scans ---------------------------------------------------------------
 
     /// Iterator over all key/value pairs whose key starts with `prefix`, in

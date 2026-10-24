@@ -108,6 +108,8 @@ test "a constraint on several properties, Neo4j 4's syntax, and what is refused"
     try expectQuery(&ast, &g, "CREATE CONSTRAINT IF NOT EXISTS FOR (d:Door) REQUIRE (d.building, d.number) IS UNIQUE", &.{});
     try expectQuery(&ast, &g, "CREATE (:Door {building: 'A', number: 1}), (:Door {building: 'B', number: 1}), (:Door {building: 'A', number: 2})", &.{});
     try expectQueryError(&ast, &g, "CREATE (:Door {building: 'B', number: 1})", error.ConstraintViolation);
+    // Values compare as `=` does, on every property: 1 is 1.0.
+    try expectQueryError(&ast, &g, "CREATE (:Door {building: 'B', number: 1.0})", error.ConstraintViolation);
     try expectQuery(&ast, &g, "CREATE CONSTRAINT person_id ON (p:Person) ASSERT p.id IS UNIQUE", &.{});
     try expectQuery(&ast, &g, "MATCH (n) RETURN count(n)", &.{&.{int(3)}});
     try expectOrdered(&ast, &g, "SHOW CONSTRAINTS", &.{
