@@ -23,6 +23,9 @@ pub const NodeIdIterator = graph.NodeIdIterator;
 /// Checks that every derived structure agrees with the primary records.
 pub const integrity = @import("storage/integrity.zig");
 
+/// The storage engine this build uses (`zig build -Dstorage-engine=...`).
+pub const storage_engine = @tagName(@import("build_options").storage_engine);
+
 pub const value = @import("value.zig");
 
 pub const Value = value.Value;

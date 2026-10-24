@@ -8,6 +8,7 @@ already cost time.
 
 ```bash
 zig build test    # unit tests in src/ + the suite in tests/
+zig build fuzz -- storage --seeds 100   # the storage fuzzer, from a random seed
 zig build         # static + shared libraries and acmedb.h into zig-out/
 make python       # the Python extension module into zig-out/python/
 make test-py      # Python tests and documentation tests (pip install -e "python[dev]" once)
@@ -49,6 +50,36 @@ longer passes; CI does the same. Language work is measured there: pick a reason 
 `python -I tests/tck/runner.py --update-baseline --report tests/tck/REPORT.md` in the same commit.
 `tests/tck/deviations.txt` lists the scenarios that acmedb answers differently on purpose (map
 properties, for instance), each with its reason.
+
+### The storage fuzzer and the integrity checker
+
+`tests/fuzz/storage.zig` runs random operations through the `Graph` API — nodes, labels,
+properties of every type, relationships (loops and parallel ones too), commits and aborts,
+full-text indexes and uniqueness constraints (as statements), closing and reopening the database —
+and applies each to a model in memory (`tests/fuzz/model.zig`) that predicts the ones that must
+fail (a constraint broken, a node still connected, a value that cannot be stored). After every
+commit and abort it checks that the database equals the model, and runs the
+[integrity checker](storage.md#checking-integrity).
+
+A run is determined by its seed. Each seed also picks what it exercises (swarm testing): which
+operations run and how often, with transactions or without, how many labels and properties, and
+whether values come from every type or from a narrow few that collide often. A failure prints the
+last operations, the problem, and the command that repeats it:
+
+```bash
+zig build fuzz -- storage --seed 42 --steps 1000 --verbose
+```
+
+`zig build test` runs eight fixed seeds; a long run takes random ones, on each engine:
+
+```bash
+zig build fuzz -Doptimize=ReleaseSafe -- storage --seeds 200 --steps 2000
+zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- storage --seeds 200 --steps 2000
+```
+
+At the end it prints how often each operation ran, and how often it failed as the model said it
+must: a fuzzer that never breaks a constraint does not test them. A new mutation of the graph, or a
+new kind of failure, gets an operation in the fuzzer and a prediction in the model.
 
 ### Benchmarks
 
@@ -152,7 +183,7 @@ Indexes are just more key ranges (see [storage](storage)):
 3. If it should drive planning, surface it in `patterns.zig` (`estimate`, `shouldEdgeAnchor`) and
    in the pattern operator that reads it (`pattern_matching.zig`).
 4. `src/storage/integrity.zig` — rebuild its keys from the primary data, so the checker compares
-   them (until then it reports them as unknown keys).
+   them (until then it reports them as unknown keys); then run the storage fuzzer.
 
 ## Zig 0.17 gotchas (rediscovered once, recorded here)
 

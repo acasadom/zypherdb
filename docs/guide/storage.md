@@ -225,6 +225,9 @@ uncommitted changes), in O(database) time and memory. Two differences are not pr
 of something no longer there may stay at zero, and an edge key may keep a neighbour's labels as an
 empty section or as a count of zero (both mean none).
 
+The storage fuzzer checks the database with it after every commit (see
+[contributing](contributing.md#the-storage-fuzzer-and-the-integrity-checker)).
+
 ## The storage engines
 
 The rest of acmedb sees the engine only through `src/storage/engine/contract.zig`; the engine is

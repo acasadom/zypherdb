@@ -111,6 +111,21 @@ pub fn build(b: *std.Build) void {
         b.step("python", "Build the Python extension module into zig-out/python").dependOn(&install_native.step);
     }
 
+    // Fuzzers: `zig build fuzz -- storage [--seed N] [--steps N] [--seeds N]`
+    // (tests/fuzz/main.zig); `zig build test` runs a few fixed seeds.
+    const fuzz = b.addExecutable(.{
+        .name = "fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/fuzz/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+        }),
+    });
+    const run_fuzz = b.addRunArtifact(fuzz);
+    run_fuzz.addPassthruArgs();
+    b.step("fuzz", "Run a fuzzer: zig build fuzz -- storage [--seed N] [--steps N] [--seeds N]").dependOn(&run_fuzz.step);
+
     // Benchmark: `zig build bench -Doptimize=ReleaseFast -- --people 100000`.
     const bench = b.addExecutable(.{
         .name = "bench-access-control",
