@@ -8,6 +8,7 @@ already cost time.
 
 ```bash
 zig build test    # unit tests in src/ + the suite in tests/
+SNAP_UPDATE=1 zig build test   # rewrite the snapshots that differ (review with git diff)
 zig build fuzz -- storage --seeds 100   # the storage fuzzer, from a random seed
 zig build         # static + shared libraries and acmedb.h into zig-out/
 make python       # the Python extension module into zig-out/python/
@@ -80,6 +81,26 @@ zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- storage --seeds 2
 At the end it prints how often each operation ran, and how often it failed as the model said it
 must: a fuzzer that never breaks a constraint does not test them. A new mutation of the graph, or a
 new kind of failure, gets an operation in the fuzzer and a prediction in the model.
+
+### Snapshot tests
+
+Text that a reader checks as a whole — EXPLAIN and PROFILE plans
+(`tests/end_to_end/explain_test.zig`) and the error messages a caller of the C ABI or Python
+reads (`tests/error_messages_test.zig`) — is compared with a multiline string literal written
+right after `snap(@src(), ...)` (`tests/snapshot.zig`):
+
+```zig
+try snap(@src(),
+    \\Return m.title  [estimated 6]
+    \\NodeByLabelScan (m:Movie)  [estimated 4]
+).diff(plan_text);
+```
+
+When the text changes, the test prints both versions. `SNAP_UPDATE=1 zig build test` rewrites
+every literal that differs with the new text; read the change with `git diff` before committing
+it. To add a case, write an empty literal (`\\` alone on its line) and run with `SNAP_UPDATE=1`.
+If a test crashes during an update, the rest of the run can refuse to rewrite a file that changed
+since it was compiled; run the update again.
 
 ### Benchmarks
 

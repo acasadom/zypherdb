@@ -2,6 +2,7 @@
 //! Unit tests of private helpers stay next to their code in src/.
 
 test {
+    _ = @import("snapshot.zig");
     _ = @import("storage/key_value_store_test.zig");
     _ = @import("storage/graph_test.zig");
     _ = @import("storage/integrity_test.zig");

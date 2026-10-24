@@ -14,32 +14,41 @@ const support = @import("../support.zig");
 const openStore = support.openStore;
 const loadMoviesGraph = support.loadMoviesGraph;
 const expectQuery = support.expectQuery;
+const Snap = @import("../snapshot.zig").Snap;
+const snap = @import("../snapshot.zig").snap;
 
-/// One line of a plan, as a test expects it.
-const Line = struct { depth: i64, operator: []const u8, details: []const u8, estimated_rows: ?i64 = null, rows: ?i64 = null };
-
-/// Runs `src` (an EXPLAIN or PROFILE) and checks its lines in order. The
-/// estimate is checked where the test gives one; the rows, in PROFILE.
-fn expectPlan(ast: *Ast, g: *Graph, src: []const u8, expected: []const Line) !void {
+/// Runs `src` (an EXPLAIN or PROFILE) and prints its plan, one operator per
+/// line, indented by depth, with the estimate and, in PROFILE, the rows (the
+/// time is only checked to be a number of milliseconds).
+fn planText(ast: *Ast, g: *Graph, src: []const u8) ![]const u8 {
     const query = try acmedb.parser.parse(ast, src, null);
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var executor = Executor.init(ast, g, arena.allocator());
     const rows = try executor.run(query);
-    errdefer for (rows) |row| std.debug.print("{any}\n", .{row.items});
-    try testing.expectEqual(expected.len, rows.len);
-    for (expected, rows) |line, row| {
+    var text: std.Io.Writer.Allocating = .init(testing.allocator);
+    errdefer text.deinit();
+    for (rows) |row| {
         const cells = row.items;
         try testing.expectEqual(@as(usize, 6), cells.len);
-        try testing.expectEqual(line.depth, cells[0].int);
-        try testing.expectEqualStrings(line.operator, cells[1].string);
-        try testing.expectEqualStrings(line.details, cells[2].string);
-        if (line.estimated_rows) |estimate| try testing.expectEqual(estimate, cells[3].int);
-        if (line.rows) |made| {
-            try testing.expectEqual(made, cells[4].int);
+        for (0..@intCast(cells[0].int)) |_| try text.writer.writeAll("    ");
+        try text.writer.writeAll(cells[1].string);
+        if (cells[2].string.len > 0) try text.writer.print(" {s}", .{cells[2].string});
+        if (cells[3] == .int) try text.writer.print("  [estimated {d}", .{cells[3].int}) else try text.writer.writeAll("  [estimated -");
+        if (cells[4] == .int) {
             try testing.expect(cells[5] == .float and cells[5].float >= 0);
+            try text.writer.print(", rows {d}", .{cells[4].int});
         }
+        try text.writer.writeAll("]\n");
     }
+    return text.toOwnedSlice();
+}
+
+/// Checks the plan of `src` against the snapshot.
+fn expectPlan(ast: *Ast, g: *Graph, src: []const u8, expected: Snap) !void {
+    const text = try planText(ast, g, src);
+    defer testing.allocator.free(text);
+    try expected.diff(text);
 }
 
 test "EXPLAIN shows the plan from the result down to the anchor, with estimates" {
@@ -55,24 +64,24 @@ test "EXPLAIN shows the plan from the result down to the anchor, with estimates"
 
     // 4 movies, 5 people, 6 ACTED_IN: the movies are the anchor, each has
     // 1.5 actors on average.
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN m.title", &.{
-        .{ .depth = 0, .operator = "Return", .details = "m.title", .estimated_rows = 6 },
-        .{ .depth = 0, .operator = "Expand(All)", .details = "(m:Movie)<-[:ACTED_IN]-(p:Person)", .estimated_rows = 6 },
-        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(m:Movie)", .estimated_rows = 4 },
-    });
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person {name: $name}) WHERE p.born > 1960 RETURN count(*) AS n", &.{
-        .{ .depth = 0, .operator = "Return", .details = "count(*) AS n", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "Aggregation", .details = "count(*) AS n", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "Filter", .details = "p.born > 1960", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "NodeIndexSeek", .details = "(p:Person {name: $name})", .estimated_rows = 1 },
-    });
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (m:Movie) WHERE m.released >= 2000 WITH m ORDER BY m.released LIMIT 2 RETURN m.title", &.{
-        .{ .depth = 0, .operator = "Return", .details = "m.title", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "Top", .details = "ORDER BY m.released LIMIT 2", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "Projection", .details = "m", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "Filter", .details = "m.released >= 2000", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "NodeIndexRangeSeek", .details = "(m:Movie) WHERE 2000 <= m.released", .estimated_rows = 1 },
-    });
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN m.title", snap(@src(),
+        \\Return m.title  [estimated 6]
+        \\Expand(All) (m:Movie)<-[:ACTED_IN]-(p:Person)  [estimated 6]
+        \\NodeByLabelScan (m:Movie)  [estimated 4]
+    ));
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person {name: $name}) WHERE p.born > 1960 RETURN count(*) AS n", snap(@src(),
+        \\Return count(*) AS n  [estimated 1]
+        \\Aggregation count(*) AS n  [estimated 1]
+        \\Filter p.born > 1960  [estimated 1]
+        \\NodeIndexSeek (p:Person {name: $name})  [estimated 1]
+    ));
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (m:Movie) WHERE m.released >= 2000 WITH m ORDER BY m.released LIMIT 2 RETURN m.title", snap(@src(),
+        \\Return m.title  [estimated 1]
+        \\Top ORDER BY m.released LIMIT 2  [estimated 1]
+        \\Projection m  [estimated 1]
+        \\Filter m.released >= 2000  [estimated 1]
+        \\NodeIndexRangeSeek (m:Movie) WHERE 2000 <= m.released  [estimated 1]
+    ));
 }
 
 test "EXPLAIN shows DISTINCT, ORDER BY, SKIP and LIMIT as stages of their own" {
@@ -88,23 +97,23 @@ test "EXPLAIN shows DISTINCT, ORDER BY, SKIP and LIMIT as stages of their own" {
 
     // ORDER BY with a LIMIT keeps SKIP + LIMIT rows (Top), then SKIP drops
     // some: no Limit is left to apply.
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) RETURN DISTINCT p.name ORDER BY p.name SKIP 1 LIMIT 2", &.{
-        .{ .depth = 0, .operator = "Return", .details = "p.name", .estimated_rows = 2 },
-        .{ .depth = 0, .operator = "Skip", .details = "SKIP 1", .estimated_rows = 2 },
-        .{ .depth = 0, .operator = "Top", .details = "ORDER BY p.name LIMIT 1 + 2", .estimated_rows = 3 },
-        .{ .depth = 0, .operator = "Distinct", .details = "p.name", .estimated_rows = 5 },
-        .{ .depth = 0, .operator = "Projection", .details = "p.name", .estimated_rows = 5 },
-        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .estimated_rows = 5 },
-    });
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) WITH p SKIP 1 LIMIT 2 RETURN p.name ORDER BY p.name", &.{
-        .{ .depth = 0, .operator = "Return", .details = "p.name", .estimated_rows = 2 },
-        .{ .depth = 0, .operator = "Sort", .details = "ORDER BY p.name", .estimated_rows = 2 },
-        .{ .depth = 0, .operator = "Projection", .details = "p.name", .estimated_rows = 2 },
-        .{ .depth = 0, .operator = "Limit", .details = "LIMIT 2", .estimated_rows = 2 },
-        .{ .depth = 0, .operator = "Skip", .details = "SKIP 1", .estimated_rows = 4 },
-        .{ .depth = 0, .operator = "Projection", .details = "p", .estimated_rows = 5 },
-        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .estimated_rows = 5 },
-    });
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) RETURN DISTINCT p.name ORDER BY p.name SKIP 1 LIMIT 2", snap(@src(),
+        \\Return p.name  [estimated 2]
+        \\Skip SKIP 1  [estimated 2]
+        \\Top ORDER BY p.name LIMIT 1 + 2  [estimated 3]
+        \\Distinct p.name  [estimated 5]
+        \\Projection p.name  [estimated 5]
+        \\NodeByLabelScan (p:Person)  [estimated 5]
+    ));
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) WITH p SKIP 1 LIMIT 2 RETURN p.name ORDER BY p.name", snap(@src(),
+        \\Return p.name  [estimated 2]
+        \\Sort ORDER BY p.name  [estimated 2]
+        \\Projection p.name  [estimated 2]
+        \\Limit LIMIT 2  [estimated 2]
+        \\Skip SKIP 1  [estimated 4]
+        \\Projection p  [estimated 5]
+        \\NodeByLabelScan (p:Person)  [estimated 5]
+    ));
 }
 
 test "EXPLAIN shows the chains an operator runs one level deeper" {
@@ -118,28 +127,28 @@ test "EXPLAIN shows the chains an operator runs one level deeper" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
 
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m) RETURN p.name, m.title", &.{
-        .{ .depth = 0, .operator = "Return", .details = "p.name, m.title" },
-        .{ .depth = 0, .operator = "Optional", .details = "(p)-[:DIRECTED]->(m)" },
-        .{ .depth = 1, .operator = "Expand(All)", .details = "(p)-[:DIRECTED]->(m)" },
-        .{ .depth = 1, .operator = "BoundNode", .details = "(p)" },
-        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)" },
-    });
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:ACTED_IN]->(:Movie {released: 1999}) } RETURN p.name", &.{
-        .{ .depth = 0, .operator = "Return", .details = "p.name" },
-        .{ .depth = 0, .operator = "Filter", .details = "EXISTS {…}" },
-        .{ .depth = 1, .operator = "Exists", .details = "EXISTS {…}" },
-        .{ .depth = 2, .operator = "Expand(All)", .details = "(p)-[:ACTED_IN]->(:Movie {released: 1999})" },
-        .{ .depth = 2, .operator = "BoundNode", .details = "(p)" },
-        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)" },
-    });
-    try expectPlan(&ast, &g, "EXPLAIN MATCH (m:Movie) RETURN m.title AS name UNION ALL MATCH (p:Person) RETURN p.name AS name", &.{
-        .{ .depth = 0, .operator = "UnionAll", .details = "" },
-        .{ .depth = 1, .operator = "Return", .details = "m.title AS name" },
-        .{ .depth = 1, .operator = "NodeByLabelScan", .details = "(m:Movie)" },
-        .{ .depth = 1, .operator = "Return", .details = "p.name AS name" },
-        .{ .depth = 1, .operator = "NodeByLabelScan", .details = "(p:Person)" },
-    });
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m) RETURN p.name, m.title", snap(@src(),
+        \\Return p.name, m.title  [estimated 5]
+        \\Optional (p)-[:DIRECTED]->(m)  [estimated 5]
+        \\    Expand(All) (p)-[:DIRECTED]->(m)  [estimated -]
+        \\    BoundNode (p)  [estimated 1]
+        \\NodeByLabelScan (p:Person)  [estimated 5]
+    ));
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:ACTED_IN]->(:Movie {released: 1999}) } RETURN p.name", snap(@src(),
+        \\Return p.name  [estimated 5]
+        \\Filter EXISTS {…}  [estimated 5]
+        \\    Exists EXISTS {…}  [estimated -]
+        \\        Expand(All) (p)-[:ACTED_IN]->(:Movie {released: 1999})  [estimated -]
+        \\        BoundNode (p)  [estimated 1]
+        \\NodeByLabelScan (p:Person)  [estimated 5]
+    ));
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (m:Movie) RETURN m.title AS name UNION ALL MATCH (p:Person) RETURN p.name AS name", snap(@src(),
+        \\UnionAll  [estimated -]
+        \\    Return m.title AS name  [estimated 4]
+        \\    NodeByLabelScan (m:Movie)  [estimated 4]
+        \\    Return p.name AS name  [estimated 5]
+        \\    NodeByLabelScan (p:Person)  [estimated 5]
+    ));
 }
 
 test "PROFILE runs the query and counts each operator's rows" {
@@ -153,30 +162,30 @@ test "PROFILE runs the query and counts each operator's rows" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
 
-    try expectPlan(&ast, &g, "PROFILE MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released < 2000 RETURN DISTINCT p.name", &.{
-        .{ .depth = 0, .operator = "Return", .details = "p.name", .rows = 4 },
-        .{ .depth = 0, .operator = "Distinct", .details = "p.name", .rows = 4 },
-        .{ .depth = 0, .operator = "Projection", .details = "p.name", .rows = 4 },
-        .{ .depth = 0, .operator = "Filter", .details = "m.released < 2000", .rows = 4 },
-        .{ .depth = 0, .operator = "Expand(All)", .details = "(m:Movie)<-[:ACTED_IN]-(p:Person)", .rows = 4 },
-        .{ .depth = 0, .operator = "NodeIndexRangeSeek", .details = "(m:Movie) WHERE m.released <= 2000", .rows = 2 },
-    });
-    try expectPlan(&ast, &g, "PROFILE MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m) RETURN count(m) AS directed", &.{
-        .{ .depth = 0, .operator = "Return", .details = "count(m) AS directed", .rows = 1 },
-        .{ .depth = 0, .operator = "Aggregation", .details = "count(m) AS directed", .rows = 1 },
-        .{ .depth = 0, .operator = "Optional", .details = "(p)-[:DIRECTED]->(m)", .rows = 6 },
-        .{ .depth = 1, .operator = "Expand(All)", .details = "(p)-[:DIRECTED]->(m)", .rows = 2 },
-        .{ .depth = 1, .operator = "BoundNode", .details = "(p)", .rows = 5 },
-        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .rows = 5 },
-    });
+    try expectPlan(&ast, &g, "PROFILE MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released < 2000 RETURN DISTINCT p.name", snap(@src(),
+        \\Return p.name  [estimated 2, rows 4]
+        \\Distinct p.name  [estimated 2, rows 4]
+        \\Projection p.name  [estimated 2, rows 4]
+        \\Filter m.released < 2000  [estimated 2, rows 4]
+        \\Expand(All) (m:Movie)<-[:ACTED_IN]-(p:Person)  [estimated 2, rows 4]
+        \\NodeIndexRangeSeek (m:Movie) WHERE m.released <= 2000  [estimated 1, rows 2]
+    ));
+    try expectPlan(&ast, &g, "PROFILE MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m) RETURN count(m) AS directed", snap(@src(),
+        \\Return count(m) AS directed  [estimated 1, rows 1]
+        \\Aggregation count(m) AS directed  [estimated 1, rows 1]
+        \\Optional (p)-[:DIRECTED]->(m)  [estimated 5, rows 6]
+        \\    Expand(All) (p)-[:DIRECTED]->(m)  [estimated -, rows 2]
+        \\    BoundNode (p)  [estimated 1, rows 5]
+        \\NodeByLabelScan (p:Person)  [estimated 5, rows 5]
+    ));
     // Each stage of a WITH counts the rows it keeps.
-    try expectPlan(&ast, &g, "PROFILE MATCH (p:Person) WITH p ORDER BY p.name SKIP 1 LIMIT 2 RETURN p.name", &.{
-        .{ .depth = 0, .operator = "Return", .details = "p.name", .rows = 2 },
-        .{ .depth = 0, .operator = "Skip", .details = "SKIP 1", .rows = 2 },
-        .{ .depth = 0, .operator = "Top", .details = "ORDER BY p.name LIMIT 1 + 2", .rows = 3 },
-        .{ .depth = 0, .operator = "Projection", .details = "p", .rows = 5 },
-        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .rows = 5 },
-    });
+    try expectPlan(&ast, &g, "PROFILE MATCH (p:Person) WITH p ORDER BY p.name SKIP 1 LIMIT 2 RETURN p.name", snap(@src(),
+        \\Return p.name  [estimated 2, rows 2]
+        \\Skip SKIP 1  [estimated 2, rows 2]
+        \\Top ORDER BY p.name LIMIT 1 + 2  [estimated 3, rows 3]
+        \\Projection p  [estimated 5, rows 5]
+        \\NodeByLabelScan (p:Person)  [estimated 5, rows 5]
+    ));
 }
 
 test "PROFILE commits what the query writes; EXPLAIN writes nothing" {
@@ -189,19 +198,19 @@ test "PROFILE commits what the query writes; EXPLAIN writes nothing" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
 
-    try expectPlan(&ast, &g, "EXPLAIN UNWIND [1, 2, 3] AS i CREATE (:Event {n: i})", &.{
-        .{ .depth = 0, .operator = "EmptyResult", .details = "", .estimated_rows = 3 },
-        .{ .depth = 0, .operator = "Create", .details = "(:Event {n: i})", .estimated_rows = 3 },
-        .{ .depth = 0, .operator = "Eager", .details = "", .estimated_rows = 3 },
-        .{ .depth = 0, .operator = "Unwind", .details = "[1, 2, 3] AS i", .estimated_rows = 3 },
-    });
+    try expectPlan(&ast, &g, "EXPLAIN UNWIND [1, 2, 3] AS i CREATE (:Event {n: i})", snap(@src(),
+        \\EmptyResult  [estimated 3]
+        \\Create (:Event {n: i})  [estimated 3]
+        \\Eager  [estimated 3]
+        \\Unwind [1, 2, 3] AS i  [estimated 3]
+    ));
     try expectQuery(&ast, &g, "MATCH (e:Event) RETURN count(e)", &.{&.{.{ .int = 0 }}});
-    try expectPlan(&ast, &g, "PROFILE UNWIND [1, 2, 3] AS i CREATE (:Event {n: i})", &.{
-        .{ .depth = 0, .operator = "EmptyResult", .details = "", .rows = 3 },
-        .{ .depth = 0, .operator = "Create", .details = "(:Event {n: i})", .rows = 3 },
-        .{ .depth = 0, .operator = "Eager", .details = "", .rows = 3 },
-        .{ .depth = 0, .operator = "Unwind", .details = "[1, 2, 3] AS i", .rows = 3 },
-    });
+    try expectPlan(&ast, &g, "PROFILE UNWIND [1, 2, 3] AS i CREATE (:Event {n: i})", snap(@src(),
+        \\EmptyResult  [estimated 3, rows 3]
+        \\Create (:Event {n: i})  [estimated 3, rows 3]
+        \\Eager  [estimated 3, rows 3]
+        \\Unwind [1, 2, 3] AS i  [estimated 3, rows 3]
+    ));
     try expectQuery(&ast, &g, "MATCH (e:Event) RETURN count(e)", &.{&.{.{ .int = 3 }}});
 }
 
