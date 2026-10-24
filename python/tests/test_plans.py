@@ -42,7 +42,11 @@ def test_profile_returns_the_rows_and_what_each_operator_did(db):
     assert [row[0].properties["id"] for row in rows] == [1, 2, 3]
     assert isinstance(rows[0][0], Node)
     assert plan["operator"] == "Return" and plan["rows"] == 3
-    scan = plan["children"][0]["children"][0]
+    sort = plan["children"][0]
+    assert sort["operator"] == "Sort" and sort["details"] == "ORDER BY p.id"
+    projection = sort["children"][0]
+    assert projection["operator"] == "Projection" and projection["children"][0]["operator"] == "Filter"
+    scan = projection["children"][0]["children"][0]
     assert scan["operator"] == "NodeIndexRangeSeek"
     assert scan["rows"] == 3
     assert scan["time_ms"] >= 0
@@ -62,9 +66,13 @@ def test_union_plans_have_one_child_per_part(db):
 
 def test_explain_and_profile_as_rows(db):
     rows = db.query("EXPLAIN MATCH (p:Person) RETURN count(*)")
-    assert rows == [[0, "Return", "count(*)", 1, None, None], [0, "NodeByLabelScan", "(p:Person)", 10, None, None]]
+    assert rows == [
+        [0, "Return", "count(*)", 1, None, None],
+        [0, "Aggregation", "count(*)", 1, None, None],
+        [0, "NodeByLabelScan", "(p:Person)", 10, None, None],
+    ]
     rows = db.query("PROFILE MATCH (p:Person) RETURN count(*)")
-    assert [row[4] for row in rows] == [1, 10]
+    assert [row[4] for row in rows] == [1, 1, 10]
 
 
 def test_plan_errors(db):

@@ -81,7 +81,7 @@ const Explainer = struct {
                 .depth = depth,
                 .parent = consumer,
                 .operator = index,
-                .name = self.name(operator),
+                .name = self.name(index, operator),
                 .details = try self.details(operator),
                 .estimated_rows = self.estimates[index],
             });
@@ -151,7 +151,7 @@ const Explainer = struct {
         }
     }
 
-    fn name(self: *Explainer, operator: Operator) []const u8 {
+    fn name(self: *Explainer, index: OperatorIndex, operator: Operator) []const u8 {
         return switch (operator) {
             .bound_node => "BoundNode",
             .node_scan => |reference| scan: {
@@ -179,8 +179,16 @@ const Explainer = struct {
             .procedure_call => "ProcedureCall",
             .call_subquery => "Apply",
             .with_streaming => "Projection",
-            .with_collecting => |clause| self.projectionName(clause),
-            .return_ => "Return",
+            .with_collecting => |clause| if (containsAggregates(self.ast, clause)) "Aggregation" else "Projection",
+            .return_ => |clause| if (!self.hasStages(index)) "Return" else if (containsAggregates(self.ast, clause)) "Aggregation" else "Projection",
+            .projection_stage => |stage| switch (stage.kind) {
+                .distinct => "Distinct",
+                .sort => "Sort",
+                .top => "Top",
+                .skip => "Skip",
+                .limit => "Limit",
+            },
+            .produce_results => "Return",
             .eager => "Eager",
             .write => |clause| switch (self.ast.kind(clause)) {
                 .create_clause => "Create",
@@ -195,25 +203,13 @@ const Explainer = struct {
         };
     }
 
-    /// A WITH that keeps its rows, by the first thing it does of: aggregate,
-    /// remove duplicates, sort (with a LIMIT: keep the top rows), page.
-    fn projectionName(self: *Explainer, clause: Index) []const u8 {
-        const ast = self.ast;
-        const children = ast.nodeChildren(clause);
-        for (ast.nodeChildren(children[0])) |item| {
-            if (containsAggregate(ast, ast.nodeChildren(item)[0])) return "Aggregation";
-        }
-        const distinct = if (ast.kind(clause) == .return_clause) ast.data(clause).return_.distinct else ast.data(clause).with_.distinct;
-        if (distinct) return "Distinct";
-        var sorts = false;
-        var limits = false;
-        for (children[1..]) |child| switch (ast.kind(child)) {
-            .order_by => sorts = true,
-            .limit => limits = true,
-            else => {},
+    /// Whether stages (or the end of a RETURN) follow operator `index`.
+    fn hasStages(self: *Explainer, index: OperatorIndex) bool {
+        if (index + 1 >= self.plan.operators.len) return false;
+        return switch (self.plan.operators[index + 1]) {
+            .projection_stage, .produce_results => true,
+            else => false,
         };
-        if (sorts) return if (limits) "Top" else "Sort";
-        return if (limits) "Limit" else "Skip";
     }
 
     fn details(self: *Explainer, operator: Operator) Allocator.Error![]const u8 {
@@ -262,7 +258,8 @@ const Explainer = struct {
                 }
             },
             .call_subquery => try text.append("CALL {…}"),
-            .with_streaming, .with_collecting, .return_ => |clause| try projectionDetails(&text, clause),
+            .with_streaming, .with_collecting, .return_, .produce_results => |clause| try projectionDetails(&text, clause),
+            .projection_stage => |stage| try stageDetails(&text, stage),
             .write => |clause| try text.list(ast.nodeChildren(clause), ", "),
             .merge => |merge| try text.write(ast.nodeChildren(merge.clause)[0]),
             .foreach => |foreach| {
@@ -303,7 +300,8 @@ const Explainer = struct {
             },
             .load_csv, .procedure_call => null,
             .call_subquery => |call| if (call.returns) times(input, self.chainRows(call.chain)) else input,
-            .with_collecting, .return_ => |clause| self.projectionRows(clause, input),
+            .with_collecting, .return_ => |clause| if (containsAggregates(ast, clause)) groupRows(ast, clause) else input,
+            .projection_stage => |stage| stageRows(ast, stage, input),
             else => input,
         };
     }
@@ -341,30 +339,57 @@ const Explainer = struct {
         return per_node;
     }
 
-    /// The rows a WITH or RETURN that keeps its rows makes: one group
-    /// without grouping keys; at most its LIMIT; fewer by its SKIP.
-    fn projectionRows(self: *Explainer, clause: Index, input: ?f64) ?f64 {
-        const ast = self.ast;
-        const children = ast.nodeChildren(clause);
-        var rows = input;
-        var aggregates = false;
-        var keys = false;
-        for (ast.nodeChildren(children[0])) |item| {
-            if (containsAggregate(ast, ast.nodeChildren(item)[0])) aggregates = true else keys = true;
-        }
-        if (aggregates) rows = if (keys) null else 1;
-        for (children[1..]) |child| switch (ast.kind(child)) {
-            .skip => if (literalCount(ast, child)) |skipped| {
-                if (rows) |known| rows = @max(known - skipped, 0);
-            },
-            .limit => if (literalCount(ast, child)) |limit| {
-                rows = if (rows) |known| @min(known, limit) else limit;
-            },
-            else => {},
-        };
-        return rows;
-    }
 };
+
+/// Whether a WITH's or RETURN's items aggregate.
+fn containsAggregates(ast: *const Ast, clause: Index) bool {
+    for (ast.nodeChildren(ast.nodeChildren(clause)[0])) |item| {
+        if (containsAggregate(ast, ast.nodeChildren(item)[0])) return true;
+    }
+    return false;
+}
+
+/// The groups of an aggregation: one without grouping keys, else unknown.
+fn groupRows(ast: *const Ast, clause: Index) ?f64 {
+    for (ast.nodeChildren(ast.nodeChildren(clause)[0])) |item| {
+        if (!containsAggregate(ast, ast.nodeChildren(item)[0])) return null;
+    }
+    return 1;
+}
+
+/// The rows a stage keeps of `input`: at most its LIMIT (SKIP + LIMIT for
+/// `top`), fewer by its SKIP. DISTINCT is not assumed to drop any.
+fn stageRows(ast: *const Ast, stage: Plan.ProjectionStage, input: ?f64) ?f64 {
+    const parts = clauseParts(ast, stage.clause);
+    const kept: ?f64 = switch (stage.kind) {
+        .distinct, .sort => return input,
+        .top => top: {
+            const limit = literalCount(ast, parts.limit.?) orelse break :top null;
+            const skipped = if (parts.skip) |skip| literalCount(ast, skip) orelse break :top null else 0;
+            break :top skipped + limit;
+        },
+        .limit => literalCount(ast, parts.limit.?),
+        .skip => {
+            const skipped = literalCount(ast, parts.skip.?) orelse return input;
+            return if (input) |known| @max(known - skipped, 0) else null;
+        },
+    };
+    const limit = kept orelse return input;
+    return if (input) |known| @min(known, limit) else limit;
+}
+
+const ClauseParts = struct { order_by: ?Index = null, skip: ?Index = null, limit: ?Index = null };
+
+fn clauseParts(ast: *const Ast, clause: Index) ClauseParts {
+    var parts = ClauseParts{};
+    for (ast.nodeChildren(clause)[1..]) |child| switch (ast.kind(child)) {
+        .order_by => parts.order_by = child,
+        .skip => parts.skip = child,
+        .limit => parts.limit = child,
+        else => {},
+    };
+    return parts;
+}
 
 fn times(a: ?f64, b: ?f64) ?f64 {
     return (a orelse return null) * (b orelse return null);
@@ -440,19 +465,14 @@ fn nodeText(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
     try text.append(")");
 }
 
-/// `a, count(*) AS n ORDER BY n DESC LIMIT 10 WHERE n > 1`: the projection,
-/// its ORDER BY, SKIP and LIMIT, and a WITH's WHERE.
+/// `a, count(*) AS n WHERE n > 1`: the projection and a WITH's WHERE (its
+/// DISTINCT, ORDER BY, SKIP and LIMIT are stages of their own).
 fn projectionDetails(text: *Printer, clause: Index) Allocator.Error!void {
     const ast = text.ast;
     const children = ast.nodeChildren(clause);
-    const distinct = if (ast.kind(clause) == .return_clause) ast.data(clause).return_.distinct else ast.data(clause).with_.distinct;
-    if (distinct) try text.append("DISTINCT ");
     try text.write(children[0]);
     for (children[1..]) |child| switch (ast.kind(child)) {
-        .order_by, .skip, .limit => {
-            try text.append(" ");
-            try text.write(child);
-        },
+        .order_by, .skip, .limit => {},
         .boolean_literal => if (!ast.data(child).boolean) try text.append(" WHERE false"),
         else => {
             // A WITH's WHERE (always its last child).
@@ -460,4 +480,27 @@ fn projectionDetails(text: *Printer, clause: Index) Allocator.Error!void {
             try text.write(child);
         },
     };
+}
+
+/// `p.name, n` (DISTINCT: what rows are distinct by), `ORDER BY n DESC`,
+/// `ORDER BY n DESC LIMIT 1 + 3` (`top`: SKIP + LIMIT rows), `SKIP 1`,
+/// `LIMIT 3`.
+fn stageDetails(text: *Printer, stage: Plan.ProjectionStage) Allocator.Error!void {
+    const ast = text.ast;
+    const parts = clauseParts(ast, stage.clause);
+    switch (stage.kind) {
+        .distinct => try text.write(ast.nodeChildren(stage.clause)[0]),
+        .sort => try text.write(parts.order_by.?),
+        .top => {
+            try text.write(parts.order_by.?);
+            try text.append(" LIMIT ");
+            if (parts.skip) |skip| {
+                try text.write(ast.nodeChildren(skip)[0]);
+                try text.append(" + ");
+            }
+            try text.write(ast.nodeChildren(parts.limit.?)[0]);
+        },
+        .skip => try text.write(parts.skip.?),
+        .limit => try text.write(parts.limit.?),
+    }
 }

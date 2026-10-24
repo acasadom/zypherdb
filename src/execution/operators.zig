@@ -8,9 +8,11 @@
 //! - a streaming WITH passes each projected row on;
 //! - an operator that needs every row first (a collecting WITH, `eager`)
 //!   keeps copies, and its rows go on when the operators before it in the
-//!   chain are done (`flush`);
+//!   chain are done; a collecting WITH's rows go through its stages
+//!   (DISTINCT, ORDER BY, SKIP, LIMIT) first;
 //! - RETURN accumulates or projects each row. With a LIMIT and nothing that
-//!   needs every row first, it stops the query once it has enough.
+//!   needs every row first, it stops the query once it has enough. Its
+//!   stages apply when the chain is done.
 //!
 //! A row passed to an operator is the caller's: an operator may extend it,
 //! but must restore it before returning, and copies it to keep it.
@@ -70,11 +72,13 @@ pub fn runMain(executor: *Executor, chain: Plan.ChainIndex) ExecutionError!void 
     const plan = executor.plan;
     const range = plan.chains[chain];
     var return_info: ?projection.ReturnClauseParts = null;
+    var return_index: Plan.OperatorIndex = undefined;
     var rows_needed: ?usize = null;
-    for (plan.operators[range.first..range.end]) |operator| switch (operator) {
+    for (range.first..range.end) |index| switch (plan.operators[index]) {
         .return_ => |clause| {
             const info = try projection.beginReturn(executor, clause);
             return_info = info;
+            return_index = @intCast(index);
             rows_needed = try projection.returnRowsNeeded(executor, info);
         },
         else => {},
@@ -87,16 +91,41 @@ pub fn runMain(executor: *Executor, chain: Plan.ChainIndex) ExecutionError!void 
         error.LimitReached => {}, // the RETURN has every row it keeps
         else => |other| return other,
     };
-    if (return_info) |info| try projection.endReturn(executor, info);
+    if (return_info) |info| try endReturn(executor, info, return_index);
     if (executor.profile) |profile| {
-        // The query's rows: its RETURN's, or those of a CALL that ends it.
+        // The rows of a CALL that ends the query.
         for (range.first..range.end) |index| switch (plan.operators[index]) {
-            .return_ => profile.returned[index] = executor.rows.items.len,
             .procedure_call => |call| if (call.ends_query) {
                 profile.returned[index] = executor.rows.items.len;
             },
             else => {},
         };
+    }
+}
+
+/// Ends the RETURN at `index`: its groups become rows, then its stages
+/// apply, each one timed and counted on its own in PROFILE.
+fn endReturn(executor: *Executor, info: projection.ReturnClauseParts, index: Plan.OperatorIndex) ExecutionError!void {
+    const operators = executor.plan.operators;
+    {
+        const previous = if (executor.profile) |profile| profile.enter(index) else null;
+        defer if (executor.profile) |profile| profile.leave(previous);
+        try projection.endReturn(executor, info);
+    }
+    var next = index;
+    while (true) {
+        if (executor.profile) |profile| profile.returned[next] = executor.rows.items.len;
+        next += 1;
+        if (next == operators.len) break;
+        switch (operators[next]) {
+            .projection_stage => |stage| {
+                const previous = if (executor.profile) |profile| profile.enter(next) else null;
+                defer if (executor.profile) |profile| profile.leave(previous);
+                try projection.returnStage(executor, stage);
+            },
+            .produce_results => {},
+            else => break,
+        }
     }
 }
 
@@ -123,23 +152,39 @@ fn runOperators(executor: *Executor, range: Plan.Chain, start: *Bindings) Execut
             .kept => |*state| {
                 const kept = state.items;
                 state.* = .empty;
-                for (try keptRows(executor, @intCast(index), kept)) |*row| try feed(executor, @intCast(index + 1), row);
+                switch (executor.plan.operators[index]) {
+                    .with_collecting => |clause| try flushWith(executor, @intCast(index), clause, kept),
+                    else => for (kept) |*row| try feed(executor, @intCast(index + 1), row),
+                }
             },
             else => {},
         }
     }
 }
 
-/// The rows a collecting operator passes on, made from those it kept.
-fn keptRows(executor: *Executor, index: Plan.OperatorIndex, kept: []Bindings) ExecutionError![]Bindings {
-    const clause = switch (executor.plan.operators[index]) {
-        .with_collecting => |clause| clause,
-        else => return kept,
+/// A collecting WITH at `index`, its chain done: projects or groups the rows
+/// it kept, applies its stages (the operators after it), and feeds the rows
+/// left to the operator after the last stage.
+fn flushWith(executor: *Executor, index: Plan.OperatorIndex, clause: Index, kept: []Bindings) ExecutionError!void {
+    const operators = executor.plan.operators;
+    var rows = rows: {
+        const previous = if (executor.profile) |profile| profile.enter(index) else null;
+        defer if (executor.profile) |profile| profile.leave(previous);
+        break :rows try projection.applyWith(executor, clause, kept);
     };
-    const profile = executor.profile orelse return projection.applyWith(executor, clause, kept);
-    const previous = profile.enter(index);
-    defer profile.leave(previous);
-    return projection.applyWith(executor, clause, kept);
+    var next = index;
+    while (true) {
+        if (executor.profile) |profile| profile.returned[next] = rows.items.len;
+        next += 1;
+        const stage = switch (operators[next]) {
+            .projection_stage => |stage| stage,
+            else => break,
+        };
+        const previous = if (executor.profile) |profile| profile.enter(next) else null;
+        defer if (executor.profile) |profile| profile.leave(previous);
+        try projection.withStage(executor, stage, &rows);
+    }
+    for (rows.items) |*sortable| try feed(executor, next, &sortable.item);
 }
 
 /// Hands `row` to operator `index`.
@@ -209,6 +254,8 @@ inline fn run(executor: *Executor, index: Plan.OperatorIndex, row: *Bindings) Ex
             try sink.take(sink.context, row);
         },
         .discard => {},
+        // Applied to all the rows at once (`flushWith`, `endReturn`).
+        .projection_stage, .produce_results => unreachable,
     }
 }
 

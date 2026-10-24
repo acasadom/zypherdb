@@ -204,6 +204,14 @@ Against that tree, at the same harness: these commits are 25-44% faster on multi
 one lead before (17.1 ms here, 17.8-18.3 ms there, in different sessions), and 2% faster on the
 expression query (29.2 vs 29.9 ms, same session).
 
+## DISTINCT, ORDER BY, SKIP and LIMIT as plan stages (October 2026)
+
+Each a `projection_stage` operator after its WITH or RETURN (for EXPLAIN and PROFILE: each stage
+shows its own rows and time), applied to the whole list of projected rows. Against the commit
+before, same method: every query within ±3% in both modes (the expression query +2% in both;
+the change adds work per run, not per row, so this is likely code layout). No speed was expected
+or found; the point is a truthful plan.
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

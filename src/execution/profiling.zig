@@ -27,7 +27,8 @@ const Row = Executor.Row;
 pub const Profile = struct {
     /// How many rows each operator was handed.
     rows_in: []u64,
-    /// How many rows a RETURN made (after aggregating and paging).
+    /// How many rows the operators that make all theirs at once made: a
+    /// RETURN, a collecting WITH, a stage, a CALL that ends the query.
     returned: []u64,
     nanoseconds: []u64,
     /// The operator the time goes to now, and since when.
@@ -126,11 +127,11 @@ fn rows(executor: *Executor, plan: *const Plan, plan_lines: []const explain.Line
 }
 
 /// The rows `operator` made: those its successor in the chain was handed
-/// (a RETURN's are counted at its end; the last operator of a chain makes
-/// what it was handed).
+/// (those of an operator that makes them all at once are counted then; the
+/// last operator of a chain makes what it was handed).
 fn rowsMade(plan: *const Plan, profile: *const Profile, operator: OperatorIndex) u64 {
     return switch (plan.operators[operator]) {
-        .return_ => profile.returned[operator],
+        .return_, .with_collecting, .projection_stage, .produce_results => profile.returned[operator],
         .procedure_call => |call| if (call.ends_query) profile.returned[operator] else profile.rows_in[operator + 1],
         .output, .discard => profile.rows_in[operator],
         else => profile.rows_in[operator + 1],

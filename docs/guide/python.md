@@ -115,12 +115,20 @@ and its plan, as `explain` would, with `rows` (how many rows each operator made)
 
 ```python
 rows, plan = db.profile("MATCH (r:Room) WHERE r.number > 1 RETURN r.number ORDER BY r.number")
-scan = plan["children"][0]
-print(rows, scan["operator"], scan["rows"])
+operator = plan
+while operator:
+    print(operator["operator"], operator["rows"])
+    operator = operator["children"][0] if operator["children"] else None
+print(rows)
 ```
 
 ```text
-[[2], [3]] Filter 2
+Return 2
+Sort 2
+Projection 2
+Filter 2
+NodeIndexRangeSeek 3
+[[2], [3]]
 ```
 
 `db.query("EXPLAIN " + text)` and `db.query("PROFILE " + text)` give the plan as rows instead.

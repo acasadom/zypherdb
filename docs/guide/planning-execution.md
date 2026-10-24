@@ -31,8 +31,9 @@ and end with `output`, which hands their rows back:
 | `MATCH` | per pattern, the pattern's operators (below), then a `filter` for the `WHERE` |
 | `OPTIONAL MATCH`, `CALL { }`, `MERGE`, `FOREACH` | one operator, running a chain of its own |
 | `UNWIND`, `LOAD CSV`, `CALL` | `unwind`, `load_csv`, `procedure_call` |
-| `WITH` (and a subquery's `RETURN`) | `with_streaming` if it only projects and filters, else `with_collecting` |
-| `RETURN` | `return_` |
+| `WITH` (and a subquery's `RETURN`) | `with_streaming` if it only projects and filters, else `with_collecting` and its stages |
+| `RETURN` | `return_`; with aggregates or stages, also the stages and `produce_results` |
+| their `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT` | one `projection_stage` each, in that order; `ORDER BY` with a `LIMIT` is a `top`, which keeps `SKIP + LIMIT` rows, and no `limit` follows it |
 | `CREATE`, `SET`, `DELETE`, `REMOVE` | `write` |
 
 A query that writes gets an `eager` between each two clauses: every row goes through a clause
@@ -159,7 +160,11 @@ return_   → project the row (or fold it into its group)
   `WITH` that only projects writes its slots into the row it gets: the slots it leaves behind are
   still there, but nothing after it reads them; its `DISTINCT` compares its own slots only.
 - **Operators that need every row first** (`with_collecting`, `eager`) keep copies. When the chain's
-  first operator returns, `runOperators` lets each of them, in chain order, pass its rows on.
+  first operator returns, `runOperators` lets each of them, in chain order, pass its rows on. A
+  `with_collecting` first projects or groups them, each with its `ORDER BY` key (which may read
+  variables the `WITH` does not project), then its stages apply to the whole list, one after the
+  other; a `RETURN`'s stages apply the same way once its chain is done. Stages are never fed a row,
+  so they cost nothing per row, and each one has its own time and rows in `PROFILE`.
 - **A plan does not change while it runs.** What a run needs besides it is the executor's: each
   operator's kept rows, where each chain's rows go, and the node and relationships each pattern
   element is matched to on the current branch (`node_ids`, `matched_edges`, read by later operators

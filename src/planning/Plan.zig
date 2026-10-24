@@ -87,10 +87,19 @@ pub const Operator = union(enum) {
     /// A WITH (or a subquery's RETURN) that only projects and filters.
     with_streaming: Index,
     /// A WITH (or a subquery's RETURN) that groups, removes duplicates,
-    /// sorts or pages: it keeps every row, and makes its own at the end.
+    /// sorts or pages: it keeps every row, and at the end projects or
+    /// groups them (with their ORDER BY keys). The stages that follow it
+    /// remove duplicates, sort and page those rows; then they go on.
     with_collecting: Index,
-    /// The query's RETURN.
+    /// The query's RETURN: projects each row, or adds it to its group.
+    /// Alone when it neither groups, removes duplicates, sorts nor pages;
+    /// else its stages and `produce_results` follow it.
     return_: Index,
+    /// DISTINCT, ORDER BY, SKIP or LIMIT of a WITH or RETURN, applied to the
+    /// rows its projection made once they are all there (never fed a row).
+    projection_stage: ProjectionStage,
+    /// The end of a RETURN that has stages: its rows are the query's result.
+    produce_results: Index,
     /// Keeps every row before handing any on: each clause of a query that
     /// writes sees the effect of the clause before it on every row.
     eager,
@@ -105,6 +114,16 @@ pub const Operator = union(enum) {
     output: ChainIndex,
     /// The end of a query without RETURN: its rows go no further.
     discard,
+};
+
+pub const ProjectionStage = struct {
+    /// The WITH or RETURN clause.
+    clause: Index,
+    kind: Kind,
+
+    /// `top` is ORDER BY with a LIMIT: it keeps the first SKIP + LIMIT rows
+    /// in order (a partial sort); a `skip` then follows it, never a `limit`.
+    pub const Kind = enum { distinct, sort, top, skip, limit };
 };
 
 pub const NodeReference = struct { pattern: PatternIndex, node: u32 };

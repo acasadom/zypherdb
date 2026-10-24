@@ -62,14 +62,48 @@ test "EXPLAIN shows the plan from the result down to the anchor, with estimates"
     });
     try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person {name: $name}) WHERE p.born > 1960 RETURN count(*) AS n", &.{
         .{ .depth = 0, .operator = "Return", .details = "count(*) AS n", .estimated_rows = 1 },
+        .{ .depth = 0, .operator = "Aggregation", .details = "count(*) AS n", .estimated_rows = 1 },
         .{ .depth = 0, .operator = "Filter", .details = "p.born > 1960", .estimated_rows = 1 },
         .{ .depth = 0, .operator = "NodeIndexSeek", .details = "(p:Person {name: $name})", .estimated_rows = 1 },
     });
     try expectPlan(&ast, &g, "EXPLAIN MATCH (m:Movie) WHERE m.released >= 2000 WITH m ORDER BY m.released LIMIT 2 RETURN m.title", &.{
         .{ .depth = 0, .operator = "Return", .details = "m.title", .estimated_rows = 1 },
-        .{ .depth = 0, .operator = "Top", .details = "m ORDER BY m.released LIMIT 2", .estimated_rows = 1 },
+        .{ .depth = 0, .operator = "Top", .details = "ORDER BY m.released LIMIT 2", .estimated_rows = 1 },
+        .{ .depth = 0, .operator = "Projection", .details = "m", .estimated_rows = 1 },
         .{ .depth = 0, .operator = "Filter", .details = "m.released >= 2000", .estimated_rows = 1 },
         .{ .depth = 0, .operator = "NodeIndexRangeSeek", .details = "(m:Movie) WHERE 2000 <= m.released", .estimated_rows = 1 },
+    });
+}
+
+test "EXPLAIN shows DISTINCT, ORDER BY, SKIP and LIMIT as stages of their own" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadMoviesGraph(&g);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // ORDER BY with a LIMIT keeps SKIP + LIMIT rows (Top), then SKIP drops
+    // some: no Limit is left to apply.
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) RETURN DISTINCT p.name ORDER BY p.name SKIP 1 LIMIT 2", &.{
+        .{ .depth = 0, .operator = "Return", .details = "p.name", .estimated_rows = 2 },
+        .{ .depth = 0, .operator = "Skip", .details = "SKIP 1", .estimated_rows = 2 },
+        .{ .depth = 0, .operator = "Top", .details = "ORDER BY p.name LIMIT 1 + 2", .estimated_rows = 3 },
+        .{ .depth = 0, .operator = "Distinct", .details = "p.name", .estimated_rows = 5 },
+        .{ .depth = 0, .operator = "Projection", .details = "p.name", .estimated_rows = 5 },
+        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .estimated_rows = 5 },
+    });
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (p:Person) WITH p SKIP 1 LIMIT 2 RETURN p.name ORDER BY p.name", &.{
+        .{ .depth = 0, .operator = "Return", .details = "p.name", .estimated_rows = 2 },
+        .{ .depth = 0, .operator = "Sort", .details = "ORDER BY p.name", .estimated_rows = 2 },
+        .{ .depth = 0, .operator = "Projection", .details = "p.name", .estimated_rows = 2 },
+        .{ .depth = 0, .operator = "Limit", .details = "LIMIT 2", .estimated_rows = 2 },
+        .{ .depth = 0, .operator = "Skip", .details = "SKIP 1", .estimated_rows = 4 },
+        .{ .depth = 0, .operator = "Projection", .details = "p", .estimated_rows = 5 },
+        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .estimated_rows = 5 },
     });
 }
 
@@ -120,16 +154,27 @@ test "PROFILE runs the query and counts each operator's rows" {
     defer ast.deinit();
 
     try expectPlan(&ast, &g, "PROFILE MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released < 2000 RETURN DISTINCT p.name", &.{
-        .{ .depth = 0, .operator = "Return", .details = "DISTINCT p.name", .rows = 4 },
+        .{ .depth = 0, .operator = "Return", .details = "p.name", .rows = 4 },
+        .{ .depth = 0, .operator = "Distinct", .details = "p.name", .rows = 4 },
+        .{ .depth = 0, .operator = "Projection", .details = "p.name", .rows = 4 },
         .{ .depth = 0, .operator = "Filter", .details = "m.released < 2000", .rows = 4 },
         .{ .depth = 0, .operator = "Expand(All)", .details = "(m:Movie)<-[:ACTED_IN]-(p:Person)", .rows = 4 },
         .{ .depth = 0, .operator = "NodeIndexRangeSeek", .details = "(m:Movie) WHERE m.released <= 2000", .rows = 2 },
     });
     try expectPlan(&ast, &g, "PROFILE MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m) RETURN count(m) AS directed", &.{
         .{ .depth = 0, .operator = "Return", .details = "count(m) AS directed", .rows = 1 },
+        .{ .depth = 0, .operator = "Aggregation", .details = "count(m) AS directed", .rows = 1 },
         .{ .depth = 0, .operator = "Optional", .details = "(p)-[:DIRECTED]->(m)", .rows = 6 },
         .{ .depth = 1, .operator = "Expand(All)", .details = "(p)-[:DIRECTED]->(m)", .rows = 2 },
         .{ .depth = 1, .operator = "BoundNode", .details = "(p)", .rows = 5 },
+        .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .rows = 5 },
+    });
+    // Each stage of a WITH counts the rows it keeps.
+    try expectPlan(&ast, &g, "PROFILE MATCH (p:Person) WITH p ORDER BY p.name SKIP 1 LIMIT 2 RETURN p.name", &.{
+        .{ .depth = 0, .operator = "Return", .details = "p.name", .rows = 2 },
+        .{ .depth = 0, .operator = "Skip", .details = "SKIP 1", .rows = 2 },
+        .{ .depth = 0, .operator = "Top", .details = "ORDER BY p.name LIMIT 1 + 2", .rows = 3 },
+        .{ .depth = 0, .operator = "Projection", .details = "p", .rows = 5 },
         .{ .depth = 0, .operator = "NodeByLabelScan", .details = "(p:Person)", .rows = 5 },
     });
 }

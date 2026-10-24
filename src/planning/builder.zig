@@ -129,7 +129,8 @@ const Builder = struct {
             .inner => try operators.append(allocator, .{ .output = index }),
             .main => {
                 const items = operators.items;
-                if (items.len == 0 or items[items.len - 1] != .return_) try operators.append(allocator, .discard);
+                const returns = items.len > 0 and (items[items.len - 1] == .return_ or items[items.len - 1] == .produce_results);
+                if (!returns) try operators.append(allocator, .discard);
             },
         }
         const first: Plan.OperatorIndex = @intCast(self.operators.items.len);
@@ -166,6 +167,8 @@ const Builder = struct {
             .return_clause => if (kind == .main) {
                 _ = try self.projectionExpressions(clause_index, scope, .query_return);
                 try operators.append(allocator, .{ .return_ = clause_index });
+                const staged = try appendStages(allocator, ast, clause_index, operators);
+                if (staged or projectionAggregates(ast, clause_index)) try operators.append(allocator, .{ .produce_results = clause_index });
             } else try self.planProjection(clause_index, scope, operators),
             .call_clause => {
                 const call = ast.data(clause_index).call;
@@ -246,8 +249,12 @@ const Builder = struct {
     fn planProjection(self: *Builder, clause_index: Index, scope: *Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
         const ast = self.context.ast;
         const projected = try self.projectionExpressions(clause_index, scope, .with);
-        const operator: Operator = if (projectionStreams(ast, clause_index)) .{ .with_streaming = clause_index } else .{ .with_collecting = clause_index };
-        try operators.append(self.context.allocator, operator);
+        if (projectionStreams(ast, clause_index)) {
+            try operators.append(self.context.allocator, .{ .with_streaming = clause_index });
+        } else {
+            try operators.append(self.context.allocator, .{ .with_collecting = clause_index });
+            _ = try appendStages(self.context.allocator, ast, clause_index, operators);
+        }
         scope.* = projected;
     }
 
@@ -359,17 +366,42 @@ fn projectedName(ast: *const Ast, item: Index) []const u8 {
 /// Whether a WITH (or a subquery's RETURN) can pass its rows on one at a
 /// time: it neither groups, removes duplicates, sorts nor pages.
 fn projectionStreams(ast: *const Ast, clause_index: Index) bool {
-    const distinct = if (ast.kind(clause_index) == .return_clause) ast.data(clause_index).return_.distinct else ast.data(clause_index).with_.distinct;
-    if (distinct) return false;
-    const children = ast.nodeChildren(clause_index);
-    for (children[1..]) |child| switch (ast.kind(child)) {
-        .order_by, .skip, .limit => return false,
+    const parts = projectionParts(ast, clause_index);
+    return !parts.distinct and parts.order_by == null and parts.skip == null and parts.limit == null and !projectionAggregates(ast, clause_index);
+}
+
+/// Whether a WITH's or RETURN's items aggregate.
+fn projectionAggregates(ast: *const Ast, clause_index: Index) bool {
+    for (ast.nodeChildren(ast.nodeChildren(clause_index)[0])) |item| {
+        if (containsAggregate(ast, ast.nodeChildren(item)[0])) return true;
+    }
+    return false;
+}
+
+const ProjectionParts = struct { distinct: bool, order_by: ?Index = null, skip: ?Index = null, limit: ?Index = null };
+
+fn projectionParts(ast: *const Ast, clause_index: Index) ProjectionParts {
+    var parts = ProjectionParts{ .distinct = if (ast.kind(clause_index) == .return_clause) ast.data(clause_index).return_.distinct else ast.data(clause_index).with_.distinct };
+    for (ast.nodeChildren(clause_index)[1..]) |child| switch (ast.kind(child)) {
+        .order_by => parts.order_by = child,
+        .skip => parts.skip = child,
+        .limit => parts.limit = child,
         else => {},
     };
-    for (ast.nodeChildren(children[0])) |item| {
-        if (containsAggregate(ast, ast.nodeChildren(item)[0])) return false;
-    }
-    return true;
+    return parts;
+}
+
+/// Appends the stages of a WITH or RETURN, in the order they apply:
+/// DISTINCT, ORDER BY (with a LIMIT, `top`), SKIP, then LIMIT unless `top`
+/// kept SKIP + LIMIT rows already. True if there is one.
+fn appendStages(allocator: Allocator, ast: *const Ast, clause_index: Index, operators: *std.ArrayList(Operator)) Allocator.Error!bool {
+    const parts = projectionParts(ast, clause_index);
+    const count = operators.items.len;
+    if (parts.distinct) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = .distinct } });
+    if (parts.order_by != null) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = if (parts.limit != null) .top else .sort } });
+    if (parts.skip != null) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = .skip } });
+    if (parts.limit != null and parts.order_by == null) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = .limit } });
+    return operators.items.len > count;
 }
 
 /// True if `expression` contains an aggregate call (not one of a subquery's).

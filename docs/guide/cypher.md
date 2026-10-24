@@ -454,6 +454,7 @@ MATCH (p:Person {id: $id})-[:MEMBER_OF]->(g)<-[:MEMBER_OF]-(q) RETURN count(DIST
 
 depth  operator        details                                    estimated_rows
 0      Return          count(DISTINCT q)                          1
+0      Aggregation     count(DISTINCT q)                          1
 0      Expand(All)     (g)<-[:MEMBER_OF]-(q)                      null
 0      Expand(All)     (p:Person {id: $id})-[:MEMBER_OF]->(g)     5
 0      NodeIndexSeek   (p:Person {id: $id})                       1
@@ -474,9 +475,11 @@ depth  operator        details                                    estimated_rows
 | `Optional` | `OPTIONAL MATCH`: runs its chain from each row |
 | `Apply` | `CALL { }`: runs the subquery from each row |
 | `Unwind`, `LoadCSV`, `ProcedureCall` | `UNWIND`, `LOAD CSV`, `CALL procedure` |
-| `Projection` | a `WITH` that only projects and filters |
-| `Aggregation`, `Distinct`, `Sort`, `Top`, `Skip`, `Limit` | a `WITH` that needs every row first, by the first thing it does (`Top`: a sort that keeps its `LIMIT`); `details` shows all of it |
-| `Return` | the `RETURN`: projects, aggregates, sorts and pages, as its `details` say |
+| `Projection` | a `WITH` or `RETURN` projecting each row (and a `WITH`'s `WHERE`) |
+| `Aggregation` | a `WITH` or `RETURN` with aggregates: groups the rows and computes them |
+| `Distinct`, `Sort`, `Skip`, `Limit` | `DISTINCT`, `ORDER BY`, `SKIP`, `LIMIT` of the `WITH` or `RETURN` above them, applied to all its rows at once |
+| `Top` | `ORDER BY` with a `LIMIT`: keeps only the first `SKIP + LIMIT` rows, in order (`LIMIT 1 + 3` for `SKIP 1 LIMIT 3`), then `Skip` drops the skipped ones |
+| `Return` | the query's result; alone when the `RETURN` only projects (a projection, aggregation or stages then show below it) |
 | `Create`, `Merge`, `Set`, `Delete`, `DetachDelete`, `Remove`, `Foreach` | the writing clauses |
 | `Eager` | in a query that writes: every row goes through the clause before it before any goes on |
 | `EmptyResult` | the end of a query without `RETURN` |
