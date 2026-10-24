@@ -669,10 +669,10 @@ fn atan2(self: *Executor, arguments: []const Value) ExecutionError!Value {
     return .{ .float = std.math.atan2(expressions.asFloat(arguments[0]), expressions.asFloat(arguments[1])) };
 }
 
-/// A random float in [0, 1).
-fn random(_: *Executor, _: []const Value) ExecutionError!Value {
+/// A random float in [0, 1), from the executor's generator if it has one.
+fn random(self: *Executor, _: []const Value) ExecutionError!Value {
     var bytes: [8]u8 = undefined;
-    std.Io.Threaded.global_single_threaded.io().random(&bytes);
+    if (self.random) |generator| generator.bytes(&bytes) else std.Io.Threaded.global_single_threaded.io().random(&bytes);
     const bits = std.mem.readInt(u64, &bytes, .little) >> 11;
     return .{ .float = @as(f64, @floatFromInt(bits)) / @as(f64, @floatFromInt(@as(u64, 1) << 53)) };
 }

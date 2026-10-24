@@ -157,3 +157,29 @@ test "float properties are stored, indexed and ordered with integers" {
         &.{float(2.5)}, &.{int(2)}, &.{float(1)},
     });
 }
+
+test "rand() draws from the executor's generator when it has one" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    const query = try acmedb.parser.parse(&ast, "UNWIND range(1, 3) AS i RETURN i, rand() ORDER BY i", null);
+    var draws: [2][3]f64 = undefined;
+    for (&draws) |*draw| {
+        var arena = std.heap.ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        var prng = std.Random.DefaultPrng.init(42);
+        var executor = acmedb.Executor.init(&ast, &g, arena.allocator());
+        executor.random = prng.random();
+        const rows = try executor.run(query);
+        try testing.expectEqual(@as(usize, 3), rows.len);
+        for (rows, draw) |row, *value| value.* = row.items[1].float;
+    }
+    try testing.expectEqualSlices(f64, &draws[0], &draws[1]);
+    try testing.expect(draws[0][0] != draws[0][1]);
+}

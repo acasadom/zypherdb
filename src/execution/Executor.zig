@@ -143,6 +143,13 @@ expression_overrides: ?*const std.AutoHashMapUnmanaged(Index, Value),
 /// The time the statement runs at (nanoseconds since the epoch), read from
 /// the clock when first asked for, so `datetime()` is the same throughout.
 statement_time: ?i128,
+/// A fixed clock (nanoseconds since the epoch) for every reading of the time,
+/// `realtime` ones too; null: the system clock. Fuzzers and tests set it so a
+/// run repeats.
+fixed_time: ?i128 = null,
+/// The generator `rand()` draws from; null: the system's random source.
+/// Fuzzers and tests set it so a run repeats.
+random: ?std.Random = null,
 
 pub fn init(ast: *Ast, graph: *Graph, allocator: Allocator) Executor {
     return .{
@@ -280,8 +287,13 @@ pub fn newRow(self: *const Executor) ExecutionError!Bindings {
 
 /// The statement's time, in nanoseconds since the epoch.
 pub fn statementTime(self: *Executor) i128 {
-    if (self.statement_time == null) self.statement_time = temporal_functions.clockNow();
+    if (self.statement_time == null) self.statement_time = self.clockNow();
     return self.statement_time.?;
+}
+
+/// The time now, in nanoseconds since the epoch: `fixed_time` if set.
+pub fn clockNow(self: *const Executor) i128 {
+    return self.fixed_time orelse temporal_functions.clockNow();
 }
 
 /// The expression of each projection item.

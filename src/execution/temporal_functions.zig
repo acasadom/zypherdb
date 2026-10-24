@@ -83,7 +83,7 @@ pub fn valueOf(kind: Kind, parts: Parts) TemporalError!Value {
 /// The current instant as parts at UTC: fixed for the statement unless
 /// `realtime`.
 fn nowParts(self: *Executor, realtime: bool) Parts {
-    const instant = if (realtime) clockNow() else self.statementTime();
+    const instant = if (realtime) self.clockNow() else self.statementTime();
     return .{ .days = @intCast(@divFloor(instant, nanoseconds_per_day)), .nanoseconds = @intCast(@mod(instant, nanoseconds_per_day)), .offset = 0 };
 }
 
