@@ -9,49 +9,13 @@ pub fn build(b: *std.Build) void {
 
     // The storage engine under the key-value store (src/storage/engine.zig).
     const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine: lmdb (default) or mdbx") orelse .lmdb;
-    const build_options = b.addOptions();
-    build_options.addOption(StorageEngine, "storage_engine", storage_engine);
 
     // Single acmedb module: engine logic + the vendored storage engine (C) linked in.
-    const acmedb = b.addModule("acmedb", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    acmedb.addOptions("build_options", build_options);
-    switch (storage_engine) {
-        .lmdb => {
-            acmedb.addIncludePath(b.path("vendor/lmdb"));
-            acmedb.addCSourceFiles(.{
-                .files = &.{ "vendor/lmdb/mdb.c", "vendor/lmdb/midl.c" },
-                .flags = &.{"-O2"},
-            });
-        },
-        .mdbx => {
-            acmedb.addIncludePath(b.path("vendor/libmdbx"));
-            // Only for Linux targets: see the shim's comment.
-            if (target.result.os.tag == .linux) acmedb.addIncludePath(b.path("vendor/shims"));
-            // A fixed timestamp keeps builds reproducible (libmdbx would
-            // record __DATE__ and __TIME__). No runtime CPU dispatch: it needs
-            // `__cpu_model`, which Zig's compiler-rt lacks, and libmdbx uses it
-            // only to pick SIMD for its page lists (on macOS it never does);
-            // the target's own CPU features apply instead. Debug builds keep
-            // libmdbx's cheap checks. Builds with safety checks (Debug,
-            // ReleaseSafe) sanitize C code too: they drop the alignment
-            // sanitizer, as libmdbx reads and writes unaligned words on
-            // purpose where the CPU allows it.
-            const common = .{ "-O2", "-DNDEBUG", "-DMDBX_BUILD_SHARED_LIBRARY=0", "-DMDBX_HAVE_BUILTIN_CPU_SUPPORTS=0", "-DMDBX_BUILD_TIMESTAMP=\"unknown\"", "-DMDBX_BUILD_FLAGS=\"acmedb\"" };
-            acmedb.addCSourceFiles(.{
-                .files = &.{"vendor/libmdbx/mdbx.c"},
-                .flags = switch (optimize) {
-                    .debug => &(common ++ .{ "-DMDBX_CHECKING=1", "-fno-sanitize=alignment" }),
-                    .safe => &(common ++ .{"-fno-sanitize=alignment"}),
-                    .fast, .small => &common,
-                },
-            });
-        },
-    }
+    const acmedb = acmedbModule(b, "acmedb", target, optimize, storage_engine, false);
+
+    // The same module over an engine that fails on purpose
+    // (src/storage/engine/faulty.zig), for the fault tests and the fuzzers.
+    const acmedb_with_faults = acmedbModule(b, null, target, optimize, storage_engine, true);
 
     // Static library: the embeddable artifact, with the C ABI of src/c_api.zig.
     const lib = b.addLibrary(.{
@@ -89,6 +53,17 @@ pub fn build(b: *std.Build) void {
     });
     test_step.dependOn(&b.addRunArtifact(suite).step);
 
+    // Fault tests: the suite's fault-injection test, over the failing engine.
+    const fault_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/faults_root.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "acmedb", .module = acmedb_with_faults }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(fault_tests).step);
+
     // The Python extension module (python/native/module.zig), built against
     // the headers of a Python 3.10+ install: `zig build python
     // -Dpython-include=$(python3 -c "import sysconfig; print(sysconfig.get_paths()['include'])")`.
@@ -111,7 +86,7 @@ pub fn build(b: *std.Build) void {
         b.step("python", "Build the Python extension module into zig-out/python").dependOn(&install_native.step);
     }
 
-    // Fuzzers: `zig build fuzz -- storage|query [--seed N] [--steps N] [--seeds N]`
+    // Fuzzers: `zig build fuzz -- storage|query|faults [--seed N] [--steps N] [--seeds N]`
     // (tests/fuzz/main.zig); `zig build test` runs a few fixed seeds.
     const fuzz = b.addExecutable(.{
         .name = "fuzz",
@@ -119,12 +94,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/fuzz/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+            .imports = &.{.{ .name = "acmedb", .module = acmedb_with_faults }},
         }),
     });
     const run_fuzz = b.addRunArtifact(fuzz);
     run_fuzz.addPassthruArgs();
-    b.step("fuzz", "Run a fuzzer: zig build fuzz -- storage|query [--seed N] [--steps N] [--seeds N]").dependOn(&run_fuzz.step);
+    b.step("fuzz", "Run a fuzzer: zig build fuzz -- storage|query|faults [--seed N] [--steps N] [--seeds N]").dependOn(&run_fuzz.step);
 
     // Benchmark: `zig build bench -Doptimize=ReleaseFast -- --people 100000`.
     const bench = b.addExecutable(.{
@@ -139,4 +114,54 @@ pub fn build(b: *std.Build) void {
     const run_bench = b.addRunArtifact(bench);
     run_bench.addPassthruArgs();
     b.step("bench", "Run the access-control benchmark").dependOn(&run_bench.step);
+}
+
+/// The acmedb library over `storage_engine` (its C sources compiled in),
+/// wrapped by the fault-injecting engine if `fault_injection`; exported
+/// under `name` if one is given.
+fn acmedbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, storage_engine: StorageEngine, fault_injection: bool) *std.Build.Module {
+    const options: std.Build.Module.CreateOptions = .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    };
+    const module = if (name) |exported| b.addModule(exported, options) else b.createModule(options);
+    const build_options = b.addOptions();
+    build_options.addOption(StorageEngine, "storage_engine", storage_engine);
+    build_options.addOption(bool, "fault_injection", fault_injection);
+    module.addOptions("build_options", build_options);
+    switch (storage_engine) {
+        .lmdb => {
+            module.addIncludePath(b.path("vendor/lmdb"));
+            module.addCSourceFiles(.{
+                .files = &.{ "vendor/lmdb/mdb.c", "vendor/lmdb/midl.c" },
+                .flags = &.{"-O2"},
+            });
+        },
+        .mdbx => {
+            module.addIncludePath(b.path("vendor/libmdbx"));
+            // Only for Linux targets: see the shim's comment.
+            if (target.result.os.tag == .linux) module.addIncludePath(b.path("vendor/shims"));
+            // A fixed timestamp keeps builds reproducible (libmdbx would
+            // record __DATE__ and __TIME__). No runtime CPU dispatch: it needs
+            // `__cpu_model`, which Zig's compiler-rt lacks, and libmdbx uses it
+            // only to pick SIMD for its page lists (on macOS it never does);
+            // the target's own CPU features apply instead. Debug builds keep
+            // libmdbx's cheap checks. Builds with safety checks (Debug,
+            // ReleaseSafe) sanitize C code too: they drop the alignment
+            // sanitizer, as libmdbx reads and writes unaligned words on
+            // purpose where the CPU allows it.
+            const common = .{ "-O2", "-DNDEBUG", "-DMDBX_BUILD_SHARED_LIBRARY=0", "-DMDBX_HAVE_BUILTIN_CPU_SUPPORTS=0", "-DMDBX_BUILD_TIMESTAMP=\"unknown\"", "-DMDBX_BUILD_FLAGS=\"acmedb\"" };
+            module.addCSourceFiles(.{
+                .files = &.{"vendor/libmdbx/mdbx.c"},
+                .flags = switch (optimize) {
+                    .debug => &(common ++ .{ "-DMDBX_CHECKING=1", "-fno-sanitize=alignment" }),
+                    .safe => &(common ++ .{"-fno-sanitize=alignment"}),
+                    .fast, .small => &common,
+                },
+            });
+        },
+    }
+    return module;
 }

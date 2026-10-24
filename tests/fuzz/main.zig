@@ -1,8 +1,9 @@
 //! The fuzzers' command line:
 //!
-//!     zig build fuzz -- storage|query [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]
+//!     zig build fuzz -- storage|query|faults [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]
 //!
-//! For the query fuzzer, `--steps` is the number of queries per seed.
+//! For the query fuzzer, `--steps` is the number of queries per seed; for
+//! the fault fuzzer, the number of statements (each run many times).
 //! Without `--seed` the first seed is random. `--seeds N` runs N seeds in a
 //! row from it (a long run). Each seed's database lives in `PATH/seed-N`
 //! (by default under .zig-cache/fuzz), removed when the seed passes. Build
@@ -12,10 +13,11 @@
 const std = @import("std");
 const storage = @import("storage.zig");
 const query = @import("query.zig");
+const faults = @import("faults.zig");
 
-const usage = "usage: zig build fuzz -- storage|query [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]\n";
+const usage = "usage: zig build fuzz -- storage|query|faults [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]\n";
 
-const Fuzzer = enum { storage, query };
+const Fuzzer = enum { storage, query, faults };
 
 const Arguments = struct {
     fuzzer: Fuzzer = .storage,
@@ -47,12 +49,13 @@ pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
     var totals = storage.Statistics{};
     var query_totals = query.Statistics{};
+    var fault_totals = faults.Statistics{};
     for (0..arguments.seeds) |i| {
         const seed = first_seed +% i;
         const path = try std.fmt.allocPrint(arena, "{s}/seed-{d}", .{ arguments.dir, seed });
         std.Io.Dir.cwd().deleteTree(io, path) catch {};
         try std.Io.Dir.cwd().createDirPath(io, path);
-        runSeed(allocator, path, seed, arguments, out, &totals, &query_totals) catch |err| {
+        runSeed(io, allocator, path, seed, arguments, out, &totals, &query_totals, &fault_totals) catch |err| {
             try out.print("database kept in {s}\n", .{path});
             try out.flush();
             if (err == error.FuzzFailed) std.process.exit(1);
@@ -65,17 +68,28 @@ pub fn main(init: std.process.Init) !void {
     switch (arguments.fuzzer) {
         .storage => try out.print("operations over {d} seed(s):\n{f}", .{ arguments.seeds, totals }),
         .query => try out.print("over {d} seed(s):\n{f}", .{ arguments.seeds, query_totals }),
+        .faults => try out.print("over {d} seed(s):\n{f}", .{ arguments.seeds, fault_totals }),
     }
     try out.flush();
 }
 
-fn runSeed(allocator: std.mem.Allocator, path: []const u8, seed: u64, arguments: Arguments, out: *std.Io.Writer, totals: *storage.Statistics, query_totals: *query.Statistics) !void {
+fn runSeed(io: std.Io, allocator: std.mem.Allocator, path: []const u8, seed: u64, arguments: Arguments, out: *std.Io.Writer, totals: *storage.Statistics, query_totals: *query.Statistics, fault_totals: *faults.Statistics) !void {
     switch (arguments.fuzzer) {
         .storage => totals.add(try storage.run(allocator, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out)),
         .query => {
             var statistics = try query.run(allocator, path, .{ .seed = seed, .queries = arguments.steps, .verbose = arguments.verbose }, out);
             defer statistics.deinit(allocator);
             try query_totals.add(allocator, statistics);
+        },
+        .faults => {
+            // The failing database and its twin, side by side.
+            const failing = try std.fmt.allocPrint(allocator, "{s}/failing", .{path});
+            defer allocator.free(failing);
+            const twin = try std.fmt.allocPrint(allocator, "{s}/twin", .{path});
+            defer allocator.free(twin);
+            try std.Io.Dir.cwd().createDirPath(io, failing);
+            try std.Io.Dir.cwd().createDirPath(io, twin);
+            fault_totals.add(try faults.run(allocator, failing, twin, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out));
         },
     }
 }
