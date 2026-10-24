@@ -267,6 +267,14 @@ const queries = [_]Query{
     .{ .name = "department counts", .text = "MATCH (p:Person) RETURN p.department, count(*)", .heavy = true },
     .{ .name = "return 100k rows (3 columns)", .text = "MATCH (p:Person) RETURN p.id, p.name, p.age", .heavy = true },
     .{ .name = "return 10k whole nodes", .text = "MATCH (p:Person) RETURN p LIMIT 10000", .heavy = true },
+    .{
+        .name = "expressions (regex, CASE, functions)",
+        .text =
+        \\MATCH (p:Person) WHERE p.name =~ 'person-1.*' AND p.age % 7 <> 0
+        \\RETURN count(CASE WHEN toUpper(p.department) STARTS WITH 'E' THEN 1 END), sum(p.age * 2 + size(p.name))
+        ,
+        .heavy = true,
+    },
     .{ .name = "create one node (commit)", .text = "CREATE (:Event {at: datetime(), card: $card})", .parameters = &.{.card} },
     .{ .name = "create 1000 nodes (UNWIND)", .text = "UNWIND range(1, 1000) AS i CREATE (:Event {n: i})", .heavy = true },
 };
