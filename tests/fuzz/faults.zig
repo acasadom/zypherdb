@@ -31,10 +31,8 @@ const acmedb = @import("acmedb");
 const workload = @import("fault_workload.zig");
 const generator = @import("query_generator.zig");
 const Outcome = @import("query_results.zig").Outcome;
+const Database = @import("database.zig");
 
-const Graph = acmedb.Graph;
-const KeyValueStore = acmedb.KeyValueStore;
-const Statement = acmedb.Statement;
 const Operation = acmedb.faults.Operation;
 const plan = &acmedb.faults.faults;
 
@@ -124,111 +122,6 @@ pub fn run(backing_allocator: Allocator, path: []const u8, twin_path: []const u8
     return statistics;
 }
 
-/// An entry the engine keeps in the main table for one of its other tables
-/// (LMDB names them with a trailing 0x00, libmdbx without): its value
-/// describes the table's pages, which may differ between equal databases.
-fn isTableCatalogEntry(key: []const u8) bool {
-    const name = if (std.mem.endsWith(u8, key, "\x00")) key[0 .. key.len - 1] else key;
-    return std.mem.eql(u8, name, "#nodes") or std.mem.eql(u8, name, "#relationships");
-}
-
-/// A stored key and value, copied.
-const Pair = struct { key: []const u8, value: []const u8 };
-
-/// A database and the statements prepared on it.
-const Database = struct {
-    store: KeyValueStore,
-    graph: Graph,
-    /// Prepared statements by text (the texts live in `Fuzzer.texts`).
-    statements: std.StringHashMapUnmanaged(*Statement) = .empty,
-
-    const store_options = KeyValueStore.Options{ .durability = .deferred };
-
-    fn open(self: *Database, allocator: Allocator, path: []const u8) !void {
-        self.* = .{ .store = try KeyValueStore.openWithOptions(allocator, path, store_options), .graph = undefined };
-        self.graph = Graph.init(&self.store, allocator);
-    }
-
-    fn close(self: *Database, allocator: Allocator) void {
-        var statements = self.statements.valueIterator();
-        while (statements.next()) |statement| statement.*.destroy();
-        self.statements.deinit(allocator);
-        self.store.deinit();
-    }
-
-    /// Runs `step`'s statement (prepared, or kept from an earlier run, if
-    /// `prepared`); rows and the run's memory go to `arena`.
-    fn run(self: *Database, allocator: Allocator, arena: Allocator, step: workload.Step, prepared: bool, parameters: acmedb.Executor.Parameters) Allocator.Error!Outcome {
-        const rows = if (prepared) rows: {
-            const statement = self.statements.get(step.text) orelse made: {
-                const statement = Statement.prepare(allocator, step.text, .{ .graph = &self.graph }) catch |err| return failure(err);
-                errdefer statement.destroy();
-                try self.statements.put(allocator, step.text, statement);
-                break :made statement;
-            };
-            var executor = statement.executorFor(&self.graph, arena);
-            executor.parameters = parameters;
-            break :rows statement.run(&executor) catch |err| return failure(err);
-        } else rows: {
-            const ast = try arena.create(acmedb.Ast);
-            ast.* = acmedb.Ast.init(arena);
-            const root = acmedb.parser.parse(ast, step.text, null) catch |err| return failure(err);
-            var executor = acmedb.Executor.init(ast, &self.graph, arena);
-            executor.parameters = parameters;
-            break :rows executor.run(root) catch |err| return failure(err);
-        };
-        return Outcome.fromRows(arena, rows, step.ordered);
-    }
-
-    fn failure(err: anyerror) Allocator.Error!Outcome {
-        if (err == error.OutOfMemory) return error.OutOfMemory;
-        return .{ .failure = err };
-    }
-
-    /// A hash of every record and key of the database, read in its own
-    /// transaction, without the engine's catalog of its tables.
-    fn digest(self: *Database) !u64 {
-        var hasher = std.hash.Wyhash.init(0);
-        inline for (.{ KeyValueStore.scanAll, KeyValueStore.scanNodes, KeyValueStore.scanRelationships }) |scan| {
-            var iterator = try scan(&self.store);
-            defer iterator.deinit();
-            while (try iterator.next()) |entry| {
-                if (isTableCatalogEntry(entry.key)) continue;
-                hasher.update(std.mem.asBytes(&entry.key.len));
-                hasher.update(entry.key);
-                hasher.update(std.mem.asBytes(&entry.value.len));
-                hasher.update(entry.value);
-            }
-            hasher.update("|");
-        }
-        return hasher.final();
-    }
-
-    /// Every entry of the three tables, in order, copied into `arena`
-    /// (the table's number first in each key).
-    fn entries(self: *Database, arena: Allocator) !std.ArrayList(Pair) {
-        var list = std.ArrayList(Pair).empty;
-        inline for (.{ KeyValueStore.scanAll, KeyValueStore.scanNodes, KeyValueStore.scanRelationships }, 0..) |scan, table| {
-            var iterator = try scan(&self.store);
-            defer iterator.deinit();
-            while (try iterator.next()) |entry| {
-                if (isTableCatalogEntry(entry.key)) continue;
-                const key = try std.mem.concat(arena, u8, &.{ &.{@as(u8, table)}, entry.key });
-                try list.append(arena, .{ .key = key, .value = try arena.dupe(u8, entry.value) });
-            }
-        }
-        return list;
-    }
-
-    fn checkIntegrity(self: *Database, allocator: Allocator, out: *std.Io.Writer) !bool {
-        var report = try acmedb.integrity.check(&self.graph, allocator);
-        defer report.deinit();
-        if (report.ok()) return true;
-        try out.print("{f}", .{report});
-        return false;
-    }
-};
-
 const Fuzzer = struct {
     allocator: Allocator,
     options: Options,
@@ -263,7 +156,7 @@ const Fuzzer = struct {
         if (options.verbose) try out.print("seed {d}, swarm: {f}\n", .{ options.seed, self.swarm });
         try self.openFailing(path);
         errdefer self.failing.close(allocator);
-        try self.twin.open(allocator, twin_path);
+        try self.twin.open(allocator, twin_path, Database.fuzz_options);
         errdefer self.twin.close(allocator);
         // The query generator's parameters.
         const values = [_]acmedb.Value{ .{ .int = 1 }, .{ .string = "red" }, .{ .float = 2.0 } };
@@ -275,7 +168,7 @@ const Fuzzer = struct {
         var point: u64 = 0;
         while (true) : (point += 1) {
             plan.arm(point, self.swarm.persistent, self.swarm.breaks_writer);
-            const opened = self.failing.open(self.allocator, path);
+            const opened = self.failing.open(self.allocator, path, Database.fuzz_options);
             const fired = plan.injected > 0;
             plan.disarm();
             if (opened) |_| {
@@ -331,7 +224,7 @@ const Fuzzer = struct {
                 }
                 return;
             }
-            self.statistics.faults[@intFromEnum(operation.?)] += 1;
+            self.statistics.faults[@backingInt(operation.?)] += 1;
             switch (actual) {
                 .failure => |err| {
                     if (!isStorageError(err) and !expected.eql(actual)) return self.fail("a fault reported as another error\n{f}", .{context});
@@ -353,38 +246,8 @@ const Fuzzer = struct {
         }
     }
 
-    /// Prints the first entries that differ between the failing database
-    /// and the twin (table number, then key and value bytes).
     fn printDifference(self: *Fuzzer) !void {
-        const arena = self.scratch.allocator();
-        const mine = (try self.failing.entries(arena)).items;
-        const theirs = (try self.twin.entries(arena)).items;
-        var i: usize = 0;
-        var j: usize = 0;
-        var printed: usize = 0;
-        while ((i < mine.len or j < theirs.len) and printed < 10) {
-            const order = if (i == mine.len) std.math.Order.gt else if (j == theirs.len) std.math.Order.lt else std.mem.order(u8, mine[i].key, theirs[j].key);
-            switch (order) {
-                .lt => {
-                    try self.out.print("only here: {x} = {x}\n", .{ mine[i].key, mine[i].value });
-                    i += 1;
-                    printed += 1;
-                },
-                .gt => {
-                    try self.out.print("only in the twin: {x} = {x}\n", .{ theirs[j].key, theirs[j].value });
-                    j += 1;
-                    printed += 1;
-                },
-                .eq => {
-                    if (!std.mem.eql(u8, mine[i].value, theirs[j].value)) {
-                        try self.out.print("differs: {x} = {x}, twin {x}\n", .{ mine[i].key, mine[i].value, theirs[j].value });
-                        printed += 1;
-                    }
-                    i += 1;
-                    j += 1;
-                },
-            }
-        }
+        try Database.printDifference(&self.failing, &self.twin, self.scratch.allocator(), self.out);
     }
 
     fn isStorageError(err: anyerror) bool {

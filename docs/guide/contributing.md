@@ -11,6 +11,7 @@ zig build test    # unit tests in src/ + the suite in tests/
 SNAP_UPDATE=1 zig build test   # rewrite the snapshots that differ (review with git diff)
 zig build fuzz -- storage --seeds 100   # the storage fuzzer, from a random seed
 zig build fuzz -- faults --seeds 100    # the fault fuzzer: storage that fails on purpose
+zig build fuzz -- crash --seeds 100     # the crash fuzzer: a writer killed with SIGKILL
 zig build         # static + shared libraries and acmedb.h into zig-out/
 make python       # the Python extension module into zig-out/python/
 make test-py      # Python tests and documentation tests (pip install -e "python[dev]" once)
@@ -107,6 +108,33 @@ zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- faults --seeds 30
 ```
 
 A new kind of statement that writes gets a template in the workload.
+
+### The crash fuzzer
+
+A process that dies must leave a database that opens, passes the integrity checker and holds every
+transaction it committed. `tests/fuzz/crash.zig` starts a writer (the fuzz program itself, run as
+`crash-writer`) that runs a seed's write workload, one statement per transaction, and reports each
+statement done. The writer dies, a few times per seed, in one of two ways:
+
+- at a crash point: the failing engine (`src/storage/engine/faulty.zig`) has one before each storage
+  operation and one after each commit, and the writer sends itself SIGKILL at the one the fuzzer
+  chose (half of them near a commit). These crashes are reproducible from the seed.
+- killed by the fuzzer a random delay after a report, which can land inside the storage engine (in
+  the middle of a commit's writes or its sync), but depends on timing.
+
+After each crash the fuzzer reopens the database, runs the integrity checker, and compares it with a
+twin that ran the same statements without crashing: it must equal the twin after the last statement
+reported, or after the next one (whose commit may have finished before the kill). The writer then
+starts again from there; the last one runs to the end and must reach the twin.
+
+```bash
+zig build fuzz -- crash --seed 42 --steps 80 --verbose
+zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- crash --seeds 200 --steps 80
+```
+
+A process crash keeps what the operating system already holds, so every durability setting must keep
+every reported commit. Power failures, which lose what was not synced, are not tested: they need a
+simulated disk.
 
 ### Snapshot tests
 
