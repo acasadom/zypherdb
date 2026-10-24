@@ -1,7 +1,8 @@
 //! The fuzzers' command line:
 //!
-//!     zig build fuzz -- storage [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]
+//!     zig build fuzz -- storage|query [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]
 //!
+//! For the query fuzzer, `--steps` is the number of queries per seed.
 //! Without `--seed` the first seed is random. `--seeds N` runs N seeds in a
 //! row from it (a long run). Each seed's database lives in `PATH/seed-N`
 //! (by default under .zig-cache/fuzz), removed when the seed passes. Build
@@ -10,10 +11,14 @@
 
 const std = @import("std");
 const storage = @import("storage.zig");
+const query = @import("query.zig");
 
-const usage = "usage: zig build fuzz -- storage [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]\n";
+const usage = "usage: zig build fuzz -- storage|query [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose]\n";
+
+const Fuzzer = enum { storage, query };
 
 const Arguments = struct {
+    fuzzer: Fuzzer = .storage,
     seed: ?u64 = null,
     steps: u32 = 1000,
     seeds: u64 = 1,
@@ -41,29 +46,44 @@ pub fn main(init: std.process.Init) !void {
 
     const allocator = std.heap.smp_allocator;
     var totals = storage.Statistics{};
+    var query_totals = query.Statistics{};
     for (0..arguments.seeds) |i| {
         const seed = first_seed +% i;
         const path = try std.fmt.allocPrint(arena, "{s}/seed-{d}", .{ arguments.dir, seed });
         std.Io.Dir.cwd().deleteTree(io, path) catch {};
         try std.Io.Dir.cwd().createDirPath(io, path);
-        const statistics = storage.run(allocator, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out) catch |err| {
+        runSeed(allocator, path, seed, arguments, out, &totals, &query_totals) catch |err| {
             try out.print("database kept in {s}\n", .{path});
             try out.flush();
             if (err == error.FuzzFailed) std.process.exit(1);
             return err;
         };
         std.Io.Dir.cwd().deleteTree(io, path) catch {};
-        totals.add(statistics);
         try out.print("seed {d}: {d} steps ok\n", .{ seed, arguments.steps });
         try out.flush();
     }
-    try out.print("operations over {d} seed(s):\n{f}", .{ arguments.seeds, totals });
+    switch (arguments.fuzzer) {
+        .storage => try out.print("operations over {d} seed(s):\n{f}", .{ arguments.seeds, totals }),
+        .query => try out.print("over {d} seed(s):\n{f}", .{ arguments.seeds, query_totals }),
+    }
     try out.flush();
+}
+
+fn runSeed(allocator: std.mem.Allocator, path: []const u8, seed: u64, arguments: Arguments, out: *std.Io.Writer, totals: *storage.Statistics, query_totals: *query.Statistics) !void {
+    switch (arguments.fuzzer) {
+        .storage => totals.add(try storage.run(allocator, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out)),
+        .query => {
+            var statistics = try query.run(allocator, path, .{ .seed = seed, .queries = arguments.steps, .verbose = arguments.verbose }, out);
+            defer statistics.deinit(allocator);
+            try query_totals.add(allocator, statistics);
+        },
+    }
 }
 
 fn parseArguments(args: []const [:0]const u8) !Arguments {
     var arguments = Arguments{};
-    if (args.len < 2 or !std.mem.eql(u8, args[1], "storage")) return error.Usage;
+    if (args.len < 2) return error.Usage;
+    arguments.fuzzer = std.meta.stringToEnum(Fuzzer, args[1]) orelse return error.Usage;
     var i: usize = 2;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
