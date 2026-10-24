@@ -221,6 +221,9 @@ test "C ABI: export the whole graph as JSON" {
             "]}",
         json[0..length],
     );
+
+    const report = c_api.acmedb_check(context, &length).?;
+    try testing.expectEqualStrings("{\"ok\":true,\"problem_count\":0,\"problems\":[]}", report[0..length]);
 }
 
 test "C ABI: whole nodes and relationships in the JSON result" {

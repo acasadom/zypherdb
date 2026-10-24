@@ -169,6 +169,15 @@ Direct writes, each its own transaction unless inside `write()`:
 - `export_graph() -> dict` — the whole graph read straight from storage, as
   `{"nodes": [{"id", "labels", "properties"}], "relationships": [{"id", "source", "target", "type", "properties"}]}`.
   Meant for tests and debugging; it reads everything.
+- `check() -> dict` — checks that every index and counter agrees with the stored records, and
+  returns `{"ok": bool, "problem_count": int, "problems": [str]}` (`problems` describes the first
+  32).
+
+  > **Warning.** It is **a diagnostic, not a routine call**. Run it only with a reason: a query that misses
+  > data it should find or counts that do not add up (a suspected bug in acmedb), to be sure after a
+  > crash, or to attach its output to a bug report. It reads the whole database and holds memory in
+  > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
+  > reports is a bug in acmedb: please report it with the output.
 - `sync()` — writes every commit so far to disk (for `"deferred"` durability).
 - `close()` — releases the database. Using it afterwards raises `ClosedError`.
 

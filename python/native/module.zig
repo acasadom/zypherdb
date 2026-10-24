@@ -898,6 +898,33 @@ fn setProperty(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
 
 /// `{"nodes": [{"id", "labels", "properties"}], "relationships": [{"source",
 /// "target", "type", "properties"}]}`, read from storage in one snapshot.
+/// `{"ok": bool, "problem_count": int, "problems": [str]}` (see
+/// `acmedb.integrity.check`).
+fn check(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    const database = parseDatabase(args) orelse return null;
+    var report = acmedb.integrity.check(&database.graph, allocator) catch return storageFailure();
+    defer report.deinit();
+    const result = py.PyDict_New() orelse return null;
+    if (!fillReport(result, &report)) {
+        py.Py_DecRef(result);
+        return null;
+    }
+    return result;
+}
+
+fn fillReport(result: *py.PyObject, report: *const acmedb.integrity.Report) bool {
+    if (!setItem(result, "ok", py.PyBool_FromLong(@intFromBool(report.ok())))) return false;
+    if (!setItem(result, "problem_count", py.PyLong_FromUnsignedLongLong(report.count))) return false;
+    const problems = py.PyList_New(0) orelse return false;
+    if (!setItem(result, "problems", problems)) return false;
+    for (report.problems.items) |problem| {
+        const text = string(problem) orelse return false;
+        defer py.Py_DecRef(text);
+        if (py.PyList_Append(problems, text) != 0) return false;
+    }
+    return true;
+}
+
 fn exportGraph(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = parseDatabase(args) orelse return null;
     const graph = &database.graph;
@@ -1000,6 +1027,7 @@ var methods = [_]py.PyMethodDef{
     method("add_edge", addEdge),
     method("set_property", setProperty),
     method("export_graph", exportGraph),
+    method("check", check),
     method("define_procedure", defineProcedure),
     method("set_import_directory", setImportDirectory),
     method("duration_text", durationText),

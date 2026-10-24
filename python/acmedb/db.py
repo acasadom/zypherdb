@@ -236,6 +236,23 @@ class Database:
         with self._lock:
             return native.export_graph(self._handle())
 
+    def check(self) -> dict:
+        """Check that every index and counter agrees with the stored records.
+
+        **A diagnostic, not a routine call.** Use it when you suspect acmedb
+        itself has a bug (a query that misses nodes it should find, counts
+        that do not add up), after a crash if you want to be sure, or to
+        attach its output to a bug report. It reads the whole database and
+        holds memory in proportion to it, so it is slow on a large one; it
+        repairs nothing. Returns::
+
+            {"ok": True, "problem_count": 0, "problems": []}
+
+        ``problems`` describes the first 32 problems found.
+        """
+        with self._lock:
+            return native.check(self._handle())
+
     def _define_procedure(self, name: str, arguments: list, columns: list, rows: list) -> None:
         """For the openCypher TCK: a procedure, for this open database only,
         whose rows are a table. ``arguments`` and ``columns`` are ``(name,
