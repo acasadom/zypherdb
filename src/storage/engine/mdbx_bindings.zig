@@ -74,9 +74,11 @@ pub const MDBX_SET_RANGE: c_int = 17;
 
 // --- Logging (MDBX_log_level_t, MDBX_debug_flags_t) ---
 
-/// Warnings and errors only: libmdbx logs notices (an empty file at
-/// creation, readahead...) by default.
-pub const MDBX_LOG_WARN: c_int = 2;
+/// Errors only: libmdbx logs notices (an empty file at creation,
+/// readahead...) by default, and warns on stderr when it opens a database
+/// after an unclean shutdown, which it handles itself; a library must not
+/// write to its host program's stderr for that.
+pub const MDBX_LOG_ERROR: c_int = 1;
 pub const MDBX_DBG_DONTCHANGE: c_int = -1;
 /// `MDBX_LOGGER_DONTCHANGE`: keep the current logger (a pointer of all ones).
 pub const MDBX_LOGGER_DONTCHANGE: *const anyopaque = @ptrFromInt(std.math.maxInt(usize));
