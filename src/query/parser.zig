@@ -13,6 +13,7 @@ const Index = @import("ast.zig").Index;
 const NodeKind = @import("ast.zig").NodeKind;
 const EdgeDirection = @import("ast.zig").EdgeDirection;
 const EdgePatternData = @import("ast.zig").EdgePatternData;
+const ExplainMode = @import("ast.zig").ExplainMode;
 const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 const lexer = @import("lexer.zig");
 const call_parser = @import("call_parser.zig");
@@ -38,6 +39,16 @@ pub fn parse(ast: *Ast, src: []const u8, diagnostic: ?*Diagnostic) ParseError!In
         .pos = 0,
         .diagnostic = diagnostic,
     };
+    const mode: ?ExplainMode = if (parser.atKeyword("EXPLAIN")) .explain else if (parser.atKeyword("PROFILE")) .profile else null;
+    if (mode) |explain_mode| {
+        _ = parser.advance();
+        if (schema_parser.atSchemaCommand(&parser)) {
+            parser.fail("EXPLAIN and PROFILE take a query, not a schema command", .{});
+            return error.UnexpectedToken;
+        }
+        const statement = try parser.parseUnion();
+        return ast.addNode(.explain, .{ .explain = explain_mode }, &.{statement});
+    }
     if (schema_parser.atSchemaCommand(&parser)) return schema_parser.parseSchemaCommand(&parser);
     return parser.parseUnion();
 }

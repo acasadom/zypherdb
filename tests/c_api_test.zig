@@ -283,3 +283,37 @@ test "C ABI: query parameters as a JSON object" {
     try testing.expect(acmedb_query(context, missing.ptr, missing.len) == null);
     try testing.expectEqual(@as(c_int, 8), acmedb_error_code(context));
 }
+
+test "C ABI: a prepared statement runs again with new parameters" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(context);
+
+    const create = "UNWIND range(1, 5) AS i CREATE (:Card {number: i, holder: 'h' + toString(i)})";
+    acmedb_result_free(acmedb_query(context, create.ptr, create.len).?);
+
+    const text = "MATCH (c:Card {number: $number}) RETURN c.holder AS holder";
+    const statement = c_api.acmedb_prepare(context, text.ptr, text.len).?;
+    defer c_api.acmedb_statement_free(statement);
+    var length: usize = 0;
+    try testing.expectEqual(@as(usize, 1), c_api.acmedb_statement_column_count(statement));
+    try testing.expectEqualStrings("holder", c_api.acmedb_statement_column_name(statement, 0, &length)[0..length]);
+    try testing.expectEqual(@as(usize, 1), c_api.acmedb_statement_parameter_count(statement));
+    try testing.expectEqualStrings("number", c_api.acmedb_statement_parameter_name(statement, 0, &length)[0..length]);
+
+    for ([_][]const u8{ "{\"number\": 2}", "{\"number\": 4}" }, [_][]const u8{ "h2", "h4" }) |parameters, holder| {
+        const result = c_api.acmedb_statement_query(context, statement, parameters.ptr, parameters.len).?;
+        defer acmedb_result_free(result);
+        try testing.expectEqual(@as(usize, 1), acmedb_result_row_count(result));
+        try testing.expectEqualStrings(holder, acmedb_result_string(result, 0, 0, &length)[0..length]);
+    }
+    // Without parameters, the query fails as acmedb_query would.
+    try testing.expect(c_api.acmedb_statement_query(context, statement, null, 0) == null);
+    try testing.expect(acmedb_error_code(context) != 0);
+
+    const broken = "MATCH (n RETURN n";
+    try testing.expect(c_api.acmedb_prepare(context, broken.ptr, broken.len) == null);
+}

@@ -10,7 +10,7 @@ Usage::
         print(db.query("MATCH (m:Movie) RETURN m.title"))
 """
 
-from .db import Database
+from .db import Database, PreparedQuery
 from .entities import Node, Path, Relationship
 from .temporal import Duration
 from .errors import (
@@ -32,6 +32,7 @@ from .errors import (
 
 __all__ = [
     "Database",
+    "PreparedQuery",
     "Node",
     "Path",
     "Relationship",

@@ -7,6 +7,10 @@
 
 const std = @import("std");
 const temporal = @import("temporal/types.zig");
+const sequence_algorithms = @import("sequence_algorithms.zig");
+const hashWord = sequence_algorithms.hashWord;
+const hashBytes = sequence_algorithms.hashBytes;
+const combineHashes = sequence_algorithms.combineHashes;
 
 /// A reference to a stored relationship: its id identifies it; its ends and
 /// type come with it, so a traversal needs no lookup. A regular type.
@@ -25,8 +29,8 @@ pub const Relationship = struct {
         return std.math.order(a.id, b.id);
     }
 
-    pub fn hash(self: Relationship, hasher: *std.hash.Wyhash) void {
-        hasher.update(std.mem.asBytes(&self.id));
+    pub fn hash(self: Relationship) u64 {
+        return hashWord(self.id);
     }
 };
 
@@ -50,9 +54,11 @@ pub const Path = struct {
         return .eq;
     }
 
-    pub fn hash(self: Path, hasher: *std.hash.Wyhash) void {
-        hasher.update(std.mem.sliceAsBytes(self.nodes));
-        for (self.relationships) |relationship| relationship.hash(hasher);
+    pub fn hash(self: Path) u64 {
+        var result = hashWord(self.nodes.len);
+        for (self.nodes) |node| result = combineHashes(result, hashWord(node));
+        for (self.relationships) |relationship| result = combineHashes(result, relationship.hash());
+        return result;
     }
 };
 
@@ -178,56 +184,38 @@ pub const Value = union(enum) {
     }
 
     /// Feeds the value into `hasher`; values that are `eql` hash equally.
-    pub fn hash(self: Value, hasher: *std.hash.Wyhash) void {
-        hasher.update(&.{self.typeRank()});
-        switch (self) {
-            .null => {},
-            .int => |x| hasher.update(std.mem.asBytes(&x)),
-            // An integral float hashes as the integer it equals (1.0 = 1).
-            .float => |x| if (exactInteger(x)) |n| hasher.update(std.mem.asBytes(&n)) else if (std.math.isNan(x)) hasher.update("NaN") else hasher.update(std.mem.asBytes(&x)),
-            .string => |x| {
-                hasher.update(std.mem.asBytes(&x.len));
-                hasher.update(x);
+    /// Equal values hash alike: an integral float as the integer it equals
+    /// (1.0 = 1), every NaN alike. The type's rank seeds every hash, so
+    /// values of different types rarely collide.
+    pub fn hash(self: Value) u64 {
+        const seed: u64 = self.typeRank();
+        const part = struct {
+            fn of(type_seed: u64, word: u64) u64 {
+                return combineHashes(hashWord(type_seed), word);
+            }
+        }.of;
+        return switch (self) {
+            .null => hashWord(seed),
+            .int => |x| part(seed, @bitCast(x)),
+            .float => |x| if (exactInteger(x)) |n| part(seed, @bitCast(n)) else if (std.math.isNan(x)) hashBytes(seed, "NaN") else part(seed, @bitCast(x)),
+            .string => |x| hashBytes(seed, x),
+            .boolean => |x| part(seed, @intFromBool(x)),
+            .list => |items| combineHashes(hashWord(seed), sequence_algorithms.hashSequence(Value, items)),
+            .node => |id| part(seed, id),
+            .relationship => |relationship| part(seed, relationship.hash()),
+            .path => |p| part(seed, p.hash()),
+            .date => |d| part(seed, @bitCast(@as(i64, d.days))),
+            .local_time => |t| part(seed, @bitCast(@as(i64, t.nanoseconds))),
+            .time => |t| combineHashes(part(seed, @bitCast(@as(i64, t.nanoseconds))), @bitCast(@as(i64, t.offset))),
+            .local_date_time => |t| combineHashes(part(seed, @bitCast(@as(i64, t.seconds))), t.nanoseconds),
+            .date_time => |t| combineHashes(combineHashes(combineHashes(part(seed, @bitCast(@as(i64, t.seconds))), t.nanoseconds), @bitCast(@as(i64, t.offset))), hashBytes(seed, t.zone)),
+            .duration => |d| combineHashes(combineHashes(combineHashes(part(seed, @bitCast(@as(i64, d.months))), @bitCast(@as(i64, d.days))), @bitCast(@as(i64, d.seconds))), d.nanoseconds),
+            .map => |entries| map: {
+                var result = part(seed, entries.len);
+                for (entries) |entry| result = combineHashes(combineHashes(result, hashBytes(seed, entry.key)), entry.value.hash());
+                break :map result;
             },
-            .boolean => |x| hasher.update(&.{@intFromBool(x)}),
-            .list => |items| {
-                hasher.update(std.mem.asBytes(&items.len));
-                for (items) |item| item.hash(hasher);
-            },
-            .node => |id| hasher.update(std.mem.asBytes(&id)),
-            .relationship => |relationship| relationship.hash(hasher),
-            .path => |p| p.hash(hasher),
-            .date => |d| hasher.update(std.mem.asBytes(&d.days)),
-            .local_time => |t| hasher.update(std.mem.asBytes(&t.nanoseconds)),
-            .time => |t| {
-                hasher.update(std.mem.asBytes(&t.nanoseconds));
-                hasher.update(std.mem.asBytes(&t.offset));
-            },
-            .local_date_time => |t| {
-                hasher.update(std.mem.asBytes(&t.seconds));
-                hasher.update(std.mem.asBytes(&t.nanoseconds));
-            },
-            .date_time => |t| {
-                hasher.update(std.mem.asBytes(&t.seconds));
-                hasher.update(std.mem.asBytes(&t.nanoseconds));
-                hasher.update(std.mem.asBytes(&t.offset));
-                hasher.update(t.zone);
-            },
-            .duration => |d| {
-                hasher.update(std.mem.asBytes(&d.months));
-                hasher.update(std.mem.asBytes(&d.days));
-                hasher.update(std.mem.asBytes(&d.seconds));
-                hasher.update(std.mem.asBytes(&d.nanoseconds));
-            },
-            .map => |entries| {
-                hasher.update(std.mem.asBytes(&entries.len));
-                for (entries) |entry| {
-                    hasher.update(std.mem.asBytes(&entry.key.len));
-                    hasher.update(entry.key);
-                    entry.value.hash(hasher);
-                }
-            },
-        }
+        };
     }
 
     /// Position of the value's type in the global sort order.
@@ -417,11 +405,7 @@ test "hash agrees with eql" {
     for (values) |a| {
         for (values) |b| {
             if (!Value.eql(a, b)) continue;
-            var hash_a = std.hash.Wyhash.init(0);
-            var hash_b = std.hash.Wyhash.init(0);
-            a.hash(&hash_a);
-            b.hash(&hash_b);
-            try testing.expectEqual(hash_a.final(), hash_b.final());
+            try testing.expectEqual(a.hash(), b.hash());
         }
     }
 }

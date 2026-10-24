@@ -58,6 +58,8 @@ pub const AggregateKind = ast.AggregateKind;
 pub const EdgeDirection = ast.EdgeDirection;
 
 pub const parser = @import("query/parser.zig");
+/// Cypher text of an AST part (EXPLAIN's details).
+pub const printer = @import("query/printer.zig");
 
 pub const ParseError = parser.ParseError;
 pub const lexer = @import("query/lexer.zig");
@@ -68,6 +70,10 @@ pub const Token = lexer.Token;
 pub const Executor = @import("execution/Executor.zig");
 pub const ExecutionError = Executor.ExecutionError;
 pub const Row = Executor.Row;
+
+/// Prepared statements, and the cache of those `query` calls prepare.
+pub const Statement = @import("statement/Statement.zig");
+pub const StatementCache = @import("statement/Cache.zig");
 
 pub const diagnostics = @import("diagnostics.zig");
 

@@ -70,6 +70,148 @@ commit 10x faster, but on macOS it flushes with `msync` and no `F_FULLFSYNC`, wh
 durable: not used. `MDBX_LIFORECLAIM` changed nothing measurable. Renewing read transactions
 instead of making them made short reads 2-3% faster.
 
+## A plan built once per query (October 2026)
+
+Queries planned once into chains of operators (`src/planning/`) instead of each pattern being
+planned again for every row that reaches it. `main` against the branch, LMDB, each loading its own
+data; best median of three alternating rounds, `--people 100000 --runs 200`, full durability.
+
+| Query | per-row planning | plan once | |
+| --- | ---: | ---: | ---: |
+| card lookup | 4.8 µs | 4.7 µs | −2% |
+| person's groups (1 hop) | 9.1 µs | 8.1 µs | −11% |
+| colleagues (2 hops, `count(DISTINCT)`) | 101 µs | 77 µs | −24% |
+| may this card open this door? (MATCH) | 38.7 µs | 33.4 µs | −14% |
+| same, with `EXISTS` | 41.4 µs | 38.3 µs | −8% |
+| doors of a person's zones (`*1..3`) | 122 µs | 119 µs | −3% |
+| people over 60 (range index + records) | 4.6 ms | 4.3 ms | −8% |
+| oldest 10 (`ORDER BY … LIMIT`) | 25.0 ms | 25.6 ms | +2% (noise: 25-30 ms in both) |
+| group sizes (expand 200k edges + aggregate) | 25.1 ms | 23.5 ms | −6% |
+| department counts (scan + group) | 13.3 ms | 12.4 ms | −7% |
+| return 100k rows (3 columns) | 17.7 ms | 16.7 ms | −6% |
+| create one node (one commit) | 8.0 ms | 8.1 ms | 0% |
+| create 1000 nodes (`UNWIND`, one commit) | 14.0 ms | 13.0 ms | −7% |
+
+The gain is in the patterns reached by many rows: the second pattern of `colleagues` was planned
+(allocations, label and edge-type counts read) once per group of the person, now once per query.
+
+PROFILE then added one test per operator call (is a profile being taken?). Against the plan above,
+best of three rounds: the short queries unchanged (±2%); the queries that push 100k-300k rows
+through the operators 1-2.5% slower (group sizes 23.4 → 24.0 ms with 100 runs per round), about
+the noise between rounds on this laptop (±0.3 ms). With the test removed entirely they measured
+the same within that noise, so it stays (a cold branch, the operator switch inlined into `feed`).
+
+## Prepared statements (October 2026)
+
+`--prepared` runs each query as a statement prepared once (`acmedb.Statement`), the way the C and
+Python `query` calls now run a text they have seen before. Same build, same data, best median of
+three alternating rounds, `--people 100000 --runs 200`:
+
+| Query | parse + check + plan each run | prepared | |
+| --- | ---: | ---: | ---: |
+| card lookup | 5.1 µs | 3.7 µs | −27% |
+| person's groups (1 hop) | 8.3 µs | 6.6 µs | −20% |
+| colleagues (2 hops, `count(DISTINCT)`) | 80 µs | 74 µs | −8% |
+| may this card open this door? (MATCH) | 32.8 µs | 29.0 µs | −12% |
+| same, with `EXISTS` | 40.7 µs | 35.5 µs | −13% |
+| doors of a person's zones (`*1..3`) | 124 µs | 117 µs | −6% |
+| the scans and aggregations (4-24 ms) | | | within ±2% (noise), but `department counts` −6% |
+
+Each run of a prepared statement reads again the counts its plan was built on (one key lookup per
+count) to plan again if they drifted; with the reads taken out, the card lookup measured the same
+(2.7 µs with 2000 runs, both ways). The writing queries measured the same too: `create 1000 nodes`
+first looked 11% slower prepared, but each run adds 1000 nodes and the prepared runs came second;
+run first, they were the faster ones.
+
+## Cheaper hashing and a reused run arena (October 2026)
+
+Profiles (`sample`) of the prepared runs showed `count(DISTINCT q)` spending about 30% of
+`colleagues` in streaming Wyhash (several tiny updates per value) and set growth, and every run
+mapping and unmapping its arena (about 7%). Two changes: the regular-type hash became a value's
+own `u64` (a scalar is one multiply-mix of its bits, a string one Wyhash pass, a composite folds
+its parts'), and the bindings keep one arena per database, reset after each query keeping up to
+1 MiB (the benchmark does the same). Against the prepared statements above, both `--prepared`,
+best of three alternating rounds:
+
+| Query | before | after | |
+| --- | ---: | ---: | ---: |
+| card lookup | 5.0 µs | 3.9 µs | −22% |
+| person's groups (1 hop) | 7.8 µs | 6.7 µs | −14% |
+| colleagues (2 hops, `count(DISTINCT)`) | 80 µs | 57 µs | −29% |
+| may this card open this door? | 30.2 µs | 29.2 µs | −3% |
+| doors of a person's zones (`*1..3`, `count(DISTINCT)`) | 117 µs | 90 µs | −24% |
+| group sizes (expand + aggregate) | 24.0 ms | 21.7 ms | −10% |
+| department counts (scan + group) | 12.2 ms | 10.8 ms | −12% |
+| the other scans, writes | | | within ±2%, `create 1000` −6% |
+
+`same, with EXISTS` measured 14% slower in that series, but not again: alone, 1000 runs, its clean
+rounds gave 36.5 µs after against 39.4 µs before. The laptop was busy during these runs (load
+average 3-8, rounds of 180-340 µs discarded as such), so differences of a few percent here are
+not established either way.
+
+## Rows as slots (October 2026)
+
+Each variable resolved by the planner to a slot, rows as fixed arrays (`bindings.zig`), instead of
+a list of (name, value) searched by name. Against the commit before, both `--prepared`, 1000
+runs (50 for the heavy queries), best of three rounds at load average < 3.5:
+
+| Query | names | slots | |
+| --- | ---: | ---: | ---: |
+| may this card open this door? | 28.9 µs | 27.0 µs | −7% |
+| colleagues | 53.6 µs | 52.6 µs | −2% |
+| oldest 10 (`ORDER BY … LIMIT`) | 23.3 ms | 20.5 ms | −12% |
+| department counts | 10.7 ms | 10.7 ms | 0% |
+| return 100k rows (3 columns) | 15.9 ms | 16.2 ms | +2% |
+
+The first version recorded the previous value of every binding (a 64-byte undo record, and a read
+of the slot) and was 4-12% slower on most queries; recording a slot and whether it was bound
+(values kept aside only when one is overwritten) gave the numbers above. `oldest 10` gains because
+the RETURN's sort key no longer copies the row to add the aliases. `return 100k rows` stays about
+3 ns a row slower, consistently over the rounds: reading a variable is now two lookups (the AST
+node's slot, then the row's value), which compiled expressions will make one.
+
+## RETURN rows without per-row allocations, compiled expressions (October 2026)
+
+Two changes, each measured against the commit before it (ReleaseFast, 100k people, 200 runs, 10
+for the heavy queries, three alternating rounds at load average < 3, best median; plain and
+`--prepared` agree unless shown):
+
+- **RETURN rows** (bd6a55d): the projected expressions are found once per run, not once per row
+  for the ORDER BY key; rows are allocated at their width instead of grown.
+- **Compiled expressions** (`planning/expression_program.zig`): one instruction per AST node, made
+  with the plan. A constant carries its value, a variable its slot, `n.name` its slot and name, a
+  parameter an index into values looked up once per run, a call its function, a constant `=~`
+  pattern its compiled regex. `evaluate` handles the scalar operations only; lists, maps, CASE and
+  subqueries are in a separate function, so the hot one keeps a small stack frame.
+
+| Query | before | RETURN rows | compiled expressions |
+| --- | ---: | ---: | ---: |
+| card lookup (prepared) | 4.4 µs | 4.2 µs | 3.7 µs |
+| may this card open this door? (prepared) | 29.4 µs | 31.3 µs | 28.2 µs |
+| colleagues (prepared) | 57.0 µs | 57.6 µs | 53.9 µs |
+| oldest 10 (`ORDER BY … LIMIT`) | 20.9 ms | 18.1 ms | 17.1 ms |
+| return 100k rows (3 columns) | 16.5 ms | 15.6 ms | 14.8 ms |
+| expressions (regex, CASE, functions) | 31.2 ms | 31.2 ms | 29.2 ms |
+
+(The middle column comes from two A/B runs, so its rows mix rounds; read each change against its
+own neighbour.) Nothing measured slower; writes vary ±7% from round to round as before. On the new
+expression-heavy query the gain is 6%: with 100k people reading three properties a row from
+storage costs more than evaluating the expressions.
+
+Both ideas come from a parallel review of this branch (another agent continued from 33a78fa).
+Against that tree, at the same harness: these commits are 25-44% faster on multi-hop queries,
+9-14% on aggregates (both measured before these two commits), on par on ORDER BY + LIMIT, its
+one lead before (17.1 ms here, 17.8-18.3 ms there, in different sessions), and 2% faster on the
+expression query (29.2 vs 29.9 ms, same session).
+
+## DISTINCT, ORDER BY, SKIP and LIMIT as plan stages (October 2026)
+
+Each a `projection_stage` operator after its WITH or RETURN (for EXPLAIN and PROFILE: each stage
+shows its own rows and time), applied to the whole list of projected rows. Against the commit
+before, same method: every query within ±3% in both modes (the expression query +2% in both;
+the change adds work per run, not per row, so this is likely code layout). No speed was expected
+or found; the point is a truthful plan.
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read

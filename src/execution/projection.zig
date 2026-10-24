@@ -1,10 +1,9 @@
-//! Projection: WITH (project, group, filter) and RETURN post-processing
-//! (DISTINCT, ORDER BY, SKIP, LIMIT).
+//! Projection: WITH and RETURN (project, group, filter), and the stages
+//! that follow them in a plan (DISTINCT, ORDER BY, SKIP, LIMIT).
 //!
 //! RETURN rows and WITH rows are different types (value rows vs. variable
-//! bindings), but DISTINCT, ORDER BY and SKIP/LIMIT are the same algorithms
-//! on both: they are written once, generically, in `sequence_algorithms` and
-//! `sortByKey` below.
+//! bindings), but the stages are the same algorithms on both: they are
+//! written once, generically, in `sequence_algorithms` and `applyStage`.
 
 const std = @import("std");
 const Index = @import("../query/ast.zig").Index;
@@ -22,7 +21,10 @@ const aggregation = @import("aggregation.zig");
 const ExecutionError = Executor.ExecutionError;
 const Row = Executor.Row;
 
+const ProjectionStage = @import("../planning/Plan.zig").ProjectionStage;
 const Bindings = @import("bindings.zig").Bindings;
+const Slot = @import("bindings.zig").Slot;
+const SlotsContext = @import("bindings.zig").SlotsContext;
 
 /// An item paired with its ORDER BY key. The key is evaluated alongside the
 /// item because ORDER BY may use variables that are not projected.
@@ -55,12 +57,14 @@ fn keyLessThan(directions: []const bool, a: []const Value, b: []const Value) boo
 /// `Inner` is a hash-map context for `T`.
 fn SortableContext(comptime T: type, comptime Inner: type) type {
     return struct {
-        pub fn hash(_: @This(), row: Sortable(T)) u64 {
-            return Inner.hash(.{}, row.item);
+        inner: Inner,
+
+        pub fn hash(self: @This(), row: Sortable(T)) u64 {
+            return self.inner.hash(row.item);
         }
 
-        pub fn eql(_: @This(), a: Sortable(T), b: Sortable(T)) bool {
-            return Inner.eql(.{}, a.item, b.item);
+        pub fn eql(self: @This(), a: Sortable(T), b: Sortable(T)) bool {
+            return self.inner.eql(a.item, b.item);
         }
     };
 }
@@ -101,10 +105,10 @@ pub fn withClauseParts(self: *Executor, with_clause: Index) WithClauseParts {
 }
 
 /// Projects the collected bindings through the WITH clause (grouping +
-/// aggregation), then applies WHERE / DISTINCT / ORDER BY / SKIP / LIMIT,
-/// rebinding the result into fresh variable bindings for the next clauses.
-/// (Also a subquery's RETURN, whose rows are made the same way.)
-pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) ExecutionError![]Bindings {
+/// aggregation) and its WHERE, each row with its ORDER BY key; the WITH's
+/// stages (`applyStage`) come next. (Also a subquery's RETURN, whose rows
+/// are made the same way.)
+pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) ExecutionError!std.ArrayList(Sortable(Bindings)) {
     const info = withClauseParts(self, with_clause);
     const items = try withItems(self, info);
     const projected = try self.projectedExpressions(info.projection);
@@ -117,15 +121,12 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
     var rows = std.ArrayList(Sortable(Bindings)).empty;
     if (aggregating.items.len == 0) {
         // No aggregates: project each row (no grouping, so no deduplication).
+        // The projected slots are new, so the copy holds what the ORDER BY
+        // sees: the projected names and the variables from before the WITH.
         for (input) |*input_row| {
-            const row = try withRow(self, info, items, input_row) orelse continue;
-            // Without grouping, the ORDER BY also sees the variables from
-            // before the WITH (the projected names win).
-            const sort_key = if (info.order_by) |order_by| key: {
-                var scope = try clauses.copyRow(self, input_row.*);
-                for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
-                break :key try orderByKey(self, order_by, &scope);
-            } else &.{};
+            var row = try clauses.copyRow(self, input_row.*);
+            if (!try project(self, info, items, &row)) continue;
+            const sort_key = if (info.order_by) |order_by| try orderByKey(self, order_by, &row) else &.{};
             try rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
         }
     } else {
@@ -138,7 +139,7 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
         for (input) |*input_row| try aggregation.accumulateRow(self, &groups, aggregation_plan, input_row);
         try aggregation.ensureGroupWithoutKeys(self, &groups, aggregation_plan);
         for (groups.keys.items, groups.states.items) |key_values, states| {
-            var row = Bindings{ .entries = .empty };
+            var row = try self.newRow();
             var values = std.ArrayList(Value).empty;
             var key_index: usize = 0;
             for (items) |item| {
@@ -148,7 +149,7 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
                     key_index += 1;
                     break :value key_values[key_index - 1];
                 };
-                try row.put(self.allocator, item.name, value);
+                try row.put(self.allocator, item.slot, value);
                 try values.append(self.allocator, value);
             }
             if (info.where_expression != Executor.no_where and !try expressions.evaluateBool(self, info.where_expression, &row)) continue;
@@ -157,38 +158,60 @@ pub fn applyWith(self: *Executor, with_clause: Index, input: []Bindings) Executi
         }
     }
 
-    if (info.distinct) {
-        try sequence_algorithms.removeDuplicates(Sortable(Bindings), self.allocator, &rows, SortableContext(Bindings, ElementContext(Bindings)){});
-    }
-    try orderAndPaginate(self, Bindings, &rows, info.order_by, info.skip, info.limit);
-
-    const output = try self.allocator.alloc(Bindings, rows.items.len);
-    for (output, rows.items) |*row, sortable| row.* = sortable.item;
-    return output;
+    return rows;
 }
 
-/// One input row of a WITH without aggregates, projected into the new scope,
-/// or null if the WITH's WHERE drops it.
-pub fn withRow(self: *Executor, info: WithClauseParts, items: []const WithItem, input_row: *Bindings) ExecutionError!?Bindings {
-    var row = Bindings{ .entries = .empty };
-    for (items) |item| try row.put(self.allocator, item.name, try expressions.evaluate(self, item.expr, input_row));
-    // The WHERE also sees the variables from before the WITH (the projected
-    // names win): `WITH x[i] AS v WHERE i > 0`.
-    if (info.where_expression != Executor.no_where) {
-        var scope = try clauses.copyRow(self, input_row.*);
-        for (row.entries.items) |entry| try scope.put(self.allocator, entry.name, entry.value);
-        if (!try expressions.evaluateBool(self, info.where_expression, &scope)) return null;
-    }
-    return row;
+/// Applies a WITH's stage to its projected rows.
+pub fn withStage(self: *Executor, stage: ProjectionStage, rows: *std.ArrayList(Sortable(Bindings))) ExecutionError!void {
+    // Rows are distinct by their projected slots.
+    const items = try withItems(self, withClauseParts(self, stage.clause));
+    const slots = try self.allocator.alloc(Slot, items.len);
+    for (slots, items) |*slot, item| slot.* = item.slot;
+    try applyStage(self, Bindings, stage, rows, SortableContext(Bindings, SlotsContext){ .inner = .{ .slots = slots } });
 }
 
-/// Whether a WITH can pass its rows on one at a time: it neither groups,
-/// removes duplicates, sorts nor pages.
-pub fn withStreams(self: *Executor, with_clause: Index) ExecutionError!bool {
-    const info = withClauseParts(self, with_clause);
-    if (info.distinct or info.order_by != null or info.skip != null or info.limit != null) return false;
-    for (try withItems(self, info)) |item| if (item.aggregating) return false;
-    return true;
+/// Applies a RETURN's stage to `self.rows`.
+pub fn returnStage(self: *Executor, stage: ProjectionStage) ExecutionError!void {
+    try applyStage(self, Row, stage, &self.rows, SortableContext(Row, RowContext){ .inner = .{} });
+}
+
+/// One stage over rows of type `T` paired with their ORDER BY keys;
+/// `distinctness` is the hash-map context of DISTINCT. A sort is stable,
+/// O(n log n); `top` sorts only the SKIP + LIMIT rows it keeps, O(n log k).
+fn applyStage(self: *Executor, comptime T: type, stage: ProjectionStage, rows: *std.ArrayList(Sortable(T)), distinctness: anytype) ExecutionError!void {
+    const parts = withClauseParts(self, stage.clause);
+    switch (stage.kind) {
+        .distinct => try sequence_algorithms.removeDuplicates(Sortable(T), self.allocator, rows, distinctness),
+        .sort => sortByKey(T, rows.items, try orderByDirections(self, parts.order_by.?)),
+        .top => {
+            const skipped = if (parts.skip) |skip| try evaluateClauseCount(self, skip) else 0;
+            const kept = skipped +| try evaluateClauseCount(self, parts.limit.?);
+            try sequence_algorithms.partialSortStable(Sortable(T), self.allocator, rows.items, kept, try orderByDirections(self, parts.order_by.?), struct {
+                fn lessThan(ascending: []const bool, a: Sortable(T), b: Sortable(T)) bool {
+                    return keyLessThan(ascending, a.sort_key, b.sort_key);
+                }
+            }.lessThan);
+            sequence_algorithms.truncate(Sortable(T), rows, kept);
+        },
+        .skip => sequence_algorithms.dropFirst(Sortable(T), rows, try evaluateClauseCount(self, parts.skip.?)),
+        .limit => sequence_algorithms.truncate(Sortable(T), rows, try evaluateClauseCount(self, parts.limit.?)),
+    }
+}
+
+/// The count of a SKIP or LIMIT.
+fn evaluateClauseCount(self: *Executor, clause_part: Index) ExecutionError!usize {
+    return expressions.evaluateCount(self, self.ast.nodeChildren(clause_part)[0]);
+}
+
+/// Projects one row of a WITH without aggregates: binds each item's slot in
+/// `row` (the caller marks it, to restore), then applies the WHERE. False if
+/// the WHERE drops the row. Each item reads the variables from before the
+/// WITH, and its slot is new, so the WHERE sees both, the projected names
+/// winning: `WITH x[i] AS v WHERE i > 0`.
+pub fn project(self: *Executor, info: WithClauseParts, items: []const WithItem, row: *Bindings) ExecutionError!bool {
+    for (items) |item| try row.put(self.allocator, item.slot, try expressions.evaluate(self, item.expr, row));
+    if (info.where_expression == Executor.no_where) return true;
+    return expressions.evaluateBool(self, info.where_expression, row);
 }
 
 /// The WITH projection items: each binds `name` (its alias, or the variable it
@@ -204,7 +227,7 @@ pub fn withItems(self: *Executor, info: WithClauseParts) ExecutionError![]const 
             self.fail(.invalid_expression, "WITH expression requires an alias", .{});
             return error.InvalidExpression;
         };
-        try items.append(self.allocator, .{ .name = name, .expr = expr, .aggregating = aggregation.containsAggregate(self, expr) });
+        try items.append(self.allocator, .{ .name = name, .slot = self.slotOf(item), .expr = expr, .aggregating = aggregation.containsAggregate(self, expr) });
     }
     return items.items;
 }
@@ -224,23 +247,20 @@ fn orderByKey(self: *Executor, order_by: Index, bindings: *Bindings) ExecutionEr
 /// expression that repeats a projected expression reuses that column;
 /// otherwise it is evaluated with the RETURN aliases in scope, on top of the
 /// row's variables (`bindings`, null for an aggregated row, which has none).
-pub fn returnSortKey(self: *Executor, info: ReturnClauseParts, row: []const Value, bindings: *const Bindings) ExecutionError![]const Value {
+pub fn returnSortKey(self: *Executor, info: ReturnClauseParts, row: []const Value, bindings: *Bindings) ExecutionError![]const Value {
     const order_by = info.order_by orelse return &.{};
     const items = self.ast.nodeChildren(info.projection);
 
-    var scope = Bindings{ .entries = .empty };
-    try scope.entries.appendSlice(self.allocator, bindings.entries.items);
-    for (items, row) |item, value| {
-        const alias = self.ast.data(item).text;
-        if (alias.len > 0) try scope.put(self.allocator, alias, value);
-    }
+    // The aliases' slots (an item without one has none) on top of the row's.
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
+    for (items, row) |item, value| try bindings.put(self.allocator, self.slotOf(item), value);
 
-    const projected = try self.projectedExpressions(info.projection);
     const order_items = self.ast.nodeChildren(order_by);
     const key = try self.allocator.alloc(Value, order_items.len);
     for (key, order_items) |*value, order_item| {
         const expr = self.ast.nodeChildren(order_item)[0];
-        value.* = if (projectedColumn(self, projected, expr)) |column| row[column] else try expressions.evaluate(self, expr, &scope);
+        value.* = if (projectedColumn(self, info.projected, expr)) |column| row[column] else try expressions.evaluate(self, expr, bindings);
     }
     return key;
 }
@@ -281,36 +301,15 @@ fn orderByDirections(self: *Executor, order_by: Index) ExecutionError![]const bo
     return ascending;
 }
 
-/// Applies SKIP then LIMIT to any row list.
-/// ORDER BY, then SKIP and LIMIT. With a LIMIT only the rows that can be
-/// kept are put in order (a partial sort: O(n log k), not O(n log n)).
-fn orderAndPaginate(self: *Executor, comptime T: type, rows: *std.ArrayList(Sortable(T)), order_by: ?Index, skip: ?Index, limit: ?Index) ExecutionError!void {
-    if (order_by) |order| {
-        const directions = try orderByDirections(self, order);
-        if (limit) |l| {
-            const skipped = if (skip) |s| try expressions.evaluateCount(self, self.ast.nodeChildren(s)[0]) else 0;
-            const kept = try expressions.evaluateCount(self, self.ast.nodeChildren(l)[0]);
-            try sequence_algorithms.partialSortStable(Sortable(T), self.allocator, rows.items, skipped +| kept, directions, struct {
-                fn lessThan(ascending: []const bool, a: Sortable(T), b: Sortable(T)) bool {
-                    return keyLessThan(ascending, a.sort_key, b.sort_key);
-                }
-            }.lessThan);
-        } else sortByKey(T, rows.items, directions);
-    }
-    try paginate(self, Sortable(T), rows, skip, limit);
-}
-
-fn paginate(self: *Executor, comptime T: type, rows: *std.ArrayList(T), skip: ?Index, limit: ?Index) ExecutionError!void {
-    if (skip) |s| sequence_algorithms.dropFirst(T, rows, try expressions.evaluateCount(self, self.ast.nodeChildren(s)[0]));
-    if (limit) |l| sequence_algorithms.truncate(T, rows, try expressions.evaluateCount(self, self.ast.nodeChildren(l)[0]));
-}
-
 pub const ReturnClauseParts = struct {
     projection: Index,
     order_by: ?Index,
     skip: ?Index,
     limit: ?Index,
     distinct: bool,
+    /// The expression of each projection item, found once per run (the
+    /// ORDER BY key of every row looks its items up in it).
+    projected: []const Index = &.{},
 };
 
 pub fn returnClauseParts(self: *Executor, return_clause: Index) ReturnClauseParts {
@@ -333,19 +332,11 @@ pub fn returnClauseParts(self: *Executor, return_clause: Index) ReturnClausePart
     return info;
 }
 
-/// RETURN: projects every row (or folds it into its group when the
-/// projection aggregates), then aggregates, applies DISTINCT, ORDER BY, SKIP
-/// and LIMIT. The rows go to `self.rows`.
-pub fn applyReturn(self: *Executor, return_clause: Index, input: []Bindings) ExecutionError!void {
-    const info = try beginReturn(self, return_clause);
-    for (input) |*row| try returnRow(self, info, row);
-    try endReturn(self, info);
-}
-
 /// Starts a RETURN: plans its projection and aggregation. Then each row goes
 /// to `returnRow`, and `endReturn` produces the result in `self.rows`.
 pub fn beginReturn(self: *Executor, return_clause: Index) ExecutionError!ReturnClauseParts {
-    const info = returnClauseParts(self, return_clause);
+    var info = returnClauseParts(self, return_clause);
+    info.projected = try self.projectedExpressions(info.projection);
     try planReturn(self, info);
     return info;
 }
@@ -354,23 +345,19 @@ pub fn beginReturn(self: *Executor, return_clause: Index) ExecutionError!ReturnC
 /// row is not kept, so the caller may reuse it.
 pub fn returnRow(self: *Executor, info: ReturnClauseParts, row: *Bindings) ExecutionError!void {
     if (self.has_aggregates) return aggregation.accumulate(self, row);
-    var values = std.ArrayList(Value).empty;
-    for (self.ast.nodeChildren(info.projection)) |item| {
-        try values.append(self.allocator, try expressions.evaluate(self, self.ast.nodeChildren(item)[0], row));
-    }
+    // The row's width is known: allocated exactly, not grown.
+    const values = Row.fromOwnedSlice(try self.allocator.alloc(Value, info.projected.len));
+    for (values.items, info.projected) |*value, expression| value.* = try expressions.evaluate(self, expression, row);
     // The ORDER BY key is evaluated now, while the row's variables are
     // still bound: it may use variables that are not projected.
     const sort_key = try returnSortKey(self, info, values.items, row);
     try self.rows.append(self.allocator, .{ .item = values, .sort_key = sort_key });
 }
 
-/// Ends a RETURN: aggregates, removes duplicates, sorts and pages `self.rows`.
+/// Ends a RETURN's projection: with aggregates, turns its groups into rows.
+/// Its stages (`returnStage`) come next.
 pub fn endReturn(self: *Executor, info: ReturnClauseParts) ExecutionError!void {
     if (self.has_aggregates) try aggregation.aggregate(self, info);
-    if (info.distinct) {
-        try sequence_algorithms.removeDuplicates(Sortable(Row), self.allocator, &self.rows, SortableContext(Row, RowContext){});
-    }
-    try orderAndPaginate(self, Row, &self.rows, info.order_by, info.skip, info.limit);
 }
 
 /// How many rows a RETURN keeps if it can stop reading early: it has a
@@ -399,8 +386,7 @@ fn planReturn(self: *Executor, parts: ReturnClauseParts) ExecutionError!void {
         }
     }
     self.has_aggregates = aggregating.items.len > 0;
-    const projected = try self.projectedExpressions(parts.projection);
-    const ordering = try aggregation.orderByAggregating(self, parts.order_by, projected, self.has_aggregates);
+    const ordering = try aggregation.orderByAggregating(self, parts.order_by, parts.projected, self.has_aggregates);
     if (self.has_aggregates) {
         try aggregating.appendSlice(self.allocator, ordering);
         self.return_aggregation = try aggregation.plan(self, keys.items, aggregating.items, try projectionNames(self, parts.projection));
@@ -417,10 +403,10 @@ fn projectionNames(self: *Executor, projection_node: Index) ExecutionError![]con
     return names.items;
 }
 
-/// One WITH projection item: `name` is the variable it binds in the new scope
-/// (its alias, or the variable it projects); an `aggregating` item contains
-/// aggregates and is computed per group.
-pub const WithItem = struct { name: []const u8, expr: Index, aggregating: bool };
+/// One WITH projection item: `name` is the variable it binds in the new
+/// scope (its alias, or the variable it projects), in slot `slot`; an
+/// `aggregating` item contains aggregates and is computed per group.
+pub const WithItem = struct { name: []const u8, slot: Slot, expr: Index, aggregating: bool };
 
 pub const WithClauseParts = struct {
     projection: Index,

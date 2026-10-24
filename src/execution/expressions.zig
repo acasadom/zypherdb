@@ -12,17 +12,19 @@ const mapOf = @import("../value.zig").mapOf;
 const formatFloat = @import("../value.zig").formatFloat;
 const comparison = @import("comparison.zig");
 const temporal_functions = @import("temporal_functions.zig");
-const clauses = @import("clauses.zig");
+const operators = @import("operators.zig");
 
 const Executor = @import("Executor.zig");
 const functions = @import("functions.zig");
 const ExecutionError = Executor.ExecutionError;
 
 const Bindings = @import("bindings.zig").Bindings;
+const Slot = @import("bindings.zig").Slot;
+const Instruction = @import("../planning/expression_program.zig").Instruction;
 
 /// Evaluates a SKIP or LIMIT count: a non-negative integer, else an error.
 pub fn evaluateCount(self: *Executor, expr: Index) ExecutionError!usize {
-    var empty = Bindings{ .entries = .empty };
+    var empty = try Bindings.init(self.allocator, 0);
     return switch (try evaluate(self, expr, &empty)) {
         .int => |n| if (n >= 0) @intCast(n) else {
             self.fail(.invalid_expression, "SKIP and LIMIT need a non-negative integer, got {d}", .{n});
@@ -69,29 +71,75 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
     if (self.expression_overrides) |overrides| {
         if (overrides.get(expr)) |value| return value;
     }
-    return switch (self.ast.kind(expr)) {
-        .integer_literal => .{ .int = self.ast.data(expr).int },
-        .float_literal => .{ .float = self.ast.data(expr).float },
-        .string_literal => .{ .string = self.ast.data(expr).text },
-        .boolean_literal => .{ .boolean = self.ast.data(expr).boolean },
-        .null_literal => .{ .null = {} },
-        .parameter => blk: {
-            const name = self.ast.data(expr).text;
-            break :blk self.parameters.get(name) orelse {
-                self.fail(.parameter_missing, "missing parameter '${s}'", .{name});
-                return error.ParameterMissing;
-            };
+    const program = self.expression_program;
+    if (expr >= program.instructions.len) return error.InvalidExpression;
+    const instruction = &program.instructions[expr];
+    const operands = instruction.operands;
+    // Scalar operations only: the others, with temporaries of their own, are
+    // in `evaluateComplex`, which keeps this function's stack frame small.
+    return switch (instruction.operation) {
+        .integer_constant => |value| .{ .int = value },
+        .float_constant => |value| .{ .float = value },
+        .string_constant => |value| .{ .string = value },
+        .boolean_constant => |value| .{ .boolean = value },
+        .null_constant => .null,
+        .slot => |slot| readSlot(self, expr, slot, bindings),
+        .parameter => |parameter| self.parameter_values[parameter] orelse {
+            self.fail(.parameter_missing, "missing parameter '${s}'", .{program.parameter_names[parameter]});
+            return error.ParameterMissing;
         },
-        .list_literal => blk: {
-            var items = std.ArrayList(Value).empty;
-            for (self.ast.nodeChildren(expr)) |item| {
-                try items.append(self.allocator, try evaluate(self, item, bindings));
+        .property => |name| propertyOf(self, try evaluate(self, operands[0], bindings), name),
+        // While a group's values stand for sub-expressions, the variable may
+        // be one of them: it is evaluated, not read from its slot.
+        .slot_property => |property| propertyOf(self, if (self.expression_overrides != null)
+            try evaluate(self, operands[0], bindings)
+        else
+            try readSlot(self, operands[0], property.slot, bindings), property.name),
+        .call => |function| call(self, function, operands, bindings),
+        .binary => |binary| blk: {
+            const l = try evaluate(self, operands[0], bindings);
+            const r = try evaluate(self, operands[1], bindings);
+            if (binary.regex) |compiled| break :blk matchCompiled(self, compiled, l);
+            break :blk applyBinaryOperator(self, binary.operator, l, r);
+        },
+        .unary => |operator| applyUnaryOperator(self, operator, try evaluate(self, operands[0], bindings)),
+        .invalid => error.InvalidExpression,
+        else => evaluateComplex(self, expr, instruction, bindings),
+    };
+}
+
+/// The value bound to `slot`; `variable` names it in the error.
+inline fn readSlot(self: *Executor, variable: Index, slot: Slot, bindings: *const Bindings) ExecutionError!Value {
+    return bindings.get(slot) orelse {
+        self.fail(.unknown_variable, "unknown variable '{s}'", .{self.ast.data(variable).text});
+        return error.UnknownVariable;
+    };
+}
+
+/// Calls `function` (resolved and checked when the query was planned).
+fn call(self: *Executor, function: functions.Function, operands: []const Index, bindings: *Bindings) ExecutionError!Value {
+    const arguments = try self.allocator.alloc(Value, operands.len);
+    for (arguments, operands) |*argument, operand| argument.* = try evaluate(self, operand, bindings);
+    return function.implementation(self, arguments);
+}
+
+/// The operations that build lists, maps or rows (see `evaluate`).
+fn evaluateComplex(self: *Executor, expr: Index, instruction: *const Instruction, bindings: *Bindings) ExecutionError!Value {
+    const children = instruction.operands;
+    return switch (instruction.operation) {
+        .list => blk: {
+            const items = try self.allocator.alloc(Value, children.len);
+            for (items, children) |*item, child| item.* = try evaluate(self, child, bindings);
+            break :blk .{ .list = items };
+        },
+        .map => |keys| blk: {
+            const entries = try self.allocator.alloc(MapEntry, keys.len);
+            for (entries, keys, children) |*entry, key, value| {
+                entry.* = .{ .key = key, .value = try evaluate(self, value, bindings) };
             }
-            break :blk .{ .list = items.items };
+            break :blk mapOf(entries);
         },
-        .function_call => functions.call(self, expr, bindings),
-        .case_expression => blk: {
-            const children = self.ast.nodeChildren(expr);
+        .case_ => blk: {
             const else_present = (children.len % 2) == 1;
             const num_pairs = children.len / 2;
             var p: usize = 0;
@@ -105,21 +153,7 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             }
             break :blk .{ .null = {} };
         },
-        .pattern_predicate => blk: {
-            const children = self.ast.nodeChildren(expr);
-            break :blk .{ .boolean = (try clauses.nestedMatches(self, children[0..1], children[1], bindings.*)).len > 0 };
-        },
-        .exists_subquery => .{ .boolean = (try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len > 0 },
-        .count_subquery => .{ .int = @intCast((try clauses.runSubquery(self, self.ast.nodeChildren(expr)[0], bindings.*)).len) },
-        .pattern_comprehension => blk: {
-            const children = self.ast.nodeChildren(expr);
-            const matches = try clauses.nestedMatches(self, children[0..1], children[1], bindings.*);
-            const items = try self.allocator.alloc(Value, matches.len);
-            for (items, matches) |*item, *match| item.* = try evaluate(self, children[2], match);
-            break :blk .{ .list = items };
-        },
-        .simple_case_expression => blk: {
-            const children = self.ast.nodeChildren(expr);
+        .simple_case => blk: {
             const subject = try evaluate(self, children[0], bindings);
             const branches = children[1..];
             var p: usize = 0;
@@ -130,16 +164,20 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             if (branches.len % 2 == 1) break :blk try evaluate(self, branches[branches.len - 1], bindings);
             break :blk .{ .null = {} };
         },
-        .variable => blk: {
-            const name = self.ast.data(expr).text;
-            break :blk bindings.get(name) orelse {
-                self.fail(.unknown_variable, "unknown variable '{s}'", .{name});
-                return error.UnknownVariable;
+        .subplan => |subplan| blk: {
+            const matches = try operators.expressionRows(self, expr, bindings);
+            break :blk switch (subplan.kind) {
+                .exists => .{ .boolean = matches.len > 0 },
+                .count => .{ .int = @intCast(matches.len) },
+                .list => list: {
+                    const items = try self.allocator.alloc(Value, matches.len);
+                    for (items, matches) |*item, *match| item.* = try evaluate(self, children[2], match);
+                    break :list .{ .list = items };
+                },
             };
         },
-        .label_predicate => blk: {
-            const subject = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
-            const labels = self.ast.data(expr).labels;
+        .labels => |labels| blk: {
+            const subject = try evaluate(self, children[0], bindings);
             break :blk switch (subject) {
                 .null => .null,
                 .node => |id| has: {
@@ -156,14 +194,9 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
                 },
             };
         },
-        .property_access => blk: {
-            const object = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
-            break :blk try propertyOf(self, object, self.ast.data(expr).text);
-        },
-        .list_comprehension => listComprehension(self, expr, bindings),
+        .comprehension => listComprehension(self, expr, bindings),
         .quantifier => quantifier(self, expr, bindings),
         .map_projection => blk: {
-            const children = self.ast.nodeChildren(expr);
             const subject = try evaluate(self, children[0], bindings);
             if (subject == .null) break :blk .null;
             if (subject != .node and subject != .relationship and subject != .map) {
@@ -184,42 +217,16 @@ pub fn evaluate(self: *Executor, expr: Index, bindings: *Bindings) ExecutionErro
             };
             break :blk mapOf(entries.items);
         },
-        .map_literal => blk: {
-            const property_nodes = self.ast.nodeChildren(expr);
-            const entries = try self.allocator.alloc(MapEntry, property_nodes.len);
-            for (entries, property_nodes) |*entry, property_node| {
-                entry.* = .{ .key = self.ast.data(property_node).text, .value = try evaluate(self, self.ast.nodeChildren(property_node)[0], bindings) };
-            }
-            break :blk mapOf(entries);
-        },
-        .subscript => blk: {
-            const children = self.ast.nodeChildren(expr);
-            break :blk try subscript(self, try evaluate(self, children[0], bindings), try evaluate(self, children[1], bindings));
-        },
-        .slice => blk: {
-            const children = self.ast.nodeChildren(expr);
+        .subscript => try subscript(self, try evaluate(self, children[0], bindings), try evaluate(self, children[1], bindings)),
+        .slice => |written| blk: {
             const from = try evaluate(self, children[1], bindings);
             const to = try evaluate(self, children[2], bindings);
             // A bound written as an expression that is null makes the slice null;
             // an end left out is unbounded.
-            const data = self.ast.data(expr);
-            const written: i64 = if (data == .int) data.int else 0;
             if ((written & 1 != 0 and from == .null) or (written & 2 != 0 and to == .null)) break :blk .null;
             break :blk try slice(self, try evaluate(self, children[0], bindings), from, to);
         },
-        .binary_operation => blk: {
-            const operator = self.ast.data(expr).binary_operator;
-            const children = self.ast.nodeChildren(expr);
-            const l = try evaluate(self, children[0], bindings);
-            const r = try evaluate(self, children[1], bindings);
-            break :blk try applyBinaryOperator(self, operator, l, r);
-        },
-        .unary_operation => blk: {
-            const operator = self.ast.data(expr).unary_operator;
-            const v = try evaluate(self, self.ast.nodeChildren(expr)[0], bindings);
-            break :blk try applyUnaryOperator(self, operator, v);
-        },
-        else => error.InvalidExpression,
+        else => unreachable, // the scalar operations are `evaluate`'s
     };
 }
 
@@ -232,25 +239,20 @@ fn iterationList(self: *Executor, list_expression: Index, bindings: *Bindings) E
     };
 }
 
-/// A scope for the iteration variable: a copy of the bindings, so the
-/// variable may shadow an outer one without touching it.
-fn iterationScope(self: *Executor, bindings: *const Bindings) ExecutionError!Bindings {
-    var scope = Bindings{ .entries = .empty };
-    try scope.entries.appendSlice(self.allocator, bindings.entries.items);
-    return scope;
-}
-
 /// `[x IN list WHERE predicate | projection]`.
 fn listComprehension(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
     const children = self.ast.nodeChildren(expr);
     const items = try iterationList(self, children[0], bindings) orelse return .{ .null = {} };
-    const variable_name = self.ast.data(expr).text;
-    var scope = try iterationScope(self, bindings);
+    // The iteration variable has a slot of its own, bound in the row while
+    // the comprehension runs.
+    const slot = self.slotOf(expr);
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
     var output = std.ArrayList(Value).empty;
     for (items) |item| {
-        try scope.put(self.allocator, variable_name, item);
-        if (!try evaluateBool(self, children[1], &scope)) continue;
-        try output.append(self.allocator, try evaluate(self, children[2], &scope));
+        try bindings.put(self.allocator, slot, item);
+        if (!try evaluateBool(self, children[1], bindings)) continue;
+        try output.append(self.allocator, try evaluate(self, children[2], bindings));
     }
     return .{ .list = output.items };
 }
@@ -262,12 +264,14 @@ fn quantifier(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!
     const children = self.ast.nodeChildren(expr);
     const items = try iterationList(self, children[0], bindings) orelse return .{ .null = {} };
     const data = self.ast.data(expr).quantifier;
-    var scope = try iterationScope(self, bindings);
+    const slot = self.slotOf(expr);
+    const saved = bindings.mark();
+    defer bindings.restore(saved);
     var trues: usize = 0;
     var nulls: usize = 0;
     for (items) |item| {
-        try scope.put(self.allocator, data.variable_name, item);
-        switch (try evaluate(self, children[1], &scope)) {
+        try bindings.put(self.allocator, slot, item);
+        switch (try evaluate(self, children[1], bindings)) {
             .boolean => |b| if (b) {
                 trues += 1;
             },
@@ -370,7 +374,14 @@ fn regexMatch(self: *Executor, left: Value, right: Value) ExecutionError!Value {
     return .{ .boolean = try compiled.matches(self.allocator, text) };
 }
 
-/// `pattern` compiled, once per query (a WHERE tests it on every row).
+/// `text =~ 'constant'`, the pattern compiled with the plan.
+fn matchCompiled(self: *Executor, compiled: regex.Regex, left: Value) ExecutionError!Value {
+    if (Value.isNull(left)) return .{ .null = {} };
+    const text = asString(left) catch return .{ .null = {} };
+    return .{ .boolean = try compiled.matches(self.allocator, text) };
+}
+
+/// A pattern that is not a constant compiled, once per query (a WHERE tests it on every row).
 fn compiledRegex(self: *Executor, pattern: []const u8) ExecutionError!regex.Regex {
     if (self.regexes.get(pattern)) |compiled| return compiled;
     var problem = regex.Problem{};

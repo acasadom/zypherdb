@@ -105,18 +105,21 @@ The style follows Alexander Stepanov's generic programming, within Zig's convent
 
 ### Add a clause
 
-A clause is a `NodeKind`, a parser rule, and an executor arm.
+A clause is a `NodeKind`, a parser rule, an operator and its executor arm.
 
 1. `src/query/ast.zig` — add a `NodeKind` value (and a `Data` payload if it carries state, e.g.
    `unwind.variable_name`). Document its children in the header comment.
 2. `src/query/parser.zig` — add a `parse…Clause` function and call it from `parseQuery` in source
    order.
-3. `src/execution/` — a case in `Executor.runClauses`, which turns the rows the clause receives
-   into the rows it passes on. A writing clause goes through `clauses.runWrite` to `writes.zig`, and
-   must be listed in `clauses.isWrite` so the query opens a write transaction.
-4. `src/query/semantics.zig` — the variables it binds, if any, so later clauses see them in scope.
-5. `tests/end_to_end/` — queries that use it, in the feature's file; then `make tck`.
-6. `docs/guide/cypher.md` — its row in the clause table, and a tutorial step if users need it.
+3. `src/planning/` — its operator in `Plan.Operator`, and a case in `builder.planClause` that adds
+   it to the chain (and the variables it binds to the scope). A writing clause must be listed in
+   `ast.isUpdatingClause` so the query opens a write transaction and gets its `eager`s.
+4. `src/execution/operators.zig` — a case in `feed`, which turns each row the operator receives into
+   the rows it passes on; a writing clause's work on one row goes in `clauses.applyWrite` and
+   `writes.zig`.
+5. `src/query/semantics.zig` — the variables it binds, if any, so later clauses see them in scope.
+6. `tests/end_to_end/` — queries that use it, in the feature's file; then `make tck`.
+7. `docs/guide/cypher.md` — its row in the clause table, and a tutorial step if users need it.
 
 ### Add an expression or operator
 
@@ -146,7 +149,8 @@ Indexes are just more key ranges (see [storage](storage)):
 2. `src/storage/graph.zig` — maintain it in the right mutation (`setProperty`, `addEdge`, …) and
    cleanup (`deleteNodeOnly`, `deleteEdgesInDirection`), and expose a lookup that returns an
    iterator (`nodesByProperty`/`edgesByProperty` are the models). State its cost.
-3. If it should drive planning, surface it in `planner.estimate`/`planner.shouldEdgeAnchor`.
+3. If it should drive planning, surface it in `patterns.zig` (`estimate`, `shouldEdgeAnchor`) and
+   in the pattern operator that reads it (`pattern_matching.zig`).
 
 ## Zig 0.17 gotchas (rediscovered once, recorded here)
 

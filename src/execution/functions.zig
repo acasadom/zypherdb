@@ -24,9 +24,8 @@ const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const expressions = @import("expressions.zig");
 const temporal_functions = @import("temporal_functions.zig");
-const Bindings = @import("bindings.zig").Bindings;
 
-const Function = struct {
+pub const Function = struct {
     min_arguments: usize,
     max_arguments: usize,
     implementation: *const fn (self: *Executor, arguments: []const Value) ExecutionError!Value,
@@ -180,13 +179,10 @@ pub fn checkCalls(ast: *const Ast, index: Index, diagnostic: ?*Diagnostic) error
     for (ast.nodeChildren(index)) |child| try checkCalls(ast, child, diagnostic);
 }
 
-/// Evaluates the call `expr` (already checked by `checkCalls`).
-pub fn call(self: *Executor, expr: Index, bindings: *Bindings) ExecutionError!Value {
-    const function = table.get(self.ast.data(expr).text) orelse return error.InvalidExpression;
-    const argument_nodes = self.ast.nodeChildren(expr);
-    const arguments = try self.allocator.alloc(Value, argument_nodes.len);
-    for (arguments, argument_nodes) |*argument, node| argument.* = try expressions.evaluate(self, node, bindings);
-    return function.implementation(self, arguments);
+/// The function called `name` (case-insensitive), or null. A plan resolves
+/// each call once (see `planning/expression_program.zig`).
+pub fn resolve(name: []const u8) ?Function {
+    return table.get(name);
 }
 
 fn typeError(self: *Executor, comptime function: []const u8, comptime expected: []const u8) ExecutionError {

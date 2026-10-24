@@ -59,6 +59,80 @@ print(db.query("MATCH (c:Card) WHERE c.number IN $numbers RETURN c.holder", {"nu
 A query is one transaction: if it fails, none of its writes are kept. It runs with Python's global
 interpreter lock released.
 
+A query is parsed, checked and planned the first time its text is run; the database keeps the
+result for the 64 texts used most recently, so running the same text again (with other parameter
+values) skips that work. Write parameters (`$number`), not values pasted into the text, for the
+same text to come back.
+
+### `prepare(text) -> PreparedQuery`
+
+Parses, checks and plans a query once, to run it with `query(parameters=None, /, **named)` as
+often as needed. It saves the lookup by text, and stays prepared for as long as the object lives.
+`parameters` and `columns` name what it reads and returns:
+
+```python
+lookup = db.prepare("MATCH (c:Card {number: $number}) RETURN c.holder AS holder")
+print(lookup.parameters, lookup.columns, lookup.query(number=123))
+```
+
+```text
+('number',) ('holder',) [['Ana']]
+```
+
+A plan was made from the graph's label and relationship-type counts of the time. When a run finds
+one of them grown or shrunk at least twofold (and by 100 or more), the query is planned again
+before it runs; a prepared query, or a kept one, never runs on a plan made for a very different
+graph.
+
+### `explain(text, parameters=None, /, **named) -> dict`
+
+Returns the plan of a query without running it ([EXPLAIN](cypher.md#explain-and-profile)), as a
+tree of operators. Each operator is a dict:
+
+- `operator` — its name (`"NodeIndexSeek"`, `"Expand(All)"`, `"Return"`, …);
+- `details` — what it works on, as Cypher;
+- `estimated_rows` — how many rows it makes per run of its chain, a guess from the label and
+  relationship-type counts; `None` when they say nothing;
+- `rows`, `time_ms` — `None` here (see `profile`);
+- `children` — first the operator it gets its rows from, then the chains it runs (an
+  `OPTIONAL MATCH`'s, a subquery's, a pattern's inside an expression).
+
+```python
+db.query("UNWIND range(1, 3) AS i CREATE (:Room {number: i})")
+plan = db.explain("MATCH (r:Room {number: $number}) RETURN r", number=2)
+print(plan["operator"], plan["children"][0]["operator"], plan["children"][0]["details"])
+```
+
+```text
+Return NodeIndexSeek (r:Room {number: $number})
+```
+
+### `profile(text, parameters=None, /, **named) -> tuple[list[list], dict]`
+
+Runs a query ([PROFILE](cypher.md#explain-and-profile)) and returns its rows, as `query` would,
+and its plan, as `explain` would, with `rows` (how many rows each operator made) and `time_ms`
+(the time spent in the operator itself, in milliseconds) filled in. Its writes commit.
+
+```python
+rows, plan = db.profile("MATCH (r:Room) WHERE r.number > 1 RETURN r.number ORDER BY r.number")
+operator = plan
+while operator:
+    print(operator["operator"], operator["rows"])
+    operator = operator["children"][0] if operator["children"] else None
+print(rows)
+```
+
+```text
+Return 2
+Sort 2
+Projection 2
+Filter 2
+NodeIndexRangeSeek 3
+[[2], [3]]
+```
+
+`db.query("EXPLAIN " + text)` and `db.query("PROFILE " + text)` give the plan as rows instead.
+
 ### `write()`
 
 A context manager that makes every mutator call inside it one transaction, committed when the

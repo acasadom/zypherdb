@@ -17,8 +17,6 @@
 const std = @import("std");
 const NodeId = @import("../storage/graph.zig").NodeId;
 const Direction = @import("../storage/graph.zig").Direction;
-const Ast = @import("../query/ast.zig").Ast;
-const Index = @import("../query/ast.zig").Index;
 const Relationship = @import("../value.zig").Relationship;
 
 const Executor = @import("Executor.zig");
@@ -28,36 +26,20 @@ const pattern_matching = @import("pattern_matching.zig");
 const Expansion = pattern_matching.Expansion;
 const MatchingEdges = pattern_matching.MatchingEdges;
 
-/// Expands the shortest edge between pattern positions `from` (bound) and `to`.
-pub fn expand(self: *Executor, from: usize, to: usize, next_step: usize, pattern_index: usize, bindings: *Bindings) ExecutionError!void {
-    const expansion = Expansion{ .from = from, .to = to, .edge_index = @min(from, to), .next_step = next_step, .pattern_index = pattern_index };
-    if (whereReadsPath(self, expansion)) return byIncreasingLength(self, expansion, bindings);
+/// Expands the shortest edge of `expansion`, from its bound end.
+pub fn expand(self: *Executor, expansion: Expansion, bindings: *Bindings) ExecutionError!void {
+    if (expansion.edge().where_reads_path) return byIncreasingLength(self, expansion, bindings);
     return breadthFirst(self, expansion, bindings);
 }
 
-/// True if the MATCH's WHERE reads the path variable or the relationship list.
-fn whereReadsPath(self: *Executor, expansion: Expansion) bool {
-    if (self.where_expression == Executor.no_where) return false;
-    const edge = self.edges.items[expansion.edge_index];
-    return mentions(self.ast, self.where_expression, self.path_variable) or mentions(self.ast, self.where_expression, edge.variable_name);
-}
-
-fn mentions(ast: *const Ast, expression: Index, name: []const u8) bool {
-    if (name.len == 0) return false;
-    if (ast.kind(expression) == .variable and std.mem.eql(u8, ast.data(expression).text, name)) return true;
-    for (ast.nodeChildren(expression)) |child| if (mentions(ast, child, name)) return true;
-    return false;
-}
-
 /// The node the `to` end must be, if the row binds it already.
-fn boundTarget(self: *Executor, expansion: Expansion, bindings: *Bindings) ?NodeId {
-    const name = self.nodes.items[expansion.to].variable_name;
-    return if (name.len > 0) bindings.getNode(name) else null;
+fn boundTarget(expansion: Expansion, bindings: *Bindings) ?NodeId {
+    return bindings.getNode(expansion.pattern.nodes[expansion.to].slot);
 }
 
-fn traversal(self: *Executor, expansion: Expansion) Direction {
-    const edge = self.edges.items[expansion.edge_index];
-    return if (expansion.from < expansion.to) edge.forward_direction else pattern_matching.opposite(edge.forward_direction);
+/// The node the expansion starts from.
+fn startNode(self: *Executor, expansion: Expansion) NodeId {
+    return self.node_ids[expansion.pattern.first_node + expansion.from];
 }
 
 /// One way a node is first reached: from `from`, through `relationship`.
@@ -68,10 +50,10 @@ const Step = struct { from: NodeId, relationship: Relationship };
 const Reached = struct { distance: u32, steps: std.ArrayList(Step) };
 
 fn breadthFirst(self: *Executor, expansion: Expansion, bindings: *Bindings) ExecutionError!void {
-    const edge = self.edges.items[expansion.edge_index];
-    const start = self.nodes.items[expansion.from].id;
-    const target = boundTarget(self, expansion, bindings);
-    const direction = traversal(self, expansion);
+    const edge = expansion.edge();
+    const start = startNode(self, expansion);
+    const target = boundTarget(expansion, bindings);
+    const direction = expansion.traversal();
 
     // Insertion-ordered: the ends come out in the order the search met them.
     var reached = std.AutoArrayHashMapUnmanaged(NodeId, Reached).empty;
@@ -88,8 +70,8 @@ fn breadthFirst(self: *Executor, expansion: Expansion, bindings: *Bindings) Exec
             var edges = MatchingEdges.init(self.graph, current, edge, direction);
             defer edges.deinit();
             while (try edges.next()) |found| {
-                const ref = Relationship{ .id = found.ref.id, .src = found.ref.src, .dst = found.ref.dst, .edge_type = try self.ownedEdgeType(edge, found.ref.edge_type) };
-                if (pattern_matching.edgeUsed(self, ref)) continue;
+                const ref = Relationship{ .id = found.ref.id, .src = found.ref.src, .dst = found.ref.dst, .edge_type = try pattern_matching.ownedEdgeType(self, edge, found.ref.edge_type) };
+                if (pattern_matching.edgeUsed(self, expansion.pattern.match, ref)) continue;
                 if (!try pattern_matching.edgeSeeksMatch(self, edge, ref, bindings)) continue;
                 const entry = try reached.getOrPut(self.allocator, found.neighbour);
                 if (!entry.found_existing) {
@@ -127,7 +109,7 @@ fn emitPaths(self: *Executor, expansion: Expansion, reached: *const std.AutoArra
         return reachEnd(self, expansion, end, trail, bindings);
     }
     const steps = reached.get(node).?.steps.items;
-    const used = if (self.edges.items[expansion.edge_index].shortest == .one) steps[0..1] else steps;
+    const used = if (expansion.edge().shortest == .one) steps[0..1] else steps;
     for (used) |step| {
         try suffix.append(self.allocator, step.relationship);
         defer _ = suffix.pop();
@@ -140,20 +122,20 @@ fn emitPaths(self: *Executor, expansion: Expansion, reached: *const std.AutoArra
 fn reachEnd(self: *Executor, expansion: Expansion, end: NodeId, trail: []const Relationship, bindings: *Bindings) ExecutionError!void {
     const mark = self.used_edges.items.len;
     defer self.used_edges.shrinkRetainingCapacity(mark);
-    try self.used_edges.appendSlice(self.allocator, trail);
+    try pattern_matching.useEdges(self, expansion.pattern.match, trail);
     try pattern_matching.reachEnd(self, expansion, end, trail, bindings);
 }
 
 /// The WHERE reads the path: every path of length k, for k from the least
 /// up, until each end has one that passed (or no path is that long).
 fn byIncreasingLength(self: *Executor, expansion: Expansion, bindings: *Bindings) ExecutionError!void {
-    const edge = self.edges.items[expansion.edge_index];
+    const edge = expansion.edge();
     var search = DeepeningSearch{
         .executor = self,
         .expansion = expansion,
         .bindings = bindings,
-        .target = boundTarget(self, expansion, bindings),
-        .direction = traversal(self, expansion),
+        .target = boundTarget(expansion, bindings),
+        .direction = expansion.traversal(),
     };
     var length = edge.min_hops;
     while (true) : (length += 1) {
@@ -161,7 +143,7 @@ fn byIncreasingLength(self: *Executor, expansion: Expansion, bindings: *Bindings
         search.any_path = false;
         search.passed_now.clearRetainingCapacity();
         var trail = std.ArrayList(Relationship).empty;
-        try search.walk(self.nodes.items[expansion.from].id, length, &trail);
+        try search.walk(startNode(self, expansion), length, &trail);
         for (search.passed_now.keys()) |end| try search.done.put(self.allocator, end, {});
         if (search.target) |end| if (search.done.contains(end)) break;
         if (!search.any_path) break;
@@ -183,7 +165,7 @@ const DeepeningSearch = struct {
 
     fn walk(self: *DeepeningSearch, current: NodeId, remaining: u32, trail: *std.ArrayList(Relationship)) ExecutionError!void {
         const executor = self.executor;
-        const edge = executor.edges.items[self.expansion.edge_index];
+        const edge = self.expansion.edge();
         if (remaining == 0) {
             self.any_path = true;
             if (self.done.contains(current)) return;
@@ -197,10 +179,10 @@ const DeepeningSearch = struct {
         var edges = MatchingEdges.init(executor.graph, current, edge, self.direction);
         defer edges.deinit();
         while (try edges.next()) |found| {
-            const ref = Relationship{ .id = found.ref.id, .src = found.ref.src, .dst = found.ref.dst, .edge_type = try executor.ownedEdgeType(edge, found.ref.edge_type) };
-            if (pattern_matching.edgeUsed(executor, ref)) continue;
+            const ref = Relationship{ .id = found.ref.id, .src = found.ref.src, .dst = found.ref.dst, .edge_type = try pattern_matching.ownedEdgeType(executor, edge, found.ref.edge_type) };
+            if (pattern_matching.edgeUsed(executor, self.expansion.pattern.match, ref)) continue;
             if (!try pattern_matching.edgeSeeksMatch(executor, edge, ref, self.bindings)) continue;
-            try executor.used_edges.append(executor.allocator, ref);
+            try executor.used_edges.append(executor.allocator, .{ .match = self.expansion.pattern.match, .relationship = ref });
             defer _ = executor.used_edges.pop();
             try trail.append(executor.allocator, ref);
             defer _ = trail.pop();

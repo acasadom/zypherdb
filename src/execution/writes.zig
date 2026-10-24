@@ -32,19 +32,18 @@ pub fn createPattern(self: *Executor, pattern: Index, bindings: *Bindings, creat
     const node_ids = try self.allocator.alloc(NodeId, (chain.len + 1) / 2);
     for (node_ids, 0..) |*id, i| {
         const node_pattern_index = chain[i * 2];
-        const variable_name = self.ast.data(node_pattern_index).node_pattern.variable_name;
-        if (boundNode(bindings, variable_name)) |bound| {
+        const slot = self.slotOf(node_pattern_index);
+        if (bindings.getNode(slot)) |bound| {
             if (creator == .create) try checkReusedNode(self, node_pattern_index, chain.len == 1);
             id.* = bound;
             continue;
         }
         id.* = try createNode(self, node_pattern_index, bindings);
-        if (variable_name.len > 0) try bindings.put(self.allocator, variable_name, .{ .node = id.* });
+        try bindings.put(self.allocator, slot, .{ .node = id.* });
     }
     const relationships = try applyEdges(self, chain, node_ids, bindings, creator);
     // A path variable (`CREATE p = (a)-[:R]->(b)`) binds what was written.
-    const path_variable = self.ast.data(pattern).text;
-    if (path_variable.len > 0) try bindings.put(self.allocator, path_variable, .{ .path = .{ .nodes = node_ids, .relationships = relationships } });
+    try bindings.put(self.allocator, self.slotOf(pattern), .{ .path = .{ .nodes = node_ids, .relationships = relationships } });
 }
 
 /// CREATE may reuse a bound node only as a relationship endpoint, as it is:
@@ -57,13 +56,6 @@ fn checkReusedNode(self: *Executor, node_pattern_index: Index, alone: bool) Exec
         self.fail(.invalid_expression, "variable '{s}' is already bound; CREATE cannot create it again", .{node_pattern.variable_name});
         return error.InvalidExpression;
     }
-}
-
-/// The node already bound to `variable_name`, if any; an anonymous node (empty
-/// name) is never bound.
-fn boundNode(bindings: *const Bindings, variable_name: []const u8) ?NodeId {
-    if (variable_name.len == 0) return null;
-    return bindings.getNode(variable_name);
 }
 
 /// Creates a node from a `node_pattern` and returns its fresh id.
@@ -147,9 +139,7 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
             try setEdgeProperty(self, id, property_name, value);
         }
         relationship.* = .{ .id = id, .src = src, .dst = dst, .edge_type = edge_type };
-        if (edge_pattern.variable_name.len > 0) {
-            try bindings.put(self.allocator, edge_pattern.variable_name, .{ .relationship = relationship.* });
-        }
+        try bindings.put(self.allocator, self.slotOf(edge_pattern_index), .{ .relationship = relationship.* });
     }
     return relationships;
 }

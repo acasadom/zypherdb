@@ -14,6 +14,7 @@ const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const Row = Executor.Row;
 const Bindings = @import("bindings.zig").Bindings;
+const ExpressionProgram = @import("../planning/expression_program.zig").Program;
 const expressions = @import("expressions.zig");
 
 /// The analyzers a full-text index can use.
@@ -102,7 +103,10 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
 
 /// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.
 fn analyzerOption(executor: *Executor, options_expression: Index) ExecutionError![]const u8 {
-    var empty = Bindings{ .entries = .empty };
+    // A schema command has no plan: its options are compiled here.
+    const no_chains: std.AutoHashMapUnmanaged(Index, u32) = .empty;
+    try executor.useExpressions(try ExpressionProgram.compile(executor.allocator, executor.ast, &.{}, &no_chains));
+    var empty = try Bindings.init(executor.allocator, 0);
     const options = try expressions.evaluate(executor, options_expression, &empty);
     var analyzer: []const u8 = "standard";
     for (options.map) |option| {

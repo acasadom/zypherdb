@@ -18,6 +18,7 @@ extern "C" {
 
 typedef struct acmedb_context acmedb_context;
 typedef struct acmedb_result acmedb_result;
+typedef struct acmedb_statement acmedb_statement;
 
 /* Durability modes for acmedb_open_with_durability. */
 #define ACMEDB_DURABILITY_FULL 0     /* each commit is on disk when it returns */
@@ -88,6 +89,19 @@ acmedb_result *acmedb_query(acmedb_context *context, const char *query, size_t q
 acmedb_result *acmedb_query_with_parameters(acmedb_context *context, const char *query, size_t query_len,
                                             const char *parameters_json, size_t parameters_len);
 void acmedb_result_free(acmedb_result *result);
+
+/* Prepared statements: a query parsed, checked and planned once, run again
+ * and again with new parameters (acmedb_query keeps the ones it prepares, by
+ * text, too). NULL on failure, with the context's error set. Free each one
+ * before closing its context. parameters_json may be NULL (no parameters). */
+acmedb_statement *acmedb_prepare(acmedb_context *context, const char *query, size_t query_len);
+acmedb_result *acmedb_statement_query(acmedb_context *context, acmedb_statement *statement,
+                                      const char *parameters_json, size_t parameters_len);
+void acmedb_statement_free(acmedb_statement *statement);
+size_t acmedb_statement_column_count(const acmedb_statement *statement);
+const char *acmedb_statement_column_name(const acmedb_statement *statement, size_t column, size_t *out_len);
+size_t acmedb_statement_parameter_count(const acmedb_statement *statement);
+const char *acmedb_statement_parameter_name(const acmedb_statement *statement, size_t parameter, size_t *out_len);
 size_t acmedb_result_row_count(const acmedb_result *result);
 size_t acmedb_result_column_count(const acmedb_result *result);
 int acmedb_result_type(const acmedb_result *result, size_t row, size_t col);
