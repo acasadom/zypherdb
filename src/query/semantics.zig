@@ -44,6 +44,18 @@ const Scope = struct {
     }
 };
 
+/// The name of a literal's type, for messages.
+fn literalName(kind: NodeKind) []const u8 {
+    return switch (kind) {
+        .integer_literal => "integer",
+        .float_literal => "float",
+        .string_literal => "string",
+        .boolean_literal => "boolean",
+        .list_literal => "list",
+        else => "value",
+    };
+}
+
 /// An expression that can never be a node, relationship or path.
 fn isPlainValue(ast: *const Ast, expression: Index) bool {
     return switch (ast.kind(expression)) {
@@ -224,6 +236,10 @@ const Checker = struct {
                 }
             },
             .pattern_comprehension => return self.checkWithLocals(&.{children[0]}, children),
+            // `SET n = 1` fails on every row: say so before any row is found.
+            .set_properties => if (isLiteralOf(self.ast, children[1], &.{ .integer_literal, .float_literal, .string_literal, .boolean_literal, .list_literal })) {
+                return self.fail("SET {s} {s} needs a map, a node or a relationship, not a literal {s}", .{ self.ast.data(children[0]).text, if (self.ast.data(index).boolean) "+=" else "=", literalName(self.ast.kind(children[1])) });
+            },
             .exists_subquery, .count_subquery => return self.checkSubquery(children[0]),
             .aggregate => {
                 if (self.iteration_depth > 0) return self.fail("an aggregate cannot be used inside a list comprehension or quantifier", .{});

@@ -49,6 +49,8 @@ test "parse errors name what was expected and what was found" {
         "RETURN [1, 2",
         "RETURN 'unterminated",
         "MATCH (n) WHERE RETURN n",
+        "MATCH (n) WITH n WHERE WITH n RETURN n",
+        "WITH 1 AS return RETURN return",
         "MATCH (n)",
         "CREATE (a) MATCH (b) RETURN b",
         "RETURN 1 AS a UNION RETURN 2 AS b",
@@ -70,7 +72,11 @@ test "parse errors name what was expected and what was found" {
         \\RETURN 'unterminated
         \\  parse: unterminated string literal
         \\MATCH (n) WHERE RETURN n
-        \\  parse: unexpected n (unsupported syntax or missing clause)
+        \\  parse: expected an expression, found RETURN
+        \\MATCH (n) WITH n WHERE WITH n RETURN n
+        \\  parse: expected an expression, found WITH
+        \\WITH 1 AS return RETURN return
+        \\  ok
         \\MATCH (n)
         \\  parse: a query must end with RETURN or an updating clause
         \\CREATE (a) MATCH (b) RETURN b
@@ -98,6 +104,10 @@ test "semantic errors name the variable, function or clause at fault" {
         "MATCH (n) RETURN n, count(*) ORDER BY m",
         "RETURN $missing",
         "MATCH (n) SET n = 1",
+        "MATCH (n) SET n += 'x'",
+        "MATCH (n) SET n = [1]",
+        "MERGE (n:A) ON CREATE SET n = true",
+        "MATCH (n) SET n = {a: 1}, n += $map",
         "CREATE (n)-[:A|B]->(m)",
         "CREATE (n)-[]->(m)",
         "MATCH (a) CREATE (a)",
@@ -117,6 +127,14 @@ test "semantic errors name the variable, function or clause at fault" {
         \\RETURN $missing
         \\  parameter_missing: missing parameter '$missing'
         \\MATCH (n) SET n = 1
+        \\  invalid_expression: SET n = needs a map, a node or a relationship, not a literal integer
+        \\MATCH (n) SET n += 'x'
+        \\  invalid_expression: SET n += needs a map, a node or a relationship, not a literal string
+        \\MATCH (n) SET n = [1]
+        \\  invalid_expression: SET n = needs a map, a node or a relationship, not a literal list
+        \\MERGE (n:A) ON CREATE SET n = true
+        \\  invalid_expression: SET n = needs a map, a node or a relationship, not a literal boolean
+        \\MATCH (n) SET n = {a: 1}, n += $map
         \\  ok
         \\CREATE (n)-[:A|B]->(m)
         \\  invalid_expression: CREATE needs a relationship with exactly one type
@@ -137,6 +155,9 @@ test "run-time errors name the operation and the values" {
         "RETURN [1, 2][true]",
         "RETURN date('2026-02-30')",
         "RETURN duration('P1X')",
+        "RETURN date({year: 2026, month: 13})",
+        "RETURN localtime('25:00')",
+        "RETURN datetime('2026-10-24T12:00:00[Nowhere/City]')",
         "UNWIND [1, 2] AS x RETURN x.name",
         "MATCH (p:Person {name: 'Ann'}) DELETE p",
         "MATCH (p:Person) SET p.tags = [1, 'a']",
@@ -158,9 +179,15 @@ test "run-time errors name the operation and the values" {
         \\RETURN [1, 2][true]
         \\  type_mismatch: a list index must be an integer
         \\RETURN date('2026-02-30')
-        \\  invalid_expression: invalid temporal value
+        \\  invalid_expression: date('2026-02-30'): not a valid date (written like '2026-10-24')
         \\RETURN duration('P1X')
-        \\  invalid_expression: invalid temporal value
+        \\  invalid_expression: duration('P1X'): not a valid duration (written like 'P1Y2M3DT4H5M6S')
+        \\RETURN date({year: 2026, month: 13})
+        \\  invalid_expression: date(): the map's fields do not make a valid date (a field out of range, or a smaller unit without the larger one)
+        \\RETURN localtime('25:00')
+        \\  invalid_expression: localtime('25:00'): not a valid local time (written like '12:30:00')
+        \\RETURN datetime('2026-10-24T12:00:00[Nowhere/City]')
+        \\  invalid_expression: datetime('2026-10-24T12:00:00[Nowhere/City]'): unknown time zone
         \\UNWIND [1, 2] AS x RETURN x.name
         \\  type_mismatch: only nodes, relationships, maps and temporal values have properties
         \\MATCH (p:Person {name: 'Ann'}) DELETE p
