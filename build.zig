@@ -86,7 +86,7 @@ pub fn build(b: *std.Build) void {
         b.step("python", "Build the Python extension module into zig-out/python").dependOn(&install_native.step);
     }
 
-    // Fuzzers: `zig build fuzz -- storage|query|faults [--seed N] [--steps N] [--seeds N]`
+    // Fuzzers: `zig build fuzz -- storage|query|faults|crash [--seed N] [--steps N] [--seeds N]`
     // (tests/fuzz/main.zig); `zig build test` runs a few fixed seeds.
     const fuzz = b.addExecutable(.{
         .name = "fuzz",
@@ -99,7 +99,14 @@ pub fn build(b: *std.Build) void {
     });
     const run_fuzz = b.addRunArtifact(fuzz);
     run_fuzz.addPassthruArgs();
-    b.step("fuzz", "Run a fuzzer: zig build fuzz -- storage|query|faults [--seed N] [--steps N] [--seeds N]").dependOn(&run_fuzz.step);
+    b.step("fuzz", "Run a fuzzer: zig build fuzz -- storage|query|faults|crash [--seed N] [--steps N] [--seeds N]").dependOn(&run_fuzz.step);
+
+    // Crash tests: the crash fuzzer on fixed seeds (the ones that found its
+    // deliberate mutations). It starts the fuzz executable as the writer it
+    // kills, so it runs as that program rather than as a test.
+    const crash_tests = b.addRunArtifact(fuzz);
+    crash_tests.addArgs(&.{ "crash", "--seed", "100", "--seeds", "4", "--steps", "60", "--quiet" });
+    test_step.dependOn(&crash_tests.step);
 
     // Benchmark: `zig build bench -Doptimize=ReleaseFast -- --people 100000`.
     const bench = b.addExecutable(.{

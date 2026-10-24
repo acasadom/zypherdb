@@ -14,6 +14,10 @@
 //! engine does but which shows a write error the layers above ignored: the
 //! transaction then commits without that write.
 //!
+//! The plan can also crash the process (SIGKILL to itself) at a chosen
+//! crash point: before each fallible operation, and after each commit. The
+//! crash tests (tests/fuzz/crash.zig) use it to stop a writer exactly there.
+//!
 //! The plan (`faults`) is one global: tests that use it run one database at
 //! a time on one thread.
 
@@ -45,6 +49,9 @@ pub const Plan = struct {
     first_failed: ?Operation = null,
     /// A failure broke the current write transaction (see the module comment).
     writer_broken: bool = false,
+    /// The crash points so far, and the one where the process kills itself.
+    crash_points: u64 = 0,
+    crash_at: ?u64 = null,
 
     /// Starts counting again, failing at `fail_at`.
     pub fn arm(self: *Plan, fail_at: ?u64, persistent: bool, breaks_writer: bool) void {
@@ -60,6 +67,7 @@ pub const Plan = struct {
     /// True if `operation` must fail now; `in_writer` if it runs in a write
     /// transaction.
     fn fails(self: *Plan, operation: Operation, in_writer: bool) bool {
+        self.crashPoint();
         const number = self.operations;
         self.operations += 1;
         const due = if (self.fail_at) |at| number == at or (self.persistent and number > at) else false;
@@ -68,6 +76,13 @@ pub const Plan = struct {
         if (self.first_failed == null) self.first_failed = operation;
         if (in_writer and self.breaks_writer) self.writer_broken = true;
         return true;
+    }
+
+    /// A place the process may crash: it kills itself here if `crash_at` says.
+    fn crashPoint(self: *Plan) void {
+        const number = self.crash_points;
+        self.crash_points += 1;
+        if (self.crash_at == number) std.posix.raise(.KILL) catch unreachable;
     }
 };
 
@@ -121,7 +136,8 @@ pub fn Wrap(comptime Inner: type) type {
                     faults.writer_broken = false;
                     return error.WriteFailed;
                 }
-                return self.inner.commit();
+                try self.inner.commit();
+                faults.crashPoint();
             }
 
             pub fn abort(self: Transaction) void {

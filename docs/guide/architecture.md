@@ -99,7 +99,7 @@ flowchart TB
 | `src/storage/engine/lmdb.zig` | The LMDB engine (the default): map size, durability flags, renewed read transactions. |
 | `src/storage/engine/lmdb_bindings.zig` | Hand-written C bindings for LMDB (`MDB_env`/`MDB_txn`/`MDB_cursor`, `MDB_val`, the functions and constants used). |
 | `src/storage/engine/mdbx.zig` | The libmdbx engine: file geometry, durability flags, renewed read transactions. |
-| `src/storage/engine/faulty.zig` | An engine that wraps the chosen one and fails at the N-th operation, used only by the fault tests and the fuzzers (see the contributing guide). |
+| `src/storage/engine/faulty.zig` | An engine that wraps the chosen one and fails at the N-th operation, or kills the process at a chosen crash point; used only by the fault and crash tests and the fuzzers (see the contributing guide). |
 | `src/storage/engine/mdbx_bindings.zig` | Hand-written C bindings for libmdbx: `opaque {}` handles for `MDBX_env`/`MDBX_txn`/`MDBX_cursor`, `extern struct MDBX_val`, the `extern "c" fn`s and constants. |
 | `src/storage/key_value_store.zig` | `KeyValueStore`, the graph's view of the engine: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix`, explicit write/read transactions, pooled cursors and the record cache. `scanPrefix` returns an **iterator**, not a callback. |
 | `src/storage/key_encoding.zig` | The byte layout of every key (markers, node ids, edge keys, index keys). The only place that knows the key layout. |
