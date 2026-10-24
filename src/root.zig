@@ -26,6 +26,11 @@ pub const integrity = @import("storage/integrity.zig");
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
 pub const storage_engine = @tagName(@import("build_options").storage_engine);
 
+/// True in the module build.zig makes for the fault tests and the fuzzers:
+/// its engine fails when `faults.faults` says (storage/engine/faulty.zig).
+pub const fault_injection = @import("build_options").fault_injection;
+pub const faults = @import("storage/engine/faulty.zig");
+
 pub const value = @import("value.zig");
 
 pub const Value = value.Value;

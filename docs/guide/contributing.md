@@ -10,6 +10,7 @@ already cost time.
 zig build test    # unit tests in src/ + the suite in tests/
 SNAP_UPDATE=1 zig build test   # rewrite the snapshots that differ (review with git diff)
 zig build fuzz -- storage --seeds 100   # the storage fuzzer, from a random seed
+zig build fuzz -- faults --seeds 100    # the fault fuzzer: storage that fails on purpose
 zig build         # static + shared libraries and acmedb.h into zig-out/
 make python       # the Python extension module into zig-out/python/
 make test-py      # Python tests and documentation tests (pip install -e "python[dev]" once)
@@ -81,6 +82,31 @@ zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- storage --seeds 2
 At the end it prints how often each operation ran, and how often it failed as the model said it
 must: a fuzzer that never breaks a constraint does not test them. A new mutation of the graph, or a
 new kind of failure, gets an operation in the fuzzer and a prediction in the model.
+
+### The fault fuzzer
+
+Every storage error must reach the caller as an error, without a panic, a leak, a transaction left
+open or a half-written change. `tests/fuzz/faults.zig` checks this with a storage engine that fails
+on purpose (`src/storage/engine/faulty.zig`, which wraps the real engine and fails at the N-th
+operation). `build.zig` builds a second acmedb module with it (build option `fault_injection`) for
+the fault test and the fuzzers; the library itself never includes it, so it pays nothing for it.
+
+The fuzzer runs a random workload (`tests/fuzz/fault_workload.zig`: writes, MERGE, deletions,
+constraints, full-text indexes and searches, and the query fuzzer's reads; one-shot or prepared) on
+two databases: one that fails and a twin that does not. Each statement runs on the failing database
+once per fault point, until a run reaches none. After a failure, the statement must have failed
+with a storage error (or with the twin's own error), the database must be exactly as before it, and
+the integrity checker must pass; once no fault is reached, the outcome and the whole database must
+equal the twin's. A seed chooses transient or persistent failures (a dead disk), and whether a
+failure breaks the write transaction as a real engine does or leaves it usable: only then does a
+write error that the code ignores show up, as a database unlike the twin's.
+
+```bash
+zig build fuzz -- faults --seed 42 --steps 40 --verbose
+zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- faults --seeds 300 --steps 60
+```
+
+A new kind of statement that writes gets a template in the workload.
 
 ### Snapshot tests
 
