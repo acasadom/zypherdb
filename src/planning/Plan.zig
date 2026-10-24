@@ -20,6 +20,7 @@ const Shortest = @import("../query/ast.zig").EdgePatternData.Shortest;
 const Direction = @import("../storage/graph.zig").Direction;
 const Count = @import("statistics.zig").Count;
 const Slot = @import("../execution/bindings.zig").Slot;
+const ExpressionProgram = @import("expression_program.zig").Program;
 
 const Plan = @This();
 
@@ -52,6 +53,8 @@ slot_count: u32,
 /// LOAD CSV, FOREACH, a comprehension, a YIELD item); `no_slot` for the
 /// others. Indexed by AST node.
 slot_of: []const Slot,
+/// The query's expressions, compiled (see `expression_program.zig`).
+expressions: ExpressionProgram,
 
 /// A run of consecutive operators: `first` up to, not including, `end`.
 pub const Chain = struct {

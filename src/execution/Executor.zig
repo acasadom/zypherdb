@@ -37,6 +37,7 @@ const NodeId = @import("../storage/graph.zig").NodeId;
 const Plan = @import("../planning/Plan.zig");
 const builder = @import("../planning/builder.zig");
 const Statistics = @import("../planning/statistics.zig").Statistics;
+const ExpressionProgram = @import("../planning/expression_program.zig").Program;
 
 const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
@@ -100,6 +101,10 @@ chain_sinks: []?operators.Sink = &.{},
 node_ids: []NodeId = &.{},
 /// The plan's `slot_of`, and how many slots its rows have.
 slot_of: []const Slot = &.{},
+/// The plan's compiled expressions, and the value of each of its
+/// parameters (null: not given), found once per run.
+expression_program: ExpressionProgram = .empty,
+parameter_values: []const ?Value = &.{},
 row_width: usize = 0,
 matched_edges: [][]const Relationship = &.{},
 single_matches: []Relationship = &.{},
@@ -120,7 +125,8 @@ table_procedures: []const procedure_signatures.TableProcedure = &.{},
 used_edges: std.ArrayList(UsedEdge),
 /// The directory LOAD CSV reads from; null: LOAD CSV is off.
 import_directory: ?[]const u8 = null,
-/// The patterns of `=~` compiled in this query, by their text.
+/// The patterns of `=~` compiled in this run, by their text: those that are
+/// not constants (a constant one is compiled with the plan).
 regexes: std.StringHashMapUnmanaged(@import("../text/regex.zig").Regex) = .empty,
 /// How many matches have passed their MATCH's WHERE so far (a shortest-path
 /// search that tests the WHERE stops at the length where one did).
@@ -232,6 +238,7 @@ pub fn execute(self: *Executor, plan: *const Plan, root: Index) ExecutionError![
 fn start(self: *Executor, plan: *const Plan) ExecutionError!void {
     self.plan = plan;
     self.slot_of = plan.slot_of;
+    try self.useExpressions(plan.expressions);
     self.row_width = plan.slot_count;
     self.operator_states = try operators.initialStates(self);
     self.chain_sinks = try self.allocator.alloc(?operators.Sink, plan.chains.len);
@@ -239,6 +246,15 @@ fn start(self: *Executor, plan: *const Plan) ExecutionError!void {
     self.node_ids = try self.allocator.alloc(NodeId, plan.node_count);
     self.matched_edges = try self.allocator.alloc([]const Relationship, plan.edge_count);
     self.single_matches = try self.allocator.alloc(Relationship, plan.edge_count);
+}
+
+/// Evaluates expressions with `program` (a plan's, or a schema command's),
+/// looking up the values of its parameters once.
+pub fn useExpressions(self: *Executor, program: ExpressionProgram) ExecutionError!void {
+    self.expression_program = program;
+    const values = try self.allocator.alloc(?Value, program.parameter_names.len);
+    for (values, program.parameter_names) |*value, name| value.* = self.parameters.get(name);
+    self.parameter_values = values;
 }
 
 /// Clears the state of the query part last run.

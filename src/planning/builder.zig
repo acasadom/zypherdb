@@ -23,6 +23,7 @@ const Index = @import("../query/ast.zig").Index;
 const isSubquery = @import("../query/ast.zig").isSubquery;
 
 const Plan = @import("Plan.zig");
+const ExpressionProgram = @import("expression_program.zig").Program;
 const Operator = Plan.Operator;
 const ChainIndex = Plan.ChainIndex;
 const Scope = @import("scope.zig").Scope;
@@ -52,6 +53,7 @@ pub fn build(context: Context, root: Index) Allocator.Error!Plan {
         .statistics = context.statistics.used.items,
         .slot_count = builder.slot_count,
         .slot_of = slot_of,
+        .expressions = try ExpressionProgram.compile(context.allocator, ast, slot_of, &builder.expression_chains),
     };
 }
 

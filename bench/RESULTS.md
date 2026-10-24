@@ -170,6 +170,40 @@ the RETURN's sort key no longer copies the row to add the aliases. `return 100k 
 3 ns a row slower, consistently over the rounds: reading a variable is now two lookups (the AST
 node's slot, then the row's value), which compiled expressions will make one.
 
+## RETURN rows without per-row allocations, compiled expressions (October 2026)
+
+Two changes, each measured against the commit before it (ReleaseFast, 100k people, 200 runs, 10
+for the heavy queries, three alternating rounds at load average < 3, best median; plain and
+`--prepared` agree unless shown):
+
+- **RETURN rows** (bd6a55d): the projected expressions are found once per run, not once per row
+  for the ORDER BY key; rows are allocated at their width instead of grown.
+- **Compiled expressions** (`planning/expression_program.zig`): one instruction per AST node, made
+  with the plan. A constant carries its value, a variable its slot, `n.name` its slot and name, a
+  parameter an index into values looked up once per run, a call its function, a constant `=~`
+  pattern its compiled regex. `evaluate` handles the scalar operations only; lists, maps, CASE and
+  subqueries are in a separate function, so the hot one keeps a small stack frame.
+
+| Query | before | RETURN rows | compiled expressions |
+| --- | ---: | ---: | ---: |
+| card lookup (prepared) | 4.4 µs | 4.2 µs | 3.7 µs |
+| may this card open this door? (prepared) | 29.4 µs | 31.3 µs | 28.2 µs |
+| colleagues (prepared) | 57.0 µs | 57.6 µs | 53.9 µs |
+| oldest 10 (`ORDER BY … LIMIT`) | 20.9 ms | 18.1 ms | 17.1 ms |
+| return 100k rows (3 columns) | 16.5 ms | 15.6 ms | 14.8 ms |
+| expressions (regex, CASE, functions) | 31.2 ms | 31.2 ms | 29.2 ms |
+
+(The middle column comes from two A/B runs, so its rows mix rounds; read each change against its
+own neighbour.) Nothing measured slower; writes vary ±7% from round to round as before. On the new
+expression-heavy query the gain is 6%: with 100k people reading three properties a row from
+storage costs more than evaluating the expressions.
+
+Both ideas come from a parallel review of this branch (another agent continued from 33a78fa).
+Against that tree, at the same harness: these commits are 25-44% faster on multi-hop queries,
+9-14% on aggregates (both measured before these two commits), on par on ORDER BY + LIMIT, its
+one lead before (17.1 ms here, 17.8-18.3 ms there, in different sessions), and 2% faster on the
+expression query (29.2 vs 29.9 ms, same session).
+
 ## The Python bindings (ctypes and JSON)
 
 `python bench/python_overhead.py --dir .bench-data` on the same graph, the database file read
