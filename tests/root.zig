@@ -4,6 +4,7 @@
 test {
     _ = @import("storage/key_value_store_test.zig");
     _ = @import("storage/graph_test.zig");
+    _ = @import("storage/integrity_test.zig");
     _ = @import("query/ast_test.zig");
     _ = @import("text/analyzer_test.zig");
     _ = @import("text/case_test.zig");

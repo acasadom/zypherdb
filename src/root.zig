@@ -20,6 +20,9 @@ pub const EdgeKey = graph.EdgeKey;
 pub const NeighbourIterator = graph.NeighbourIterator;
 pub const NodeIdIterator = graph.NodeIdIterator;
 
+/// Checks that every derived structure agrees with the primary records.
+pub const integrity = @import("storage/integrity.zig");
+
 pub const value = @import("value.zig");
 
 pub const Value = value.Value;

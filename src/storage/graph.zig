@@ -1061,7 +1061,7 @@ pub const EdgeKeyIterator = KeyRangeIterator(EdgeKey, struct {
 }.decode);
 
 /// The format of the neighbour labels an edge key's value holds.
-const neighbour_labels_version: u8 = 1;
+pub const neighbour_labels_version: u8 = 1;
 
 /// The relationships an edge-property index scan finds, with their ends
 /// and type (`edge_type` valid until the next `next` call).

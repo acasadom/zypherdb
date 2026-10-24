@@ -151,6 +151,8 @@ Indexes are just more key ranges (see [storage](storage)):
    iterator (`nodesByProperty`/`edgesByProperty` are the models). State its cost.
 3. If it should drive planning, surface it in `patterns.zig` (`estimate`, `shouldEdgeAnchor`) and
    in the pattern operator that reads it (`pattern_matching.zig`).
+4. `src/storage/integrity.zig` — rebuild its keys from the primary data, so the checker compares
+   them (until then it reports them as unknown keys).
 
 ## Zig 0.17 gotchas (rediscovered once, recorded here)
 

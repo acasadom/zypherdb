@@ -209,6 +209,22 @@ so the counter never hands out an id that is in use.
   transaction ends (the cursor belongs to it). The executor scopes every iterator to the operator
   call that opened it, which is what makes this safe.
 
+## Checking integrity
+
+Everything but the records is derived: the label, property and edge-property indexes, both edge
+keys of each relationship and the labels they keep, the counters, the full-text postings. The
+integrity checker, `acmedb.integrity.check(graph, allocator)` (`src/storage/integrity.zig`),
+rebuilds each of them from the primary data — the node and relationship records, the relationship
+properties (`f`), the schema definitions (`i`) — and compares them with what is stored. It also
+checks that every uniqueness constraint holds, that the id counters are above every id in use,
+that each record is well formed, and that the main table holds no key of any other kind. It
+returns a `Report` with the first problems found, described, and their count.
+
+It runs in one read transaction, or in the active one (a write transaction is seen with its
+uncommitted changes), in O(database) time and memory. Two differences are not problems: a counter
+of something no longer there may stay at zero, and an edge key may keep a neighbour's labels as an
+empty section or as a count of zero (both mean none).
+
 ## The storage engines
 
 The rest of acmedb sees the engine only through `src/storage/engine/contract.zig`; the engine is
