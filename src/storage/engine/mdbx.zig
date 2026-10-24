@@ -41,7 +41,7 @@ pub const Environment = struct {
     /// Opens (or creates) the database in directory `path`, which must exist.
     pub fn open(allocator: std.mem.Allocator, path: []const u8, options: contract.Options) Error!Environment {
         // The log level is global to the process; setting it again is harmless.
-        _ = c.mdbx_setup_debug(c.MDBX_LOG_WARN, c.MDBX_DBG_DONTCHANGE, c.MDBX_LOGGER_DONTCHANGE);
+        _ = c.mdbx_setup_debug(c.MDBX_LOG_ERROR, c.MDBX_DBG_DONTCHANGE, c.MDBX_LOGGER_DONTCHANGE);
         var environment: ?*c.MDBX_env = null;
         if (c.mdbx_env_create(&environment) != c.MDBX_SUCCESS) return error.OpenFailed;
         errdefer _ = c.mdbx_env_close_ex(environment.?, false);
