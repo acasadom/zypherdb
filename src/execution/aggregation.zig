@@ -14,6 +14,7 @@ const SequenceContext = @import("../sequence_algorithms.zig").SequenceContext;
 const ElementContext = @import("../sequence_algorithms.zig").ElementContext;
 
 const Executor = @import("Executor.zig");
+const Row = Executor.Row;
 const expressions = @import("expressions.zig");
 const projection = @import("projection.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -314,18 +315,15 @@ fn notANumber(self: *Executor, function: []const u8) ExecutionError {
     return error.TypeMismatch;
 }
 
-/// Turns the groups into RETURN rows: grouping keys and aggregate results in
-/// projection order.
 /// RETURN with aggregates: turns the groups into rows, in projection order.
 pub fn aggregate(self: *Executor, info: projection.ReturnClauseParts) ExecutionError!void {
     self.rows = .empty;
     try ensureGroupWithoutKeys(self, &self.groups, self.return_aggregation);
-    const projected = try self.projectedExpressions(info.projection);
     for (self.groups.keys.items, self.groups.states.items) |keys, states| {
-        var row = std.ArrayList(Value).empty;
+        const row = Row.fromOwnedSlice(try self.allocator.alloc(Value, info.projected.len));
         var key_index: usize = 0;
         var scope = try self.newRow();
-        for (self.projection_items.items, self.ast.nodeChildren(info.projection)) |item, item_node| {
+        for (row.items, self.projection_items.items, self.ast.nodeChildren(info.projection)) |*cell, item, item_node| {
             const value = switch (item) {
                 .key => value: {
                     key_index += 1;
@@ -333,11 +331,11 @@ pub fn aggregate(self: *Executor, info: projection.ReturnClauseParts) ExecutionE
                 },
                 .aggregating => |expr| try evaluateAggregating(self, expr, self.return_aggregation, keys, states, &scope),
             };
-            try row.append(self.allocator, value);
+            cell.* = value;
             // An aliased item has a slot, for the ORDER BY.
             try scope.put(self.allocator, self.slotOf(item_node), value);
         }
-        const sort_key = try projection.groupSortKey(self, info.order_by, projected, row.items, &scope, self.return_aggregation, keys, states);
+        const sort_key = try projection.groupSortKey(self, info.order_by, info.projected, row.items, &scope, self.return_aggregation, keys, states);
         try self.rows.append(self.allocator, .{ .item = row, .sort_key = sort_key });
     }
 }

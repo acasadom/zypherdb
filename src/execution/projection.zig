@@ -232,12 +232,11 @@ pub fn returnSortKey(self: *Executor, info: ReturnClauseParts, row: []const Valu
     defer bindings.restore(saved);
     for (items, row) |item, value| try bindings.put(self.allocator, self.slotOf(item), value);
 
-    const projected = try self.projectedExpressions(info.projection);
     const order_items = self.ast.nodeChildren(order_by);
     const key = try self.allocator.alloc(Value, order_items.len);
     for (key, order_items) |*value, order_item| {
         const expr = self.ast.nodeChildren(order_item)[0];
-        value.* = if (projectedColumn(self, projected, expr)) |column| row[column] else try expressions.evaluate(self, expr, bindings);
+        value.* = if (projectedColumn(self, info.projected, expr)) |column| row[column] else try expressions.evaluate(self, expr, bindings);
     }
     return key;
 }
@@ -308,6 +307,9 @@ pub const ReturnClauseParts = struct {
     skip: ?Index,
     limit: ?Index,
     distinct: bool,
+    /// The expression of each projection item, found once per run (the
+    /// ORDER BY key of every row looks its items up in it).
+    projected: []const Index = &.{},
 };
 
 pub fn returnClauseParts(self: *Executor, return_clause: Index) ReturnClauseParts {
@@ -333,7 +335,8 @@ pub fn returnClauseParts(self: *Executor, return_clause: Index) ReturnClausePart
 /// Starts a RETURN: plans its projection and aggregation. Then each row goes
 /// to `returnRow`, and `endReturn` produces the result in `self.rows`.
 pub fn beginReturn(self: *Executor, return_clause: Index) ExecutionError!ReturnClauseParts {
-    const info = returnClauseParts(self, return_clause);
+    var info = returnClauseParts(self, return_clause);
+    info.projected = try self.projectedExpressions(info.projection);
     try planReturn(self, info);
     return info;
 }
@@ -342,10 +345,9 @@ pub fn beginReturn(self: *Executor, return_clause: Index) ExecutionError!ReturnC
 /// row is not kept, so the caller may reuse it.
 pub fn returnRow(self: *Executor, info: ReturnClauseParts, row: *Bindings) ExecutionError!void {
     if (self.has_aggregates) return aggregation.accumulate(self, row);
-    var values = std.ArrayList(Value).empty;
-    for (self.ast.nodeChildren(info.projection)) |item| {
-        try values.append(self.allocator, try expressions.evaluate(self, self.ast.nodeChildren(item)[0], row));
-    }
+    // The row's width is known: allocated exactly, not grown.
+    const values = Row.fromOwnedSlice(try self.allocator.alloc(Value, info.projected.len));
+    for (values.items, info.projected) |*value, expression| value.* = try expressions.evaluate(self, expression, row);
     // The ORDER BY key is evaluated now, while the row's variables are
     // still bound: it may use variables that are not projected.
     const sort_key = try returnSortKey(self, info, values.items, row);
@@ -387,8 +389,7 @@ fn planReturn(self: *Executor, parts: ReturnClauseParts) ExecutionError!void {
         }
     }
     self.has_aggregates = aggregating.items.len > 0;
-    const projected = try self.projectedExpressions(parts.projection);
-    const ordering = try aggregation.orderByAggregating(self, parts.order_by, projected, self.has_aggregates);
+    const ordering = try aggregation.orderByAggregating(self, parts.order_by, parts.projected, self.has_aggregates);
     if (self.has_aggregates) {
         try aggregating.appendSlice(self.allocator, ordering);
         self.return_aggregation = try aggregation.plan(self, keys.items, aggregating.items, try projectionNames(self, parts.projection));
