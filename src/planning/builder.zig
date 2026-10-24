@@ -32,6 +32,7 @@ const no_slot = @import("../execution/bindings.zig").no_slot;
 const patterns = @import("patterns.zig");
 
 pub const Context = patterns.Context;
+pub const Options = patterns.Options;
 
 /// The plan of `root`: a query, or a UNION of queries.
 pub fn build(context: Context, root: Index) Allocator.Error!Plan {
@@ -54,6 +55,7 @@ pub fn build(context: Context, root: Index) Allocator.Error!Plan {
         .slot_count = builder.slot_count,
         .slot_of = slot_of,
         .expressions = try ExpressionProgram.compile(context.allocator, ast, slot_of, &builder.expression_chains),
+        .index_lookups = context.options.index_lookups,
     };
 }
 
@@ -167,7 +169,7 @@ const Builder = struct {
             .return_clause => if (kind == .main) {
                 _ = try self.projectionExpressions(clause_index, scope, .query_return);
                 try operators.append(allocator, .{ .return_ = clause_index });
-                const staged = try appendStages(allocator, ast, clause_index, operators);
+                const staged = try appendStages(allocator, ast, clause_index, self.context.options.top, operators);
                 if (staged or projectionAggregates(ast, clause_index)) try operators.append(allocator, .{ .produce_results = clause_index });
             } else try self.planProjection(clause_index, scope, operators),
             .call_clause => {
@@ -253,7 +255,7 @@ const Builder = struct {
             try operators.append(self.context.allocator, .{ .with_streaming = clause_index });
         } else {
             try operators.append(self.context.allocator, .{ .with_collecting = clause_index });
-            _ = try appendStages(self.context.allocator, ast, clause_index, operators);
+            _ = try appendStages(self.context.allocator, ast, clause_index, self.context.options.top, operators);
         }
         scope.* = projected;
     }
@@ -392,15 +394,16 @@ fn projectionParts(ast: *const Ast, clause_index: Index) ProjectionParts {
 }
 
 /// Appends the stages of a WITH or RETURN, in the order they apply:
-/// DISTINCT, ORDER BY (with a LIMIT, `top`), SKIP, then LIMIT unless `top`
-/// kept SKIP + LIMIT rows already. True if there is one.
-fn appendStages(allocator: Allocator, ast: *const Ast, clause_index: Index, operators: *std.ArrayList(Operator)) Allocator.Error!bool {
+/// DISTINCT, ORDER BY (with a LIMIT and `use_top`, `top`), SKIP, then LIMIT
+/// unless `top` kept SKIP + LIMIT rows already. True if there is one.
+fn appendStages(allocator: Allocator, ast: *const Ast, clause_index: Index, use_top: bool, operators: *std.ArrayList(Operator)) Allocator.Error!bool {
     const parts = projectionParts(ast, clause_index);
+    const top = use_top and parts.order_by != null and parts.limit != null;
     const count = operators.items.len;
     if (parts.distinct) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = .distinct } });
-    if (parts.order_by != null) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = if (parts.limit != null) .top else .sort } });
+    if (parts.order_by != null) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = if (top) .top else .sort } });
     if (parts.skip != null) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = .skip } });
-    if (parts.limit != null and parts.order_by == null) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = .limit } });
+    if (parts.limit != null and !top) try operators.append(allocator, .{ .projection_stage = .{ .clause = clause_index, .kind = .limit } });
     return operators.items.len > count;
 }
 

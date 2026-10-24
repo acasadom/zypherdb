@@ -145,3 +145,25 @@ test "an access-control rule: weekdays from 9:00 to 18:00, local time" {
     // Saturday: not a working day.
     try support.expectQueryWithParameters(&ast, &g, query, &.{.{ "at", try at.instant("2024-07-06T10:00+02:00") }}, &.{&.{boolean(false)}});
 }
+
+test "a fixed time replaces the clock, for realtime readings too" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    const query = try acmedb.parser.parse(&ast, "RETURN datetime().epochMillis, datetime.realtime().epochMillis, date()", null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var executor = acmedb.Executor.init(&ast, &g, arena.allocator());
+    executor.fixed_time = 1_700_000_000_123 * std.time.ns_per_ms;
+    const rows = try executor.run(query);
+    try testing.expectEqual(@as(usize, 1), rows.len);
+    try testing.expectEqual(@as(i64, 1_700_000_000_123), rows[0].items[0].int);
+    try testing.expectEqual(@as(i64, 1_700_000_000_123), rows[0].items[1].int);
+    try support.expectRows(try executor.run(try acmedb.parser.parse(&ast, "RETURN toString(date())", null)), &.{&.{string("2023-11-14")}});
+}

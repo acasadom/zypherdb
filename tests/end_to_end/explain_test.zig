@@ -211,3 +211,60 @@ test "EXPLAIN takes a query, not a schema command" {
     var ast = Ast.init(arena.allocator());
     try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "EXPLAIN SHOW INDEXES", null));
 }
+
+/// The operators of `query`'s plan with `options`, one per line.
+fn operatorNames(ast: *Ast, g: *Graph, query: []const u8, options: acmedb.PlanOptions, allocator: std.mem.Allocator) ![]const u8 {
+    const root = try acmedb.parser.parse(ast, try std.fmt.allocPrint(allocator, "EXPLAIN {s}", .{query}), null);
+    var executor = Executor.init(ast, g, allocator);
+    executor.plan_options = options;
+    var names = std.ArrayList(u8).empty;
+    for (try executor.run(root)) |row| try names.print(allocator, "{s}\n", .{row.items[1].string});
+    return names.items;
+}
+
+/// The rows of `query` with `options`, printed and sorted.
+fn sortedRows(ast: *Ast, g: *Graph, query: []const u8, options: acmedb.PlanOptions, allocator: std.mem.Allocator) ![]const []const u8 {
+    var executor = Executor.init(ast, g, allocator);
+    executor.plan_options = options;
+    const rows = try executor.run(try acmedb.parser.parse(ast, query, null));
+    const printed = try allocator.alloc([]const u8, rows.len);
+    for (printed, rows) |*text, row| text.* = try std.fmt.allocPrint(allocator, "{any}", .{row.items});
+    std.mem.sort([]const u8, printed, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+    return printed;
+}
+
+test "planner options change the plan, not the rows" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    try loadMoviesGraph(&g);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const cases = [_]struct { query: []const u8, options: acmedb.PlanOptions, missing: []const u8 }{
+        .{ .query = "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title", .options = .{ .index_lookups = false }, .missing = "NodeIndexSeek" },
+        .{ .query = "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title", .options = .{ .anchor = .{ .position = 1 } }, .missing = "NodeIndexSeek" },
+        .{ .query = "MATCH (m:Movie) WHERE m.released > 2000 RETURN m.title", .options = .{ .where_seeks = false }, .missing = "NodeIndexRangeSeek" },
+        .{ .query = "MATCH (p:Person) RETURN p.name ORDER BY p.name SKIP 1 LIMIT 2", .options = .{ .top = false }, .missing = "Top" },
+    };
+    for (cases) |case| {
+        const optimized = try operatorNames(&ast, &g, case.query, .{}, allocator);
+        const plain = try operatorNames(&ast, &g, case.query, case.options, allocator);
+        try testing.expect(std.mem.indexOf(u8, optimized, case.missing) != null);
+        try testing.expect(std.mem.indexOf(u8, plain, case.missing) == null);
+        const expected = try sortedRows(&ast, &g, case.query, .{}, allocator);
+        const actual = try sortedRows(&ast, &g, case.query, case.options, allocator);
+        try testing.expectEqual(expected.len, actual.len);
+        for (expected, actual) |a, b| try testing.expectEqualStrings(a, b);
+    }
+}

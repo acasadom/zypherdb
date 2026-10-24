@@ -55,6 +55,9 @@ slot_count: u32,
 slot_of: []const Slot,
 /// The query's expressions, compiled (see `expression_program.zig`).
 expressions: ExpressionProgram,
+/// False if the plan scans instead of using the property indexes
+/// (`Options.index_lookups`).
+index_lookups: bool = true,
 
 /// A run of consecutive operators: `first` up to, not including, `end`.
 pub const Chain = struct {

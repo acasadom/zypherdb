@@ -156,8 +156,8 @@ const Explainer = struct {
             .bound_node => "BoundNode",
             .node_scan => |reference| scan: {
                 const node = self.plan.patterns[reference.pattern].nodes[reference.node];
-                if (node.seeks.len > 0) break :scan "NodeIndexSeek";
-                if (node.ranges.len > 0) break :scan "NodeIndexRangeSeek";
+                if (node.seeks.len > 0 and self.plan.index_lookups) break :scan "NodeIndexSeek";
+                if (node.ranges.len > 0 and self.plan.index_lookups) break :scan "NodeIndexRangeSeek";
                 if (node.labels.len > 0) break :scan "NodeByLabelScan";
                 break :scan "AllNodesScan";
             },
