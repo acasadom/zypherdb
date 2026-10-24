@@ -5,7 +5,9 @@
 //! A write is checked before it is made, against the property index: a node
 //! that would get a label or a property value another node of that label
 //! already has fails with `error.ConstraintViolation`, and nothing is
-//! written. Each check is O(log N + nodes with that value). Checking before
+//! written. Values are compared as the index compares them, on every
+//! property: 1 and 1.0 are one value. Each check is O(log N + nodes with
+//! that value). Checking before
 //! writing is stricter than at commit: swapping two nodes' values in one
 //! query fails.
 
@@ -65,11 +67,20 @@ fn duplicateOf(graph: *Graph, arena: std.mem.Allocator, definition: fulltext.Def
         if (!other_record.hasLabel(label)) continue;
         for (definition.properties[1..], values[1..]) |property, value| {
             const other_value = other_record.property(property) orelse continue :candidate;
-            if (!std.mem.eql(u8, other_value, value)) continue :candidate;
+            if (!try sameToTheIndex(arena, other_value, value)) continue :candidate;
         }
         return other;
     }
     return null;
+}
+
+/// True if two stored values are one to the property index (1 and 1.0 are),
+/// as the lookup of the first property compares them.
+fn sameToTheIndex(arena: std.mem.Allocator, a: []const u8, b: []const u8) std.mem.Allocator.Error!bool {
+    if (std.mem.eql(u8, a, b)) return true;
+    var keys: [2]std.ArrayList(u8) = .{ .empty, .empty };
+    for (&keys, [_][]const u8{ a, b }) |*key, encoded| try value_encoding.encodeIndexValue(key, arena, try value_encoding.decodeValue(encoded, arena));
+    return std.mem.eql(u8, keys[0].items, keys[1].items);
 }
 
 /// `a` or `(a, b)`: the constraint's properties, for a message.
