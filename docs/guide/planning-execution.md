@@ -187,6 +187,29 @@ return_   → project the row (or fold it into its group)
 row and gets `ON MATCH SET`. If not, `writes.createPattern` creates the pattern's unbound nodes and
 its relationships, and binds their variables for `ON CREATE SET`.
 
+## Expressions
+
+The builder also compiles the query's expressions (`expression_program.zig`): one instruction
+per AST node, indexed as the AST is, so execution never reads an AST kind or looks a name up.
+
+| Expression | Instruction |
+| --- | --- |
+| a literal | its value |
+| a variable | its slot |
+| `variable.property` | the variable's slot and the property name (no step through the variable) |
+| `$name` | an index into the run's parameter values, looked up by name once per run |
+| a function call | the function, resolved by name once |
+| `text =~ 'constant'` | the pattern, compiled once (an invalid one fails when, and only if, it is evaluated) |
+| a pattern or subquery in an expression | its chain |
+
+`expressions.evaluate` handles only the scalar instructions (constants, slots, parameters,
+properties, calls, operators); lists, maps, `CASE`, comprehensions and subqueries are in
+`evaluateComplex`, so the function every expression goes through keeps a small stack frame.
+Because instructions are indexed by AST node, what is keyed by node needs nothing new: while an
+aggregating expression is evaluated for one group, `expression_overrides` gives the values that
+stand for its aggregates and grouping keys, by node, before the instruction is read. A schema
+command, which has no plan, compiles the expressions of its `OPTIONS` alone.
+
 ## EXPLAIN and PROFILE
 
 `EXPLAIN` plans the query and returns the plan's lines without running it; `PROFILE` also runs it
@@ -244,7 +267,8 @@ A projection is split into **key** items, which are the implicit grouping keys, 
 items. For each row, `accumulate` evaluates the keys and finds or creates the row's group in a
 hashed `Grouping(Key, KeyContext)`, with expected O(1) time per row. It then updates the group's
 `AggregateState`s. When the input ends, `aggregate` turns the groups back into rows. `WITH` uses
-the same machinery, with `Binding`-valued keys, so a node variable passes through as a node.
+the same machinery and binds each group's values to its items' slots, so a node variable passes
+through as a node.
 
 An `AggregateState` holds a running reduction. It covers count, sum, min and max, `collect`'s list,
 the running mean and variance of `avg`, `stDev` and `stDevP`, and the set of seen values for

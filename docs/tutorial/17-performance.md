@@ -42,6 +42,41 @@ On a laptop this prints figures in the tens of microseconds for the decision and
 microseconds for the lookup. (Measurements on a graph of 100,000 people are in `bench/RESULTS.md`
 in the repository.)
 
+## Asking the same question all day
+
+Before a query runs, acmedb reads its text, checks it, and makes its **plan**: which node to start
+from, which steps to take. For a badge lookup that work costs about as much as the lookup itself.
+A door asks the same few questions all day, only with other badges, so it should not be done again
+each time.
+
+`db.query` already keeps the plans of the last 64 texts it ran: the second time the same text
+comes, only the parameters are new. That is one more reason to pass values as parameters
+(`$badge`): a value pasted into the text makes a new text, and a new plan, for every badge.
+
+A program that knows its questions can also prepare them once, by name, and keep them:
+
+```python
+lookup = db.prepare("MATCH (:Badge {number: $badge, active: true})-[:ISSUED_TO]->(p:Person) RETURN p.name")
+print(lookup.parameters, lookup.columns)
+print(lookup.query(badge=70013), lookup.query(badge=70003))
+```
+
+```text
+('badge',) ('p.name',)
+[['Chen Wei']] []
+```
+
+A prepared query runs as `db.query` would, without even looking its text up:
+
+```python
+print(f"prepared lookup: {timed(lambda: lookup.query(badge=70013)):.0f} µs")
+```
+
+A plan is made for the graph as it is: from how many nodes each label has and how many
+relationships each type has. When those counts grow or shrink a lot (twofold, and by 100 or more),
+the next run plans the query again first, so a query prepared on an empty lab still runs well when
+the building is full.
+
 ## What scans
 
 An equality uses the property's index, and so does a range of numbers or dates (`<`, `<=`, `>`,

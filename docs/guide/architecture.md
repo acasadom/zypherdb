@@ -121,6 +121,7 @@ flowchart TB
 | `src/planning/builder.zig` | Builds the plan: each clause's operators, the chains of subqueries and of patterns in expressions, the variables in scope. |
 | `src/planning/patterns.zig` | Pattern planning: predicate pushdown (seeks and ranges), the estimates, anchor choice, the pattern's operators. |
 | `src/planning/scope.zig` | The variables in scope at a point of a query, as the planner knows them. |
+| `src/planning/expression_program.zig` | The query's expressions compiled with its plan: one instruction per AST node (a constant's value, a variable's slot, a parameter's index, a resolved function, a compiled constant regex). |
 | `src/planning/statistics.zig` | The label and relationship-type counts the planner reads, once per plan, recorded in the plan. |
 | `src/planning/explain.zig` | A plan as EXPLAIN's lines: the result first, inner chains one level deeper, with estimated rows. |
 | `src/execution/Executor.zig` | The executor's state and `run()`: one transaction, the plan, then its main chains. |
