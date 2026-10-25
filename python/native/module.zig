@@ -838,8 +838,16 @@ fn addNode(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var label_length: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "OKs#", &capsule, &id, &label_pointer, &label_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
+    if (label_length > 0 and !requireStorableName("label", label_pointer[0..@intCast(label_length)])) return null;
     writing(database, Graph.addNode, .{ &database.graph, id, label_pointer[0..@intCast(label_length)] }) catch |err| return writeFailure(database, err);
     return none();
+}
+
+/// Raises ValueError for a label, type or property name storage cannot keep.
+fn requireStorableName(kind: []const u8, name: []const u8) bool {
+    if (acmedb.layout.isStorableName(name)) return true;
+    _ = raise(py.PyExc_ValueError, "a {s} cannot be empty or contain the character U+0000", .{kind});
+    return false;
 }
 
 fn requireNodes(database: *Database, ids: []const u64) bool {
@@ -864,6 +872,7 @@ fn addEdge(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var type_length: py.Py_ssize_t = 0;
     if (py.PyArg_ParseTuple(args, "OKKs#", &capsule, &source, &target, &type_pointer, &type_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
+    if (!requireStorableName("relationship type", type_pointer[0..@intCast(type_length)])) return null;
     if (!requireNodes(database, &.{ source, target })) return null;
     var id: u64 = 0;
     const Add = struct {
@@ -887,6 +896,7 @@ fn setProperty(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     var arena_state = std.heap.ArenaAllocator.init(allocator);
     defer arena_state.deinit();
     const value = valueOf(value_object.?, arena_state.allocator(), false) orelse return null;
+    if (value != .null and !requireStorableName("property name", name_pointer[0..@intCast(name_length)])) return null;
     writing(database, Graph.setProperty, .{ &database.graph, id, name_pointer[0..@intCast(name_length)], value }) catch |err| switch (err) {
         error.UnsupportedPropertyType => return raise(py.PyExc_TypeError, "this value cannot be stored as a property", .{}),
         else => return writeFailure(database, err),

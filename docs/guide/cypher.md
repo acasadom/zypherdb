@@ -8,7 +8,9 @@ leaves out a few features; both are listed below. This page is the complete refe
 
 - **Keywords** are case-insensitive: `MATCH` and `match` are the same keyword. **Identifiers** are
   case-sensitive; that covers variables, labels, relationship types and property names. Write an
-  identifier that has spaces or symbols between backticks: `` (`my node`:`Floor 3`) ``.
+  identifier that has spaces or symbols between backticks: `` (`my node`:`Floor 3`) ``. A label,
+  relationship type, property name or index name cannot be empty or contain the character U+0000
+  (writes and schema commands refuse it; this also covers keys of a map in `SET n += $map`).
 - **Strings** use single or double quotes (`'Ana'`, `"Ana"`), with backslash escapes: `\'`, `\"`,
   `\\`, `\n`, `\t`, `\r`, `\b`, `\f`, and `\uXXXX` or `\UXXXXXXXX` for a code point. A malformed
   escape is a syntax error.

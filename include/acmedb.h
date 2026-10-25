@@ -30,6 +30,7 @@ typedef struct acmedb_statement acmedb_statement;
 #define ACMEDB_STORAGE_ERROR 1
 #define ACMEDB_NODE_NOT_FOUND 2
 #define ACMEDB_CONSTRAINT_VIOLATION 3 /* acmedb_last_error says which constraint */
+#define ACMEDB_INVALID_NAME 4         /* an empty name, or one with a 0x00 byte */
 
 /* Error codes reported by acmedb_error_code. */
 #define ACMEDB_ERROR_NONE 0

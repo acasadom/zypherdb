@@ -16,6 +16,7 @@ const Row = Executor.Row;
 const Bindings = @import("bindings.zig").Bindings;
 const ExpressionProgram = @import("../planning/expression_program.zig").Program;
 const expressions = @import("expressions.zig");
+const requireStorableName = @import("writes.zig").requireStorableName;
 
 /// The analyzers a full-text index can use.
 pub const analyzers = [_][]const u8{ "standard", "english", "spanish" };
@@ -73,6 +74,11 @@ fn drop(executor: *Executor, root: Index, comptime what: []const u8) ExecutionEr
 
 fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!void {
     const command = executor.ast.data(root).schema_definition;
+    // Names go into keys, where 0x00 ends them ("f" would find "f\x00g").
+    // (A generated name holds the labels and properties: check them first.)
+    for (command.labels_or_types) |name| try requireStorableName(executor, if (command.relationships) "relationship type" else "label", name);
+    for (command.properties) |name| try requireStorableName(executor, "property name", name);
+    try requireStorableName(executor, "name for an index or constraint", command.name);
     if (try fulltext.find(executor.graph, command.name, executor.allocator)) |existing| {
         if (command.if_not_exists) return;
         executor.fail(.invalid_expression, "{s} named '{s}' already exists", .{ if (existing.kind == .unique) "a constraint" else "an index", command.name });

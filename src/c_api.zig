@@ -20,6 +20,7 @@ const PropertyIterator = @import("storage/graph.zig").PropertyIterator;
 const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
 const StorageError = @import("storage/key_value_store.zig").StorageError;
 const integrity = @import("storage/integrity.zig");
+const isStorableName = @import("storage/layout.zig").isStorableName;
 const Value = @import("value.zig").Value;
 const MapEntry = @import("value.zig").MapEntry;
 const formatFloat = @import("value.zig").formatFloat;
@@ -198,16 +199,19 @@ pub export fn acmedb_allocate_node_id(context: *Context) u64 {
 }
 
 pub export fn acmedb_add_node(context: *Context, id: u64, label_ptr: [*]const u8, label_len: usize) c_int {
+    if (label_len > 0 and !isStorableName(label_ptr[0..label_len])) return RETURN_INVALID_NAME;
     context.graph.addNode(id, label_ptr[0..label_len]) catch |err| return writeFailure(context, err);
     return 0;
 }
 
-/// Mutator return codes: success, storage failure, a missing node, and a
-/// write a uniqueness constraint refused (its message in acmedb_last_error).
+/// Mutator return codes: success, storage failure, a missing node, a write
+/// a uniqueness constraint refused (its message in acmedb_last_error), and a
+/// label, type or property name that is empty or holds a 0x00 byte.
 pub const RETURN_OK: c_int = 0;
 pub const RETURN_STORAGE_ERROR: c_int = 1;
 pub const RETURN_NODE_NOT_FOUND: c_int = 2;
 pub const RETURN_CONSTRAINT_VIOLATION: c_int = 3;
+pub const RETURN_INVALID_NAME: c_int = 4;
 
 /// The return code of a failed write; a constraint violation's message
 /// goes to the context's diagnostic.
@@ -229,6 +233,7 @@ fn requireNodes(context: *Context, ids: []const u64) c_int {
 /// Adds a directed edge. Both endpoints must exist (`RETURN_NODE_NOT_FOUND` otherwise), so
 /// the C ABI can never create a dangling edge.
 pub export fn acmedb_add_edge(context: *Context, src: u64, dst: u64, edge_type_ptr: [*]const u8, edge_type_length: usize) c_int {
+    if (!isStorableName(edge_type_ptr[0..edge_type_length])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{ src, dst });
     if (return_code != RETURN_OK) return return_code;
     _ = context.graph.addEdge(src, dst, edge_type_ptr[0..edge_type_length]) catch return RETURN_STORAGE_ERROR;
@@ -237,6 +242,7 @@ pub export fn acmedb_add_edge(context: *Context, src: u64, dst: u64, edge_type_p
 
 /// Sets an int property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
 pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: i64) c_int {
+    if (!isStorableName(name_ptr[0..name_len])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
     context.graph.setProperty(id, name_ptr[0..name_len], .{ .int = value }) catch |err| return writeFailure(context, err);
@@ -245,6 +251,7 @@ pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*
 
 /// Sets a float property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
 pub export fn acmedb_set_property_float64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: f64) c_int {
+    if (!isStorableName(name_ptr[0..name_len])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
     context.graph.setProperty(id, name_ptr[0..name_len], .{ .float = value }) catch |err| return writeFailure(context, err);
@@ -253,6 +260,7 @@ pub export fn acmedb_set_property_float64(context: *Context, id: u64, name_ptr: 
 
 /// Sets a string property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
 pub export fn acmedb_set_property_string(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_length: usize) c_int {
+    if (!isStorableName(name_ptr[0..name_len])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
     context.graph.setProperty(id, name_ptr[0..name_len], .{ .string = value_ptr[0..value_length] }) catch |err| return writeFailure(context, err);

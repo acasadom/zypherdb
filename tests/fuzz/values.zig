@@ -70,8 +70,8 @@ fn randomTemporal(random: std.Random) Value {
         1 => .{ .local_time = .{ .nanoseconds = pick(i64, random, &.{ 0, 1, 86_399_999_999_999 }) } },
         2 => .{ .time = .{ .nanoseconds = 3_600_000_000_000, .offset = pick(i32, random, &.{ 0, 3600, -1800 }) } },
         3 => .{ .local_date_time = .{ .seconds = pick(i64, random, &.{ -1, 0, 1_700_000_000 }), .nanoseconds = 5 } },
-        4 => .{ .date_time = .{ .seconds = 1_700_000_000, .nanoseconds = 0, .offset = 3600, .zone = pick([]const u8, random, &zones) } },
-        else => .{ .duration = .{ .months = pick(i64, random, &.{ 0, 14 }), .days = 1, .seconds = -5, .nanoseconds = 0 } },
+        4 => .{ .date_time = .{ .seconds = 1_700_000_000, .nanoseconds = pick(u32, random, &.{ 0, 1 }), .offset = 3600, .zone = pick([]const u8, random, &zones) } },
+        else => .{ .duration = .{ .months = pick(i64, random, &.{ 0, 14 }), .days = 1, .seconds = -5, .nanoseconds = pick(u32, random, &.{ 0, 999_999_999 }) } },
     };
 }
 

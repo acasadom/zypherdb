@@ -16,8 +16,8 @@
 //!   above every id in use.
 //!
 //! Every key of the main table must be one of these: any other is reported.
-//! The records themselves are checked for their layout (node_record.zig) and
-//! their values for their tags and sizes.
+//! The records themselves and their values are checked for their layout
+//! (layout.zig).
 //!
 //! It runs in one read transaction (or in the active one, also a write
 //! transaction, which it sees with its uncommitted changes), in O(database)
@@ -35,6 +35,10 @@ const StorageError = @import("key_value_store.zig").StorageError;
 const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const NodeRecord = @import("node_record.zig").NodeRecord;
+const layout = @import("layout.zig");
+const Reader = layout.Reader;
+const recordProblem = layout.recordProblem;
+const valueProblem = layout.valueProblem;
 const fulltext = @import("fulltext.zig");
 const fulltext_postings = @import("fulltext_postings.zig");
 const integrity_fulltext = @import("integrity_fulltext.zig");
@@ -173,8 +177,8 @@ pub const Checker = struct {
             }
             const id = std.mem.readInt(RelationshipId, entry.key[0..8], .native);
             const raw = entry.value;
-            if (raw.len <= 2 * key_encoding.node_id_length or std.mem.indexOfScalar(u8, raw[2 * key_encoding.node_id_length ..], 0) != null) {
-                try self.report.add("relationship {d}: malformed record {f}", .{ id, Bytes{ .bytes = raw } });
+            if (layout.relationshipRecordProblem(raw)) |problem| {
+                try self.report.add("relationship {d}: malformed record ({s}): {f}", .{ id, problem, Bytes{ .bytes = raw } });
                 continue;
             }
             const record = key_encoding.decodeRelationshipRecord(raw);
@@ -405,90 +409,11 @@ fn sameNeighbourLabels(want: []const u8, have: []const u8) bool {
     return stored.position == stored.bytes.len;
 }
 
-// --- Record and value layout -------------------------------------------------
-
-/// Reads big-endian integers and byte runs, failing (null) past the end.
-const Reader = struct {
-    bytes: []const u8,
-    position: usize = 0,
-
-    fn int(self: *Reader, comptime T: type) ?T {
-        const bytes = self.take(@sizeOf(T)) orelse return null;
-        return std.mem.readInt(T, bytes[0..@sizeOf(T)], .big);
-    }
-
-    fn take(self: *Reader, length: usize) ?[]const u8 {
-        if (self.bytes.len - self.position < length) return null;
-        defer self.position += length;
-        return self.bytes[self.position..][0..length];
-    }
-};
-
-/// Why `bytes` is not a well-formed node record (node_record.zig), or null:
-/// labels and property names non-empty and in strictly ascending order,
-/// each value well formed, nothing after the last property.
-fn recordProblem(bytes: []const u8) ?[]const u8 {
-    if (bytes.len == 0) return null;
-    var reader = Reader{ .bytes = bytes };
-    const label_count = reader.int(u16) orelse return "truncated label count";
-    var previous: ?[]const u8 = null;
-    for (0..label_count) |_| {
-        const length = reader.int(u16) orelse return "truncated label";
-        const label = reader.take(length) orelse return "truncated label";
-        if (label.len == 0) return "empty label";
-        if (previous) |before| if (std.mem.order(u8, before, label) != .lt) return "labels out of order";
-        previous = label;
-    }
-    const property_count = reader.int(u32) orelse return "truncated property count";
-    previous = null;
-    for (0..property_count) |_| {
-        const name_length = reader.int(u16) orelse return "truncated property name";
-        const name = reader.take(name_length) orelse return "truncated property name";
-        if (name.len == 0) return "empty property name";
-        if (previous) |before| if (std.mem.order(u8, before, name) != .lt) return "properties out of order";
-        previous = name;
-        const value_length = reader.int(u32) orelse return "truncated property value";
-        const value = reader.take(value_length) orelse return "truncated property value";
-        if (valueProblem(value)) |problem| return problem;
-    }
-    if (reader.position != bytes.len) return "bytes after the last property";
-    return null;
-}
-
-/// Why `encoded` is not a stored value (value_encoding.zig), or null: a
-/// storable tag, and the payload size its type has. Lists and maps are
-/// checked only for their count.
-fn valueProblem(encoded: []const u8) ?[]const u8 {
-    if (encoded.len == 0) return "empty value";
-    const Tag = value_encoding.Tag;
-    const payload = encoded.len - 1;
-    const fits = switch (encoded[0]) {
-        @backingInt(Tag.int), @backingInt(Tag.float), @backingInt(Tag.date), @backingInt(Tag.local_time) => payload == 8,
-        @backingInt(Tag.string) => true,
-        @backingInt(Tag.boolean) => payload == 1 and encoded[1] <= 1,
-        @backingInt(Tag.time), @backingInt(Tag.local_date_time) => payload == 12,
-        @backingInt(Tag.date_time) => payload >= 16,
-        @backingInt(Tag.duration) => payload == 28,
-        @backingInt(Tag.list), @backingInt(Tag.map) => payload >= 4,
-        else => return "not a stored value's tag",
-    };
-    return if (fits) null else "wrong size for its type";
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-
-test "a record's layout is checked" {
-    try testing.expectEqual(@as(?[]const u8, null), recordProblem(""));
-    // One label "A", no properties.
-    try testing.expectEqual(@as(?[]const u8, null), recordProblem("\x00\x01\x00\x01A\x00\x00\x00\x00"));
-    try testing.expectEqualStrings("labels out of order", (recordProblem("\x00\x02\x00\x01B\x00\x01A\x00\x00\x00\x00")).?);
-    try testing.expectEqualStrings("truncated label", (recordProblem("\x00\x01\x00\x05A")).?);
-    try testing.expectEqualStrings("bytes after the last property", (recordProblem("\x00\x00\x00\x00\x00\x00!")).?);
-}
 
 test "an edge key's labels of its neighbour are compared as labels" {
     try testing.expect(sameNeighbourLabels("\x01", "\x01\x00\x00"));
@@ -496,10 +421,4 @@ test "an edge key's labels of its neighbour are compared as labels" {
     try testing.expect(!sameNeighbourLabels("\x01\x00\x01\x00\x01A", "\x01"));
     try testing.expect(!sameNeighbourLabels("\x01", ""));
     try testing.expect(!sameNeighbourLabels("\x01", "\x01\x00\x01\x00\x09A"));
-}
-
-test "a value's tag and size are checked" {
-    try testing.expectEqual(@as(?[]const u8, null), valueProblem("\x01\x00\x00\x00\x00\x00\x00\x00\x2a"));
-    try testing.expectEqualStrings("wrong size for its type", valueProblem("\x01\x2a").?);
-    try testing.expectEqualStrings("not a stored value's tag", valueProblem("\x0d").?);
 }

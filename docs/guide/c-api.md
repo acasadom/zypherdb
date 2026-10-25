@@ -278,9 +278,9 @@ These functions write without parsing a query, for loading data in bulk:
 - `acmedb_set_property_*` set a node's property.
 
 Each function returns `ACMEDB_OK`, `ACMEDB_STORAGE_ERROR`, `ACMEDB_CONSTRAINT_VIOLATION` when a
-uniqueness constraint refuses the write (`acmedb_last_error` says which), or
-`ACMEDB_NODE_NOT_FOUND` when a node
-it names does not exist.
+uniqueness constraint refuses the write (`acmedb_last_error` says which), `ACMEDB_INVALID_NAME`
+when a label, relationship type or property name is empty or contains a 0x00 byte (an empty label
+in `acmedb_add_node` means none), or `ACMEDB_NODE_NOT_FOUND` when a node it names does not exist.
 
 On its own, each call is a transaction that waits for the disk. Between `acmedb_begin_write` and
 `acmedb_commit_write`, all the calls form one transaction instead, committed at the end with a

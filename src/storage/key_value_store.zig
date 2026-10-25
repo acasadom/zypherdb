@@ -13,6 +13,7 @@
 const std = @import("std");
 
 const engine = @import("engine.zig");
+const layout = @import("layout.zig");
 
 const Table = engine.Table;
 
@@ -303,7 +304,9 @@ pub const KeyValueStore = struct {
     pub fn viewNode(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
         const transaction = self.active_read_transaction orelse {
             const writing = self.active_write_transaction orelse return null;
-            return writing.get(.nodes, std.mem.asBytes(&id));
+            const bytes = (try writing.get(.nodes, std.mem.asBytes(&id))) orelse return null;
+            layout.assertRecord(bytes);
+            return bytes;
         };
         if (self.records.find(id)) |bytes| return bytes;
         if (self.node_cursor == null) self.node_cursor = try transaction.openCursor(.nodes);
@@ -316,6 +319,7 @@ pub const KeyValueStore = struct {
                 break :found found orelse return null;
             },
         };
+        layout.assertRecord(bytes); // checked once: kept records were
         self.records.keep(id, bytes);
         return bytes;
     }
@@ -329,8 +333,16 @@ pub const KeyValueStore = struct {
     }
 
     pub fn putNode(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
+        layout.assertRecord(record);
         const transaction = self.writer() orelse return self.autocommit(putNode, .{ self, id, record });
         try transaction.put(.nodes, std.mem.asBytes(&id), record);
+    }
+
+    /// Writes `record` as node `id`'s record without checking its layout, in
+    /// the active write transaction: for tests that damage a database on
+    /// purpose (`putNode` refuses malformed records in checked builds).
+    pub fn putDamagedNode(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
+        try self.writer().?.put(.nodes, std.mem.asBytes(&id), record);
     }
 
     pub fn deleteNode(self: *KeyValueStore, id: u64) StorageError!void {
@@ -350,10 +362,13 @@ pub const KeyValueStore = struct {
     /// copying (null if absent, or outside a transaction).
     pub fn viewRelationship(self: *KeyValueStore, id: u64) StorageError!?[]const u8 {
         const transaction = self.activeTransaction() orelse return null;
-        return transaction.get(.relationships, std.mem.asBytes(&id));
+        const bytes = (try transaction.get(.relationships, std.mem.asBytes(&id))) orelse return null;
+        layout.assertRelationshipRecord(bytes);
+        return bytes;
     }
 
     pub fn putRelationship(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
+        layout.assertRelationshipRecord(record);
         const transaction = self.writer() orelse return self.autocommit(putRelationship, .{ self, id, record });
         try transaction.put(.relationships, std.mem.asBytes(&id), record);
     }

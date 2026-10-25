@@ -27,6 +27,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Value = @import("../value.zig").Value;
 const encodeIndexValue = @import("value_encoding.zig").encodeIndexValue;
+const layout = @import("layout.zig");
 
 /// Node identifiers are fixed-width u64.
 pub const NodeId = u64;
@@ -119,6 +120,7 @@ pub fn appendRelationshipRecord(list: *std.ArrayList(u8), allocator: Allocator, 
 pub const RelationshipRecord = struct { src: NodeId, dst: NodeId, edge_type: []const u8 };
 
 pub fn decodeRelationshipRecord(record: []const u8) RelationshipRecord {
+    std.debug.assert(record.len > 2 * node_id_length); // see `layout.relationshipRecordProblem`
     return .{ .src = readNodeId(record[0..node_id_length]), .dst = readNodeId(record[node_id_length .. 2 * node_id_length]), .edge_type = record[2 * node_id_length ..] };
 }
 
@@ -171,6 +173,7 @@ pub fn appendEdgeBetweenPrefix(list: *std.ArrayList(u8), allocator: Allocator, i
 /// Appends the key for one stored direction of an edge:
 /// `e | node_id | dir | 0x00 | edge_type | 0x00 | neighbour_id | relationship_id`.
 pub fn appendEdgeKey(list: *std.ArrayList(u8), allocator: Allocator, id: NodeId, direction: Direction, edge_type: []const u8, neighbour: NodeId, relationship: RelationshipId) !void {
+    layout.assertName(edge_type); // paired with `decodeEdgeKey`, which ends the type at a 0x00
     try appendEdgeBetweenPrefix(list, allocator, id, direction, edge_type, neighbour);
     try appendNodeId(list, allocator, relationship);
 }
@@ -186,6 +189,7 @@ pub fn decodeEdgeKey(key: []const u8) EdgeKey {
     const edge_type = key[edge_type_start .. edge_type_start + edge_type_length];
     const neighbour_start = edge_type_start + edge_type_length + 1;
     const neighbour = readNodeId(key[neighbour_start .. neighbour_start + node_id_length]);
+    std.debug.assert(key.len == neighbour_start + 2 * node_id_length); // paired with `appendEdgeKey`
     const relationship = readNodeId(key[neighbour_start + node_id_length .. neighbour_start + 2 * node_id_length]);
     return .{ .id = id, .direction = direction, .edge_type = edge_type, .neighbour = neighbour, .relationship = relationship };
 }
