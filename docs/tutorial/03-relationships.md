@@ -144,7 +144,8 @@ print(db.query("MATCH (:Team {name: 'Genomics'})-[:PART_OF]-(other) RETURN other
 ## Relationships as values
 
 A relationship can have a variable too, and be returned whole, as an `acmedb.Relationship` with
-its endpoints (node ids), type and properties:
+its own id, its endpoints (`source` and `target`, node ids), type and properties. The id tells
+apart two relationships that share their endpoints and type:
 
 ```python
 (edge,), = db.query("MATCH (:Person {name: 'Chen Wei'})-[m:MEMBER_OF]->() RETURN m")
