@@ -8,7 +8,7 @@ grow out of this one.
 
 ## Why it is shaped this way
 
-acmedb is deliberately small and generic. Four decisions explain almost every file:
+acmedb is deliberately small and generic. Five decisions explain almost every file:
 
 - **Zig, not C++.** The project started as C++/RocksDB and pivoted. The reasons were pragmatic:
   embeddable in Python, real performance, fast builds on an 8 GB M1, and a single-binary toolchain
@@ -17,8 +17,8 @@ acmedb is deliberately small and generic. Four decisions explain almost every fi
 - **No class hierarchies, no Visitor.** The style is Stepanov/STL: **data as concrete types,
   algorithms as free functions, errors as values** (Zig `error union`s, the analogue of
   `std::expected`). You will not find `interface`/`abstract class` anywhere — the AST is not a tree
-  of `Node` subclasses but a flat arena, and the executor is not a tree of `Operator` objects but a
-  recursive function over a small set of step tags.
+  of `Node` subclasses but a flat arena, and a plan is not a tree of `Operator` objects but chains
+  of operators, each a value of one tagged union, that free functions feed rows through.
 - **An arena AST.** Nodes live in one `std.ArrayList`, children are a separate index array, and
   strings are interned into the arena. No pointers, no inheritance, one `deinit` frees the whole
   tree. This is the same shape Zig itself uses for its AST.
@@ -48,6 +48,9 @@ flowchart TB
     CAPI["c_api.zig — C ABI (export fn)"]
     PyNative["python/native/ — Python extension module"]
   end
+  subgraph statement["statement/ — prepared statements"]
+    Prepared["Statement.zig + Cache.zig — planned once, run many times"]
+  end
   subgraph query["query/ — text to AST"]
     Lexer["lexer.zig — tokens"]
     Parser["parser.zig + expression_parser.zig — grammar"]
@@ -67,13 +70,17 @@ flowchart TB
     Keys["key_encoding.zig + node_record.zig — key and record layout"]
     KV["key_value_store.zig — transactions, prefix scans"]
     Engine["engine.zig + engine/ — the engine contract, LMDB, libmdbx, C bindings"]
+    Integrity["integrity.zig + layout.zig — the checker, the layout assertions"]
   end
-  Shared["value.zig · temporal/ · sequence_algorithms.zig · diagnostics.zig"]
+  Shared["value.zig · temporal/ · text/ · sequence_algorithms.zig · diagnostics.zig"]
 
-  CAPI --> Executor
+  CAPI --> Prepared
   CAPI --> Graph
-  PyNative --> Executor
+  PyNative --> Prepared
   PyNative --> Graph
+  Prepared --> Parser
+  Prepared --> Executor
+  Integrity --> Graph
   Semantics --> AST
   Executor --> Builder
   Builder --> PlanIR
@@ -99,16 +106,19 @@ flowchart TB
 | `src/storage/engine/lmdb.zig` | The LMDB engine (the default): map size, durability flags, renewed read transactions. |
 | `src/storage/engine/lmdb_bindings.zig` | Hand-written C bindings for LMDB (`MDB_env`/`MDB_txn`/`MDB_cursor`, `MDB_val`, the functions and constants used). |
 | `src/storage/engine/mdbx.zig` | The libmdbx engine: file geometry, durability flags, renewed read transactions. |
-| `src/storage/engine/faulty.zig` | An engine that wraps the chosen one and fails at the N-th operation, or kills the process at a chosen crash point; used only by the fault and crash tests and the fuzzers (see the contributing guide). |
+| `src/storage/engine/faulty.zig` | An engine that wraps the chosen one and fails at the N-th operation, or kills the process at a chosen crash point; used only by the fault and crash tests and the fuzzers (see [testing](testing.md#the-fault-fuzzer)). |
 | `src/storage/engine/mdbx_bindings.zig` | Hand-written C bindings for libmdbx: `opaque {}` handles for `MDBX_env`/`MDBX_txn`/`MDBX_cursor`, `extern struct MDBX_val`, the `extern "c" fn`s and constants. |
 | `src/storage/key_value_store.zig` | `KeyValueStore`, the graph's view of the engine: `put`/`get`/`exists`/`del`/`scanPrefix`/`countPrefix`, explicit write/read transactions, pooled cursors and the record cache. `scanPrefix` returns an **iterator**, not a callback. |
 | `src/storage/key_encoding.zig` | The byte layout of every key (markers, node ids, edge keys, index keys). The only place that knows the key layout. |
 | `src/storage/value_encoding.zig` | How a property value is stored, and written in index keys. |
 | `src/storage/node_record.zig` | The node record: a node's labels and properties in one stored value, read with one B-tree search. |
-| `src/storage/fulltext.zig` | Full-text index definitions (`i \| name`) and the schema version that says when they changed. |
+| `src/storage/layout.zig` | What a well-formed record, value, edge key and name are, as functions that say why some bytes are not; the checker reports with them, and the storage boundary asserts them in pairs (Debug and ReleaseSafe). |
+| `src/storage/integrity.zig`, `integrity_fulltext.zig` | The integrity checker: rebuilds every derived key from the records and compares (see [storage](storage.md#checking-integrity)). |
+| `src/storage/constraints.zig` | Uniqueness constraints, checked against the property index before a write is made. |
+| `src/storage/fulltext.zig` | The schema definitions (`i \| name`: full-text indexes, declared range indexes, uniqueness constraints) and the schema version that says when they changed. |
 | `src/storage/fulltext_postings.zig` | Full-text postings, entity lengths, term counts and index totals, and how graph mutations keep them current. |
 | `src/storage/fulltext_search.zig` | A full-text query against the postings: boolean clauses, phrases, prefix and fuzzy expansions, BM25. |
-| `src/text/` | Text for full-text search: Unicode tables generated from the Unicode Character Database (`unicode_tables.zig`, by `tools/unicode_tables.py`), the analyzers (`analyzer.zig`), stop words, the Snowball stemmers (`snowball.zig`, `stem_english.zig`, `stem_spanish.zig`) and the query syntax (`query.zig`). |
+| `src/text/` | Text for full-text search: Unicode tables generated from the Unicode Character Database (`unicode_tables.zig`, by `tools/unicode_tables.py`), the analyzers (`analyzer.zig`), stop words, the Snowball stemmers (`snowball.zig`, `stem_english.zig`, `stem_spanish.zig`) and the query syntax (`query.zig`); also the case mappings of `toUpper`/`toLower` (`unicode.zig`), regular expressions for `=~` (`regex.zig`, a Pike VM: no pattern can make a query hang) and CSV for LOAD CSV (`csv.zig`). |
 | `src/storage/graph.zig` | `Graph`: nodes, labels, typed edges, properties and their indexes, built on the key encoding. Each operation documents its cost. |
 | `src/query/lexer.zig` | `tokenize`: query text to tokens (UTF-8 and backtick-quoted identifiers). |
 | `src/query/parser.zig` | The `Parser` and the clause/pattern grammar. |
@@ -140,7 +150,8 @@ flowchart TB
 | `src/execution/comparison.zig` | `=` and the ordering operators: three-valued comparability, as opposed to `Value.order`. |
 | `src/execution/temporal_functions.zig` | The temporal functions, components and arithmetic, on `Value`s. |
 | `src/temporal/` | The calendar (`calendar.zig`), time zones (`zones.zig`), the temporal types (`types.zig`), ISO 8601 parsing (`parse.zig`), durations (`durations.zig`) and building values from fields (`selection.zig`). |
-| `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE. |
+| `src/execution/writes.zig` | CREATE, MERGE, SET, REMOVE and DELETE; refuses names that cannot be stored (empty, or with a `0x00` byte). |
+| `src/execution/load_csv.zig` | LOAD CSV: a CSV file's records as rows, read only from the import directory the database was opened with (none: LOAD CSV is off). |
 | `src/execution/bindings.zig` | `Bindings`: a row, one value per slot (each query variable's place, given by the planner), with a trail so `restore` undoes a branch; `SlotsContext` compares rows by some slots. |
 | `src/execution/entities.zig` | `EntitySnapshot`: the labels and properties of every node and relationship a result mentions, read before the transaction ends. |
 | `src/statement/Statement.zig` | A prepared statement: parsed, checked and planned once; each run binds the parameters and plans again if the counts drifted. |
@@ -153,24 +164,27 @@ flowchart TB
 
 ## The lifecycle of a query
 
-A query is text in, rows out, through five stages. Each stage is a separate file:
+A query is text in, rows out, through five stages. Each stage is a separate file. A query sent as
+text (`acmedb_query`, `Database.query`) is first looked up in the database's cache of prepared
+statements (`statement/Cache.zig`, by text, 64 entries): a statement found there was parsed,
+checked and planned before, so its run starts at stage 4, after reading the graph's counts again
+to see whether the plan must be built again.
 
 ```{mermaid}
 sequenceDiagram
   autonumber
-  participant C as caller (capi)
+  participant C as caller (C ABI or Python)
+  participant T as statement/
   participant P as query/
-  participant A as query/ast.zig
-  participant E as execution/
+  participant E as execution/ + planning/
   participant G as storage/graph.zig
   participant S as storage/key_value_store.zig
 
-  C->>P: "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN m.title"
-  P->>P: tokenize → tokens
-  P->>A: recursive descent → arena AST
-  P-->>C: AST (root query node)
-  C->>E: Executor.run(query AST)
-  E->>E: plan: choose anchors, push predicates, chain operators
+  C->>T: "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN m.title"
+  T->>T: cached statement for this text?
+  T->>P: (not cached) tokenize, recursive descent → arena AST
+  T->>E: (not cached) check, plan: choose anchors, pull seeks out of WHERE, chain operators
+  T->>E: run: bind parameters, open the transaction, replan if the counts drifted
   loop scan / expand
     E->>G: nodesWithLabel / neighbours / nodesByProperty
     G->>S: scanPrefix(...)
@@ -183,12 +197,12 @@ sequenceDiagram
 
 1. **Lex + parse** — `tokenize` turns the text into a token array; the recursive-descent `Parser`
    walks it into the arena AST. See [the language](language).
-2. **Check** — `Executor.run` first rejects queries that are well-formed but meaningless:
+2. **Check** — `Executor.check` rejects queries that are well-formed but meaningless:
    `semantics.check` (a node used as a relationship, `1 IN true`) and `functions.checkCalls` (an
    unknown function, a wrong number of arguments). Nothing has touched storage yet.
 3. **Plan** — `planning/builder.zig` turns the checked AST into a plan: chains of operators, one
-   or more per clause, with each `MATCH` pattern planned (predicates pushed down, an anchor
-   chosen). This is where the optimizations live. See [planning & execution](planning-execution).
+   or more per clause, with each `MATCH` pattern planned (equalities and ranges of the WHERE as
+   seeks, an anchor chosen from the graph's counts). This is where the optimizations live. See [planning & execution](planning-execution).
 4. **Execute** — `operators.feed` pushes rows through the chains; each pattern operator is a graph
    operation (a scan or an expansion) backed by a `scanPrefix` iterator. See [storage](storage)
    for what those operations *mean*.
@@ -196,6 +210,7 @@ sequenceDiagram
    the nodes and relationships the rows mention; then the rows are handed back, through the C ABI
    or the Python module.
 
-The plan is built once per query and does not change while it runs: what a run needs besides it
-is the executor's. See [planning & execution](planning-execution) for its operators, and *why there
+The plan is built once per statement and does not change while it runs: what a run needs besides
+it (parameters, rows, the transaction) is the executor's. A prepared statement keeps its plan
+between runs and builds it again only when the counts it was planned on have drifted. See [planning & execution](planning-execution) for its operators, and *why there
 is no cost-based optimizer yet*.
