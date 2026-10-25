@@ -12,7 +12,7 @@
  * same ones. Every cell of every result is read and folded into a checksum,
  * printed for the first runs, to compare the engines' answers.
  *
- * LatticeDB prepares each query once and reuses it (its best case); zypherdb
+ * LatticeDB prepares each query once and reuses it (its best case); ZypherDB
  * parses each query every time and takes parameters as JSON (its only C path).
  */
 #define _POSIX_C_SOURCE 200809L

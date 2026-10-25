@@ -1,4 +1,4 @@
-//! C ABI for embedding zypherdb from C, C++ or any language with a C FFI. The
+//! C ABI for embedding ZypherDB from C, C++ or any language with a C FFI. The
 //! declarations are in include/zypherdb.h; keep the two in step.
 //!
 //! Every function is `export fn` (C calling convention). Strings are passed as

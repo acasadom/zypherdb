@@ -26,7 +26,7 @@ const zones = zypherdb.temporal.zones;
 
 const nanoseconds_per_second = calendar.nanoseconds_per_second;
 
-/// The `datetime`-module classes and zypherdb's `Duration`, registered by
+/// The `datetime`-module classes and ZypherDB's `Duration`, registered by
 /// `configure` (new references, kept for the life of the process).
 pub const Classes = struct {
     date: ?*py.PyObject = null,

@@ -95,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
     defer store.deinit();
     var graph = Graph.init(&store, allocator);
 
-    try out.print("zypherdb access-control benchmark ({s} build, {s} durability{s})\n", .{ @tagName(@import("builtin").mode), @tagName(config.durability), if (config.prepared) ", prepared statements" else "" });
+    try out.print("ZypherDB access-control benchmark ({s} build, {s} durability{s})\n", .{ @tagName(@import("builtin").mode), @tagName(config.durability), if (config.prepared) ", prepared statements" else "" });
     try out.print("graph: {d} people and cards, {d} groups, {d} zones, {d} doors\n\n", .{ counts.people, counts.groups, counts.zones, counts.doors });
     try out.flush();
 

@@ -1,4 +1,4 @@
-//! The storage engine zypherdb is built with, chosen at compile time
+//! The storage engine ZypherDB is built with, chosen at compile time
 //! (`zig build -Dstorage-engine=...`): the only place that names one. Every
 //! engine keeps the contract of engine/contract.zig. In the module built for
 //! the fault tests (build option `fault_injection`, set by build.zig), the

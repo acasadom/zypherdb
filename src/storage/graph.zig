@@ -71,7 +71,7 @@ pub const Graph = struct {
     }
 
     /// The storage format this code writes and reads. A database in another
-    /// format is refused: zypherdb has no users yet, so formats change without
+    /// format is refused: ZypherDB has no users yet, so formats change without
     /// migrations until the first release. 2: schema definitions have a kind
     /// (full-text, range, unique).
     pub const format_version: u32 = 2;

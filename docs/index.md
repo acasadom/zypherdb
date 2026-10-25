@@ -1,8 +1,8 @@
-# zypherdb
+# ZypherDB
 
 *An embedded graph database in Zig, speaking openCypher, on LMDB or libmdbx.*
 
-zypherdb is a graph database you embed in your program: no server, no configuration. You store
+ZypherDB is a graph database you embed in your program: no server, no configuration. You store
 nodes and relationships, and you query them with **openCypher**, the language of graph databases —
 from Python (`pip install zypherdb`), or from any language through its C ABI. Under the hood it is a
 compact engine written in Zig, with storage on **LMDB** or **libmdbx**: transactions, crash safety, readers
@@ -52,7 +52,7 @@ tutorial/20-searching
 
 ## Examples
 
-Complete programs under `examples/`, built on the same lab: the smallest program that uses zypherdb,
+Complete programs under `examples/`, built on the same lab: the smallest program that uses ZypherDB,
 and a simulated day of the whole access-control system, with door controllers and a monitor in
 separate processes. They run in the test suite too.
 

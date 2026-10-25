@@ -2,10 +2,10 @@
 
 Some data is naturally structured: an emergency contact has a name, a relationship and phone
 numbers; a lab's equipment is a list of instruments, each with its own details. Modelling every
-such piece as nodes and relationships would be correct but heavy. zypherdb lets a property hold a
+such piece as nodes and relationships would be correct but heavy. ZypherDB lets a property hold a
 **map** — a document, like a JSON object — and query inside it.
 
-Storing maps is an extension of zypherdb: standard openCypher allows only numbers, strings,
+Storing maps is an extension of ZypherDB: standard openCypher allows only numbers, strings,
 booleans, temporal values and lists of them as properties. Nested lists and maps, and `null`s
 inside them, are all allowed in a document.
 

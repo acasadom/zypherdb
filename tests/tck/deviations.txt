@@ -1,5 +1,5 @@
-# Scenarios zypherdb answers differently on purpose. The runner skips them.
+# Scenarios ZypherDB answers differently on purpose. The runner skips them.
 #
-# Map properties (documents) are a zypherdb extension: openCypher refuses a
-# map, or a list of maps, as a property value; zypherdb stores it.
+# Map properties (documents) are a ZypherDB extension: openCypher refuses a
+# map, or a list of maps, as a property value; ZypherDB stores it.
 clauses/set/Set1.feature: [10] Failing when setting a list of maps as a property

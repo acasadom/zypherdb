@@ -1,4 +1,4 @@
-"""Runs the openCypher TCK against zypherdb and reports how much of it passes.
+"""Runs the openCypher TCK against ZypherDB and reports how much of it passes.
 
     python tests/tck/runner.py                     # run everything, print a summary
     python tests/tck/runner.py --report tests/tck/REPORT.md
@@ -39,7 +39,7 @@ DEVIATIONS = HERE / "deviations.txt"
 
 
 def load_deviations() -> set[str]:
-    """Scenarios zypherdb deliberately answers differently (its extensions to
+    """Scenarios ZypherDB deliberately answers differently (its extensions to
     openCypher): not run, and reported apart. One scenario id per line;
     `#` lines explain them."""
     if not DEVIATIONS.exists():
@@ -50,7 +50,7 @@ sys.path.insert(0, str(HERE))
 import cypher_values  # noqa: E402
 from gherkin import Scenario, Step, load_scenarios  # noqa: E402
 
-# TCK error classes -> the zypherdb exception classes that count as raising it.
+# TCK error classes -> the ZypherDB exception classes that count as raising it.
 _ERROR_CLASSES = {
     "SyntaxError": ("ParseError", "UnknownVariableError", "InvalidExpressionError"),
     "SemanticError": ("ParseError", "UnknownVariableError", "InvalidExpressionError"),
@@ -59,11 +59,11 @@ _ERROR_CLASSES = {
 
 
 class Unsupported(Exception):
-    """The scenario needs a TCK step the runner cannot set up for zypherdb."""
+    """The scenario needs a TCK step the runner cannot set up for ZypherDB."""
 
 
 class Failed(Exception):
-    """The scenario ran and zypherdb's behaviour did not match."""
+    """The scenario ran and ZypherDB's behaviour did not match."""
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +367,7 @@ def summarize(scenarios: list[Scenario], results: dict[str, dict]) -> str:
         f"TCK 2024.3, {len(scenarios)} scenarios (outlines expanded; `@ignore` scenarios excluded).",
         "",
         "- **Positive** scenarios expect a result: the headline measure of what works.",
-        "- **Negative** scenarios expect an error. Their pass rate overstates support: zypherdb rejects",
+        "- **Negative** scenarios expect an error. Their pass rate overstates support: ZypherDB rejects",
         "  much syntax it does not implement yet, which can coincide with an expected SyntaxError.",
         "",
         f"**Positive: {rate(total, 'positive')}** · Negative: {rate(total, 'negative')}",
@@ -409,7 +409,7 @@ def main():
     summary = summarize(scenarios, results)
     excluded = len(selected) - len(scenarios)
     if excluded:
-        summary += f"\n{excluded} scenarios not run: intentional deviations (zypherdb extensions), listed in tests/tck/deviations.txt.\n"
+        summary += f"\n{excluded} scenarios not run: intentional deviations (ZypherDB extensions), listed in tests/tck/deviations.txt.\n"
     print(summary)
     if args.verbose:
         for scenario in scenarios:

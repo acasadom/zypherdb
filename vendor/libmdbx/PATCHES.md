@@ -3,7 +3,7 @@
 `vendor/libmdbx` is the amalgamated source of libmdbx **v0.14.4** (tag `v0.14.4`,
 commit `a032e40c1c06eaf695a163cfc32d4a01ffb8b26c`, `git_commit` 716ce9d5 in
 `VERSION.json`), taken from the project's GitHub mirror
-<https://github.com/Mithril-mine/libmdbx>. Only the files zypherdb builds or must
+<https://github.com/Mithril-mine/libmdbx>. Only the files ZypherDB builds or must
 redistribute were copied: `mdbx.c`, `mdbx.h`, `mdbx-internals.h`, `ntdll.def`,
 `LICENSE`, `NOTICE`, `COPYRIGHT`, `VERSION.json`.
 
@@ -25,6 +25,6 @@ Marked `zypherdb patch` in `mdbx.c`. To report upstream.
   emulation for MinGW (`mdbx_simple_SEH`) walks the x86 TIB exception chain and sets the `Rip`
   register; ARM64 has neither. Renaming the register would compile but not work. Needs an
   upstream fix, or an MSVC-ABI build of that target.
-- Build flags zypherdb passes (see `build.zig`): `MDBX_HAVE_BUILTIN_CPU_SUPPORTS=0` (Zig's
+- Build flags ZypherDB passes (see `build.zig`): `MDBX_HAVE_BUILTIN_CPU_SUPPORTS=0` (Zig's
   compiler-rt has no `__cpu_model`; libmdbx then uses the target's CPU features instead of
   choosing SSE2/AVX2 at runtime for its page lists), a fixed `MDBX_BUILD_TIMESTAMP`, `NDEBUG`.

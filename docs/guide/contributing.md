@@ -54,7 +54,7 @@ what it cannot see are in [testing](testing).
 longer passes; CI does the same. Language work is measured there: pick a reason from
 `tests/tck/REPORT.md`, implement it, run `make tck`, then record the newly passing scenarios with
 `python -I tests/tck/runner.py --update-baseline --report tests/tck/REPORT.md` in the same commit.
-`tests/tck/deviations.txt` lists the scenarios that zypherdb answers differently on purpose (map
+`tests/tck/deviations.txt` lists the scenarios that ZypherDB answers differently on purpose (map
 properties, for instance), each with its reason.
 
 ### The storage fuzzer and the integrity checker
@@ -109,7 +109,7 @@ and without it.
 Every storage error must reach the caller as an error, without a panic, a leak, a transaction left
 open or a half-written change. `tests/fuzz/faults.zig` checks this with a storage engine that fails
 on purpose (`src/storage/engine/faulty.zig`, which wraps the real engine and fails at the N-th
-operation). `build.zig` builds a second zypherdb module with it (build option `fault_injection`) for
+operation). `build.zig` builds a second ZypherDB module with it (build option `fault_injection`) for
 the fault test and the fuzzers; the library itself never includes it, so it pays nothing for it.
 
 The fuzzer runs a random workload (`tests/fuzz/fault_workload.zig`: writes, MERGE, deletions,

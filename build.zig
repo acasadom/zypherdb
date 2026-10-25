@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// The storage engines zypherdb can be built with (src/storage/engine/).
+/// The storage engines ZypherDB can be built with (src/storage/engine/).
 const StorageEngine = enum { lmdb, mdbx };
 
 pub fn build(b: *std.Build) void {
@@ -10,7 +10,7 @@ pub fn build(b: *std.Build) void {
     // The storage engine under the key-value store (src/storage/engine.zig).
     const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine: lmdb (default) or mdbx") orelse .lmdb;
 
-    // Single zypherdb module: engine logic + the vendored storage engine (C) linked in.
+    // Single ZypherDB module: engine logic + the vendored storage engine (C) linked in.
     const zypherdb = zypherdbModule(b, "zypherdb", target, optimize, storage_engine, false);
 
     // The same module over an engine that fails on purpose
@@ -123,7 +123,7 @@ pub fn build(b: *std.Build) void {
     b.step("bench", "Run the access-control benchmark").dependOn(&run_bench.step);
 }
 
-/// The zypherdb library over `storage_engine` (its C sources compiled in),
+/// The ZypherDB library over `storage_engine` (its C sources compiled in),
 /// wrapped by the fault-injecting engine if `fault_injection`; exported
 /// under `name` if one is given.
 fn zypherdbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, storage_engine: StorageEngine, fault_injection: bool) *std.Build.Module {

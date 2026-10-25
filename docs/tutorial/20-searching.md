@@ -55,7 +55,7 @@ db.query("""
 ```
 
 The index reads the protocols that exist now, and from then on follows every change to them. An
-**analyzer** decides what the index's words are. All three that zypherdb has split text into words,
+**analyzer** decides what the index's words are. All three that ZypherDB has split text into words,
 lower-case them and remove accents. `spanish` and `english` also skip the language's most common
 words (*de*, *la*, *the*) and reduce each word to its stem, so *derrames* and *derrame* are one
 word:
@@ -234,5 +234,5 @@ Over twenty steps, Helix Biolabs got:
 - a searchable safety manual, tied to the rooms it applies to.
 
 From here, the [Cypher reference](../guide/cypher) lists everything the language can do, the
-[Python reference](../guide/python) every method, and the technical guides explain how zypherdb
+[Python reference](../guide/python) every method, and the technical guides explain how ZypherDB
 works inside.

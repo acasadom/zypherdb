@@ -1,4 +1,4 @@
-//! Test suite root: every file here exercises zypherdb through its public API.
+//! Test suite root: every file here exercises ZypherDB through its public API.
 //! Unit tests of private helpers stay next to their code in src/.
 
 test {

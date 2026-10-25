@@ -67,7 +67,7 @@ with the same rows, which is what the query fuzzer checks (see
 
 There is no cost-based optimizer. Within a `MATCH`, comma-separated patterns run in source order,
 and each pattern is a chain: the decision that matters most is which node of a chain to start from.
-A cost model would also have little to estimate with: zypherdb keeps label counts and a counter per
+A cost model would also have little to estimate with: ZypherDB keeps label counts and a counter per
 edge type, not degree distributions or per-property selectivity. Joining patterns differently
 (reordering them, a hash join instead of a nested loop) would be new operators and a planner choice
 between them; the trigger should be a query that measurably scans more than it needs to.
@@ -310,7 +310,7 @@ grouping use, and it places every value, `null` last.
   of the call that runs the loop, so it closes, by construction, before the transaction ends, and a
   branch is undone on the way back up. The price is that an operator cannot ask for "just one more
   row"; stopping early is an error (`LimitReached`) that unwinds the calls.
-- **A plan, not the AST.** Before it had plans, zypherdb's executor walked the query's clauses,
+- **A plan, not the AST.** Before it had plans, ZypherDB's executor walked the query's clauses,
   choosing what to do as it went. A plan built ahead makes those choices once: it can be shown (`EXPLAIN`), measured per
   operator (`PROFILE`), kept by a prepared statement, and compared with a plan made without an
   optimization (the query fuzzer).
@@ -323,6 +323,6 @@ grouping use, and it places every value, `null` last.
   third of the time. One instruction per AST node, built with the plan, resolves the names, the
   functions and constant regular expressions once.
 - **Plans that do not depend on parameter values.** A plan built for one value of `$name` could pick
-  a better anchor for it, but could not be reused for the next value. zypherdb keeps one plan per
+  a better anchor for it, but could not be reused for the next value. ZypherDB keeps one plan per
   statement and replans only when the counts drift, which is what prepared statements are for.
 - **No cost-based optimizer** yet: [above](#from-ast-to-plan), with the trigger that would change it.

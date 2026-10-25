@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "zypherdb"
 version = "0.1.0"
-description = "Python bindings for zypherdb, an embedded graph database (openCypher on LMDB or libmdbx)"
+description = "Python bindings for ZypherDB, an embedded graph database (openCypher on LMDB or libmdbx)"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 

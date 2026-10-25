@@ -1,7 +1,7 @@
 # 17. Fast queries
 
 A door must decide in the time it takes to swipe a card — a few milliseconds at most, and the
-database's share should be a small part of that. This step explains what zypherdb does with a
+database's share should be a small part of that. This step explains what ZypherDB does with a
 query, which shapes are fast and which are not, and how to write the ones that matter.
 
 ## How a query finds its data
@@ -44,7 +44,7 @@ in the repository.)
 
 ## Asking the same question all day
 
-Before a query runs, zypherdb reads its text, checks it, and makes its **plan**: which node to start
+Before a query runs, ZypherDB reads its text, checks it, and makes its **plan**: which node to start
 from, which steps to take. For a badge lookup that work costs about as much as the lookup itself.
 A door asks the same few questions all day, only with other badges, so it should not be done again
 each time.

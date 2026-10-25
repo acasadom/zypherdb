@@ -3,7 +3,7 @@
 TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 
 - **Positive** scenarios expect a result: the headline measure of what works.
-- **Negative** scenarios expect an error. Their pass rate overstates support: zypherdb rejects
+- **Negative** scenarios expect an error. Their pass rate overstates support: ZypherDB rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
 **Positive: 210/3202 (6.6%)** · Negative: 657/694 (94.7%)
@@ -93,4 +93,4 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 2 | fail: unexpected error: Variable 'message' is not defined |
 | 2 | fail: unexpected error: Expected variable name in SET |
 
-1 scenarios not run: intentional deviations (zypherdb extensions), listed in tests/tck/deviations.txt.
+1 scenarios not run: intentional deviations (ZypherDB extensions), listed in tests/tck/deviations.txt.

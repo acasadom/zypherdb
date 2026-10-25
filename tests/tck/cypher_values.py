@@ -3,7 +3,7 @@
 Expected values come from TCK tables written as Cypher literals: `null`,
 `true`, `42`, `1.5`, `NaN`, `'text'`, `[1, 2]`, `{a: 1}`, nodes `(:A {k: 1})`,
 relationships `[:T {k: 1}]` and paths `<(:A)-[:T]->(:B)>`. Actual values come
-from zypherdb (Python values decoded from its JSON results).
+from ZypherDB (Python values decoded from its JSON results).
 
 Both are turned into one canonical, hashable form, tagged by type (in Python
 `True == 1`, which must not make a boolean equal an integer):
@@ -31,7 +31,7 @@ def canonical_map(entries: dict) -> tuple:
 
 
 def from_python(value):
-    """Canonical form of a value decoded from a zypherdb result."""
+    """Canonical form of a value decoded from a ZypherDB result."""
     if value is None:
         return NULL
     if isinstance(value, bool):

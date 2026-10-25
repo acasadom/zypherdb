@@ -1,9 +1,9 @@
-# Testing — how zypherdb tests itself
+# Testing — how ZypherDB tests itself
 
 A database is trusted with data that often exists nowhere else. The worst thing it can do is not
 to crash, nor to refuse a query: it is to answer wrongly without saying so, or to store something
 that reads back differently, months later, when nobody remembers how it got there. This page
-explains how zypherdb looks for those failures: the problem, the one idea behind every technique,
+explains how ZypherDB looks for those failures: the problem, the one idea behind every technique,
 and each technique in turn — what it is, where it comes from, what it buys, what it cannot see,
 and what it has found.
 
@@ -12,7 +12,7 @@ about why they exist and what they prove.
 
 ## The problem: silent corruption
 
-Most tests are **examples**: a query, the rows it must return. zypherdb has many (`tests/`), and every
+Most tests are **examples**: a query, the rows it must return. ZypherDB has many (`tests/`), and every
 example in this documentation runs too. They are necessary, and they have two blind spots.
 
 - **They only test what someone thought of.** Each example is a case its author imagined. Bugs live
@@ -26,7 +26,7 @@ example in this documentation runs too. They are necessary, and they have two bl
   the other copy, will not.
 
 The openCypher **TCK** (Technology Compatibility Kit) fills a third gap: whether the answers follow
-the language at all. It is thousands of scenarios written by the language's authors; zypherdb runs
+the language at all. It is thousands of scenarios written by the language's authors; ZypherDB runs
 them (`tests/tck/`) and a baseline file fails the build if one that passed stops passing. But the
 TCK is still a set of examples, chosen to define the language, not to find storage bugs: its graphs
 are tiny, it never crashes a process, and a disk never fails in it.
@@ -66,7 +66,7 @@ whose testing is unusually thorough and unusually well documented. One lesson of
 whole plan. When the Jepsen project tested TigerBeetle, it found a bug in queries that roughly twenty
 fuzzers had missed. The fuzzers were fine; their **generators** made data that was too regular, so
 the queries never met the case that failed. The fix was to put random objects in a model, run random
-queries, and compare **exact** results with the model. zypherdb's storage fuzzer is built that way
+queries, and compare **exact** results with the model. ZypherDB's storage fuzzer is built that way
 from the start.
 
 Each section below says what was taken as it is, what was adapted, and what was left out. The
@@ -134,7 +134,7 @@ copy one node's property onto another on purpose, to break constraints by constr
 
 **From TigerBeetle.** Taken as it is: the model, seeds with a reproduction command, swarm mixes,
 and checking after every step. Adapted: TigerBeetle's fuzzers drive its own storage layer; ours
-drives the graph layer on top of a real storage engine, because zypherdb does not do its own I/O.
+drives the graph layer on top of a real storage engine, because ZypherDB does not do its own I/O.
 
 **What it guarantees.** For the operations it generates, in the combinations its seeds reach, the
 database contains exactly what the operations put there — no more, no less, no value changed in
@@ -210,7 +210,7 @@ in `git diff` like any other code. `tests/end_to_end/explain_test.zig` checks wh
 included; `tests/error_messages_test.zig` checks the code and message of 45 failing queries, through
 the C ABI that users see.
 
-**From TigerBeetle.** The idea and the shape are TigerBeetle's `snaptest.zig`. zypherdb has its own
+**From TigerBeetle.** The idea and the shape are TigerBeetle's `snaptest.zig`. ZypherDB has its own
 implementation of about 180 lines (no dependencies).
 
 **What it guarantees.** No change to a plan or a message goes unnoticed: each one appears in a diff and
@@ -253,7 +253,7 @@ The failing engine is built only into a second copy of the module that the tests
 (build option `fault_injection`); the library never contains it, so it costs users nothing.
 
 **From TigerBeetle.** Adapted. TigerBeetle simulates its disk and injects faults below its own I/O,
-including corrupted and misdirected reads and writes. zypherdb does not do its own I/O — LMDB and
+including corrupted and misdirected reads and writes. ZypherDB does not do its own I/O — LMDB and
 libmdbx do — so faults are injected at the engine's interface instead: an operation fails, or the
 process dies. Faults inside the engine are the engine's own responsibility and its own tests.
 
@@ -294,7 +294,7 @@ or after the next one (its commit may have finished an instant before the kill).
 restarts from there; the last writer runs to the end and must reach the twin.
 
 **From TigerBeetle.** Adapted. TigerBeetle crashes and restarts replicas inside its deterministic
-simulator, where a crash also loses whatever its simulated disk had not synced. zypherdb's crashes are
+simulator, where a crash also loses whatever its simulated disk had not synced. ZypherDB's crashes are
 real processes killed by the operating system, which is closer to what users see but keeps what the
 operating system already holds.
 
@@ -304,7 +304,7 @@ checker or refuses to open — on both engines, under every durability setting (
 
 **What it does not guarantee.** Power failures. When the machine itself stops, what was not yet synced
 to the disk is lost, and the durability settings start to matter. Testing that needs a simulated disk
-that can drop unsynced writes; zypherdb has none yet. Crashes while the database is being opened, and
+that can drop unsynced writes; ZypherDB has none yet. Crashes while the database is being opened, and
 several processes writing in turn, are not tested either.
 
 **What it found.** No bug, in 200 seeds on each engine (more than 800 crashes each). Two planted bugs —
@@ -322,7 +322,7 @@ below a second — and the storage boundary asserts it on both sides (`key_value
 to report problems instead of stopping.
 
 **From TigerBeetle.** The idea as it is. One difference: TigerBeetle keeps its assertions in production
-builds. zypherdb runs them in Debug and ReleaseSafe builds and compiles them out of ReleaseFast, so the
+builds. ZypherDB runs them in Debug and ReleaseSafe builds and compiles them out of ReleaseFast, so the
 fastest build pays nothing for them; which build users get is a packaging decision.
 
 **What it guarantees.** In checked builds, a bug on either side of the boundary stops the program at the
@@ -343,7 +343,7 @@ language, the C ABI and Python; string *values* with zero bytes are fine.
 ## Measuring the tests
 
 A test suite that passes says nothing about the tests: perhaps they are good, perhaps they cannot fail.
-Two measurements keep zypherdb's honest.
+Two measurements keep ZypherDB's honest.
 
 - **Counts.** Every fuzzer prints what it did: how many times each operation ran, how many failed as the
   model predicted, how many faults were injected, how many crashes happened, how often each oracle
@@ -357,17 +357,17 @@ Two measurements keep zypherdb's honest.
 ## Not adopted from TigerBeetle, and why
 
 - **The VOPR**, TigerBeetle's deterministic simulator of a whole cluster: network, clocks, disks and
-  crashes, all simulated in one process and driven by a seed. zypherdb is one process with no network,
+  crashes, all simulated in one process and driven by a seed. ZypherDB is one process with no network,
   and its engine does the I/O. It becomes the right tool with replication (below).
 - **Static allocation.** TigerBeetle allocates all its memory at startup and never again, which removes
   out-of-memory failures and leaks by construction. A query engine cannot know in advance how much
-  memory a query needs; zypherdb allocates per query, and frees per query through arenas.
-- **A hard limit of 70 lines per function.** zypherdb keeps functions under about 60 lines as a guide,
+  memory a query needs; ZypherDB allocates per query, and frees per query through arenas.
+- **A hard limit of 70 lines per function.** ZypherDB keeps functions under about 60 lines as a guide,
   with exceptions where one large `switch` reads better in one place.
 
 ## What replication will add
 
-zypherdb is a single machine today. When replication is built, the hard failures move into the network:
+ZypherDB is a single machine today. When replication is built, the hard failures move into the network:
 messages lost, delayed, duplicated or reordered, replicas that crash and come back, clocks that
 disagree, a change log that arrives torn. The plan for then:
 
@@ -398,7 +398,7 @@ injectable. The integrity checker and the failing engine will be reused.
 
 - **A second graph database as the oracle.** Running the same queries on, say, Neo4j and comparing is
   differential testing, and it finds real bugs. It was not chosen: it needs a server and a JVM in the
-  tests, the two systems disagree on purpose in places (zypherdb's map properties, for instance), and it
+  tests, the two systems disagree on purpose in places (ZypherDB's map properties, for instance), and it
   says nothing about storage, crashes or faults. The TCK gives most of its benefit for the language.
 - **Coverage-guided fuzzing** (AFL, libFuzzer): mutate inputs and keep those that reach new code. It is
   excellent for parsers, and could be added for the query parser. For the storage layer, the hard part
