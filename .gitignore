@@ -26,3 +26,8 @@ __pycache__/
 # Rust build output of the SparrowDB loader (bench/comparison)
 bench/comparison/sparrow-loader/target/
 bench/comparison/sparrow-loader/Cargo.lock
+
+# Local virtualenvs (never commit one)
+.env/
+.venv/
+venv/
