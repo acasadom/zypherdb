@@ -29,6 +29,7 @@ const fulltext_postings = @import("fulltext_postings.zig");
 const fulltext = @import("fulltext.zig");
 const constraints = @import("constraints.zig");
 const node_record = @import("node_record.zig");
+const layout = @import("layout.zig");
 const NodeRecord = node_record.NodeRecord;
 
 pub const NodeId = key_encoding.NodeId;
@@ -141,6 +142,7 @@ pub const Graph = struct {
 
     /// Adds a label to a node (its record and the label index). Idempotent.
     pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
+        layout.assertName(label); // callers refuse others
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
@@ -402,6 +404,7 @@ pub const Graph = struct {
     pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeProperty(id, name);
         if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
+        layout.assertName(name); // callers refuse others
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
@@ -581,6 +584,7 @@ pub const Graph = struct {
     /// new id: both edge keys, its record, its type count. Every call adds
     /// one (relationships between the same nodes may be parallel). O(log N).
     pub fn addEdge(self: *Graph, src: NodeId, dst: NodeId, edge_type: []const u8) StorageError!RelationshipId {
+        layout.assertName(edge_type); // callers refuse others
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const id = try self.allocateRelationshipId();
@@ -707,6 +711,7 @@ pub const Graph = struct {
     pub fn setEdgeProperty(self: *Graph, id: RelationshipId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeEdgeProperty(id, name);
         if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
+        layout.assertName(name); // callers refuse others
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const arena = scratch.allocator();

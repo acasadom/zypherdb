@@ -117,7 +117,7 @@ test "integrity: damage to each derived structure is found" {
         try g.beginWrite();
         defer g.abortWrite();
         try store.deleteNode(103);
-        try store.putNode(7, "\x00\x05A");
+        try store.putDamagedNode(7, "\x00\x05A");
         try expectProblem(&g, "node 103 does not exist");
         try expectProblem(&g, "node 7: malformed record");
     }

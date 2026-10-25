@@ -38,6 +38,7 @@ const Allocator = std.mem.Allocator;
 const Value = @import("../value.zig").Value;
 const exactInteger = @import("../value.zig").exactInteger;
 const MapEntry = @import("../value.zig").MapEntry;
+const layout = @import("layout.zig");
 
 pub const Tag = enum(u8) {
     int = 0x01,
@@ -128,7 +129,9 @@ const Form = enum { stored, index };
 
 /// Appends the storage encoding of `value` (callers check `isStorable`).
 pub fn encodeValue(list: *std.ArrayList(u8), allocator: Allocator, value: Value) Allocator.Error!void {
+    const start = list.items.len;
     try encode(list, allocator, value, .stored);
+    layout.assertValue(list.items[start..]); // paired with `decodeValue`
 }
 
 /// Appends the index encoding of `value`.
@@ -224,12 +227,18 @@ fn decodeElement(payload: []const u8, position: *usize, allocator: Allocator) Al
     const length = readInt(u32, payload[position.*..]);
     const start = position.* + 4;
     position.* = start + length;
-    return decodeValue(payload[start..position.*], allocator);
+    return decodeChecked(payload[start..position.*], allocator);
 }
 
 /// Decodes a stored value. Strings, zone names and lists are allocated
 /// with `allocator` (free them with it, or use an arena).
 pub fn decodeValue(raw: []const u8, allocator: Allocator) Allocator.Error!Value {
+    layout.assertValue(raw); // paired with `encodeValue`; covers the elements too
+    return decodeChecked(raw, allocator);
+}
+
+/// Decodes a value whose layout was checked (as part of the whole value).
+fn decodeChecked(raw: []const u8, allocator: Allocator) Allocator.Error!Value {
     const payload = raw[1..];
     return switch (@as(Tag, @fromBackingInt(@intCast(raw[0])))) {
         .int => .{ .int = readInt(i64, payload) },
