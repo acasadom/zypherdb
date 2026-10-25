@@ -94,7 +94,7 @@ pub fn prepare(allocator: Allocator, text: []const u8, environment: Environment)
         if (environment.diagnostic) |diagnostic| if (diagnostic.message().len == 0) diagnostic.set(.parse, 0, "parse failed: {s}", .{@errorName(err)});
         return error.ParseFailed;
     };
-    self.parameter_names = try parameterNames(&self.ast, arena, self.root);
+    self.parameter_names = try self.ast.parameterNames(arena, self.root);
     self.is_query = isQuery(&self.ast, self.root);
     if (!self.is_query) return self;
 
@@ -176,23 +176,6 @@ fn isQuery(ast: *const Ast, root: Index) bool {
         .query, .union_query => true,
         else => false,
     };
-}
-
-/// The names of the `$name` parameters under `root`, each once, in order.
-fn parameterNames(ast: *const Ast, arena: Allocator, root: Index) Allocator.Error![]const []const u8 {
-    var names = std.ArrayList([]const u8).empty;
-    try collectParameters(ast, arena, root, &names);
-    return names.items;
-}
-
-fn collectParameters(ast: *const Ast, arena: Allocator, node: Index, names: *std.ArrayList([]const u8)) Allocator.Error!void {
-    if (ast.kind(node) == .parameter) {
-        const name = ast.data(node).text;
-        for (names.items) |known| if (std.mem.eql(u8, known, name)) return;
-        try names.append(arena, name);
-        return;
-    }
-    for (ast.nodeChildren(node)) |child| try collectParameters(ast, arena, child, names);
 }
 
 /// The result's column names: a RETURN's (its aliases, else the expressions

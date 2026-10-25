@@ -21,7 +21,9 @@ leaves out a few features; both are listed below. This page is the complete refe
 - **Comments**: `// to the end of the line` and `/* … */`.
 - **Parameters**: `$name` is a value passed with the query (in Python,
   `db.query(text, name=value)`). A parameter is always a value; it cannot stand for a label, a type
-  or a property name.
+  or a property name. Every parameter the query names must be passed (as `null` if need be): a
+  missing one fails before the query runs, as in Neo4j, even if no row would reach it. `EXPLAIN`
+  plans without running, so it needs none.
 
 ## Clauses
 

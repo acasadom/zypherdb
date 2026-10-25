@@ -55,6 +55,9 @@ slot_count: u32,
 slot_of: []const Slot,
 /// The query's expressions, compiled (see `expression_program.zig`).
 expressions: ExpressionProgram,
+/// The `$name` parameters the query reads (`Ast.parameterNames`): a run
+/// without one of them fails before it starts.
+parameter_names: []const []const u8,
 /// False if the plan scans instead of using the property indexes
 /// (`Options.index_lookups`).
 index_lookups: bool = true,

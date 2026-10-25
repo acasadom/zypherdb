@@ -55,6 +55,7 @@ pub fn build(context: Context, root: Index) Allocator.Error!Plan {
         .slot_count = builder.slot_count,
         .slot_of = slot_of,
         .expressions = try ExpressionProgram.compile(context.allocator, ast, slot_of, &builder.expression_chains),
+        .parameter_names = try ast.parameterNames(context.allocator, root),
         .index_lookups = context.options.index_lookups,
     };
 }

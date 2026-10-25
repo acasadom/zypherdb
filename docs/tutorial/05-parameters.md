@@ -112,8 +112,9 @@ except ParameterMissingError as error:
 missing parameter '$id' (code 8)
 ```
 
-acmedb notices when it reads the parameter, so a query that never gets that far — an update of
-rows that do not exist, for one — returns without complaint.
+acmedb checks the parameters before the query runs, so the error comes even when no row would
+reach the parameter, as in an update of rows that do not exist. A query cannot half-run and then
+fail for want of a value.
 
 Parameters are values only: a label, a relationship type, or a property *name* in a pattern or a
 `SET`, cannot be a parameter, because they shape the query rather than fill it in. The one place

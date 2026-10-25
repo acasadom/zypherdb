@@ -53,6 +53,24 @@ test "a prepared statement runs again with new parameters" {
     try testing.expectEqual(@as(usize, 1), statement.plans_made);
 }
 
+test "a prepared statement checks its parameters before each run" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    // No node matches, so no row reaches $name: it is still required.
+    const statement = try Statement.prepare(testing.allocator, "MATCH (n:Nobody) SET n.name = $name", .{ .graph = &g });
+    defer statement.destroy();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var executor = statement.executorFor(&g, arena.allocator());
+    try testing.expectError(error.ParameterMissing, statement.run(&executor));
+    try expectStatement(statement, &g, &.{.{ "name", .{ .string = "Ana" } }}, &.{});
+}
+
 test "a statement that writes commits each run, and sees the runs before it" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

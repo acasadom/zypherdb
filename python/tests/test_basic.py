@@ -329,6 +329,9 @@ def test_query_parameters(db):
     assert db.query("RETURN $text, $parameters", text="t", parameters=1) == [["t", 1]]
     with pytest.raises(ParameterMissingError):
         db.query("RETURN $absent")
+    # Checked before the query runs: also when no row would reach it.
+    with pytest.raises(ParameterMissingError):
+        db.query("MATCH (c:Card {id: 0}) SET c.holder = $absent")
     assert db.query("RETURN $x, $x * 2", x=1.5) == [[1.5, 3.0]]
     # No JSON in between: NaN and infinities travel as they are.
     nan, inf = db.query("RETURN $nan, $inf", nan=float("nan"), inf=float("inf"))[0]

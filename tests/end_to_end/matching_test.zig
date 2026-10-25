@@ -360,6 +360,15 @@ test "query parameters" {
         &.{.{ .string = "John Wick" }},
     });
     try expectQueryError(&ast, &g, "RETURN $missing", error.ParameterMissing);
+    // Checked before the query runs, as in Neo4j: also where no row reaches
+    // the parameter, and a parameter given as null counts as given.
+    try expectQueryError(&ast, &g, "MATCH (n:Nobody) SET n.name = $missing", error.ParameterMissing);
+    try expectQueryError(&ast, &g, "RETURN CASE WHEN false THEN $missing ELSE 1 END", error.ParameterMissing);
+    try expectQueryError(&ast, &g, "MATCH (n:Nobody) RETURN n LIMIT $missing", error.ParameterMissing);
+    try expectQueryError(&ast, &g, "PROFILE MATCH (n:Nobody) RETURN $missing", error.ParameterMissing);
+    try support.expectQueryWithParameters(&ast, &g, "MATCH (n:Nobody) SET n.name = $given RETURN count(*)", &.{.{ "given", .null }}, &.{
+        &.{.{ .int = 0 }},
+    });
 }
 
 test "IN uses three-valued logic and accepts any list expression" {
