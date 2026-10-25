@@ -116,8 +116,6 @@ The source is laid out by layer — `src/storage/` (engine, key layout, graph, i
 with the test suite in `tests/`, which uses only the public API. The [architecture](docs/guide/architecture.md) guide maps
 every file; [contributing](docs/guide/contributing.md) has the principles and the recipes.
 
-See `STATUS.md` (kept out of git) for the working notes and the roadmap.
-
 ## What's in the box
 
 - **openCypher**: reading (`MATCH`, `OPTIONAL MATCH`, variable-length and shortest paths, `WITH`,
