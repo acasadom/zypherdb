@@ -109,7 +109,7 @@ check(tuesday(13, 11))
 ```
 
 Joon's return clears the lone-worker alarm at 12:21 — and the same run raises another: Dalia has
-been in the sealed lab since 08:20, over four hours. She comes out, and the day goes on until the
+been in the sealed lab since 08:20, over four hours. Dalia comes out, and the day goes on until the
 suite closes with Joon still inside:
 
 ```python
@@ -163,11 +163,12 @@ while True:
 
 As a separate program, the system's scheduler can start a script every minute — with `cron`, a
 line like `* * * * * /usr/bin/python3 /srv/helix/check.py` — where `check.py` opens the database,
-calls `check` once and exits. Both work alongside the door controllers: the monitor's queries read
-a consistent snapshot, and its few writes take their turn with the controllers' ([step
-16](16-concurrency)).
+calls `check` once and exits. Both work alongside the door controllers: each of the monitor's
+queries reads a consistent snapshot, and its few writes take their turn with the controllers'
+([step 16](16-concurrency)).
 
 What happens with an alarm — a page, a siren, a message to the security desk — is up to the
-program: `check` knows exactly which alarms are new (raised in this run) and which cleared.
+program. `CLEAR` already returns the alarms that cleared; ending `RAISE` with `RETURN a.raised =
+$at` would say, for each problem, whether its alarm is new in this run.
 
 Next, the lab's safety manual, searchable by what it says: [full-text search](20-searching).

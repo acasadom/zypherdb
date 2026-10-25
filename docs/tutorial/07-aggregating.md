@@ -62,8 +62,8 @@ Common Areas       BSL-1  ['Lobby', 'Seminar Room']
 
 ## Distinct values
 
-`DISTINCT` inside an aggregate counts or collects each value once. How many different roles does
-each kind of person have?
+`DISTINCT` inside an aggregate counts or collects each value once. How many employees are there,
+in how many different roles, and on which working fractions?
 
 ```python
 print(db.query("""
@@ -97,9 +97,10 @@ Research      40.0
 Virology      32.0
 ```
 
-`ORDER BY` can sort by an aggregate. Next to an aggregate, a `RETURN` may use only grouping keys
-and constants — `RETURN t.name, p.name, count(*)` would group by both names, which is rarely what
-you want.
+`ORDER BY` can sort by an aggregate. In an expression around an aggregate, the rest may use only
+grouping keys and constants: `RETURN t.name, sum(p.fte) * p.fte` is an error, because `p` is not
+a grouping key. And every item without an aggregate *is* a grouping key: `RETURN t.name, p.name,
+count(*)` groups by both names, which is rarely what you want.
 
 ## A report in one query
 
