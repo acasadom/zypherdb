@@ -49,6 +49,88 @@ Two rules make that work:
 Every "index" is just more keys, maintained by the same `put`/`del` primitives. There is no
 separate index structure — an index *is* a key range.
 
+How to read the table: the first byte of a main-table key is a letter (`e`, `f`, `l`, `p`, `g`,
+`t`, `c`) that says which kind of key it is, so every kind occupies its own range of the key
+space; the rest of the key is the fields of that kind, one after another. Most index keys have an
+empty value: the key itself is the fact.
+
+## A worked example
+
+Take the smallest graph that uses every kind of key: two people and a relationship with a
+property.
+
+```text
+CREATE (a:Person {name: 'Ana'})-[:KNOWS {since: 2020}]->(b:Person {name: 'Bob'})
+```
+
+Ana gets node id 0, Bob node id 1, and the relationship gets relationship id 0 (the two kinds of id
+are counted apart). These are all the keys the database then holds, as the storage engine stores
+them (bytes in hex, `"…"` for bytes that are text):
+
+```text
+#nodes — one record per node
+  key 00 00 00 00 00 00 00 00    (id 0, as a native integer)
+  val 00 01                      1 label
+      00 06 "Person"               length 6, the label
+      00 00 00 01                1 property
+      00 04 "name"                 name length 4, the name
+      00 00 00 04 02 "Ana"         value length 4: tag 02 (string), the bytes
+  key 01 00 00 00 00 00 00 00    (id 1)
+  val 00 01 00 06 "Person" 00 00 00 01 00 04 "name" 00 00 00 04 02 "Bob"
+
+#relationships — one record per relationship
+  key 00 00 00 00 00 00 00 00    (relationship id 0)
+  val 00 00 00 00 00 00 00 00    src: node 0 (Ana)
+      00 00 00 00 00 00 00 01    dst: node 1 (Bob)
+      "KNOWS"                    type
+
+main table, in the order the engine keeps it
+  "!"                → 00 00 00 00 00 00 00 02    next node id: 2
+  "!format"          → 00 00 00 02                format version 2
+  "!relationships"   → 00 00 00 00 00 00 00 01    next relationship id: 1
+  "c" "Person"       → 00 00 00 00 00 00 00 02    2 nodes are Person
+  "e" 00×8 "o" 00 "KNOWS" 00 00×7 01 00×8         Ana -KNOWS-> Bob, relationship 0, seen from Ana
+                     → 01 00 01 00 06 "Person"    version 1, then Bob's labels
+  "e" 00×7 01 "i" 00 "KNOWS" 00 00×8 00×8         the same relationship, seen from Bob
+                     → 01 00 01 00 06 "Person"    Ana's labels
+  "f" 00×8 "since"   → 01 00 00 00 00 00 00 07 e4 relationship 0's since: tag 01 (integer), 2020
+  "g" "since" 00 01 80 00 00 00 00 00 07 e4 00×8  index: since = 2020 → relationship 0
+  "l" "Person" 00 00×8                            index: Person → node 0
+  "l" "Person" 00 00×7 01                         index: Person → node 1
+  "p" "name" 00 02 "Ana" 00 00×8                  index: name = 'Ana' → node 0
+  "p" "name" 00 02 "Bob" 00 00×7 01               index: name = 'Bob' → node 1
+  "t" "KNOWS"        → 00 00 00 00 00 00 00 01    1 relationship is KNOWS
+```
+
+(`00×8` is eight zero bytes: the id 0. The index keys have empty values. The `#nodes` and
+`#relationships` keys are native integers, little-endian on the machine this ran on; the engine
+orders them as numbers.)
+
+A few things to see in it:
+
+- **The record is the truth, the rest is derived.** Ana's labels and properties are in her record;
+  `l`, `p` and `c` say the same things again, arranged for a different question. The
+  [integrity checker](#checking-integrity) rebuilds them from the records and compares.
+- **The relationship is stored three times**: its record (ends and type), and one `e` key from each
+  end. The `e` keys differ in the node they start with and in the direction byte (`o` out, `i` in).
+- **Index keys end with the id.** In `p`, the value comes before the id, and a string value ends
+  with a `00`, so every node with `name = 'Ana'` is under the prefix `p name 00 02 Ana 00`, and
+  `'An'` cannot match it.
+- **Numbers in index keys are rewritten to sort.** In `f` the integer 2020 is stored as it is
+  (`00 … 07 e4`); in the `g` index key its sign bit is flipped (`80 … 07 e4`), so that negative
+  numbers sort before positive ones byte by byte.
+
+And what each kind of question reads:
+
+| Query | Plan (EXPLAIN) | What the engine does |
+| --- | --- | --- |
+| `MATCH (p:Person) RETURN count(p)` | `NodeByLabelScan` | Scans the prefix `l Person 00`: two keys, the last 8 bytes of each are an id. (The planner reads `c Person` to estimate this: 2.) |
+| `MATCH (p {name: 'Bob'}) RETURN p` | `NodeIndexSeek` | Seeks the prefix `p name 00 02 Bob 00`: one key, id 1. Reads `#nodes` key 1: Bob's labels and properties, in one search. |
+| `MATCH (a {name: 'Ana'})-[k:KNOWS]->(b:Person) RETURN b.name, k.since` | `NodeIndexSeek`, `Expand(All)` | Seeks `p name … Ana` → node 0. Scans the prefix `e 00×8 o 00 KNOWS 00`: one key, whose fields give the neighbour (1) and the relationship (0), and whose value says the neighbour is a `Person`, so `b`'s label is checked without reading its record. `b.name` reads `#nodes` key 1; `k.since` reads `f 00×8 since` → 2020. |
+| `MATCH (b {name: 'Bob'})<-[:KNOWS]-(a) RETURN a` | `NodeIndexSeek`, `Expand(All)` | The same from the other end: the prefix `e 00×7 01 i 00 KNOWS 00` gives node 0. |
+| `MATCH ()-[k:KNOWS {since: 2020}]->() RETURN k` | `RelationshipIndexSeek` | Seeks the prefix `g since 00 01 80 … 07 e4`: relationship 0. Reads `#relationships` key 0 for its ends and type. |
+| `CREATE (:Person {name: 'Eva'})` | `Create` | Reads and increments `!` (id 2), writes the record under 2, then `l Person 00 …02`, `p name 00 02 Eva 00 …02`, and `c Person` = 3, all in one write transaction. |
+
 ## Index-free adjacency (the core idea)
 
 A graph database is traversed by following edges, not by joining tables, so the storage is arranged
