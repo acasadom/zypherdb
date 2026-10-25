@@ -80,7 +80,9 @@ the building is full.
 ## What scans
 
 An equality uses the property's index, and so does a range of numbers or dates (`<`, `<=`, `>`,
-`>=`): the engine reads the part of the index in range. Other conditions — `STARTS WITH`,
+`>=`) against a constant or a parameter: the engine reads the part of the index in range. A date
+written as `date('2025-03-01')` is a function call, not a constant, so pass dates as parameters
+in the queries that must be fast. Other conditions — `STARTS WITH`,
 `CONTAINS`, `IN` a list, a range of strings — do not use the index: they are checked node by node
 on whatever the anchor produced. So:
 

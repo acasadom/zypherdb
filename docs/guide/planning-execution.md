@@ -7,13 +7,14 @@ clause.
 ## From AST to plan
 
 A checked query becomes a **plan** before it runs (`src/planning/`), and the executor runs the plan
-(`src/execution/`). The plan is built once per query: nothing about it depends on the rows, only on
-the query and on the graph's label and edge-type counts.
+(`src/execution/`). The plan is built once per statement: nothing about it depends on the rows or
+the parameter values, only on the query and on the graph's label and edge-type counts (a prepared
+statement plans again when those drift; see [below](#prepared-statements-and-the-statement-cache)).
 
 A plan (`Plan.zig`) is a flat array of **operators**, a tagged union, grouped in **chains**, the
 same shape as the AST: indices, not pointers, and no `Operator` objects. A chain is a run of
 consecutive operators, each handing the rows it makes to the next one. The **main chain** runs a
-query (a `UNION` has one per part). Other chains run inside an operator, once for each of its rows,
+query (a `UNION` has one per part); without a `RETURN` it ends in `discard`. Other chains run inside an operator, once for each of its rows,
 and end with `output`, which hands their rows back:
 
 | Chain | Run by | For each row it gets |
@@ -48,12 +49,21 @@ so its `WHERE` and `ORDER BY` can read both the projected names and, unless it a
 variables before it. A pattern node bound before its pattern (by an earlier pattern or clause) is
 checked, not scanned.
 
-The optimizations are three, all made when a pattern is planned (`patterns.zig`):
+The optimizations are four. Three are made when a pattern is planned (`patterns.zig`), one when a
+projection is:
 
 1. **Anchor selection** picks the cheapest node to start a pattern from.
-2. **Predicate pushdown** turns equality predicates into index seeks before the scan runs.
+2. **Predicate pushdown** turns equality and range predicates into index seeks before the scan
+   runs.
 3. **Edge anchoring** starts a pattern from the edge-property index when only its relationship is
    selective.
+4. **Top**: an `ORDER BY` with a `LIMIT` keeps only the first `SKIP + LIMIT` rows in order (a
+   partial sort) instead of sorting them all.
+
+Each can be switched off with `PlanOptions` (`where_seeks`, `index_lookups`, `anchor`, `top`;
+`Executor.plan_options`). The defaults make the fastest plan; any other setting makes a slower plan
+with the same rows, which is what the query fuzzer checks (see
+[testing](testing.md#the-query-fuzzer)). A new optimization gets a switch too.
 
 There is no cost-based optimizer. Within a `MATCH`, comma-separated patterns run in source order,
 and each pattern is a chain: the decision that matters most is which node of a chain to start from.
@@ -71,6 +81,7 @@ const Seek = struct { property: []const u8, value: Index };   // node.property =
 
 const PatternNode = struct {
     variable_name: []const u8,
+    slot: Slot,
     labels: []const []const u8,
     seeks: []const Seek,
     ranges: []const RangeSeek,
@@ -83,6 +94,7 @@ const PatternEdge = struct {
     shortest: Shortest, where_reads_path: bool,
     forward_direction: Direction, undirected: bool,
     variable_name: []const u8,
+    slot: Slot,
     seeks: []const Seek,
 };
 ```
@@ -108,10 +120,11 @@ still evaluated at the end. So pushdown never changes a result: it only narrows 
 
 - already bound: `0`, a free start;
 - has an equality seek: `1`, a point lookup;
-- unlabeled: the maximum, since it means scanning every node;
-- otherwise: the count of its rarest label, **capped by the count of an incident edge type** (a
-  pattern cannot produce more rows than there are edges of that type). Variable-length edges do
-  not cap it.
+- unlabeled and without a range: the maximum, since it means scanning every node;
+- otherwise: the count of its rarest label, a quarter of it with a range (a guess without
+  statistics, enough to prefer a range to a scan of the whole label), **capped by the count of an
+  incident edge type** (a pattern cannot produce more rows than there are edges of that type).
+  Only an edge of one type and fixed length caps it.
 
 `chooseAnchor` takes the minimum. The pattern's operators are then: a `bound_node` check for each
 node bound before it, a `node_scan` of the anchor (unless it is bound), an `expand` for each edge
@@ -288,3 +301,28 @@ access. The rule is **propagation**:
 Ordering is separate from comparison. `comparison.zig` implements the `<` of the language, which is
 `null` for incomparable values. `Value.order` is the total order that `ORDER BY`, `DISTINCT` and
 grouping use, and it places every value, `null` last.
+
+## Why this way — and the alternatives
+
+- **Push, not pull.** The classic design (Volcano) gives each operator a `next()` that pulls one row
+  from the operator below it, so every operator keeps its loop's state in an object between calls.
+  In the push model the loops of a pattern are nested calls: a scan's iterator is a local variable
+  of the call that runs the loop, so it closes, by construction, before the transaction ends, and a
+  branch is undone on the way back up. The price is that an operator cannot ask for "just one more
+  row"; stopping early is an error (`LimitReached`) that unwinds the calls.
+- **A plan, not the AST.** Before it had plans, acmedb's executor walked the query's clauses,
+  choosing what to do as it went. A plan built ahead makes those choices once: it can be shown (`EXPLAIN`), measured per
+  operator (`PROFILE`), kept by a prepared statement, and compared with a plan made without an
+  optimization (the query fuzzer).
+- **Slots, not names.** A row could be a map from variable names to values. With slots, reading a
+  variable is an index, and a branch is undone by a short trail. Measured against a name-based
+  design (in a parallel review of this code), slots were 25-44% faster on multi-hop queries; on
+  point queries, where the B-tree search dominates, they changed little.
+- **Compiled expressions.** Evaluating the AST means deciding, at every node of every row, what
+  kind of node it is and looking names up. On an expression-heavy query that dispatch was about a
+  third of the time. One instruction per AST node, built with the plan, resolves the names, the
+  functions and constant regular expressions once.
+- **Plans that do not depend on parameter values.** A plan built for one value of `$name` could pick
+  a better anchor for it, but could not be reused for the next value. acmedb keeps one plan per
+  statement and replans only when the counts drift, which is what prepared statements are for.
+- **No cost-based optimizer** yet: [above](#from-ast-to-plan), with the trigger that would change it.

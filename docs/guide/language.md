@@ -32,7 +32,7 @@ The token kinds are:
 - brackets of the three kinds, `colon`, `comma`, `dot`, `range_dots` (`..`), `pipe`;
 - the arithmetic operators `plus`, `minus`, `star`, `slash`, `percent`, `caret`;
 - the comparisons `equal`, `not_equal`, `less_than`, `less_or_equal`, `greater_than`,
-  `greater_or_equal`;
+  `greater_or_equal`, and `regex_match` (`=~`);
 - the arrows `arrow_left` and `arrow_right`;
 - `end_of_input`.
 
@@ -66,10 +66,14 @@ offset in the `Diagnostic`, and returns an error.
 
 ```text
 parseUnion          query (UNION [ALL] query)*       the parts must RETURN the same columns
-parseQuery          clause*
+parseQuery          parseClauses: clause*
   MATCH             parseMatchClause → parseMatchBody: pattern (',' pattern)* WHERE?
   OPTIONAL MATCH    parseOptionalMatchClause → parseMatchBody
   UNWIND            parseUnwindClause: expression AS name
+  LOAD CSV          parseLoadCsvClause: [WITH HEADERS] FROM expression AS name [FIELDTERMINATOR string]
+  CALL { }          a subquery: parseClauses until '}'
+  CALL              parseCallClause (call_parser.zig, below)
+  FOREACH           parseForeachClause: '(' name IN expression '|' updating clause+ ')'
   WITH              parseWithClause: projection ORDER BY? SKIP? LIMIT? WHERE?
   CREATE            parseCreateClause: pattern (',' pattern)*
   MERGE             parseMergeClause: pattern (ON CREATE SET … | ON MATCH SET …)*
@@ -81,9 +85,15 @@ parseQuery          clause*
 
 `parseQuery` also checks how the clauses may be ordered:
 
-- a `MATCH` or `UNWIND` after a writing clause needs a `WITH` in between;
+- a `MATCH`, `OPTIONAL MATCH`, `UNWIND`, `LOAD CSV` or procedure `CALL` after a writing clause
+  needs a `WITH` in between;
 - nothing may follow `RETURN` except `UNION`;
-- a query cannot end with a reading clause.
+- a query cannot end with a reading clause;
+- a subquery that only reads (`EXISTS { }`, `COUNT { }`) holds no writing clause, and no
+  `CALL { }` that writes.
+
+The same function parses a whole query and the body of a subquery (`parseClauses`, told which one
+it is parsing), so a subquery has exactly the grammar of a query, with these limits.
 
 ### Patterns
 
@@ -144,7 +154,10 @@ Functions are not resolved here: the parser stores the name as written, and
 `parseQuery` lets a `CALL` without `YIELD`, or a `CALL` that is the whole query, end it.
 
 Schema commands are statements of their own. `parse` checks for one first (`schema_parser.zig`:
-`CREATE FULLTEXT INDEX`, `DROP INDEX`, `SHOW [FULLTEXT] INDEXES`) and parses no query after it.
+`CREATE FULLTEXT INDEX`, `CREATE [RANGE|TEXT] INDEX`, `CREATE CONSTRAINT ... IS UNIQUE`,
+`DROP INDEX`, `DROP CONSTRAINT`, `SHOW [FULLTEXT|RANGE] INDEXES`, `SHOW CONSTRAINTS`) and parses
+no query after it. A range or text index is recorded and listed but changes nothing, since every
+property is already indexed for equality and ranges.
 The labels or types and properties of an index are kept in the node's data; the `OPTIONS` map is
 its one child, evaluated by the executor.
 
@@ -174,7 +187,8 @@ pub const Data = union(enum) {
     binary_operator: BinaryOperator,
     unary_operator: UnaryOperator,
     aggregate: AggregateCall,
-    // … and the flags of RETURN, WITH, UNWIND, ORDER BY items, DELETE, quantifiers
+    // … and the flags of RETURN, WITH, UNWIND, LOAD CSV, ORDER BY items, DELETE,
+    // quantifiers, CALL and YIELD items
 };
 ```
 
@@ -189,21 +203,24 @@ pub const Data = union(enum) {
   `RETURN` item repeats a grouping key, and when the parts of a `UNION` return the same column.
 
 This shape is deliberate. There is a tag (`kind`) and a payload (`data`), with no `Node` subclasses
-to dispatch over and no `Visitor`. Adding a clause or an expression kind takes three steps: one enum
-value, one parser rule and one executor case (see [contributing](contributing)).
+to dispatch over and no `Visitor`. Adding an expression kind takes one enum value, one parser rule
+and one evaluation case; a clause also takes a plan operator (see
+[contributing](contributing.md#the-recipes)).
 
 ## After parsing
 
-Before the executor touches storage, `Executor.run` passes the AST through two static checks:
+Before the query is planned, `Executor.check` passes the AST through two static checks (a prepared
+statement runs them once, when it is prepared):
 
 - **`semantics.check`** (`src/query/semantics.zig`) tracks the kind of each variable in scope,
   clause by clause; a `WITH` starts a new scope. It rejects:
   - a name used as two kinds (`(r)-[r]-()`);
   - a relationship variable bound twice in one `MATCH`;
   - a literal operand of the wrong type (`1 IN true`, `NOT {}`);
+  - `SET n = ` a literal that is not a map;
   - an aggregate inside a comprehension.
 - **`functions.checkCalls`** rejects an unknown function or a wrong number of arguments.
-- **For a CALL**, `semantics.checkCall` looks the procedure up in `procedures.zig` and rejects:
+- **For a CALL**, the semantic checks (`checkCall`) look the procedure up in `procedures.zig` and rejects:
   - an unknown name;
   - a wrong number of arguments;
   - a yield of a column the procedure does not have;
@@ -214,3 +231,22 @@ Before the executor touches storage, `Executor.run` passes the AST through two s
 
 Both checks report through the same `Diagnostic` as the parser. They depend only on the text, so
 they fail on an empty database too, as the openCypher TCK requires.
+
+## Why this way — and the alternatives
+
+- **A hand-written parser, not a generator.** openCypher publishes its grammar (ANTLR and EBNF), and
+  a generated parser would follow it to the letter. It would also bring a tool and a runtime into
+  the build, which acmedb avoids (no third-party dependencies), and generated parsers give poor
+  error messages unless they are worked on. Recursive descent keeps every rule a function that can
+  say what it expected where (`expected an expression, found RETURN`), and the grammar is small
+  enough that the functions stay readable.
+- **No keywords in the lexer.** Reserving keywords would make the lexer decide, but openCypher lets
+  many keywords name variables. Deciding by position, in the parser, accepts `MATCH (end) RETURN end`
+  without a list of exceptions.
+- **One function per precedence level**, not a table-driven (Pratt) parser. A Pratt parser handles
+  many levels compactly; with about a dozen fixed levels, one function each reads like the grammar
+  and makes each level's special rules (chained comparisons, `IS NULL` after an operand) local.
+- **An arena AST.** A tree of allocated nodes with pointers would need a free per node and a type per
+  kind. One array, indices for children and interned strings make building cheap (appends),
+  freeing one call, and copying or comparing subtrees (`sameExpression`) simple; Zig's own compiler
+  stores its AST this way.

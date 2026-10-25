@@ -1,8 +1,9 @@
 # Storage — the key encoding and the graph algebra
 
 This is the theory of how the graph is stored. If you are going to add an index, change a property
-type, or debug a traversal, start here. Everything lives in `src/storage/graph.zig` (the encoding)
-and `src/storage/key_value_store.zig` (the store over the storage engine).
+type, or debug a traversal, start here. The encodings live in `src/storage/key_encoding.zig` (keys),
+`value_encoding.zig` (values) and `node_record.zig` (node records); `graph.zig` maintains them, and
+`key_value_store.zig` is the store over the storage engine.
 
 ## The model: everything is a key
 
@@ -21,8 +22,11 @@ Two rules make that work:
 
 - All integers are **big-endian and fixed-width** (ids are `u64`, 8 bytes). So byte order equals
   numeric order, and no id is ever a prefix of another.
-- A `0x00` byte separates variable-length parts (strings), because an openCypher identifier can
-  never contain `0x00`.
+- A `0x00` byte separates variable-length parts (strings). A quoted openCypher name could contain
+  `0x00`, so acmedb refuses labels, relationship types and property names that contain it or are
+  empty (writes.zig `requireStorableName`; `ACMEDB_INVALID_NAME` in C, `ValueError` in Python), and
+  the storage boundary asserts it (`layout.assertName`). A name with `0x00` in a key would end
+  early: `A\0B` would read as `A`.
 
 ## The key layout
 
@@ -38,12 +42,94 @@ Two rules make that work:
 | `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
 | `g \| prop \| 0x00 \| value \| rel` | edge-property index | `edgesByProperty` (an equality seek) |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
-| `c \| label` | label cardinality counter (absent in databases written before it: the label index is counted) | `labelCount` (anchor selection) |
+| `c \| label` | label cardinality counter (when absent, the label index is counted) | `labelCount` (anchor selection) |
 | `!` | the next node id to allocate | `allocateNodeId` |
 | `!relationships` | the next relationship id to allocate | `addEdge` |
 
 Every "index" is just more keys, maintained by the same `put`/`del` primitives. There is no
 separate index structure — an index *is* a key range.
+
+How to read the table: the first byte of a main-table key is a letter (`e`, `f`, `l`, `p`, `g`,
+`t`, `c`) that says which kind of key it is, so every kind occupies its own range of the key
+space; the rest of the key is the fields of that kind, one after another. Most index keys have an
+empty value: the key itself is the fact.
+
+## A worked example
+
+Take the smallest graph that uses every kind of key: two people and a relationship with a
+property.
+
+```text
+CREATE (a:Person {name: 'Ana'})-[:KNOWS {since: 2020}]->(b:Person {name: 'Bob'})
+```
+
+Ana gets node id 0, Bob node id 1, and the relationship gets relationship id 0 (the two kinds of id
+are counted apart). These are all the keys the database then holds, as the storage engine stores
+them (bytes in hex, `"…"` for bytes that are text):
+
+```text
+#nodes — one record per node
+  key 00 00 00 00 00 00 00 00    (id 0, as a native integer)
+  val 00 01                      1 label
+      00 06 "Person"               length 6, the label
+      00 00 00 01                1 property
+      00 04 "name"                 name length 4, the name
+      00 00 00 04 02 "Ana"         value length 4: tag 02 (string), the bytes
+  key 01 00 00 00 00 00 00 00    (id 1)
+  val 00 01 00 06 "Person" 00 00 00 01 00 04 "name" 00 00 00 04 02 "Bob"
+
+#relationships — one record per relationship
+  key 00 00 00 00 00 00 00 00    (relationship id 0)
+  val 00 00 00 00 00 00 00 00    src: node 0 (Ana)
+      00 00 00 00 00 00 00 01    dst: node 1 (Bob)
+      "KNOWS"                    type
+
+main table, in the order the engine keeps it
+  "!"                → 00 00 00 00 00 00 00 02    next node id: 2
+  "!format"          → 00 00 00 02                format version 2
+  "!relationships"   → 00 00 00 00 00 00 00 01    next relationship id: 1
+  "c" "Person"       → 00 00 00 00 00 00 00 02    2 nodes are Person
+  "e" 00×8 "o" 00 "KNOWS" 00 00×7 01 00×8         Ana -KNOWS-> Bob, relationship 0, seen from Ana
+                     → 01 00 01 00 06 "Person"    version 1, then Bob's labels
+  "e" 00×7 01 "i" 00 "KNOWS" 00 00×8 00×8         the same relationship, seen from Bob
+                     → 01 00 01 00 06 "Person"    Ana's labels
+  "f" 00×8 "since"   → 01 00 00 00 00 00 00 07 e4 relationship 0's since: tag 01 (integer), 2020
+  "g" "since" 00 01 80 00 00 00 00 00 07 e4 00×8  index: since = 2020 → relationship 0
+  "l" "Person" 00 00×8                            index: Person → node 0
+  "l" "Person" 00 00×7 01                         index: Person → node 1
+  "p" "name" 00 02 "Ana" 00 00×8                  index: name = 'Ana' → node 0
+  "p" "name" 00 02 "Bob" 00 00×7 01               index: name = 'Bob' → node 1
+  "t" "KNOWS"        → 00 00 00 00 00 00 00 01    1 relationship is KNOWS
+```
+
+(`00×8` is eight zero bytes: the id 0. The index keys have empty values. The `#nodes` and
+`#relationships` keys are native integers, little-endian on the machine this ran on; the engine
+orders them as numbers.)
+
+A few things to see in it:
+
+- **The record is the truth, the rest is derived.** Ana's labels and properties are in her record;
+  `l`, `p` and `c` say the same things again, arranged for a different question. The
+  [integrity checker](#checking-integrity) rebuilds them from the records and compares.
+- **The relationship is stored three times**: its record (ends and type), and one `e` key from each
+  end. The `e` keys differ in the node they start with and in the direction byte (`o` out, `i` in).
+- **Index keys end with the id.** In `p`, the value comes before the id, and a string value ends
+  with a `00`, so every node with `name = 'Ana'` is under the prefix `p name 00 02 Ana 00`, and
+  `'An'` cannot match it.
+- **Numbers in index keys are rewritten to sort.** In `f` the integer 2020 is stored as it is
+  (`00 … 07 e4`); in the `g` index key its sign bit is flipped (`80 … 07 e4`), so that negative
+  numbers sort before positive ones byte by byte.
+
+And what each kind of question reads:
+
+| Query | Plan (EXPLAIN) | What the engine does |
+| --- | --- | --- |
+| `MATCH (p:Person) RETURN count(p)` | `NodeByLabelScan` | Scans the prefix `l Person 00`: two keys, the last 8 bytes of each are an id. (The planner reads `c Person` to estimate this: 2.) |
+| `MATCH (p {name: 'Bob'}) RETURN p` | `NodeIndexSeek` | Seeks the prefix `p name 00 02 Bob 00`: one key, id 1. Reads `#nodes` key 1: Bob's labels and properties, in one search. |
+| `MATCH (a {name: 'Ana'})-[k:KNOWS]->(b:Person) RETURN b.name, k.since` | `NodeIndexSeek`, `Expand(All)` | Seeks `p name … Ana` → node 0. Scans the prefix `e 00×8 o 00 KNOWS 00`: one key, whose fields give the neighbour (1) and the relationship (0), and whose value says the neighbour is a `Person`, so `b`'s label is checked without reading its record. `b.name` reads `#nodes` key 1; `k.since` reads `f 00×8 since` → 2020. |
+| `MATCH (b {name: 'Bob'})<-[:KNOWS]-(a) RETURN a` | `NodeIndexSeek`, `Expand(All)` | The same from the other end: the prefix `e 00×7 01 i 00 KNOWS 00` gives node 0. |
+| `MATCH ()-[k:KNOWS {since: 2020}]->() RETURN k` | `RelationshipIndexSeek` | Seeks the prefix `g since 00 01 80 … 07 e4`: relationship 0. Reads `#relationships` key 0 for its ends and type. |
+| `CREATE (:Person {name: 'Eva'})` | `Create` | Reads and increments `!` (id 2), writes the record under 2, then `l Person 00 …02`, `p name 00 02 Eva 00 …02`, and `c Person` = 3, all in one write transaction. |
 
 ## Index-free adjacency (the core idea)
 
@@ -133,8 +219,8 @@ the first release.
   `(g)<-[:MEMBER_OF]-(p:Person)` checks `Person` without reading `p`'s record.
   - `addEdge` writes the value.
   - `addLabel` and `removeLabel` rewrite it in every neighbour's key, which costs O(degree).
-  - An empty value, from a key written before this format, means the labels are unknown, and the
-    record is read.
+  - A value without the version byte (an empty one) means the labels are unknown, and the record
+    is read.
 - **Label index (`l`).** Answers "which nodes carry this label" (a prefix scan), maintained with
   the record.
 - **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProperty`
@@ -159,8 +245,10 @@ it updates the memo too. A database without definitions pays one read per write 
 A uniqueness constraint (`constraints.zig`) is checked before a node's new record is written
 (`setProperty`, `addLabel`): the property index gives the other nodes with the first property's
 value, and one with the label and every other value equal is a violation
-(`error.ConstraintViolation`, `Graph.violationMessage`). Checking before writing keeps a refused
-write from changing anything, also outside a transaction.
+(`error.ConstraintViolation`, `Graph.violationMessage`). Every property is compared as the index
+compares it, so `1` and `1.0` are one value. Checking before writing keeps a refused write from
+changing anything, also outside a transaction; it is also stricter than checking at commit:
+swapping two nodes' values in one query fails.
 
 The postings live in four key spaces of their own, each after a marker byte, the index's name and a
 `0x00`. An entity is a node's or a relationship's id (8 bytes; an index holds one kind).
@@ -191,6 +279,11 @@ In a write transaction this is atomic with the rest of the query, so a `CREATE` 
 the counter back too. `addNode` accepts an id chosen by the caller and moves the counter past it,
 so the counter never hands out an id that is in use.
 
+Relationship ids come from their own counter, `!relationships`. Inside a write transaction it is
+read once and kept in `KeyValueStore.write_transaction_memo`; `Graph.commitWrite` writes it back
+with the commit, so a query that creates many relationships writes the counter once, and an
+aborted one leaves it as it was.
+
 ## Transactions
 
 - **Writes** are atomic: the executor opens one write transaction per query
@@ -205,6 +298,9 @@ so the counter never hands out an id that is in use.
   to run a scan, then a neighbour scan *inside* it.
 - An ended read transaction is reset and kept (up to four per database) for the next one to
   renew (`Environment.endRead`): starting a read costs no allocation.
+- A read transaction keeps the cursors of finished prefix scans (up to 16) for the next scans,
+  last in, first out: a nested scan gets the cursor its depth used before, which is near where it
+  starts now (the next node's edges), so the engine repositions it without searching from the root.
 - An iterator returned by `scanPrefix` borrows its transaction; it must be `deinit`'d **before** the
   transaction ends (the cursor belongs to it). The executor scopes every iterator to the operator
   call that opened it, which is what makes this safe.
@@ -217,8 +313,13 @@ integrity checker, `acmedb.integrity.check(graph, allocator)` (`src/storage/inte
 rebuilds each of them from the primary data — the node and relationship records, the relationship
 properties (`f`), the schema definitions (`i`) — and compares them with what is stored. It also
 checks that every uniqueness constraint holds, that the id counters are above every id in use,
-that each record is well formed, and that the main table holds no key of any other kind. It
-returns a `Report` with the first problems found, described, and their count.
+that each record and value is well formed (`layout.zig`), and that the main table holds no key of
+any other kind. It returns a `Report` with the first problems found, described, and their count.
+
+The same layout functions guard the storage boundary in Debug and ReleaseSafe builds: the writer
+asserts the bytes it is about to store, and the reader the bytes it is about to trust (pair
+assertions), so a malformed record stops the program where it appears. ReleaseFast compiles them
+out.
 
 Users can run it too, as `Database.check()` in Python and `acmedb_check` in C: a diagnostic for
 a suspected bug, documented as such, not a routine call.
@@ -228,8 +329,8 @@ uncommitted changes), in O(database) time and memory. Two differences are not pr
 of something no longer there may stay at zero, and an edge key may keep a neighbour's labels as an
 empty section or as a count of zero (both mean none).
 
-The storage fuzzer checks the database with it after every commit (see
-[contributing](contributing.md#the-storage-fuzzer-and-the-integrity-checker)).
+The storage fuzzer checks the database with it after every commit and abort, and the fault and
+crash fuzzers after every failure and crash (see [testing](testing.md#the-integrity-checker)).
 
 ## The storage engines
 
@@ -244,7 +345,7 @@ builds everywhere LMDB does:
 | File size | grows as data is written, within a 1 TiB map; never shrinks | grows in 16 MiB steps, up to 1 TiB; gives back free space at its end past 64 MiB |
 | A second open in one process | not safe | refused (`StorageError`) |
 | Builds | every target | every target but Windows on ARM64 |
-| Speed ([bench/RESULTS.md](../../bench/RESULTS.md)) | | commits ~2x faster, point reads 5-15% faster, range-index scans 12-22% slower |
+| Speed (`bench/RESULTS.md`) | | commits ~2x faster, point reads 5-15% faster, range-index scans 12-22% slower |
 
 The two write different files, so a database belongs to the engine that created it.
 
@@ -265,3 +366,26 @@ reverse.
 Both engines are copy-on-write and never overwrite live pages, so no mode can corrupt the database: a
 crash loses at most the commits that were not yet flushed, and the database opens at the last
 flushed one.
+
+## Why this way — and the alternatives
+
+- **A key/value B+tree, not record files with pointers.** Neo4j stores nodes and relationships in
+  fixed-size records that point at each other, so following a relationship is one pointer, without
+  a search. acmedb pays a B+tree search instead (O(log n), mostly in cached pages), and gets in
+  return transactions, crash safety and readers that never wait from an engine it does not have to
+  write, and every index in the same structure. Writing a storage engine of its own was considered
+  and rejected.
+- **LMDB or libmdbx, not an LSM tree (RocksDB).** The project started on C++ and RocksDB. An LSM
+  tree writes faster, but its reads go through several levels, and building it from source was
+  most of the build time. A graph database reads far more than it writes, and LMDB's reads were
+  about six times faster; its one writer and many readers across processes is also the model
+  acmedb offers.
+- **Each relationship stored twice.** Storing it once would halve the edge keys, but then one
+  direction needs a separate reverse index, maintained the same way. Storing both directions makes
+  either one a prefix scan.
+- **Node records, not one key per property.** A record per node makes reading a node one search,
+  at the cost of rewriting the record on every change to it. Graph queries read nodes far more than
+  they change them.
+- **Neighbour labels on edge keys.** They make `(a)-[:R]->(b:Person)` check `Person` without reading
+  `b`, and cost O(degree) when a label is added or removed. Labels change rarely; expansions run in
+  almost every query.

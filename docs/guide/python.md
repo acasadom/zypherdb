@@ -229,11 +229,12 @@ print(db.query("RETURN $at.timezone, $at + duration('P1D')", at=datetime.datetim
 
 - `Node(id, labels, properties)` — `id` is acmedb's id for the node; `labels` a tuple of strings
   in byte order; `properties` a dict.
-- `Relationship(source, target, type, properties)` — `source` and `target` are node ids.
+- `Relationship(id, source, target, type, properties)` — `id` is acmedb's id for the relationship
+  (counted apart from node ids); `source` and `target` are node ids.
 - `Path(nodes, relationships)` — tuples; `relationships[i]` joins `nodes[i]` and `nodes[i + 1]`.
 
-A node is hashed by its id and labels, a relationship by its endpoints and type, so they can be
-dict keys and set members.
+A node is hashed by its id and labels, a relationship by its id (two relationships may share
+their ends and type), so they can be dict keys and set members.
 
 ```python
 (node,), = db.query("MATCH (c:Card {number: 123}) RETURN c")
@@ -286,6 +287,8 @@ and outside queries:
 | `ClosedError` | a closed `Database` was used |
 
 Values that cannot be converted raise Python's own `TypeError`, `OverflowError` or `ValueError`.
+A mutator given a label, relationship type or property name that is empty or contains the
+character U+0000 raises `ValueError` (a query with one raises `InvalidExpressionError`).
 
 ## Concurrency
 
@@ -314,3 +317,22 @@ finds it. Measured costs are in `bench/RESULTS.md`. To embed acmedb from another
 ```python
 db.close()
 ```
+
+## Why this way — and the alternatives
+
+- **A native module, not `ctypes` over the C ABI.** The package first called the C library through
+  `ctypes`, with results as JSON. Building Python objects straight from engine values, with no JSON
+  in between, cut a point query's overhead from about 7 µs to about 1.4 µs, and returning 100,000
+  rows from 65 ms to 41 ms (`bench/RESULTS.md`).
+- **The limited C API, not the full one.** One `abi3` build serves Python 3.10 and every later
+  version, so a release needs one wheel per platform, not one per platform and Python version. The
+  full API would allow a few faster calls; none was needed.
+- **Written in Zig, not Cython or pybind11.** The module lives in the same language and build as the
+  engine, with no generator or C++ toolchain in between, and reads engine values without a copy
+  into an intermediate form.
+- **`datetime` types by default, ISO text on request.** Most programs want `datetime` values; the
+  `datetime` module cannot hold nanoseconds or years beyond 9999, so `temporals="iso"` keeps the
+  exact value for those that need it.
+- **Results as lists, built whole.** A list is the simplest thing to use and to test. An iterator
+  would let a large result arrive row by row, but the engine builds the whole result before the
+  transaction ends anyway (see [performance](performance.md#python-bindings)).

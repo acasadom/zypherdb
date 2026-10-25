@@ -15,8 +15,8 @@
 //! `node_id` and `relationship_id` are fixed-width u64s, so lexicographic
 //! byte order equals numeric order and no id is ever a prefix of another.
 //! `dir` is a single byte (`'o'`/`'i'`), and `edge_type` is a string
-//! delimited by `0x00` (edge types are identifiers, so they never contain
-//! `0x00`). Each relationship has an id of its own, so two relationships of
+//! delimited by `0x00` (names with a `0x00` byte are refused before they
+//! reach storage, and `layout.assertName` asserts it). Each relationship has an id of its own, so two relationships of
 //! one type between the same nodes (parallel ones) are two keys.
 //!
 //! The markers below list the remaining kinds (labels, property and edge

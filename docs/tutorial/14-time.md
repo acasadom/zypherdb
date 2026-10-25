@@ -126,7 +126,7 @@ for badge, door, at in [
 ```
 
 The last line is a surprise: Ada has a grant to the Vivarium with no window, and the Vivarium
-never closes — yet the door refuses her. The reason is a rule from the last step: Animal Holding
+never closes — yet the door refuses Ada. The reason is a rule from the last step: Animal Holding
 requires an animal-handling certificate, and Ada has none. The rules compose, and the query
 explains itself if you ask it the parts (`RETURN granted, banned, untrained, closed`).
 

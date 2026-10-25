@@ -5,7 +5,7 @@ This step covers every way of changing the graph.
 
 ## Setting properties: SET
 
-Chen has lost his badge. The old one must stop working at once, and he gets a new one:
+Chen has lost their badge. The old one must stop working at once, and Chen gets a new one:
 
 ```python
 db.query("MATCH (b:Badge {number: 70003}) SET b.active = false, b.lost_on = $today", today=datetime.date(2025, 3, 3))

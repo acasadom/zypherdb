@@ -8,7 +8,7 @@ visitors on a one-day pass. This step adds them, and with them the two things a 
 
 A node can have several labels. Everyone is a `Person`; in addition, each is an `Employee`, a
 `Contractor` or a `Visitor`. Ada, whom we created in the last step, is an employee — `SET` adds
-the label to her node (more on changing data in [step 8](08-updating)):
+the label to Ada's node (more on changing data in [step 8](08-updating)):
 
 ```python
 db.query("MATCH (p:Person {name: 'Ada Okafor'}) SET p:Employee")

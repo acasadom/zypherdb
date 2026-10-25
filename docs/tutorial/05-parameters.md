@@ -97,7 +97,7 @@ print(db.query("MATCH (p:Person {employee_id: $id}) RETURN p.name", {"id": 1004}
 [['Dalia Haddad']]
 ```
 
-A query that uses a parameter you did not pass fails, with an error naming it:
+A query that needs a parameter you did not pass fails, with an error naming it:
 
 ```python
 from acmedb import ParameterMissingError
@@ -112,8 +112,12 @@ except ParameterMissingError as error:
 missing parameter '$id' (code 8)
 ```
 
-Parameters are values only: a label, a relationship type or a property *name* cannot be a
-parameter, because they shape the query rather than fill it in.
+acmedb notices when it reads the parameter, so a query that never gets that far — an update of
+rows that do not exist, for one — returns without complaint.
+
+Parameters are values only: a label, a relationship type, or a property *name* in a pattern or a
+`SET`, cannot be a parameter, because they shape the query rather than fill it in. The one place
+a name may come from a parameter is reading: `p[$key]` reads the property named by `$key`.
 
 From now on every query that takes input uses parameters. [Next](06-returning), we look closer at
 the other end: shaping what a query returns.

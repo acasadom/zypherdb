@@ -89,5 +89,46 @@ guide/storage
 guide/language
 guide/planning-execution
 guide/performance
+guide/testing
 guide/contributing
 ```
+
+## Reading the engine as a course
+
+The technical guides can be read in order as a course on graph databases and systems programming in
+Zig: each chapter explains one layer, and then you read that layer's code. The files below are listed
+in the order to read them. Most are under 500 lines. Learn the language first, from tutorials 01 to 09
+and the [openCypher reference](guide/cypher.md), so the queries in the guides read easily.
+
+1. **The shape of the whole** — [architecture](guide/architecture.md). Read `src/root.zig` (the
+   public surface), `src/value.zig` (the value every layer passes around) and
+   `src/diagnostics.zig` (how errors carry a position).
+2. **Storage: a graph as sorted keys** — [storage](guide/storage.md). Read
+   `src/storage/engine/contract.zig` (what an engine must provide), `src/storage/engine/lmdb.zig`,
+   `src/storage/key_value_store.zig` (transactions and prefix scans), `src/storage/key_encoding.zig`
+   and `src/storage/value_encoding.zig` (the bytes), `src/storage/node_record.zig`, then
+   `src/storage/graph.zig` (the graph operations, each with its cost). Finish with
+   `src/storage/integrity.zig`.
+3. **The language: text to a tree** — [language](guide/language.md). Read
+   `src/query/lexer.zig`, `src/query/ast.zig` (the arena tree), `src/query/parser.zig` and
+   `src/query/expression_parser.zig` (recursive descent, one function per precedence level), then
+   `src/query/semantics.zig` (the checks before planning).
+4. **Planning and execution: a tree to rows** — [planning and execution](guide/planning-execution.md).
+   Read `src/planning/Plan.zig` (operators in chains), `src/planning/builder.zig`,
+   `src/planning/patterns.zig` (anchors, seeks, estimates), `src/planning/expression_program.zig`,
+   then `src/execution/Executor.zig`, `src/execution/bindings.zig` (a row as slots),
+   `src/execution/operators.zig`, `src/execution/pattern_matching.zig` and
+   `src/execution/expressions.zig`. Then `src/statement/Statement.zig` and `src/statement/Cache.zig`
+   (plan once, run many times).
+5. **Where the time goes** — [performance](guide/performance.md). It has no new files: it goes back
+   to the code of chapters 2 to 4 and names its known costs.
+6. **How the engine tests itself** — [testing](guide/testing.md). Its last section,
+   [Reading the code](guide/testing.md#reading-the-code), lists the files in order, from
+   `src/storage/integrity.zig` to `src/storage/layout.zig`.
+7. **Changing it** — [contributing](guide/contributing.md): the build, the principles, and recipes
+   for adding a clause, a function or an index.
+
+The storage, language, planning and testing guides end with a "Why this way — and the
+alternatives" section. Read that section after the code: it makes sense only once you know the
+code. The architecture guide gives its reasons at the start, because they explain the layers that
+follow.

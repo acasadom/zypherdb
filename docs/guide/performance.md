@@ -22,7 +22,8 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   needs only the first. Fix: stop at the first match for `EXISTS` and pattern predicates.
 - **Unbounded variable-length paths (`-[*]->`)** enumerate every path, which grows exponentially
   on dense graphs. Fix: a bound or a warning; for reachability (`EXISTS`, `count(DISTINCT)`) a
-  visited set instead of path enumeration; shortest paths as a separate algorithm.
+  visited set instead of path enumeration. (Shortest paths already have their own breadth-first
+  search, `shortest_paths.zig`.)
 - **Relationship uniqueness is a linear scan** of the edges used on the current branch: fine for
   short patterns, quadratic for long variable-length ones. Fix: a hash set past a few edges.
 - **Each property read decodes from the record.** A record is found once per node, through the
@@ -68,6 +69,12 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   point query on a laptop SSD, until the pages a query needs are cached). Normal for a disk
   database, but it makes the first queries after a start slow. Fix if needed: an optional warm-up
   (read the file, or `madvise`), documented for latency-sensitive uses.
+
+- **Checked builds validate every record they read and write.** In Debug and ReleaseSafe builds the
+  storage boundary asserts the layout of each record, value and key it stores or trusts (pair
+  assertions, see [testing](testing.md#pair-assertions)); ReleaseFast compiles them out. Their cost
+  in ReleaseSafe has not been measured yet; it matters if a package is built in ReleaseSafe to keep
+  them.
 
 ## Full-text search
 

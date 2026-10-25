@@ -26,8 +26,8 @@ db.query("MATCH (z:Zone {name: 'Common Areas'}) SET z.public = true")
 ```
 
 The HVAC contractor may enter one room, the Genomics Office, where the ventilation units are; and
-Gustavo, who as head of Research would reach the Containment Suite, is barred from it until he
-completes this year's medical check — a ban overrides any permission:
+Gustavo, who as head of Research would reach the Containment Suite, is barred from it until
+the annual medical check is done — a ban overrides any permission:
 
 ```python
 db.query("""
@@ -87,7 +87,7 @@ def may_enter(badge, door, today=datetime.date(2025, 3, 10)):
 Reading the parts:
 
 - **granted** — the zone is public, or a team of theirs (or one above it) has a grant, or they
-  manage a team (or one above a granted one) with a grant, or they have a personal grant to the
+  manage a team that has a grant or is above one that does, or they have a personal grant to the
   room;
 - **banned** — a `DENIED` relationship to the zone;
 - **untrained** — the room requires some certification for which the person holds no certificate
@@ -100,7 +100,7 @@ doors:
 ```python
 cases = [
     (70013, "D-Sequencing Lab"),   # Chen: Sequencing, inherits Genomics' grant
-    (70013, "D-BSL-3 Lab"),        # Chen: no grant to the suite (and his certificate lapsed)
+    (70013, "D-BSL-3 Lab"),        # Chen: no grant to the suite (and the certificate lapsed)
     (70004, "D-BSL-3 Lab"),        # Dalia: Virology's grant, valid BSL-3 certificate
     (70008, "D-BSL-3 Lab"),        # Joon: Virology, but not certified yet
     (70002, "D-Sequencing Lab"),   # Bruno: manages Genomics
@@ -130,7 +130,7 @@ for badge, door in cases:
 ```
 
 Each rule is a few relationships in the graph, and changing who may go where is a write, not a
-code change: grant Virology's newcomer a certificate and the BSL-3 door opens for him.
+code change: grant Virology's newcomer a certificate and the BSL-3 door opens for Joon.
 
 ```python
 certify("Joon Park", "BSL-3", datetime.date(2026, 3, 1))

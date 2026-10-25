@@ -85,7 +85,7 @@ print(db.query("""
 
 ## Unique rows: DISTINCT
 
-Which roles are there among the members of the Research teams? Several people share a role;
+Which roles are there among the members of a team? Several people share a role;
 `DISTINCT` keeps one of each row:
 
 ```python

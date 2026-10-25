@@ -331,3 +331,22 @@ valid until the next check or `acmedb_close`.
 A context is not thread-safe, so serialize the calls on one context. Each process opens the
 database itself: reads run in parallel across processes, and writes take turns, one write
 transaction at a time. Do not open the same directory twice in one process.
+
+## Why this way — and the alternatives
+
+- **A C ABI, not a C++ or Rust API.** Every language can call C, and a C ABI does not change with
+  the compiler that built the library. The header is written by hand, so it says exactly what is
+  promised.
+- **Strings as pointer and length.** Callers in most languages hold strings with a length and no
+  terminating NUL; requiring one would mean a copy per call, and a NUL inside a string could not be
+  passed at all.
+- **A result that owns its values.** A result is copied out of the database before the transaction
+  ends, so it stays valid whatever the database does next, and the caller never holds a pointer
+  into storage. The price is the copy; the gain is that no misuse of a result can corrupt or block
+  the database.
+- **JSON for structured values**, not a C struct per type. Nodes, maps, paths and temporals would
+  need many structs and functions to walk them; JSON is one function and every language reads it.
+  The common scalar types still have direct readers, which avoid the JSON round trip.
+- **Status codes and a context's last error**, not callbacks or `errno`: every function says
+  whether it failed in its return value, and the message is there to read, in the context, until
+  the next call.

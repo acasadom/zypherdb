@@ -12,8 +12,9 @@ leaves out a few features; both are listed below. This page is the complete refe
   relationship type, property name or index name cannot be empty or contain the character U+0000
   (writes and schema commands refuse it; this also covers keys of a map in `SET n += $map`).
 - **Strings** use single or double quotes (`'Ana'`, `"Ana"`), with backslash escapes: `\'`, `\"`,
-  `\\`, `\n`, `\t`, `\r`, `\b`, `\f`, and `\uXXXX` or `\UXXXXXXXX` for a code point. A malformed
-  escape is a syntax error.
+  `\\`, `\n`, `\t`, `\r`, `\b`, `\f`, and `\uXXXX` or `\UXXXXXXXX` for a code point. A `\u` or `\U`
+  without its hexadecimal digits, or not a code point, is a syntax error; any other backslash stays
+  as it is (`'\q'` is the two characters `\q`).
 - **Numbers**:
   - integers in decimal, hexadecimal (`0x1F`) or octal (`0o17`);
   - floats (`1.5`, `.5`, `1e3`, `2.5e-3`).
@@ -377,7 +378,8 @@ SHOW CONSTRAINTS
   two nodes' values in one query fails. `CREATE CONSTRAINT` fails if the graph already has
   duplicates. Neo4j 4's `CREATE CONSTRAINT ON (n:Label) ASSERT n.p IS UNIQUE` is accepted too.
   Other constraints (`IS NOT NULL`, `IS NODE KEY`, on relationships) are not supported.
-- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT` or `RANGE`), `entityType`
+- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT` or `RANGE`; a `TEXT` index
+  is listed as `RANGE`, since it is one), `entityType`
   (`NODE` or `RELATIONSHIP`), `labelsOrTypes`, `properties`, `options`. `SHOW CONSTRAINTS`
   returns `name`, `type` (`UNIQUENESS`), `entityType`, `labelsOrTypes`, `properties`.
 

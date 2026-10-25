@@ -2,10 +2,10 @@
 
 *An embedded graph database in Zig, speaking openCypher, on LMDB or libmdbx.*
 
-A small, embeddable **graph database**: link it into your process, or load the shared library from
-Python, write nodes and edges, and answer queries in a subset of **openCypher** — over an
-**index-free adjacency** graph stored in **LMDB** (or **libmdbx**). No server, no configuration, one binary
-toolchain.
+A small, embeddable **graph database**: link it into your process through its C ABI, or
+`import acmedb` in Python, store nodes and relationships, and query them in **openCypher** — over
+an **index-free adjacency** graph stored in **LMDB** (or **libmdbx**). No server, no configuration,
+one binary toolchain.
 
 ---
 
@@ -26,7 +26,7 @@ toolchain.
   tested), and algorithms shared by several types — deduplication, sorting, grouping, pagination —
   are written once, generically. No class hierarchies, no Visitor; the AST is an arena of nodes
   with child indices.
-- **A hand-written recursive-descent parser** for the openCypher subset — no ANTLR, no generator.
+- **A hand-written recursive-descent parser** for openCypher — no ANTLR, no generator.
 
 ## Building
 
@@ -68,7 +68,8 @@ A query looks like openCypher:
 MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2000 RETURN m.title
 ```
 
-Cells come back as Python values (`int`/`str`/`bool`/`None`/`list`); errors raise typed
+Cells come back as Python values (`int`, `float`, `str`, `bool`, `None`, `list`, `dict`,
+`datetime` types, and `Node`/`Relationship`/`Path`); errors raise typed
 exceptions (`ParseError`, `UnknownVariableError`, `TypeMismatchError`, …). See the
 [Python guide](docs/guide/python.md) and the raw [C ABI](docs/guide/c-api.md) for the layer
 underneath.
@@ -80,13 +81,15 @@ Read the docs at [`docs/`](docs/) — two tracks:
 - **Using acmedb** — a step-by-step [tutorial](docs/tutorial/01-getting-started.md) (twenty
   steps building the access-control system of a biomedical lab, every example run by the tests)
   plus references for the
-  [openCypher subset](docs/guide/cypher.md), the [C ABI](docs/guide/c-api.md), and
+  [Cypher](docs/guide/cypher.md) acmedb speaks, the [C ABI](docs/guide/c-api.md), and
   [Python](docs/guide/python.md).
 - **How it works inside** — the [architecture](docs/guide/architecture.md) (design decisions,
   components, query lifecycle), the [storage encoding](docs/guide/storage.md) (keys, index-free
-  adjacency, indexes), the [lexer/parser](docs/guide/language.md), and
-  [planning & execution](docs/guide/planning-execution.md) (anchor selection, pushdown, the
-  volcano translation), plus [contributing](docs/guide/contributing.md).
+  adjacency, indexes, a worked example of the keys), the [lexer/parser](docs/guide/language.md),
+  [planning & execution](docs/guide/planning-execution.md) (plans of operators, anchor selection,
+  pushdown, prepared statements), [performance](docs/guide/performance.md) (known costs),
+  [testing](docs/guide/testing.md) (how acmedb tests itself: oracles, fuzzers, crashes, faults),
+  and [contributing](docs/guide/contributing.md).
 
 Build the HTML locally:
 
@@ -103,30 +106,35 @@ zig build test    # unit tests in src/ + the suite in tests/
 zig build         # static + shared libraries into zig-out/
 make docs         # build the HTML documentation
 make test-py      # Python bindings (pip install -e "python[dev]" once)
+make tck          # the openCypher TCK, against its baseline
+zig build fuzz -- storage --seeds 100   # one of the fuzzers (storage, query, faults, crash)
 ```
 
-The source is laid out by layer — `src/storage/` (engine, key layout, graph), `src/query/` (lexer,
-parser, AST) and `src/execution/` (planning, matching, projection, writes) — with the test suite in
-`tests/`, which uses only the public API. The [architecture](docs/guide/architecture.md) guide maps
+The source is laid out by layer — `src/storage/` (engine, key layout, graph, integrity checker),
+`src/query/` (lexer, parser, AST, semantic checks), `src/planning/` (plans), `src/execution/`
+(running them), `src/statement/` (prepared statements) — plus `src/temporal/` and `src/text/`,
+with the test suite in `tests/`, which uses only the public API. The [architecture](docs/guide/architecture.md) guide maps
 every file; [contributing](docs/guide/contributing.md) has the principles and the recipes.
-
-See `STATUS.md` (kept out of git) for the working notes and the roadmap.
 
 ## What's in the box
 
-- **The openCypher subset**: `MATCH` (chains, multi-pattern, `WHERE`), `OPTIONAL MATCH` (outer
-  join + nulls), `WITH` (pipelines), `UNWIND`, `RETURN` (`DISTINCT` / `ORDER BY` / `SKIP` /
-  `LIMIT`), and the writes `CREATE` / `MERGE` (with `ON CREATE/MATCH SET`) / `SET` / `DELETE`
-  (`DETACH DELETE`) / `REMOVE`.
-- **Expressions**: comparisons, `AND`/`OR`/`NOT`, `STARTS WITH`/`ENDS WITH`/`CONTAINS`, `IN`,
-  `CASE`, `size`, list literals.
-- **Aggregations** with implicit grouping: `count` (and `count(*)`), `sum`, `min`, `max`, `collect`.
-- **A typed value model**: `int`, `str`, `boolean`, `null`, `list`.
-- **Storage**: index-free adjacency, a property index, an edge-property index, label indexes, and
-  an edge-type cardinality counter for planning — all as keys of the key-value store.
-- **An executor that plans**: anchor selection (label counts, equality seeks, edge-type
-  cardinality) with predicate pushdown, one read transaction per read query, one write transaction
-  per writing query.
+- **openCypher**: reading (`MATCH`, `OPTIONAL MATCH`, variable-length and shortest paths, `WITH`,
+  `UNWIND`, `UNION`, `CALL { }` subqueries, `EXISTS { }` and `COUNT { }`, pattern comprehensions),
+  writing (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`), `LOAD CSV` from an import
+  directory, procedures (`CALL db.labels()`, full-text queries), and `EXPLAIN` / `PROFILE`.
+- **Values**: integers, floats, strings, booleans, lists, maps, and the six temporal types with
+  time zones; properties can also hold maps (documents, an acmedb extension).
+- **Expressions and functions**: the openCypher operators (three-valued `null` logic, `=~` regular
+  expressions), string, numeric, list, temporal and graph functions, and every aggregate
+  (`count`, `sum`, `avg`, `min`, `max`, `collect`, `stDev`, percentiles, with `DISTINCT`).
+- **Schema**: full-text indexes (BM25, Spanish and English stemmers, Lucene's query syntax as in
+  Neo4j) and uniqueness constraints; every property is already indexed for equality and ranges.
+- **Storage**: index-free adjacency, relationships with ids of their own, node records, label,
+  property and edge-property indexes, counters for the planner; transactions, crash safety, three
+  durability modes, several processes on one database (one writer at a time, readers that never
+  wait), and an integrity checker.
+- **Execution**: plans of operators with anchor selection and index seeks, prepared statements and
+  a statement cache, one transaction per query.
 - **A Python package** whose engine is a native extension module written in Zig on the Python
   limited API (one build per platform for every Python from 3.10), and **a C ABI** for embedding
   from any language with an FFI.
@@ -137,7 +145,7 @@ acmedb is measured against the [openCypher TCK](tests/tck/README.md), the refere
 the language: **all 3202 scenarios that expect a result pass**, and all 694 that expect an
 error — see [tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area. The TCK does not
 cover everything Neo4j users write: the [Cypher reference](docs/guide/cypher.md#not-supported)
-lists what acmedb does not implement yet. See `STATUS.md` (kept out of git) for the working notes and the roadmap.
+lists what acmedb does not implement yet.
 
 ## License
 

@@ -109,7 +109,7 @@ db = Database("/srv/helix/db")
 
 Reads in different processes run in parallel and never wait for each other or for a writer. Writes
 are serialized across all processes: one write transaction at a time, the others wait their turn.
-Two rules:
+Three rules:
 
 - **Open the database once per process.** The storage engine allows one open per process: with
   LMDB (the default) a second one is not safe, with libmdbx it raises `StorageError`. Share the
