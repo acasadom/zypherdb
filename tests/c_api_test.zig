@@ -350,6 +350,10 @@ test "C ABI: query parameters as a JSON object" {
     const missing = "RETURN $absent";
     try testing.expect(acmedb_query(context, missing.ptr, missing.len) == null);
     try testing.expectEqual(@as(c_int, 8), acmedb_error_code(context));
+    // Also when no row would reach it.
+    const unreached = "MATCH (n:Nobody) SET n.name = $absent";
+    try testing.expect(acmedb_query(context, unreached.ptr, unreached.len) == null);
+    try testing.expectEqual(@as(c_int, 8), acmedb_error_code(context));
 }
 
 test "C ABI: a prepared statement runs again with new parameters" {

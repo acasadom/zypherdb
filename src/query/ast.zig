@@ -443,6 +443,24 @@ pub const Ast = struct {
         return true;
     }
 
+    /// The names of the `$name` parameters under `top`, each once, in the
+    /// order they first appear. O(nodes under `top` × parameters).
+    pub fn parameterNames(self: *const Ast, allocator: Allocator, top: Index) Allocator.Error![]const []const u8 {
+        var names = std.ArrayList([]const u8).empty;
+        try self.collectParameters(allocator, top, &names);
+        return names.items;
+    }
+
+    fn collectParameters(self: *const Ast, allocator: Allocator, index: Index, names: *std.ArrayList([]const u8)) Allocator.Error!void {
+        if (self.kind(index) == .parameter) {
+            const name = self.data(index).text;
+            for (names.items) |known| if (std.mem.eql(u8, known, name)) return;
+            try names.append(allocator, name);
+            return;
+        }
+        for (self.nodeChildren(index)) |child| try self.collectParameters(allocator, child, names);
+    }
+
     pub fn root(self: *const Ast) Index {
         std.debug.assert(self.nodes.items.len > 0);
         return @intCast(self.nodes.items.len - 1);

@@ -135,7 +135,7 @@ test "semantic errors name the variable, function or clause at fault" {
         \\MERGE (n:A) ON CREATE SET n = true
         \\  invalid_expression: SET n = needs a map, a node or a relationship, not a literal boolean
         \\MATCH (n) SET n = {a: 1}, n += $map
-        \\  ok
+        \\  parameter_missing: missing parameter '$map'
         \\CREATE (n)-[:A|B]->(m)
         \\  invalid_expression: CREATE needs a relationship with exactly one type
         \\CREATE (n)-[]->(m)

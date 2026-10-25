@@ -244,8 +244,16 @@ pub fn execute(self: *Executor, plan: *const Plan, root: Index) ExecutionError![
     return result.items;
 }
 
-/// Prepares the run state of `plan`.
+/// Prepares the run state of `plan`. A parameter the query reads but the
+/// run was not given fails here, before anything runs, as in Neo4j: even
+/// one that no row would reach.
 fn start(self: *Executor, plan: *const Plan) ExecutionError!void {
+    for (plan.parameter_names) |name| {
+        if (!self.parameters.contains(name)) {
+            self.fail(.parameter_missing, "missing parameter '${s}'", .{name});
+            return error.ParameterMissing;
+        }
+    }
     self.plan = plan;
     self.slot_of = plan.slot_of;
     try self.useExpressions(plan.expressions);
