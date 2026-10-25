@@ -1,6 +1,6 @@
 # The smallest program
 
-`examples/minimal/run.py` is the least a program needs to use zypherdb: open a database, store a
+`examples/minimal/run.py` is the least a program needs to use ZypherDB: open a database, store a
 small graph, and ask it a question with a parameter.
 
 ```{literalinclude} ../../examples/minimal/run.py

@@ -29,7 +29,7 @@ def _load():
             loader.exec_module(module)
             return module
     raise ImportError(
-        "zypherdb's native engine is missing: build it with "
+        "ZypherDB's native engine is missing: build it with "
         "`zig build python -Dpython-include=$(python3 -c \"import sysconfig; print(sysconfig.get_paths()['include'])\")`"
     )
 

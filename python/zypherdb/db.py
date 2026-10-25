@@ -1,4 +1,4 @@
-"""The zypherdb `Database` object: open a graph, write data, run queries."""
+"""The ZypherDB `Database` object: open a graph, write data, run queries."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ class PreparedQuery:
 
 
 class Database:
-    """A handle to one zypherdb database (a storage-engine environment in directory `path`).
+    """A handle to one ZypherDB database (a storage-engine environment in directory `path`).
 
     The directory must exist. Use it as a context manager to close on exit::
 
@@ -149,7 +149,7 @@ class Database:
 
         Parameter values may be `int` (64-bit), `float`, `str`, `bool`, `None`,
         lists, tuples and dicts (with `str` keys) of those, and temporal values
-        (`datetime.date`, `time`, `datetime`, `timedelta`, or zypherdb's own).
+        (`datetime.date`, `time`, `datetime`, `timedelta`, or ZypherDB's own).
 
         Cells become `int`, `float`, `str`, `bool`, `None` (null), a `list`, a
         `dict`, a whole :class:`Node` / :class:`Relationship` / :class:`Path`,
@@ -239,7 +239,7 @@ class Database:
     def check(self) -> dict:
         """Check that every index and counter agrees with the stored records.
 
-        **A diagnostic, not a routine call.** Use it when you suspect zypherdb
+        **A diagnostic, not a routine call.** Use it when you suspect ZypherDB
         itself has a bug (a query that misses nodes it should find, counts
         that do not add up), after a crash if you want to be sure, or to
         attach its output to a bug report. It reads the whole database and

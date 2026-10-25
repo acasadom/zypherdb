@@ -1,4 +1,4 @@
-/* zypherdb — an embedded openCypher graph database. C interface.
+/* ZypherDB — an embedded openCypher graph database. C interface.
  *
  * Strings are (pointer, length) pairs in UTF-8 and need not be NUL-terminated.
  * Handles are opaque: release a context with zypherdb_close and a result with

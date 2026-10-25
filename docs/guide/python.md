@@ -8,7 +8,7 @@ it by example; this page is the complete list.
 pip install zypherdb
 ```
 
-zypherdb needs Python 3.10 or later. The package carries the engine as a native extension module
+ZypherDB needs Python 3.10 or later. The package carries the engine as a native extension module
 (see [the end of this page](#under-the-hood)).
 
 ## `Database`
@@ -174,10 +174,10 @@ Direct writes, each its own transaction unless inside `write()`:
   32).
 
   > **Warning.** It is **a diagnostic, not a routine call**. Run it only with a reason: a query that misses
-  > data it should find or counts that do not add up (a suspected bug in zypherdb), to be sure after a
+  > data it should find or counts that do not add up (a suspected bug in ZypherDB), to be sure after a
   > crash, or to attach its output to a bug report. It reads the whole database and holds memory in
   > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
-  > reports is a bug in zypherdb: please report it with the output.
+  > reports is a bug in ZypherDB: please report it with the output.
 - `sync()` — writes every commit so far to disk (for `"deferred"` durability).
 - `close()` — releases the database. Using it afterwards raises `ClosedError`.
 
@@ -206,7 +206,7 @@ How values cross between Python and Cypher, both ways:
 
 As **properties**, a node or relationship can store booleans, numbers, strings, temporal values,
 lists of one of those types, and maps — documents, which may nest maps and lists of any values,
-`null`s included (a zypherdb extension to openCypher).
+`null`s included (a ZypherDB extension to openCypher).
 
 Python's `datetime` types hold microseconds and years 1 to 9999: nanoseconds are truncated, and a
 value outside those years raises `ValueError` — open the database with `temporals="iso"` to get the
@@ -227,9 +227,9 @@ print(db.query("RETURN $at.timezone, $at + duration('P1D')", at=datetime.datetim
 
 `Node`, `Relationship` and `Path` are immutable values, equal when all their fields are:
 
-- `Node(id, labels, properties)` — `id` is zypherdb's id for the node; `labels` a tuple of strings
+- `Node(id, labels, properties)` — `id` is ZypherDB's id for the node; `labels` a tuple of strings
   in byte order; `properties` a dict.
-- `Relationship(id, source, target, type, properties)` — `id` is zypherdb's id for the relationship
+- `Relationship(id, source, target, type, properties)` — `id` is ZypherDB's id for the relationship
   (counted apart from node ids); `source` and `target` are node ids.
 - `Path(nodes, relationships)` — tuples; `relationships[i]` joins `nodes[i]` and `nodes[i + 1]`.
 
@@ -311,7 +311,7 @@ class (locking, `write()` blocks, argument checks); `zypherdb/_engine.py` loads 
 registers the classes and exceptions it builds with.
 
 From a source checkout, `make python` builds the module into `zig-out/python/`, where the package
-finds it. Measured costs are in `bench/RESULTS.md`. To embed zypherdb from another language, see the
+finds it. Measured costs are in `bench/RESULTS.md`. To embed ZypherDB from another language, see the
 [C ABI](c-api).
 
 ```python

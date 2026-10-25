@@ -1,4 +1,4 @@
-"""zypherdb — Python bindings for the embedded graph database.
+"""ZypherDB — Python bindings for the embedded graph database.
 
 Usage::
 

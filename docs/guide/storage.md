@@ -23,7 +23,7 @@ Two rules make that work:
 - All integers are **big-endian and fixed-width** (ids are `u64`, 8 bytes). So byte order equals
   numeric order, and no id is ever a prefix of another.
 - A `0x00` byte separates variable-length parts (strings). A quoted openCypher name could contain
-  `0x00`, so zypherdb refuses labels, relationship types and property names that contain it or are
+  `0x00`, so ZypherDB refuses labels, relationship types and property names that contain it or are
   empty (writes.zig `requireStorableName`; `ZYPHERDB_INVALID_NAME` in C, `ValueError` in Python), and
   the storage boundary asserts it (`layout.assertName`). A name with `0x00` in a key would end
   early: `A\0B` would read as `A`.
@@ -171,7 +171,7 @@ big-endian:
 | `0x0d` | null | nothing (only inside a map) |
 
 A list is stored only when its elements share one storable type (integers and floats count as
-one). A map — a document, a zypherdb extension — holds any of these values, nested maps, lists of
+one). A map — a document, a ZypherDB extension — holds any of these values, nested maps, lists of
 any elements, and nulls. A null on its own is never stored: setting a property to null removes it.
 
 Index keys use the same encoding except that variable-length parts (strings, zone names) end in
@@ -193,7 +193,7 @@ The key `!format` holds the format's version, `Graph.format_version` (2). When t
 Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
 written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
 
-Until the first release there are no migrations: zypherdb has no users yet, so a change to how keys
+Until the first release there are no migrations: ZypherDB has no users yet, so a change to how keys
 or values are written raises the version and earlier databases are not read. Migrations come with
 the first release.
 
@@ -334,7 +334,7 @@ crash fuzzers after every failure and crash (see [testing](testing.md#the-integr
 
 ## The storage engines
 
-The rest of zypherdb sees the engine only through `src/storage/engine/contract.zig`; the engine is
+The rest of ZypherDB sees the engine only through `src/storage/engine/contract.zig`; the engine is
 chosen at build time (`zig build -Dstorage-engine=lmdb|mdbx`), and both are kept until libmdbx
 builds everywhere LMDB does:
 
@@ -371,7 +371,7 @@ flushed one.
 
 - **A key/value B+tree, not record files with pointers.** Neo4j stores nodes and relationships in
   fixed-size records that point at each other, so following a relationship is one pointer, without
-  a search. zypherdb pays a B+tree search instead (O(log n), mostly in cached pages), and gets in
+  a search. ZypherDB pays a B+tree search instead (O(log n), mostly in cached pages), and gets in
   return transactions, crash safety and readers that never wait from an engine it does not have to
   write, and every index in the same structure. Writing a storage engine of its own was considered
   and rejected.
@@ -379,7 +379,7 @@ flushed one.
   tree writes faster, but its reads go through several levels, and building it from source was
   most of the build time. A graph database reads far more than it writes, and LMDB's reads were
   about six times faster; its one writer and many readers across processes is also the model
-  zypherdb offers.
+  ZypherDB offers.
 - **Each relationship stored twice.** Storing it once would halve the edge keys, but then one
   direction needs a separate reverse index, maintained the same way. Storing both directions makes
   either one a prefix scan.

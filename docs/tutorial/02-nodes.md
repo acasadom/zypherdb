@@ -77,7 +77,7 @@ Properties are named values. The ones above already use several kinds:
 | date | `date('2017-09-18')` | `datetime.date` |
 | list of one type | `['es', 'en', 'pt']` | `list` |
 
-There are times, date-times and durations too ([step 14](14-time)), and zypherdb also stores maps
+There are times, date-times and durations too ([step 14](14-time)), and ZypherDB also stores maps
 as documents ([step 13](13-documents)). A node does not need every property: the contractor has a
 `company`, the employees an `employee_id`. Reading one a node lacks gives `null` — `None` in
 Python:
@@ -118,7 +118,7 @@ Head of Research ['es', 'en', 'pt']
 2015
 ```
 
-`(gustavo,), = …` unpacks the single row of one column. The node's `id` is zypherdb's own number
+`(gustavo,), = …` unpacks the single row of one column. The node's `id` is ZypherDB's own number
 for it; it identifies the node, but your data should carry its own identifiers, as
 `employee_id` does — ids are an internal detail.
 

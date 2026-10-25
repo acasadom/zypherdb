@@ -2,7 +2,7 @@
 
 A door controller runs unattended, around the clock, with many readers talking to it at once. It
 must handle bad input without falling over, keep the data consistent when something fails, and
-serve many requests concurrently. This step covers how zypherdb reports errors, what a failed query
+serve many requests concurrently. This step covers how ZypherDB reports errors, what a failed query
 leaves behind, and how to use one database from many threads or processes.
 
 ## Typed errors
@@ -123,5 +123,5 @@ Three rules:
 Writes that are many and small — the swipe log — are where processes contend. Batching them
 ([step 15](15-loading)) keeps each writer's turn short.
 
-The controller is correct and concurrent. [Next](17-performance), fast: what zypherdb does with a
+The controller is correct and concurrent. [Next](17-performance), fast: what ZypherDB does with a
 query, and how to write the ones that must answer in microseconds.

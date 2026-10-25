@@ -8,7 +8,7 @@ grow out of this one.
 
 ## Why it is shaped this way
 
-zypherdb is deliberately small and generic. Five decisions explain almost every file:
+ZypherDB is deliberately small and generic. Five decisions explain almost every file:
 
 - **Zig, not C++.** The project started as C++/RocksDB and pivoted. The reasons were pragmatic:
   embeddable in Python, real performance, fast builds on an 8 GB M1, and a single-binary toolchain
@@ -30,7 +30,7 @@ zypherdb is deliberately small and generic. Five decisions explain almost every 
 - **LMDB or libmdbx as the storage engine, behind a contract.** A graph is traversed by following
   adjacencies, not by joining tables, so the storage is a key/value B+tree and *"neighbours of X"
   is one prefix scan*. Both engines are single-writer / multi-reader across processes, and their
-  lexicographic key order is what the adjacency encoding exploits. The rest of zypherdb sees the
+  lexicographic key order is what the adjacency encoding exploits. The rest of ZypherDB sees the
   engine only through its contract (`storage/engine/contract.zig`); the engine is chosen at build
   time (`-Dstorage-engine=lmdb`, the default, or `mdbx`), and another one would be a new file next
   to `engine/lmdb.zig` and `engine/mdbx.zig`. Every change goes through the write transaction of

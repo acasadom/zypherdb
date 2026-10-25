@@ -1,8 +1,8 @@
-"""Typed exceptions, mapped from zypherdb's stable error codes."""
+"""Typed exceptions, mapped from ZypherDB's stable error codes."""
 
 
 class ZypherDBError(Exception):
-    """Base class for every zypherdb error."""
+    """Base class for every ZypherDB error."""
 
 
 class StorageError(ZypherDBError):

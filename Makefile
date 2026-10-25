@@ -1,4 +1,4 @@
-# zypherdb — usual development targets. Zig is a single-binary toolchain, so the
+# ZypherDB — usual development targets. Zig is a single-binary toolchain, so the
 # only real command is `zig`; these are thin conveniences.
 
 .PHONY: build python test test-py tck docs clean

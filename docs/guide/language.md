@@ -236,7 +236,7 @@ they fail on an empty database too, as the openCypher TCK requires.
 
 - **A hand-written parser, not a generator.** openCypher publishes its grammar (ANTLR and EBNF), and
   a generated parser would follow it to the letter. It would also bring a tool and a runtime into
-  the build, which zypherdb avoids (no third-party dependencies), and generated parsers give poor
+  the build, which ZypherDB avoids (no third-party dependencies), and generated parsers give poor
   error messages unless they are worked on. Recursive descent keeps every rule a function that can
   say what it expected where (`expected an expression, found RETURN`), and the grammar is small
   enough that the functions stay readable.

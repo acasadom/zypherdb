@@ -1,6 +1,6 @@
-"""Sphinx configuration for the zypherdb documentation (Markdown via MyST)."""
+"""Sphinx configuration for the ZypherDB documentation (Markdown via MyST)."""
 
-project = "zypherdb"
+project = "ZypherDB"
 
 extensions = ["myst_parser", "sphinxcontrib.mermaid"]
 

@@ -20,26 +20,26 @@ pub const checked = std.debug.runtime_safety;
 /// Panics if `bytes` is not a well-formed node record (in checked builds).
 pub fn assertRecord(bytes: []const u8) void {
     if (!checked) return;
-    if (recordProblem(bytes)) |problem| std.debug.panic("zypherdb: malformed node record: {s}", .{problem});
+    if (recordProblem(bytes)) |problem| std.debug.panic("ZypherDB: malformed node record: {s}", .{problem});
 }
 
 /// Panics if `encoded` is not a well-formed stored value (in checked builds).
 pub fn assertValue(encoded: []const u8) void {
     if (!checked) return;
-    if (valueProblem(encoded)) |problem| std.debug.panic("zypherdb: malformed stored value: {s}", .{problem});
+    if (valueProblem(encoded)) |problem| std.debug.panic("ZypherDB: malformed stored value: {s}", .{problem});
 }
 
 /// Panics if `bytes` is not a well-formed relationship record (in checked builds).
 pub fn assertRelationshipRecord(bytes: []const u8) void {
     if (!checked) return;
-    if (relationshipRecordProblem(bytes)) |problem| std.debug.panic("zypherdb: malformed relationship record: {s}", .{problem});
+    if (relationshipRecordProblem(bytes)) |problem| std.debug.panic("ZypherDB: malformed relationship record: {s}", .{problem});
 }
 
 /// Panics if `name` is not a storable label, type or property name (in
 /// checked builds); callers refuse such names with an error first.
 pub fn assertName(name: []const u8) void {
     if (!checked) return;
-    if (!isStorableName(name)) std.debug.panic("zypherdb: unstorable name of {d} bytes", .{name.len});
+    if (!isStorableName(name)) std.debug.panic("ZypherDB: unstorable name of {d} bytes", .{name.len});
 }
 
 /// Reads big-endian integers and byte runs, failing (null) past the end.

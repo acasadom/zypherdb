@@ -2,7 +2,7 @@
 
 The engine is a C library: `zig build` produces `zig-out/lib/libzypherdb.a` (static),
 `libzypherdb.dylib` or `libzypherdb.so` (shared), and the header `zig-out/include/zypherdb.h`. C, C++ and
-any language with a C foreign-function interface can embed zypherdb through it. Python does not need
+any language with a C foreign-function interface can embed ZypherDB through it. Python does not need
 it, since the [Python package](python) has its own native module.
 
 - Strings are passed as `(pointer, length)` pairs in UTF-8; they do not need a terminating NUL.
@@ -321,10 +321,10 @@ failure:
 valid until the next check or `zypherdb_close`.
 
 > **Warning.** It is **a diagnostic, not a routine call**. Run it only with a reason: a query that misses
-> data it should find or counts that do not add up (a suspected bug in zypherdb), to be sure after a
+> data it should find or counts that do not add up (a suspected bug in ZypherDB), to be sure after a
 > crash, or to attach its output to a bug report. It reads the whole database and holds memory in
 > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
-> reports is a bug in zypherdb: please report it with the output.
+> reports is a bug in ZypherDB: please report it with the output.
 
 ## Threads and processes
 

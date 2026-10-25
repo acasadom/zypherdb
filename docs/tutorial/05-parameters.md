@@ -112,7 +112,7 @@ except ParameterMissingError as error:
 missing parameter '$id' (code 8)
 ```
 
-zypherdb checks the parameters before the query runs, so the error comes even when no row would
+ZypherDB checks the parameters before the query runs, so the error comes even when no row would
 reach the parameter, as in an update of rows that do not exist. A query cannot half-run and then
 fail for want of a value.
 

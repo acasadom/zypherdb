@@ -1,4 +1,4 @@
-"""Runs the openCypher TCK against zypherdb or LatticeDB with the same criteria.
+"""Runs the openCypher TCK against ZypherDB or LatticeDB with the same criteria.
 
     python bench/comparison/tck_compare.py --engine zypherdb|latticedb [--report FILE]
 
