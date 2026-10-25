@@ -89,5 +89,6 @@ guide/storage
 guide/language
 guide/planning-execution
 guide/performance
+guide/testing
 guide/contributing
 ```

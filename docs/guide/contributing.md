@@ -44,6 +44,9 @@ make docs         # the HTML documentation
 
 A bug fix comes with a regression test that fails without the fix.
 
+The sections below say how to run each kind of test. Why each one exists, what it guarantees and
+what it cannot see are in [testing](testing).
+
 ### The openCypher TCK
 
 `make tck` runs the [openCypher TCK](https://github.com/opencypher/openCypher/tree/main/tck)
@@ -83,6 +86,23 @@ zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- storage --seeds 2
 At the end it prints how often each operation ran, and how often it failed as the model said it
 must: a fuzzer that never breaks a constraint does not test them. A new mutation of the graph, or a
 new kind of failure, gets an operation in the fuzzer and a prediction in the model.
+
+### The query fuzzer
+
+`tests/fuzz/query.zig` builds a small random graph and runs generated read queries
+(`tests/fuzz/query_generator.zig`), each compared with itself planned with optimizations off
+(`acmedb.PlanOptions`), prepared, and split by a random predicate into `WHERE p`, `WHERE NOT p` and
+`WHERE p IS NULL`. `--steps` is the number of queries per seed. Each seed prints a digest of its
+results; run the same seeds on both engines and compare the digests:
+
+```bash
+zig build fuzz -- query --seed 42 --steps 200 --verbose
+zig build fuzz -Doptimize=ReleaseSafe -- query --seed 500 --seeds 100
+zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- query --seed 500 --seeds 100
+```
+
+A new planner optimization gets a switch in `PlanOptions`, so the fuzzer can compare the plan with
+and without it.
 
 ### The fault fuzzer
 
