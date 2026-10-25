@@ -143,7 +143,7 @@ Deleting a node that is still connected is an error — a guard against leaving 
 point nowhere:
 
 ```python
-from acmedb import NodeStillConnectedError
+from zypherdb import NodeStillConnectedError
 
 try:
     db.query("MATCH (t:Team {name: 'Virology'}) DELETE t")

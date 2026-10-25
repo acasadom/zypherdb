@@ -2,11 +2,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const NodeKind = acmedb.NodeKind;
-const BinaryOperator = acmedb.BinaryOperator;
+const Ast = zypherdb.Ast;
+const NodeKind = zypherdb.NodeKind;
+const BinaryOperator = zypherdb.BinaryOperator;
 
 test "builds and walks the AST for a MATCH/RETURN query" {
     var ast = Ast.init(testing.allocator);

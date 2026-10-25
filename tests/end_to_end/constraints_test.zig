@@ -3,11 +3,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -130,5 +130,5 @@ test "a constraint on several properties, Neo4j 4's syntax, and what is refused"
         "CREATE CONSTRAINT FOR (p:A|B) REQUIRE p.id IS UNIQUE",
         "CREATE CONSTRAINT FOR (p:Person) REQUIRE q.id IS UNIQUE",
     };
-    for (invalid) |query| try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, query, null));
+    for (invalid) |query| try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, query, null));
 }

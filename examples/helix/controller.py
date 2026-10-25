@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import datetime
 
-import acmedb
+import zypherdb
 
 # The access decision. Each rule is a column of the WITH, and `refusal` names
 # the first rule broken (null if none is):
@@ -81,7 +81,7 @@ LEAVE = """
 class DoorController:
     """Decides and records the swipes of every reader, on one database."""
 
-    def __init__(self, db: acmedb.Database):
+    def __init__(self, db: zypherdb.Database):
         self.db = db
 
     def enter(self, badge: int, door: str, at: datetime.datetime) -> str | None:

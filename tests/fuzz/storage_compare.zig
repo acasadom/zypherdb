@@ -5,10 +5,10 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
-const value_encoding = acmedb.value_encoding;
+const zypherdb = @import("zypherdb");
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
+const value_encoding = zypherdb.value_encoding;
 
 const model_module = @import("model.zig");
 const Model = model_module.Model;
@@ -92,7 +92,7 @@ fn relationshipsDifference(arena: Allocator, graph: *Graph, model: *const Model)
 
 /// Node `id`'s edges in `direction`, in scan order: by type, then
 /// neighbour, then relationship id.
-fn edgesDifference(arena: Allocator, graph: *Graph, model: *const Model, id: NodeId, direction: acmedb.Direction) !?[]const u8 {
+fn edgesDifference(arena: Allocator, graph: *Graph, model: *const Model, id: NodeId, direction: zypherdb.Direction) !?[]const u8 {
     const Edge = struct {
         edge_type: []const u8,
         neighbour: NodeId,
@@ -131,7 +131,7 @@ fn edgesDifference(arena: Allocator, graph: *Graph, model: *const Model, id: Nod
 
 /// Compares stored properties (in name order) with the model's, by their
 /// encodings: equal values, of equal types, NaN included.
-fn propertiesDifference(arena: Allocator, properties: *acmedb.graph.PropertyIterator, expected: Properties) !?[]const u8 {
+fn propertiesDifference(arena: Allocator, properties: *zypherdb.graph.PropertyIterator, expected: Properties) !?[]const u8 {
     const names = try sortedNames(arena, expected.keys());
     var i: usize = 0;
     while (try properties.next()) |property| : (i += 1) {

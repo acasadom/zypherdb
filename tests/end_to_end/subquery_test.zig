@@ -4,11 +4,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -109,9 +109,9 @@ test "an EXISTS subquery's aggregates and variables stay inside it" {
     // A WITH inside it hides the outer variables it does not project.
     try expectQueryError(&ast, &g, "MATCH (p:Person) WHERE EXISTS { MATCH (p)-->(g) WITH g RETURN p } RETURN p", error.InvalidExpression);
     // Writing is not allowed in it.
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "MATCH (p) WHERE EXISTS { MATCH (p)-->(g) SET g.seen = true } RETURN p", null));
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "MATCH (p) WHERE EXISTS { CREATE (x) } RETURN p", null));
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "MATCH (p) WHERE EXISTS { } RETURN p", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "MATCH (p) WHERE EXISTS { MATCH (p)-->(g) SET g.seen = true } RETURN p", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "MATCH (p) WHERE EXISTS { CREATE (x) } RETURN p", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "MATCH (p) WHERE EXISTS { } RETURN p", null));
     // Nothing above wrote.
     try expectQuery(&ast, &g, "MATCH (n) WHERE n.seen IS NOT NULL RETURN n", &.{});
 }
@@ -212,6 +212,6 @@ test "CALL { } runs a subquery per row: imports, returned columns, writes" {
         "CALL { MATCH (n) RETURN n AS m } RETURN n", // n stays inside
     };
     for (invalid) |query| try expectQueryError(&ast, &g, query, error.InvalidExpression);
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "CALL { MATCH (n) } RETURN 1", null));
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "MATCH (n) WHERE EXISTS { CALL { CREATE (x) } } RETURN n", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "CALL { MATCH (n) } RETURN 1", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "MATCH (n) WHERE EXISTS { CALL { CREATE (x) } } RETURN n", null));
 }

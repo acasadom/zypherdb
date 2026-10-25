@@ -1,9 +1,9 @@
 """The access-control benchmark on several embedded graph databases, from Python.
 
-    python bench/comparison/bench_python.py --engine acmedb|kuzu|latticedb|sparrowdb --people N --dir DIR [--runs R]
+    python bench/comparison/bench_python.py --engine zypherdb|kuzu|latticedb|sparrowdb --people N --dir DIR [--runs R]
                      [--threads T]    (kuzu: threads per query; default: Kuzu's own)
 
-Every engine runs through its native Python binding (acmedb: Zig module;
+Every engine runs through its native Python binding (zypherdb: Zig module;
 Kuzu: pybind11; SparrowDB: PyO3; LatticeDB: ctypes, whose overhead was
 measured separately and is small). Same generated graph, same parameters,
 same Cypher text, with names chosen to avoid each engine's reserved words
@@ -77,11 +77,11 @@ QUERIES = [
 GRANT = {"days": [1, 2, 3, 4, 5], "opens": 9, "closes": 18}
 
 
-class Acmedb:
+class ZypherDB:
     def __init__(self, path, args):
-        import acmedb
+        import zypherdb
 
-        self.db = acmedb.Database(path, durability=args.durability)
+        self.db = zypherdb.Database(path, durability=args.durability)
 
     def load(self, g):
         db, ids = self.db, {}
@@ -280,7 +280,7 @@ class Sparrow:
         pass
 
 
-ENGINES = {"acmedb": Acmedb, "kuzu": Kuzu, "latticedb": Lattice, "sparrowdb": Sparrow}
+ENGINES = {"zypherdb": ZypherDB, "kuzu": Kuzu, "latticedb": Lattice, "sparrowdb": Sparrow}
 
 
 def main():

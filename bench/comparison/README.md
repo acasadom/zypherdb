@@ -1,12 +1,12 @@
-# acmedb compared with other embedded graph databases
+# zypherdb compared with other embedded graph databases
 
-In October 2026, before publishing, acmedb was measured against three other embedded graph
-databases that speak Cypher. The goal was to check two things: that acmedb's performance holds up
+In October 2026, before publishing, zypherdb was measured against three other embedded graph
+databases that speak Cypher. The goal was to check two things: that zypherdb's performance holds up
 against real alternatives, and that its answers are correct.
 
 | Engine | Language | Version | Binding used |
 | --- | --- | --- | --- |
-| acmedb | Zig | `main`, October 2026 | native module (Zig, Python limited API) |
+| zypherdb | Zig | `main`, October 2026 | native module (Zig, Python limited API) |
 | [LatticeDB](https://github.com/jeffhajewski/latticedb) | Zig | 0.15.0 (commit 3f797d5) | ctypes; also its C API |
 | [Kuzu](https://pypi.org/project/kuzu/) | C++ | 0.11.3 (archived October 2025) | pybind11 |
 | [SparrowDB](https://github.com/ryaker/SparrowDB) | Rust | 0.1.27 (commit 479fb18) | PyO3, built from source |
@@ -44,7 +44,7 @@ are chosen so that no engine trips on a reserved word: `Team`, `opens`/`closes` 
 Each engine is given its best case:
 
 - it loads by its fastest bulk path:
-  - acmedb: its mutators in one transaction;
+  - zypherdb: its mutators in one transaction;
   - Kuzu: `COPY` from CSV files, with writing the files counted in the load time;
   - SparrowDB: its Rust `BulkLoader`;
   - LatticeDB: its storage API in one transaction;
@@ -52,7 +52,7 @@ Each engine is given its best case:
 - it reuses prepared statements where it has them;
 - SparrowDB gets its parameters inlined as literals, because it ignores its index for `$parameters`.
 
-acmedb is built with `-Doptimize=ReleaseFast`.
+zypherdb is built with `-Doptimize=ReleaseFast`.
 
 ## Results
 
@@ -60,7 +60,7 @@ acmedb is built with `-Doptimize=ReleaseFast`.
 
 These rows are for 100,000 people (2,000 for SparrowDB, whose load takes 41 s even at that size).
 
-| Query | acmedb | Kuzu | SparrowDB (2k) |
+| Query | zypherdb | Kuzu | SparrowDB (2k) |
 | --- | ---: | ---: | ---: |
 | load | 2.5 s | **0.7 s** | 41 s |
 | card lookup | **8 µs** | 181 µs | 94 µs |
@@ -76,14 +76,14 @@ These rows are for 100,000 people (2,000 for SparrowDB, whose load takes 41 s ev
 | return all people | **52 ms** | 78 ms | 179 ms |
 | create one node | 8 ms | **4 ms** | 10 ms |
 
-For SparrowDB the acmedb numbers at the same size are in `results/python-acmedb-2k.jsonl`, and
+For SparrowDB the zypherdb numbers at the same size are in `results/python-zypherdb-2k.jsonl`, and
 they are lower still: for example 6 µs for a person's teams.
 
 LatticeDB was measured at 10,000 people: its load is quadratic, and 100,000 people did not finish
 loading within 15 minutes. The table below is natively from C, which removes its ctypes overhead
 (`native/bench.c`):
 
-| Query | acmedb | LatticeDB |
+| Query | zypherdb | LatticeDB |
 | --- | ---: | ---: |
 | load | 0.20 s | 27 s |
 | card lookup | 6 µs | 118 µs |
@@ -95,15 +95,15 @@ loading within 15 minutes. The table below is natively from C, which removes its
 
 ### Commits are compared at equal durability
 
-On macOS, acmedb's `full` durability flushes the drive's cache with `F_FULLFSYNC`, twice per
+On macOS, zypherdb's `full` durability flushes the drive's cache with `F_FULLFSYNC`, twice per
 commit (data and metadata), so a commit survives a power cut. LatticeDB syncs with a plain
-`fsync`, which does not flush that cache. acmedb's `relaxed` mode needs one flush, about 4 ms, the
+`fsync`, which does not flush that cache. zypherdb's `relaxed` mode needs one flush, about 4 ms, the
 same as Kuzu. Its `deferred` mode needs none: 23 µs.
 
 ### Correctness
 
 openCypher matches each relationship at most once in a pattern. So in
-`(p)-[:MEMBER_OF]->(g)<-[:MEMBER_OF]-(q)`, `q` is never `p`. acmedb follows that rule. The other
+`(p)-[:MEMBER_OF]->(g)<-[:MEMBER_OF]-(q)`, `q` is never `p`. zypherdb follows that rule. The other
 three count the person among their own colleagues:
 
 - Kuzu does it by design (walk semantics);
@@ -123,7 +123,7 @@ Other wrong results:
 
 The TCK was run in results-only mode: rows and errors are checked, side effects are not, because
 LatticeDB has no storage-level export to count them with. The result is 3000/3202 positive
-scenarios for acmedb (93.7%) and 210/3202 for LatticeDB (6.6%). Most of LatticeDB's failures are
+scenarios for zypherdb (93.7%) and 210/3202 for LatticeDB (6.6%). Most of LatticeDB's failures are
 queries it rejects:
 
 - `OPTIONAL MATCH`;
@@ -137,27 +137,27 @@ TCK cannot run on it unchanged. SparrowDB was not run.
 
 ## What this says
 
-- On transactional work (lookups, traversals, access decisions, results to Python), acmedb is
+- On transactional work (lookups, traversals, access decisions, results to Python), zypherdb is
   faster than all three: 3–200× faster than LatticeDB, 15–8000× than Kuzu, 20–8000× than
   SparrowDB.
-- On analytics over the whole graph (scans, sorts, aggregates), Kuzu is 5–50× faster than acmedb.
+- On analytics over the whole graph (scans, sorts, aggregates), Kuzu is 5–50× faster than zypherdb.
   The reason is its columnar storage, not parallelism: with one thread it is as fast. Kuzu also
-  loads in bulk 3.5× faster. These are acmedb's known gaps (see `docs/guide/performance.md`).
+  loads in bulk 3.5× faster. These are zypherdb's known gaps (see `docs/guide/performance.md`).
 - On features, LatticeDB and SparrowDB have full-text search, and LatticeDB has vector search.
-  acmedb has neither.
+  zypherdb has neither.
 
 ## Reproducing
 
-From the repository root, with acmedb built optimized
+From the repository root, with zypherdb built optimized
 (`zig build python -Doptimize=ReleaseFast -Dpython-include=…`). Each engine is installed in its own
 virtual environment. Kuzu has wheels up to Python 3.13.
 
 ```bash
 # docs-test: skip
 pip install kuzu==0.11.3 latticedb==0.15.0
-python bench/comparison/bench_python.py --engine acmedb --people 100000 --dir /tmp/b-acmedb --runs 200
+python bench/comparison/bench_python.py --engine zypherdb --people 100000 --dir /tmp/b-zypherdb --runs 200
 python bench/comparison/bench_python.py --engine kuzu --people 100000 --dir /tmp/b-kuzu --runs 200 [--threads 1]
-python bench/comparison/table.py bench/comparison/results/python-acmedb-100k.jsonl bench/comparison/results/python-kuzu-100k.jsonl
+python bench/comparison/table.py bench/comparison/results/python-zypherdb-100k.jsonl bench/comparison/results/python-kuzu-100k.jsonl
 python bench/comparison/tck_compare.py --engine latticedb --report /tmp/tck-latticedb.md
 ```
 
@@ -176,9 +176,9 @@ The native benchmark builds against each engine's C library and header:
 
 ```bash
 # docs-test: skip
-cc -O2 -Izig-out/include bench/comparison/native/bench.c -Lzig-out/lib -lacmedb -o bench-acmedb
+cc -O2 -Izig-out/include bench/comparison/native/bench.c -Lzig-out/lib -lzypherdb -o bench-zypherdb
 cc -O2 -DLATTICE -I<latticedb>/include bench/comparison/native/bench.c -L<dir of liblattice> -llattice -o bench-lattice
-./bench-acmedb /tmp/n-acmedb 10000 100 [full|relaxed|deferred]
+./bench-zypherdb /tmp/n-zypherdb 10000 100 [full|relaxed|deferred]
 ./bench-lattice /tmp/n-lattice 10000 100
 ```
 

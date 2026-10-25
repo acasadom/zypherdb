@@ -21,7 +21,7 @@
 //!
 //! A list is stored only when its elements are all of one storable,
 //! non-list type (integers and floats count as one: numbers), as openCypher
-//! requires. A map (a document, an acmedb extension to openCypher) holds any
+//! requires. A map (a document, a zypherdb extension to openCypher) holds any
 //! JSON-like value: nested maps, lists of any elements, and nulls.
 //!
 //! The index encoding is the same except that variable-length parts end in

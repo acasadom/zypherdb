@@ -8,7 +8,7 @@ grow out of this one.
 
 ## Why it is shaped this way
 
-acmedb is deliberately small and generic. Five decisions explain almost every file:
+zypherdb is deliberately small and generic. Five decisions explain almost every file:
 
 - **Zig, not C++.** The project started as C++/RocksDB and pivoted. The reasons were pragmatic:
   embeddable in Python, real performance, fast builds on an 8 GB M1, and a single-binary toolchain
@@ -30,7 +30,7 @@ acmedb is deliberately small and generic. Five decisions explain almost every fi
 - **LMDB or libmdbx as the storage engine, behind a contract.** A graph is traversed by following
   adjacencies, not by joining tables, so the storage is a key/value B+tree and *"neighbours of X"
   is one prefix scan*. Both engines are single-writer / multi-reader across processes, and their
-  lexicographic key order is what the adjacency encoding exploits. The rest of acmedb sees the
+  lexicographic key order is what the adjacency encoding exploits. The rest of zypherdb sees the
   engine only through its contract (`storage/engine/contract.zig`); the engine is chosen at build
   time (`-Dstorage-engine=lmdb`, the default, or `mdbx`), and another one would be a new file next
   to `engine/lmdb.zig` and `engine/mdbx.zig`. Every change goes through the write transaction of
@@ -156,7 +156,7 @@ flowchart TB
 | `src/execution/entities.zig` | `EntitySnapshot`: the labels and properties of every node and relationship a result mentions, read before the transaction ends. |
 | `src/statement/Statement.zig` | A prepared statement: parsed, checked and planned once; each run binds the parameters and plans again if the counts drifted. |
 | `src/statement/Cache.zig` | The statements `query` calls prepared, by text, least recently used out first. |
-| `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. Declared in `include/acmedb.h`. |
+| `src/c_api.zig` | The C ABI (`export fn`): a `Context` (store + graph) and a self-contained `Result`. Declared in `include/zypherdb.h`. |
 | `python/native/module.zig` | The Python extension module, on the limited C API: converts parameters and rows directly, runs queries with the GIL released. See [the Python reference](python.md#under-the-hood). |
 | `python/native/temporals.zig` | Converts temporal values to and from Python's `datetime` types. |
 | `src/root.zig` | The library root: re-exports the public surface. |
@@ -165,7 +165,7 @@ flowchart TB
 ## The lifecycle of a query
 
 A query is text in, rows out, through five stages. Each stage is a separate file. A query sent as
-text (`acmedb_query`, `Database.query`) is first looked up in the database's cache of prepared
+text (`zypherdb_query`, `Database.query`) is first looked up in the database's cache of prepared
 statements (`statement/Cache.zig`, by text, 64 entries): a statement found there was parsed,
 checked and planned before, so its run starts at stage 4, after reading the graph's counts again
 to see whether the plan must be built again.

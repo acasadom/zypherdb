@@ -1,4 +1,4 @@
-"""Loads the native engine (`acmedb._native`, built from python/native/) and
+"""Loads the native engine (`zypherdb._native`, built from python/native/) and
 registers with it the Python classes results are built with."""
 
 from __future__ import annotations
@@ -23,13 +23,13 @@ def _load():
     repository = Path(__file__).resolve().parent.parent.parent
     for candidate in (repository / "zig-out" / "python" / "_native.abi3.so", Path.cwd() / "zig-out" / "python" / "_native.abi3.so"):
         if candidate.is_file():
-            loader = importlib.machinery.ExtensionFileLoader("acmedb._native", str(candidate))
-            spec = importlib.util.spec_from_file_location("acmedb._native", candidate, loader=loader)
+            loader = importlib.machinery.ExtensionFileLoader("zypherdb._native", str(candidate))
+            spec = importlib.util.spec_from_file_location("zypherdb._native", candidate, loader=loader)
             module = importlib.util.module_from_spec(spec)
             loader.exec_module(module)
             return module
     raise ImportError(
-        "acmedb's native engine is missing: build it with "
+        "zypherdb's native engine is missing: build it with "
         "`zig build python -Dpython-include=$(python3 -c \"import sysconfig; print(sysconfig.get_paths()['include'])\")`"
     )
 

@@ -4,10 +4,10 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const c_api = acmedb.c_api;
-const ErrorCode = acmedb.diagnostics.ErrorCode;
+const c_api = zypherdb.c_api;
+const ErrorCode = zypherdb.diagnostics.ErrorCode;
 const snap = @import("snapshot.zig").snap;
 const Snap = @import("snapshot.zig").Snap;
 const testPath = @import("support.zig").testPath;
@@ -19,22 +19,22 @@ fn expectErrors(setup: []const u8, queries: []const []const u8, expected: Snap) 
     defer tmp.cleanup();
     var path_buffer: [256]u8 = undefined;
     const path = testPath(&tmp, &path_buffer);
-    const context = c_api.acmedb_open(path.ptr, path.len).?;
-    defer c_api.acmedb_close(context);
-    if (setup.len > 0) c_api.acmedb_result_free(c_api.acmedb_query(context, setup.ptr, setup.len).?);
+    const context = c_api.zypherdb_open(path.ptr, path.len).?;
+    defer c_api.zypherdb_close(context);
+    if (setup.len > 0) c_api.zypherdb_result_free(c_api.zypherdb_query(context, setup.ptr, setup.len).?);
 
     var text: std.Io.Writer.Allocating = .init(testing.allocator);
     defer text.deinit();
     for (queries) |query| {
         try text.writer.print("{s}\n", .{query});
-        if (c_api.acmedb_query(context, query.ptr, query.len)) |result| {
-            c_api.acmedb_result_free(result);
+        if (c_api.zypherdb_query(context, query.ptr, query.len)) |result| {
+            c_api.zypherdb_result_free(result);
             try text.writer.writeAll("  ok\n");
             continue;
         }
         var len: usize = 0;
-        const message = c_api.acmedb_last_error(context, &len)[0..len];
-        const code: ErrorCode = @enumFromInt(c_api.acmedb_error_code(context));
+        const message = c_api.zypherdb_last_error(context, &len)[0..len];
+        const code: ErrorCode = @enumFromInt(c_api.zypherdb_error_code(context));
         try text.writer.print("  {t}: {s}\n", .{ code, message });
     }
     try expected.diff(text.written());

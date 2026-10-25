@@ -120,13 +120,13 @@ def _c_programs() -> list:
 @pytest.mark.parametrize("page, index, code, expected", _c_programs())
 def test_c_program(page, index, code, expected, scratch):
     compiler = shutil.which("zig")
-    if compiler is None or not (BUILD / "include" / "acmedb.h").exists():
+    if compiler is None or not (BUILD / "include" / "zypherdb.h").exists():
         pytest.skip("needs zig and the library built with `zig build`")
     source = scratch / "program.c"
     source.write_text(code)
     library = BUILD / "lib"
     subprocess.run(
-        [compiler, "cc", f"-I{BUILD / 'include'}", str(source), f"-L{library}", "-lacmedb",
+        [compiler, "cc", f"-I{BUILD / 'include'}", str(source), f"-L{library}", "-lzypherdb",
          f"-Wl,-rpath,{library}", "-o", str(scratch / "program")],
         check=True,
     )

@@ -12,7 +12,7 @@ SNAP_UPDATE=1 zig build test   # rewrite the snapshots that differ (review with 
 zig build fuzz -- storage --seeds 100   # the storage fuzzer, from a random seed
 zig build fuzz -- faults --seeds 100    # the fault fuzzer: storage that fails on purpose
 zig build fuzz -- crash --seeds 100     # the crash fuzzer: a writer killed with SIGKILL
-zig build         # static + shared libraries and acmedb.h into zig-out/
+zig build         # static + shared libraries and zypherdb.h into zig-out/
 make python       # the Python extension module into zig-out/python/
 make test-py      # Python tests and documentation tests (pip install -e "python[dev]" once)
 make tck          # the openCypher TCK
@@ -24,7 +24,7 @@ make docs         # the HTML documentation
 
 `zig build test` runs two executables:
 
-- **The suite, `tests/`.** It imports the `acmedb` module like any client and uses **only the
+- **The suite, `tests/`.** It imports the `zypherdb` module like any client and uses **only the
   public API**. It mirrors the source layers: `tests/storage/`, `tests/query/`,
   `tests/end_to_end/` (whole queries, one file per feature) and `tests/c_api_test.zig`.
   `tests/support.zig` holds the shared helpers: a temporary store, the "people and movies" fixture
@@ -54,7 +54,7 @@ what it cannot see are in [testing](testing).
 longer passes; CI does the same. Language work is measured there: pick a reason from
 `tests/tck/REPORT.md`, implement it, run `make tck`, then record the newly passing scenarios with
 `python -I tests/tck/runner.py --update-baseline --report tests/tck/REPORT.md` in the same commit.
-`tests/tck/deviations.txt` lists the scenarios that acmedb answers differently on purpose (map
+`tests/tck/deviations.txt` lists the scenarios that zypherdb answers differently on purpose (map
 properties, for instance), each with its reason.
 
 ### The storage fuzzer and the integrity checker
@@ -91,7 +91,7 @@ new kind of failure, gets an operation in the fuzzer and a prediction in the mod
 
 `tests/fuzz/query.zig` builds a small random graph and runs generated read queries
 (`tests/fuzz/query_generator.zig`), each compared with itself planned with optimizations off
-(`acmedb.PlanOptions`), prepared, and split by a random predicate into `WHERE p`, `WHERE NOT p` and
+(`zypherdb.PlanOptions`), prepared, and split by a random predicate into `WHERE p`, `WHERE NOT p` and
 `WHERE p IS NULL`. `--steps` is the number of queries per seed. Each seed prints a digest of its
 results; run the same seeds on both engines and compare the digests:
 
@@ -109,7 +109,7 @@ and without it.
 Every storage error must reach the caller as an error, without a panic, a leak, a transaction left
 open or a half-written change. `tests/fuzz/faults.zig` checks this with a storage engine that fails
 on purpose (`src/storage/engine/faulty.zig`, which wraps the real engine and fails at the N-th
-operation). `build.zig` builds a second acmedb module with it (build option `fault_injection`) for
+operation). `build.zig` builds a second zypherdb module with it (build option `fault_injection`) for
 the fault test and the fuzzers; the library itself never includes it, so it pays nothing for it.
 
 The fuzzer runs a random workload (`tests/fuzz/fault_workload.zig`: writes, MERGE, deletions,
@@ -213,8 +213,8 @@ The style follows Alexander Stepanov's generic programming, within Zig's convent
 - **One directory per layer**: `storage/` (engine, keys, graph), `query/` (text to AST), `execution/`
   (AST to rows), `temporal/` (calendar, zones, temporal types). Shared types and algorithms sit in
   `src/` (`value.zig`, `sequence_algorithms.zig`, `diagnostics.zig`). The embeddings sit apart:
-  `src/c_api.zig` with `include/acmedb.h`, and `python/` (the native module in `python/native/`,
-  the package in `python/acmedb/`).
+  `src/c_api.zig` with `include/zypherdb.h`, and `python/` (the native module in `python/native/`,
+  the package in `python/zypherdb/`).
 - **One responsibility per file**, as a guide under ~500 lines of code; functions under ~60 lines.
   A large `switch` over token or node kinds (`tokenize`, `evaluate`) is the exception: it reads best
   in one place.

@@ -20,7 +20,7 @@ import multiprocessing
 import tempfile
 from collections import Counter
 
-import acmedb
+import zypherdb
 
 from . import day, load, monitor
 from .controller import DoorController, door_of
@@ -44,7 +44,7 @@ ALARMS = "MATCH (a:Alarm) RETURN a.raised, a.cleared, a.kind, a.room ORDER BY a.
 
 class Simulation:
     def __init__(self, path: str, every: datetime.timedelta, verbose: bool):
-        self.db = acmedb.Database(path, durability="deferred")
+        self.db = zypherdb.Database(path, durability="deferred")
         self.path = path
         self.every = every
         self.verbose = verbose

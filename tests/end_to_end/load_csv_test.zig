@@ -2,12 +2,12 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
-const Executor = acmedb.Executor;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
+const Executor = zypherdb.Executor;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -26,7 +26,7 @@ const null_value: Value = .{ .null = {} };
 
 /// Runs `src` with LOAD CSV reading from `import_directory` (null: off).
 fn run(ast: *Ast, g: *Graph, import_directory: ?[]const u8, src: []const u8, expected: []const []const Value) !void {
-    const query = try acmedb.parser.parse(ast, src, null);
+    const query = try zypherdb.parser.parse(ast, src, null);
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var executor = Executor.init(ast, g, arena.allocator());
@@ -35,7 +35,7 @@ fn run(ast: *Ast, g: *Graph, import_directory: ?[]const u8, src: []const u8, exp
 }
 
 fn runError(ast: *Ast, g: *Graph, import_directory: ?[]const u8, src: []const u8, expected: anyerror) !void {
-    const query = try acmedb.parser.parse(ast, src, null);
+    const query = try zypherdb.parser.parse(ast, src, null);
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var executor = Executor.init(ast, g, arena.allocator());

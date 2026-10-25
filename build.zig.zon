@@ -1,7 +1,7 @@
 .{
-    .name = .acmedb,
+    .name = .zypherdb,
     .version = "0.1.0",
-    .fingerprint = 0x8985f8037b44acbc,
+    .fingerprint = 0x7a82e35c3637ef2e,
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{

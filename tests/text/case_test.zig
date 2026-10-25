@@ -2,8 +2,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
-const unicode = acmedb.text.unicode;
+const zypherdb = @import("zypherdb");
+const unicode = zypherdb.text.unicode;
 
 fn expectCase(text: []const u8, case: unicode.Case, expected: []const u8) !void {
     const changed = try unicode.changeCase(testing.allocator, text, case);

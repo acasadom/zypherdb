@@ -2,7 +2,7 @@
 
 The [openCypher Technology Compatibility Kit](https://github.com/opencypher/openCypher/tree/main/tck)
 is the reference specification of Cypher's behaviour as executable scenarios: a starting graph, a
-query, and the exact expected rows, errors and side effects. acmedb runs it to measure what works
+query, and the exact expected rows, errors and side effects. zypherdb runs it to measure what works
 against an external reference, instead of trusting its own tests.
 
 ```bash
@@ -27,7 +27,7 @@ python -I tests/tck/runner.py --update-baseline                  # record newly 
 ## How a scenario is judged
 
 - **Positive** scenarios expect a result; they are the headline measure. **Negative** scenarios
-  expect an error, and are reported apart: acmedb rejects much syntax it does not implement yet,
+  expect an error, and are reported apart: zypherdb rejects much syntax it does not implement yet,
   which can coincide with an expected `SyntaxError`, so their pass rate overstates support.
 - Expected errors are matched by class: `SyntaxError`/`SemanticError` accept a parse, unknown
   variable or invalid expression error; `TypeError` a type mismatch; any other class any error.
@@ -40,7 +40,7 @@ python -I tests/tck/runner.py --update-baseline                  # record newly 
 
 ## Known limits of the runner
 
-- acmedb returns rows without column names, so columns are compared by position.
+- zypherdb returns rows without column names, so columns are compared by position.
 - Relationships are told apart by their id (`export_graph` gives it), so parallel ones count apart.
 - The TCK's test procedures (`there exists a procedure …`) are defined with the private
   `Database._define_procedure`, a procedure whose rows are the step's table.

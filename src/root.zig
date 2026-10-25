@@ -1,4 +1,4 @@
-//! Root of the `acmedb` library.
+//! Root of the `zypherdb` library.
 //!
 //! Embedded graph database engine (a subset of openCypher).
 //! First building block: the storage layer (`KeyValueStore` over the

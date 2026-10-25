@@ -2,8 +2,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
-const analyzer = acmedb.text.analyzer;
+const zypherdb = @import("zypherdb");
+const analyzer = zypherdb.text.analyzer;
 
 fn expectTerms(text: []const u8, expected: []const []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);

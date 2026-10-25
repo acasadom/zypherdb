@@ -2,16 +2,16 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Index = acmedb.Index;
-const NodeKind = acmedb.NodeKind;
-const BinaryOperator = acmedb.BinaryOperator;
-const AggregateKind = acmedb.AggregateKind;
-const EdgeDirection = acmedb.EdgeDirection;
-const Diagnostic = acmedb.Diagnostic;
-const parse = acmedb.parser.parse;
+const Ast = zypherdb.Ast;
+const Index = zypherdb.Index;
+const NodeKind = zypherdb.NodeKind;
+const BinaryOperator = zypherdb.BinaryOperator;
+const AggregateKind = zypherdb.AggregateKind;
+const EdgeDirection = zypherdb.EdgeDirection;
+const Diagnostic = zypherdb.Diagnostic;
+const parse = zypherdb.parser.parse;
 
 fn parseString(src: []const u8) !struct { ast: Ast, root: Index } {
     var ast = Ast.init(testing.allocator);
@@ -332,6 +332,6 @@ test "every parse failure carries a message" {
         var diagnostic = Diagnostic.init();
         try testing.expectError(error.UnexpectedToken, parse(&ast, src, &diagnostic));
         try testing.expect(diagnostic.message().len > 0);
-        try testing.expectEqual(acmedb.diagnostics.ErrorCode.parse, diagnostic.code);
+        try testing.expectEqual(zypherdb.diagnostics.ErrorCode.parse, diagnostic.code);
     }
 }

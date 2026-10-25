@@ -21,11 +21,11 @@
 //! 95th percentile and mean time per query.
 
 const std = @import("std");
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
-const KeyValueStore = acmedb.KeyValueStore;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
+const KeyValueStore = zypherdb.KeyValueStore;
 
 const Config = struct {
     people: u64 = 100_000,
@@ -36,7 +36,7 @@ const Config = struct {
     /// Reuse the graph already in `dir` instead of loading it again (to
     /// profile one query: the write queries of earlier runs stay in it).
     reuse: bool = false,
-    /// Run each query as a statement prepared once (`acmedb.Statement`)
+    /// Run each query as a statement prepared once (`zypherdb.Statement`)
     /// instead of parsing and planning it on every run.
     prepared: bool = false,
     durability: KeyValueStore.Durability = .full,
@@ -95,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
     defer store.deinit();
     var graph = Graph.init(&store, allocator);
 
-    try out.print("acmedb access-control benchmark ({s} build, {s} durability{s})\n", .{ @tagName(@import("builtin").mode), @tagName(config.durability), if (config.prepared) ", prepared statements" else "" });
+    try out.print("zypherdb access-control benchmark ({s} build, {s} durability{s})\n", .{ @tagName(@import("builtin").mode), @tagName(config.durability), if (config.prepared) ", prepared statements" else "" });
     try out.print("graph: {d} people and cards, {d} groups, {d} zones, {d} doors\n\n", .{ counts.people, counts.groups, counts.zones, counts.doors });
     try out.flush();
 
@@ -284,7 +284,7 @@ const Measurement = struct { median: u64, p95: u64, mean: u64, rows: usize };
 fn measure(io: std.Io, graph: *Graph, query: Query, counts: Counts, random: std.Random, runs: usize, prepared: bool) !Measurement {
     var durations = try std.heap.smp_allocator.alloc(u64, runs);
     defer std.heap.smp_allocator.free(durations);
-    const statement: ?*acmedb.Statement = if (prepared) try acmedb.Statement.prepare(std.heap.smp_allocator, query.text, .{ .graph = graph }) else null;
+    const statement: ?*zypherdb.Statement = if (prepared) try zypherdb.Statement.prepare(std.heap.smp_allocator, query.text, .{ .graph = graph }) else null;
     defer if (statement) |prepared_statement| prepared_statement.destroy();
     var rows: usize = 0;
     // One arena for every run, as the C and Python bindings keep one per database.
@@ -292,8 +292,8 @@ fn measure(io: std.Io, graph: *Graph, query: Query, counts: Counts, random: std.
     defer arena.deinit();
     for (0..runs + 2) |run| { // two warm-up runs
         defer _ = arena.reset(.{ .retain_with_limit = 1 << 20 });
-        var ast = acmedb.Ast.init(arena.allocator());
-        var executor = if (statement) |prepared_statement| prepared_statement.executorFor(graph, arena.allocator()) else acmedb.Executor.init(&ast, graph, arena.allocator());
+        var ast = zypherdb.Ast.init(arena.allocator());
+        var executor = if (statement) |prepared_statement| prepared_statement.executorFor(graph, arena.allocator()) else zypherdb.Executor.init(&ast, graph, arena.allocator());
         for (query.parameters) |parameter| {
             const value: Value = switch (parameter) {
                 .person => .{ .int = @intCast(random.uintLessThan(u64, counts.people)) },
@@ -304,7 +304,7 @@ fn measure(io: std.Io, graph: *Graph, query: Query, counts: Counts, random: std.
         }
         // Parsing is part of what a query costs: it is timed too.
         const start = now(io);
-        const result = if (statement) |prepared_statement| try prepared_statement.run(&executor) else try executor.run(try acmedb.parser.parse(&ast, query.text, null));
+        const result = if (statement) |prepared_statement| try prepared_statement.run(&executor) else try executor.run(try zypherdb.parser.parse(&ast, query.text, null));
         const elapsed: u64 = @intCast(now(io) - start);
         rows = result.len;
         if (run >= 2) durations[run - 2] = elapsed;

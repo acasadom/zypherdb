@@ -17,7 +17,7 @@ import datetime
 import multiprocessing
 from dataclasses import dataclass
 
-import acmedb
+import zypherdb
 
 CHECKS = {
     # A lab with a minimum occupancy must not hold fewer people (it may be empty).
@@ -89,7 +89,7 @@ class Report:
     cleared: tuple[Alarm, ...]
 
 
-def check(db: acmedb.Database, at: datetime.datetime) -> Report:
+def check(db: zypherdb.Database, at: datetime.datetime) -> Report:
     """Runs every check at time `at`: raises the alarms for new breaches, clears the ended ones."""
     active = []
     raised = []
@@ -110,6 +110,6 @@ def serve(path: str, times: multiprocessing.Queue, reports: multiprocessing.Queu
     The process opens the database itself: the controllers and the monitor
     share the file, not a Python object.
     """
-    with acmedb.Database(path, durability="deferred") as db:
+    with zypherdb.Database(path, durability="deferred") as db:
         while (at := times.get()) is not None:
             reports.put(check(db, at))

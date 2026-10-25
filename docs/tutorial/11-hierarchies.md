@@ -87,7 +87,7 @@ for path in db.query("""
 ```
 
 `WHERE NOT (top)-[:PART_OF]->()` keeps only the path that reaches the top of the tree. In Python a
-path is an `acmedb.Path`, with `nodes` and `relationships` tuples. Inside a query, functions
+path is a `zypherdb.Path`, with `nodes` and `relationships` tuples. Inside a query, functions
 take it apart:
 
 ```python

@@ -2,7 +2,7 @@
 
 import pytest
 
-from acmedb import AcmedbError, Database, Node, ParseError
+from zypherdb import ZypherDBError, Database, Node, ParseError
 
 
 @pytest.fixture
@@ -79,7 +79,7 @@ def test_plan_errors(db):
     with pytest.raises(ParseError):
         db.explain("SHOW INDEXES")
     with db.write():
-        with pytest.raises(AcmedbError):
+        with pytest.raises(ZypherDBError):
             db.explain("MATCH (n) RETURN n")
 
 
@@ -110,7 +110,7 @@ def test_prepared_query_after_close(tmp_path):
     database = Database(str(tmp_path))
     lookup = database.prepare("RETURN 1")
     database.close()
-    with pytest.raises(AcmedbError):
+    with pytest.raises(ZypherDBError):
         lookup.query()
 
 

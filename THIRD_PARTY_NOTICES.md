@@ -1,6 +1,6 @@
 # Third-party notices
 
-acmedb includes, or is derived from, the following works. Their licenses are reproduced below.
+zypherdb includes, or is derived from, the following works. Their licenses are reproduced below.
 
 | Work | Where | License |
 | --- | --- | --- |
@@ -15,8 +15,8 @@ The English stop words are Lucene's English stop set, a list of 33 common Englis
 
 ## libmdbx (Apache License 2.0)
 
-acmedb's builds with the libmdbx engine (`-Dstorage-engine=mdbx`) contain libmdbx, compiled from
-`vendor/libmdbx/mdbx.c` as modified by acmedb (`vendor/libmdbx/PATCHES.md`). The
+zypherdb's builds with the libmdbx engine (`-Dstorage-engine=mdbx`) contain libmdbx, compiled from
+`vendor/libmdbx/mdbx.c` as modified by zypherdb (`vendor/libmdbx/PATCHES.md`). The
 attribution notice of its NOTICE file:
 
 ```text

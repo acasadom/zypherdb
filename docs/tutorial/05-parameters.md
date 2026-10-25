@@ -100,7 +100,7 @@ print(db.query("MATCH (p:Person {employee_id: $id}) RETURN p.name", {"id": 1004}
 A query that needs a parameter you did not pass fails, with an error naming it:
 
 ```python
-from acmedb import ParameterMissingError
+from zypherdb import ParameterMissingError
 
 try:
     db.query("MATCH (p:Person {employee_id: $id}) RETURN p.name")
@@ -112,7 +112,7 @@ except ParameterMissingError as error:
 missing parameter '$id' (code 8)
 ```
 
-acmedb checks the parameters before the query runs, so the error comes even when no row would
+zypherdb checks the parameters before the query runs, so the error comes even when no row would
 reach the parameter, as in an update of rows that do not exist. A query cannot half-run and then
 fail for want of a value.
 

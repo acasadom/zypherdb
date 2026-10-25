@@ -1,9 +1,9 @@
-# acmedb
+# zypherdb
 
 *An embedded graph database in Zig, speaking openCypher, on LMDB or libmdbx.*
 
 A small, embeddable **graph database**: link it into your process through its C ABI, or
-`import acmedb` in Python, store nodes and relationships, and query them in **openCypher** — over
+`import zypherdb` in Python, store nodes and relationships, and query them in **openCypher** — over
 an **index-free adjacency** graph stored in **LMDB** (or **libmdbx**). No server, no configuration,
 one binary toolchain.
 
@@ -15,7 +15,7 @@ one binary toolchain.
   vcpkg. Pre-1.0 (breaking changes until 1.0) and a small ecosystem, but `comptime` generics map
   cleanly onto the generic-programming style the project uses throughout.
 - **LMDB or libmdbx** as the storage engine — not RocksDB, not SQLite. A graph is traversed by
-  following adjacencies, not by joining tables: acmedb encodes its own keys and exploits the
+  following adjacencies, not by joining tables: zypherdb encodes its own keys and exploits the
   engine's lexicographic iteration so *"give me the neighbours of X"* is one prefix scan. Both are
   single-writer / multi-reader across processes. The engine sits behind a contract
   (`src/storage/engine/contract.zig`) and is chosen at build time: `-Dstorage-engine=lmdb` (the
@@ -36,8 +36,8 @@ zig build         # build the static + shared libraries into zig-out/
 ```
 
 The LMDB and libmdbx C sources under `vendor/` are vendored; the build compiles the chosen one. `zig build` also
-produces `libacmedb.dylib` (`.so` on Linux) and the header `zig-out/include/acmedb.h`, for embedding
-acmedb from C, C++ or any language with a C FFI (see `docs/guide/c-api.md`).
+produces `libzypherdb.dylib` (`.so` on Linux) and the header `zig-out/include/zypherdb.h`, for embedding
+zypherdb from C, C++ or any language with a C FFI (see `docs/guide/c-api.md`).
 
 ## Quickstart (Python)
 
@@ -48,7 +48,7 @@ use the `Database` object:
 ```bash
 make python
 PYTHONPATH=python python3 - <<'PY'
-from acmedb import Database
+from zypherdb import Database
 import tempfile
 
 with Database(tempfile.mkdtemp()) as db:
@@ -78,17 +78,17 @@ underneath.
 
 Read the docs at [`docs/`](docs/) — two tracks:
 
-- **Using acmedb** — a step-by-step [tutorial](docs/tutorial/01-getting-started.md) (twenty
+- **Using zypherdb** — a step-by-step [tutorial](docs/tutorial/01-getting-started.md) (twenty
   steps building the access-control system of a biomedical lab, every example run by the tests)
   plus references for the
-  [Cypher](docs/guide/cypher.md) acmedb speaks, the [C ABI](docs/guide/c-api.md), and
+  [Cypher](docs/guide/cypher.md) zypherdb speaks, the [C ABI](docs/guide/c-api.md), and
   [Python](docs/guide/python.md).
 - **How it works inside** — the [architecture](docs/guide/architecture.md) (design decisions,
   components, query lifecycle), the [storage encoding](docs/guide/storage.md) (keys, index-free
   adjacency, indexes, a worked example of the keys), the [lexer/parser](docs/guide/language.md),
   [planning & execution](docs/guide/planning-execution.md) (plans of operators, anchor selection,
   pushdown, prepared statements), [performance](docs/guide/performance.md) (known costs),
-  [testing](docs/guide/testing.md) (how acmedb tests itself: oracles, fuzzers, crashes, faults),
+  [testing](docs/guide/testing.md) (how zypherdb tests itself: oracles, fuzzers, crashes, faults),
   and [contributing](docs/guide/contributing.md).
 
 Build the HTML locally:
@@ -123,7 +123,7 @@ every file; [contributing](docs/guide/contributing.md) has the principles and th
   writing (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`), `LOAD CSV` from an import
   directory, procedures (`CALL db.labels()`, full-text queries), and `EXPLAIN` / `PROFILE`.
 - **Values**: integers, floats, strings, booleans, lists, maps, and the six temporal types with
-  time zones; properties can also hold maps (documents, an acmedb extension).
+  time zones; properties can also hold maps (documents, a zypherdb extension).
 - **Expressions and functions**: the openCypher operators (three-valued `null` logic, `=~` regular
   expressions), string, numeric, list, temporal and graph functions, and every aggregate
   (`count`, `sum`, `avg`, `min`, `max`, `collect`, `stDev`, percentiles, with `DISTINCT`).
@@ -141,12 +141,12 @@ every file; [contributing](docs/guide/contributing.md) has the principles and th
 
 ## Status
 
-acmedb is measured against the [openCypher TCK](tests/tck/README.md), the reference scenarios of
+zypherdb is measured against the [openCypher TCK](tests/tck/README.md), the reference scenarios of
 the language: **all 3202 scenarios that expect a result pass**, and all 694 that expect an
 error — see [tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area. The TCK does not
 cover everything Neo4j users write: the [Cypher reference](docs/guide/cypher.md#not-supported)
-lists what acmedb does not implement yet.
+lists what zypherdb does not implement yet.
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). acmedb includes LMDB, libmdbx and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT (see [LICENSE](LICENSE)). zypherdb includes LMDB, libmdbx and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

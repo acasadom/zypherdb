@@ -3,11 +3,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -135,7 +135,7 @@ test "an access-control rule: weekdays from 9:00 to 18:00, local time" {
     ;
     const at = struct {
         fn instant(text: []const u8) !Value {
-            return .{ .date_time = try acmedb.temporal.parse.dateTime(text) };
+            return .{ .date_time = try zypherdb.temporal.parse.dateTime(text) };
         }
     };
     // Tuesday 07:30 UTC is 09:30 in Madrid (summer time): allowed.
@@ -156,14 +156,14 @@ test "a fixed time replaces the clock, for realtime readings too" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
 
-    const query = try acmedb.parser.parse(&ast, "RETURN datetime().epochMillis, datetime.realtime().epochMillis, date()", null);
+    const query = try zypherdb.parser.parse(&ast, "RETURN datetime().epochMillis, datetime.realtime().epochMillis, date()", null);
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    var executor = acmedb.Executor.init(&ast, &g, arena.allocator());
+    var executor = zypherdb.Executor.init(&ast, &g, arena.allocator());
     executor.fixed_time = 1_700_000_000_123 * std.time.ns_per_ms;
     const rows = try executor.run(query);
     try testing.expectEqual(@as(usize, 1), rows.len);
     try testing.expectEqual(@as(i64, 1_700_000_000_123), rows[0].items[0].int);
     try testing.expectEqual(@as(i64, 1_700_000_000_123), rows[0].items[1].int);
-    try support.expectRows(try executor.run(try acmedb.parser.parse(&ast, "RETURN toString(date())", null)), &.{&.{string("2023-11-14")}});
+    try support.expectRows(try executor.run(try zypherdb.parser.parse(&ast, "RETURN toString(date())", null)), &.{&.{string("2023-11-14")}});
 }

@@ -1,6 +1,6 @@
 # minimal
 
-The smallest acmedb program: open a database, store a little graph, ask it a question.
+The smallest zypherdb program: open a database, store a little graph, ask it a question.
 
     python -m examples.minimal.run
 

@@ -16,7 +16,7 @@ the time limit in high containment.
 
 ## Running it
 
-From the repository root, with the package installed (`pip install acmedb`) or built from source
+From the repository root, with the package installed (`pip install zypherdb`) or built from source
 (`make python`, then `PYTHONPATH=python`):
 
 ```bash
@@ -216,9 +216,9 @@ With `--database`, the day stays on disk to be queried:
 
 ```python
 # docs-test: skip
-import acmedb
+import zypherdb
 
-with acmedb.Database("helix-day") as db:
+with zypherdb.Database("helix-day") as db:
     print(db.query("""
         MATCH (s:Swipe)-[:BY]->(:Badge)-[:ISSUED_TO]->(p:Person {name: 'Nadia Petrova'}),
               (s)-[:AT]->(d:Door)

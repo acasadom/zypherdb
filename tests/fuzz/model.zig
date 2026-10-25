@@ -7,9 +7,9 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
-const Value = acmedb.Value;
-const value_encoding = acmedb.value_encoding;
+const zypherdb = @import("zypherdb");
+const Value = zypherdb.Value;
+const value_encoding = zypherdb.value_encoding;
 
 pub const NodeId = u64;
 pub const RelationshipId = u64;

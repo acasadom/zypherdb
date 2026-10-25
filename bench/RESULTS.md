@@ -103,7 +103,7 @@ the same within that noise, so it stays (a cold branch, the operator switch inli
 
 ## Prepared statements (October 2026)
 
-`--prepared` runs each query as a statement prepared once (`acmedb.Statement`), the way the C and
+`--prepared` runs each query as a statement prepared once (`zypherdb.Statement`), the way the C and
 Python `query` calls now run a text they have seen before. Same build, same data, best median of
 three alternating rounds, `--people 100000 --runs 200`:
 
@@ -236,7 +236,7 @@ rows, and parsing it in Python twice that.
 ## The native extension module
 
 The same benchmark (`python bench/python_overhead.py`) after the package moved to
-`acmedb._native` (Zig on the Python limited API, no JSON). Medians, page cache warm:
+`zypherdb._native` (Zig on the Python limited API, no JSON). Medians, page cache warm:
 
 | Query | Engine alone | ctypes + JSON | Native module |
 | --- | ---: | ---: | ---: |

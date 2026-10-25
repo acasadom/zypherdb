@@ -3,12 +3,12 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
-const Executor = acmedb.Executor;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
+const Executor = zypherdb.Executor;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -21,7 +21,7 @@ const snap = @import("../snapshot.zig").snap;
 /// line, indented by depth, with the estimate and, in PROFILE, the rows (the
 /// time is only checked to be a number of milliseconds).
 fn planText(ast: *Ast, g: *Graph, src: []const u8) ![]const u8 {
-    const query = try acmedb.parser.parse(ast, src, null);
+    const query = try zypherdb.parser.parse(ast, src, null);
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var executor = Executor.init(ast, g, arena.allocator());
@@ -225,12 +225,12 @@ test "EXPLAIN takes a query, not a schema command" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     var ast = Ast.init(arena.allocator());
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "EXPLAIN SHOW INDEXES", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "EXPLAIN SHOW INDEXES", null));
 }
 
 /// The operators of `query`'s plan with `options`, one per line.
-fn operatorNames(ast: *Ast, g: *Graph, query: []const u8, options: acmedb.PlanOptions, allocator: std.mem.Allocator) ![]const u8 {
-    const root = try acmedb.parser.parse(ast, try std.fmt.allocPrint(allocator, "EXPLAIN {s}", .{query}), null);
+fn operatorNames(ast: *Ast, g: *Graph, query: []const u8, options: zypherdb.PlanOptions, allocator: std.mem.Allocator) ![]const u8 {
+    const root = try zypherdb.parser.parse(ast, try std.fmt.allocPrint(allocator, "EXPLAIN {s}", .{query}), null);
     var executor = Executor.init(ast, g, allocator);
     executor.plan_options = options;
     var names = std.ArrayList(u8).empty;
@@ -239,10 +239,10 @@ fn operatorNames(ast: *Ast, g: *Graph, query: []const u8, options: acmedb.PlanOp
 }
 
 /// The rows of `query` with `options`, printed and sorted.
-fn sortedRows(ast: *Ast, g: *Graph, query: []const u8, options: acmedb.PlanOptions, allocator: std.mem.Allocator) ![]const []const u8 {
+fn sortedRows(ast: *Ast, g: *Graph, query: []const u8, options: zypherdb.PlanOptions, allocator: std.mem.Allocator) ![]const []const u8 {
     var executor = Executor.init(ast, g, allocator);
     executor.plan_options = options;
-    const rows = try executor.run(try acmedb.parser.parse(ast, query, null));
+    const rows = try executor.run(try zypherdb.parser.parse(ast, query, null));
     const printed = try allocator.alloc([]const u8, rows.len);
     for (printed, rows) |*text, row| text.* = try std.fmt.allocPrint(allocator, "{any}", .{row.items});
     std.mem.sort([]const u8, printed, {}, struct {
@@ -267,7 +267,7 @@ test "planner options change the plan, not the rows" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    const cases = [_]struct { query: []const u8, options: acmedb.PlanOptions, missing: []const u8 }{
+    const cases = [_]struct { query: []const u8, options: zypherdb.PlanOptions, missing: []const u8 }{
         .{ .query = "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title", .options = .{ .index_lookups = false }, .missing = "NodeIndexSeek" },
         .{ .query = "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title", .options = .{ .anchor = .{ .position = 1 } }, .missing = "NodeIndexSeek" },
         .{ .query = "MATCH (m:Movie) WHERE m.released > 2000 RETURN m.title", .options = .{ .where_seeks = false }, .missing = "NodeIndexRangeSeek" },

@@ -1,12 +1,12 @@
-//! C ABI for embedding acmedb from C, C++ or any language with a C FFI. The
-//! declarations are in include/acmedb.h; keep the two in step.
+//! C ABI for embedding zypherdb from C, C++ or any language with a C FFI. The
+//! declarations are in include/zypherdb.h; keep the two in step.
 //!
 //! Every function is `export fn` (C calling convention). Strings are passed as
 //! (pointer, length) pairs. Handles are opaque pointers (`*Context`, `*Result`);
 //! the caller must release them with the matching close/free function.
 //!
 //! Results are fully self-contained: the returned `*Result` owns an arena that
-//! holds all its string cells, freed by `acmedb_result_free`.
+//! holds all its string cells, freed by `zypherdb_result_free`.
 
 const std = @import("std");
 
@@ -38,13 +38,13 @@ pub const Context = struct {
     graph: Graph,
     allocator: Allocator,
     diagnostic: Diagnostic,
-    /// The last `acmedb_export_json` document, owned by the context.
+    /// The last `zypherdb_export_json` document, owned by the context.
     export_json: []u8 = &.{},
-    /// The last `acmedb_check` report, owned by the context.
+    /// The last `zypherdb_check` report, owned by the context.
     check_json: []u8 = &.{},
     /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
     import_directory: ?[]u8 = null,
-    /// The statements `acmedb_query` prepared, by text.
+    /// The statements `zypherdb_query` prepared, by text.
     statements: StatementCache,
     /// The memory a query runs in, kept from one query to the next (up to
     /// `retained_scratch` bytes) instead of asked for again each time.
@@ -62,18 +62,18 @@ const Result = struct {
 
 const allocator: Allocator = std.heap.c_allocator;
 
-// Cell type tags returned by acmedb_result_type.
+// Cell type tags returned by zypherdb_result_type.
 pub const TYPE_INT64: c_int = 0;
 pub const TYPE_STRING: c_int = 1;
 pub const TYPE_BOOLEAN: c_int = 2;
 pub const TYPE_NULL: c_int = 3;
 pub const TYPE_LIST: c_int = 4;
-/// A node or relationship cell: read it through `acmedb_result_to_json`.
+/// A node or relationship cell: read it through `zypherdb_result_to_json`.
 pub const TYPE_NODE: c_int = 5;
 pub const TYPE_RELATIONSHIP: c_int = 6;
-/// A map cell: read it through `acmedb_result_to_json`.
+/// A map cell: read it through `zypherdb_result_to_json`.
 pub const TYPE_MAP: c_int = 7;
-/// A path cell: read it through `acmedb_result_to_json`.
+/// A path cell: read it through `zypherdb_result_to_json`.
 pub const TYPE_PATH: c_int = 8;
 pub const TYPE_FLOAT64: c_int = 9;
 pub const TYPE_DATE: c_int = 10;
@@ -87,16 +87,16 @@ pub const DURABILITY_FULL: c_int = 0;
 pub const DURABILITY_RELAXED: c_int = 1;
 pub const DURABILITY_DEFERRED: c_int = 2;
 
-pub export fn acmedb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
-    return acmedb_open_with_durability(path_ptr, path_len, DURABILITY_FULL);
+pub export fn zypherdb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
+    return zypherdb_open_with_durability(path_ptr, path_len, DURABILITY_FULL);
 }
 
 /// Opens with a durability mode: `DURABILITY_FULL` (each commit is on disk
 /// when it returns), `DURABILITY_RELAXED` (a power failure can lose the last
 /// commit, never corrupt the database) or `DURABILITY_DEFERRED` (commits are
-/// written by the operating system or `acmedb_sync`; a power failure can
+/// written by the operating system or `zypherdb_sync`; a power failure can
 /// lose the recent ones). NULL on an unknown mode.
-pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize, durability: c_int) ?*Context {
+pub export fn zypherdb_open_with_durability(path_ptr: [*]const u8, path_len: usize, durability: c_int) ?*Context {
     const mode: KeyValueStore.Durability = switch (durability) {
         DURABILITY_FULL => .full,
         DURABILITY_RELAXED => .relaxed,
@@ -126,12 +126,12 @@ pub export fn acmedb_open_with_durability(path_ptr: [*]const u8, path_len: usize
 }
 
 /// Writes every commit so far to disk. RETURN_OK or RETURN_STORAGE_ERROR.
-pub export fn acmedb_sync(context: *Context) c_int {
+pub export fn zypherdb_sync(context: *Context) c_int {
     context.store.sync() catch return RETURN_STORAGE_ERROR;
     return RETURN_OK;
 }
 
-pub export fn acmedb_close(context: *Context) void {
+pub export fn zypherdb_close(context: *Context) void {
     context.statements.deinit();
     context.scratch.deinit();
     allocator.free(context.export_json);
@@ -144,7 +144,7 @@ pub export fn acmedb_close(context: *Context) void {
 /// Sets the directory LOAD CSV reads files from (`path_len` 0: none, which
 /// turns LOAD CSV off, as it is after opening). RETURN_OK, or
 /// RETURN_STORAGE_ERROR when out of memory.
-pub export fn acmedb_set_import_directory(context: *Context, path_ptr: [*]const u8, path_len: usize) c_int {
+pub export fn zypherdb_set_import_directory(context: *Context, path_ptr: [*]const u8, path_len: usize) c_int {
     const directory: ?[]u8 = if (path_len == 0) null else allocator.dupe(u8, path_ptr[0..path_len]) catch return RETURN_STORAGE_ERROR;
     if (context.import_directory) |old| allocator.free(old);
     context.import_directory = directory;
@@ -153,37 +153,37 @@ pub export fn acmedb_set_import_directory(context: *Context, path_ptr: [*]const 
 
 /// Returns the last error message (and its length), if the most recent
 /// operation failed.
-pub export fn acmedb_last_error(context: *Context, out_len: *usize) [*]const u8 {
+pub export fn zypherdb_last_error(context: *Context, out_len: *usize) [*]const u8 {
     const m = context.diagnostic.message();
     out_len.* = m.len;
     return m.ptr;
 }
 
 /// Returns the last error code (see `ErrorCode` in `diagnostics.zig`), 0 if none.
-pub export fn acmedb_error_code(context: *Context) c_int {
+pub export fn zypherdb_error_code(context: *Context) c_int {
     return @intCast(@backingInt(context.diagnostic.code));
 }
 
-/// Begins an explicit write transaction. Until `acmedb_commit_write` (or
-/// `acmedb_abort_write`), every mutator runs inside it and commits atomically at
+/// Begins an explicit write transaction. Until `zypherdb_commit_write` (or
+/// `zypherdb_abort_write`), every mutator runs inside it and commits atomically at
 /// the end — one fsync for the whole batch. Returns 0 on success.
-pub export fn acmedb_begin_write(context: *Context) c_int {
+pub export fn zypherdb_begin_write(context: *Context) c_int {
     context.graph.beginWrite() catch return 1;
     return 0;
 }
 
-pub export fn acmedb_commit_write(context: *Context) c_int {
+pub export fn zypherdb_commit_write(context: *Context) c_int {
     context.graph.commitWrite() catch return 1;
     return 0;
 }
 
-pub export fn acmedb_abort_write(context: *Context) void {
+pub export fn zypherdb_abort_write(context: *Context) void {
     context.graph.abortWrite();
 }
 
 /// Allocates a fresh, never-used node id (atomically). Returns `maxInt(u64)` on
 /// failure.
-pub export fn acmedb_allocate_node_id(context: *Context) u64 {
+pub export fn zypherdb_allocate_node_id(context: *Context) u64 {
     // Inside an explicit write txn the read-modify-write is already atomic;
     // standalone it needs its own transaction.
     if (context.graph.inWriteTransaction()) {
@@ -198,14 +198,14 @@ pub export fn acmedb_allocate_node_id(context: *Context) u64 {
     return id;
 }
 
-pub export fn acmedb_add_node(context: *Context, id: u64, label_ptr: [*]const u8, label_len: usize) c_int {
+pub export fn zypherdb_add_node(context: *Context, id: u64, label_ptr: [*]const u8, label_len: usize) c_int {
     if (label_len > 0 and !isStorableName(label_ptr[0..label_len])) return RETURN_INVALID_NAME;
     context.graph.addNode(id, label_ptr[0..label_len]) catch |err| return writeFailure(context, err);
     return 0;
 }
 
 /// Mutator return codes: success, storage failure, a missing node, a write
-/// a uniqueness constraint refused (its message in acmedb_last_error), and a
+/// a uniqueness constraint refused (its message in zypherdb_last_error), and a
 /// label, type or property name that is empty or holds a 0x00 byte.
 pub const RETURN_OK: c_int = 0;
 pub const RETURN_STORAGE_ERROR: c_int = 1;
@@ -232,7 +232,7 @@ fn requireNodes(context: *Context, ids: []const u64) c_int {
 
 /// Adds a directed edge. Both endpoints must exist (`RETURN_NODE_NOT_FOUND` otherwise), so
 /// the C ABI can never create a dangling edge.
-pub export fn acmedb_add_edge(context: *Context, src: u64, dst: u64, edge_type_ptr: [*]const u8, edge_type_length: usize) c_int {
+pub export fn zypherdb_add_edge(context: *Context, src: u64, dst: u64, edge_type_ptr: [*]const u8, edge_type_length: usize) c_int {
     if (!isStorableName(edge_type_ptr[0..edge_type_length])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{ src, dst });
     if (return_code != RETURN_OK) return return_code;
@@ -241,7 +241,7 @@ pub export fn acmedb_add_edge(context: *Context, src: u64, dst: u64, edge_type_p
 }
 
 /// Sets an int property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
-pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: i64) c_int {
+pub export fn zypherdb_set_property_int64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: i64) c_int {
     if (!isStorableName(name_ptr[0..name_len])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
@@ -250,7 +250,7 @@ pub export fn acmedb_set_property_int64(context: *Context, id: u64, name_ptr: [*
 }
 
 /// Sets a float property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
-pub export fn acmedb_set_property_float64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: f64) c_int {
+pub export fn zypherdb_set_property_float64(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value: f64) c_int {
     if (!isStorableName(name_ptr[0..name_len])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
@@ -259,7 +259,7 @@ pub export fn acmedb_set_property_float64(context: *Context, id: u64, name_ptr: 
 }
 
 /// Sets a string property on an existing node (`RETURN_NODE_NOT_FOUND` otherwise).
-pub export fn acmedb_set_property_string(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_length: usize) c_int {
+pub export fn zypherdb_set_property_string(context: *Context, id: u64, name_ptr: [*]const u8, name_len: usize, value_ptr: [*]const u8, value_length: usize) c_int {
     if (!isStorableName(name_ptr[0..name_len])) return RETURN_INVALID_NAME;
     const return_code = requireNodes(context, &.{id});
     if (return_code != RETURN_OK) return return_code;
@@ -267,14 +267,14 @@ pub export fn acmedb_set_property_string(context: *Context, id: u64, name_ptr: [
     return RETURN_OK;
 }
 
-pub export fn acmedb_query(context: *Context, query_ptr: [*]const u8, query_len: usize) ?*Result {
+pub export fn zypherdb_query(context: *Context, query_ptr: [*]const u8, query_len: usize) ?*Result {
     return runQuery(context, query_ptr[0..query_len], null);
 }
 
-/// Like `acmedb_query`, with the values of the query's `$name` parameters as
+/// Like `zypherdb_query`, with the values of the query's `$name` parameters as
 /// a JSON object (`{"card": 123, "zones": ["A", "B"]}`). Parameter values may
 /// be integers, floats, strings, booleans, null, lists and maps (JSON objects).
-pub export fn acmedb_query_with_parameters(context: *Context, query_ptr: [*]const u8, query_len: usize, parameters_ptr: [*]const u8, parameters_len: usize) ?*Result {
+pub export fn zypherdb_query_with_parameters(context: *Context, query_ptr: [*]const u8, query_len: usize, parameters_ptr: [*]const u8, parameters_len: usize) ?*Result {
     return runQuery(context, query_ptr[0..query_len], parameters_ptr[0..parameters_len]);
 }
 
@@ -337,11 +337,11 @@ fn noteFailure(diagnostic: *Diagnostic, err: anyerror) void {
     noteError(diagnostic, err);
 }
 
-/// Prepares a query to run again and again (`acmedb_statement_query`): it is
+/// Prepares a query to run again and again (`zypherdb_statement_query`): it is
 /// parsed, checked and planned once. NULL on failure (the error is the
-/// context's, as for `acmedb_query`). Free it with `acmedb_statement_free`
+/// context's, as for `zypherdb_query`). Free it with `zypherdb_statement_free`
 /// before closing its context.
-pub export fn acmedb_prepare(context: *Context, query_ptr: [*]const u8, query_len: usize) ?*Statement {
+pub export fn zypherdb_prepare(context: *Context, query_ptr: [*]const u8, query_len: usize) ?*Statement {
     context.diagnostic.clear();
     return Statement.prepare(allocator, query_ptr[0..query_len], .{ .graph = &context.graph, .diagnostic = &context.diagnostic }) catch |err| {
         noteFailure(&context.diagnostic, err);
@@ -350,35 +350,35 @@ pub export fn acmedb_prepare(context: *Context, query_ptr: [*]const u8, query_le
 }
 
 /// Runs a prepared statement, with its parameters as a JSON object
-/// (`parameters_ptr` NULL: none), as `acmedb_query_with_parameters` runs a query.
-pub export fn acmedb_statement_query(context: *Context, statement: *Statement, parameters_ptr: ?[*]const u8, parameters_len: usize) ?*Result {
+/// (`parameters_ptr` NULL: none), as `zypherdb_query_with_parameters` runs a query.
+pub export fn zypherdb_statement_query(context: *Context, statement: *Statement, parameters_ptr: ?[*]const u8, parameters_len: usize) ?*Result {
     const json: ?[]const u8 = if (parameters_ptr) |pointer| pointer[0..parameters_len] else null;
     return runStatement(context, statement, json);
 }
 
-pub export fn acmedb_statement_free(statement: *Statement) void {
+pub export fn zypherdb_statement_free(statement: *Statement) void {
     statement.destroy();
 }
 
 /// How many columns the statement's result has (0 without RETURN).
-pub export fn acmedb_statement_column_count(statement: *const Statement) usize {
+pub export fn zypherdb_statement_column_count(statement: *const Statement) usize {
     return statement.columns.len;
 }
 
 /// The name of column `column` (its alias, or the expression as Cypher).
-pub export fn acmedb_statement_column_name(statement: *const Statement, column: usize, out_len: *usize) [*]const u8 {
+pub export fn zypherdb_statement_column_name(statement: *const Statement, column: usize, out_len: *usize) [*]const u8 {
     const name = statement.columns[column];
     out_len.* = name.len;
     return name.ptr;
 }
 
 /// How many `$name` parameters the statement reads.
-pub export fn acmedb_statement_parameter_count(statement: *const Statement) usize {
+pub export fn zypherdb_statement_parameter_count(statement: *const Statement) usize {
     return statement.parameter_names.len;
 }
 
 /// The name of parameter `parameter` (without the `$`), in the order they appear.
-pub export fn acmedb_statement_parameter_name(statement: *const Statement, parameter: usize, out_len: *usize) [*]const u8 {
+pub export fn zypherdb_statement_parameter_name(statement: *const Statement, parameter: usize, out_len: *usize) [*]const u8 {
     const name = statement.parameter_names[parameter];
     out_len.* = name.len;
     return name.ptr;
@@ -469,8 +469,8 @@ fn temporalParameter(object: std.json.ObjectMap) error{InvalidTemporal}!?Value {
 
 /// Serializes the whole result to a JSON array of arrays (`[[…], […]]`), so a
 /// caller can read a large result in one call instead of one per cell. The
-/// returned pointer is owned by the Result (valid until `acmedb_result_free`).
-pub export fn acmedb_result_to_json(result: *const Result, out_len: *usize) [*]const u8 {
+/// returned pointer is owned by the Result (valid until `zypherdb_result_free`).
+pub export fn zypherdb_result_to_json(result: *const Result, out_len: *usize) [*]const u8 {
     out_len.* = result.json.len;
     return result.json.ptr;
 }
@@ -483,8 +483,8 @@ pub export fn acmedb_result_to_json(result: *const Result, out_len: *usize) [*]c
 ///
 /// Nodes are in id order; relationships by source, then type and target. The
 /// returned buffer belongs to the context and stays valid until the next
-/// export or `acmedb_close`. Returns null on failure. O(N) in the store size.
-pub export fn acmedb_export_json(context: *Context, out_len: *usize) ?[*]const u8 {
+/// export or `zypherdb_close`. Returns null on failure. O(N) in the store size.
+pub export fn zypherdb_export_json(context: *Context, out_len: *usize) ?[*]const u8 {
     const json = exportGraph(context) catch return null;
     allocator.free(context.export_json);
     context.export_json = json;
@@ -500,8 +500,8 @@ pub export fn acmedb_export_json(context: *Context, out_len: *usize) ?[*]const u
 /// `problems` describes the first 32. A diagnostic for a suspected bug, not a
 /// routine call: it reads the whole database and holds memory in proportion
 /// to it. The buffer belongs to the context and stays valid until the next
-/// check or `acmedb_close`. Returns null on failure.
-pub export fn acmedb_check(context: *Context, out_len: *usize) ?[*]const u8 {
+/// check or `zypherdb_close`. Returns null on failure.
+pub export fn zypherdb_check(context: *Context, out_len: *usize) ?[*]const u8 {
     const json = checkJson(context) catch return null;
     allocator.free(context.check_json);
     context.check_json = json;
@@ -741,21 +741,21 @@ fn copyRows(arena: *std.heap.ArenaAllocator, rows: []const Row) Allocator.Error!
     return copies;
 }
 
-pub export fn acmedb_result_free(result: *Result) void {
+pub export fn zypherdb_result_free(result: *Result) void {
     result.arena.deinit();
     allocator.destroy(result);
 }
 
-pub export fn acmedb_result_row_count(result: *const Result) usize {
+pub export fn zypherdb_result_row_count(result: *const Result) usize {
     return result.rows.len;
 }
 
-pub export fn acmedb_result_column_count(result: *const Result) usize {
+pub export fn zypherdb_result_column_count(result: *const Result) usize {
     if (result.rows.len == 0) return 0;
     return result.rows[0].items.len;
 }
 
-pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) c_int {
+pub export fn zypherdb_result_type(result: *const Result, row: usize, col: usize) c_int {
     if (row >= result.rows.len) return -1;
     const r = result.rows[row];
     if (col >= r.items.len) return -1;
@@ -779,7 +779,7 @@ pub export fn acmedb_result_type(result: *const Result, row: usize, col: usize) 
     };
 }
 
-pub export fn acmedb_result_int(result: *const Result, row: usize, col: usize) i64 {
+pub export fn zypherdb_result_int(result: *const Result, row: usize, col: usize) i64 {
     const r = result.rows[row];
     return switch (r.items[col]) {
         .int => |n| n,
@@ -787,7 +787,7 @@ pub export fn acmedb_result_int(result: *const Result, row: usize, col: usize) i
     };
 }
 
-pub export fn acmedb_result_float(result: *const Result, row: usize, col: usize) f64 {
+pub export fn zypherdb_result_float(result: *const Result, row: usize, col: usize) f64 {
     const r = result.rows[row];
     return switch (r.items[col]) {
         .float => |x| x,
@@ -795,7 +795,7 @@ pub export fn acmedb_result_float(result: *const Result, row: usize, col: usize)
     };
 }
 
-pub export fn acmedb_result_bool(result: *const Result, row: usize, col: usize) bool {
+pub export fn zypherdb_result_bool(result: *const Result, row: usize, col: usize) bool {
     const r = result.rows[row];
     return switch (r.items[col]) {
         .boolean => |b| b,
@@ -803,7 +803,7 @@ pub export fn acmedb_result_bool(result: *const Result, row: usize, col: usize) 
     };
 }
 
-pub export fn acmedb_result_string(result: *const Result, row: usize, col: usize, out_len: *usize) [*]const u8 {
+pub export fn zypherdb_result_string(result: *const Result, row: usize, col: usize, out_len: *usize) [*]const u8 {
     const r = result.rows[row];
     const s: []const u8 = switch (r.items[col]) {
         .string => |s| s,
@@ -827,7 +827,7 @@ fn listItem(result: *const Result, row: usize, col: usize, item_index: usize) ?V
     return items[item_index];
 }
 
-pub export fn acmedb_result_list_length(result: *const Result, row: usize, col: usize) usize {
+pub export fn zypherdb_result_list_length(result: *const Result, row: usize, col: usize) usize {
     if (row >= result.rows.len) return 0;
     const r = result.rows[row];
     if (col >= r.items.len) return 0;
@@ -837,7 +837,7 @@ pub export fn acmedb_result_list_length(result: *const Result, row: usize, col: 
     };
 }
 
-pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, col: usize, item_index: usize) c_int {
+pub export fn zypherdb_result_list_item_type(result: *const Result, row: usize, col: usize, item_index: usize) c_int {
     const item = listItem(result, row, col, item_index) orelse return -1;
     return switch (item) {
         .int => TYPE_INT64,
@@ -859,7 +859,7 @@ pub export fn acmedb_result_list_item_type(result: *const Result, row: usize, co
     };
 }
 
-pub export fn acmedb_result_list_item_int(result: *const Result, row: usize, col: usize, item_index: usize) i64 {
+pub export fn zypherdb_result_list_item_int(result: *const Result, row: usize, col: usize, item_index: usize) i64 {
     const item = listItem(result, row, col, item_index) orelse return 0;
     return switch (item) {
         .int => |n| n,
@@ -867,7 +867,7 @@ pub export fn acmedb_result_list_item_int(result: *const Result, row: usize, col
     };
 }
 
-pub export fn acmedb_result_list_item_float(result: *const Result, row: usize, col: usize, item_index: usize) f64 {
+pub export fn zypherdb_result_list_item_float(result: *const Result, row: usize, col: usize, item_index: usize) f64 {
     const item = listItem(result, row, col, item_index) orelse return 0;
     return switch (item) {
         .float => |x| x,
@@ -875,7 +875,7 @@ pub export fn acmedb_result_list_item_float(result: *const Result, row: usize, c
     };
 }
 
-pub export fn acmedb_result_list_item_bool(result: *const Result, row: usize, col: usize, item_index: usize) bool {
+pub export fn zypherdb_result_list_item_bool(result: *const Result, row: usize, col: usize, item_index: usize) bool {
     const item = listItem(result, row, col, item_index) orelse return false;
     return switch (item) {
         .boolean => |b| b,
@@ -883,7 +883,7 @@ pub export fn acmedb_result_list_item_bool(result: *const Result, row: usize, co
     };
 }
 
-pub export fn acmedb_result_list_item_string(result: *const Result, row: usize, col: usize, item_index: usize, out_len: *usize) [*]const u8 {
+pub export fn zypherdb_result_list_item_string(result: *const Result, row: usize, col: usize, item_index: usize, out_len: *usize) [*]const u8 {
     const item = listItem(result, row, col, item_index) orelse return "".ptr;
     const s: []const u8 = switch (item) {
         .string => |s| s,
@@ -901,40 +901,40 @@ fn noteError(diagnostic: *Diagnostic, err: anyerror) void {
 // Force the export functions to be analyzed/emitted even when the test blocks
 // are not compiled (library builds).
 comptime {
-    _ = acmedb_open;
-    _ = acmedb_close;
-    _ = acmedb_add_node;
-    _ = acmedb_add_edge;
-    _ = acmedb_set_property_int64;
-    _ = acmedb_set_property_string;
-    _ = acmedb_allocate_node_id;
-    _ = acmedb_begin_write;
-    _ = acmedb_commit_write;
-    _ = acmedb_abort_write;
-    _ = acmedb_query;
-    _ = acmedb_result_free;
-    _ = acmedb_result_row_count;
-    _ = acmedb_result_column_count;
-    _ = acmedb_result_type;
-    _ = acmedb_result_int;
-    _ = acmedb_result_bool;
-    _ = acmedb_result_string;
-    _ = acmedb_result_to_json;
-    _ = acmedb_last_error;
-    _ = acmedb_error_code;
-    _ = acmedb_result_list_length;
-    _ = acmedb_result_list_item_type;
-    _ = acmedb_result_list_item_int;
-    _ = acmedb_result_list_item_bool;
-    _ = acmedb_result_list_item_string;
-    _ = acmedb_export_json;
-    _ = acmedb_check;
-    _ = acmedb_query_with_parameters;
-    _ = acmedb_prepare;
-    _ = acmedb_statement_query;
-    _ = acmedb_statement_free;
-    _ = acmedb_statement_column_count;
-    _ = acmedb_statement_column_name;
-    _ = acmedb_statement_parameter_count;
-    _ = acmedb_statement_parameter_name;
+    _ = zypherdb_open;
+    _ = zypherdb_close;
+    _ = zypherdb_add_node;
+    _ = zypherdb_add_edge;
+    _ = zypherdb_set_property_int64;
+    _ = zypherdb_set_property_string;
+    _ = zypherdb_allocate_node_id;
+    _ = zypherdb_begin_write;
+    _ = zypherdb_commit_write;
+    _ = zypherdb_abort_write;
+    _ = zypherdb_query;
+    _ = zypherdb_result_free;
+    _ = zypherdb_result_row_count;
+    _ = zypherdb_result_column_count;
+    _ = zypherdb_result_type;
+    _ = zypherdb_result_int;
+    _ = zypherdb_result_bool;
+    _ = zypherdb_result_string;
+    _ = zypherdb_result_to_json;
+    _ = zypherdb_last_error;
+    _ = zypherdb_error_code;
+    _ = zypherdb_result_list_length;
+    _ = zypherdb_result_list_item_type;
+    _ = zypherdb_result_list_item_int;
+    _ = zypherdb_result_list_item_bool;
+    _ = zypherdb_result_list_item_string;
+    _ = zypherdb_export_json;
+    _ = zypherdb_check;
+    _ = zypherdb_query_with_parameters;
+    _ = zypherdb_prepare;
+    _ = zypherdb_statement_query;
+    _ = zypherdb_statement_free;
+    _ = zypherdb_statement_column_count;
+    _ = zypherdb_statement_column_name;
+    _ = zypherdb_statement_parameter_count;
+    _ = zypherdb_statement_parameter_name;
 }

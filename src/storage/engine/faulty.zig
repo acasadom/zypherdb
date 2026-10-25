@@ -1,4 +1,4 @@
-//! A storage engine that fails on purpose: it wraps the engine acmedb is
+//! A storage engine that fails on purpose: it wraps the engine zypherdb is
 //! built with and makes the N-th fallible operation fail, so tests can check
 //! that every engine error reaches the caller as an error (no panic, no leak)
 //! and leaves the database as it was before the failed transaction.

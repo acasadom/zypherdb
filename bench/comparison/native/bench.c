@@ -1,10 +1,10 @@
 /* The access-control benchmark, natively, through each engine's C API.
  *
- *   cc -O2 bench.c -lacmedb   -o bench-acmedb            (acmedb)
+ *   cc -O2 bench.c -lzypherdb   -o bench-zypherdb            (zypherdb)
  *   cc -O2 -DLATTICE bench.c -llattice -o bench-lattice  (LatticeDB)
  *
  *   ./bench-X DIR PEOPLE RUNS [OPTION]
- *     acmedb:    OPTION = full | relaxed | deferred   (durability, default full)
+ *     zypherdb:    OPTION = full | relaxed | deferred   (durability, default full)
  *     LatticeDB: OPTION = cache                       (adjacency cache on)
  *
  * The same graph (same generator, same seed) and the same queries for both.
@@ -12,7 +12,7 @@
  * same ones. Every cell of every result is read and folded into a checksum,
  * printed for the first runs, to compare the engines' answers.
  *
- * LatticeDB prepares each query once and reuses it (its best case); acmedb
+ * LatticeDB prepares each query once and reuses it (its best case); zypherdb
  * parses each query every time and takes parameters as JSON (its only C path).
  */
 #define _POSIX_C_SOURCE 200809L
@@ -26,7 +26,7 @@
 #ifdef LATTICE
 #include "lattice.h"
 #else
-#include "acmedb.h"
+#include "zypherdb.h"
 #endif
 
 /* --- Generator ------------------------------------------------------------ */
@@ -236,57 +236,57 @@ static void finish(Prepared query) { lattice_query_free(query); }
 static void close_engine(void) { lattice_close(db); }
 static const char *engine_name(void) { return "latticedb"; }
 
-#else /* acmedb */
+#else /* zypherdb */
 
-static acmedb_context *db;
+static zypherdb_context *db;
 static const char *durability_name = "full";
 
 static void open_engine(const char *dir, const char *option) {
-    int mode = ACMEDB_DURABILITY_FULL;
-    if (option && strcmp(option, "relaxed") == 0) mode = ACMEDB_DURABILITY_RELAXED, durability_name = "relaxed";
-    if (option && strcmp(option, "deferred") == 0) mode = ACMEDB_DURABILITY_DEFERRED, durability_name = "deferred";
-    db = acmedb_open_with_durability(dir, strlen(dir), mode);
+    int mode = ZYPHERDB_DURABILITY_FULL;
+    if (option && strcmp(option, "relaxed") == 0) mode = ZYPHERDB_DURABILITY_RELAXED, durability_name = "relaxed";
+    if (option && strcmp(option, "deferred") == 0) mode = ZYPHERDB_DURABILITY_DEFERRED, durability_name = "deferred";
+    db = zypherdb_open_with_durability(dir, strlen(dir), mode);
     if (!db) { fprintf(stderr, "open failed\n"); exit(1); }
 }
 
 #define S(x) x, strlen(x)
 
 static void load(const Graph *g) {
-    acmedb_begin_write(db);
+    zypherdb_begin_write(db);
     uint64_t *person = malloc(8 * g->people), *group = malloc(8 * g->groups), *zone = malloc(8 * g->zones);
     char name[32];
     for (uint32_t i = 0; i < g->people; i++) {
-        person[i] = acmedb_allocate_node_id(db);
-        acmedb_add_node(db, person[i], S("Person"));
-        acmedb_set_property_int64(db, person[i], S("id"), i);
-        snprintf(name, sizeof name, "person-%u", i); acmedb_set_property_string(db, person[i], S("name"), S(name));
-        acmedb_set_property_int64(db, person[i], S("age"), 18 + i % 50);
-        acmedb_set_property_string(db, person[i], S("department"), S(departments[i % 8]));
-        uint64_t card = acmedb_allocate_node_id(db);
-        acmedb_add_node(db, card, S("Card"));
-        acmedb_set_property_int64(db, card, S("number"), 1000000 + i);
-        acmedb_add_edge(db, card, person[i], S("HELD_BY"));
+        person[i] = zypherdb_allocate_node_id(db);
+        zypherdb_add_node(db, person[i], S("Person"));
+        zypherdb_set_property_int64(db, person[i], S("id"), i);
+        snprintf(name, sizeof name, "person-%u", i); zypherdb_set_property_string(db, person[i], S("name"), S(name));
+        zypherdb_set_property_int64(db, person[i], S("age"), 18 + i % 50);
+        zypherdb_set_property_string(db, person[i], S("department"), S(departments[i % 8]));
+        uint64_t card = zypherdb_allocate_node_id(db);
+        zypherdb_add_node(db, card, S("Card"));
+        zypherdb_set_property_int64(db, card, S("number"), 1000000 + i);
+        zypherdb_add_edge(db, card, person[i], S("HELD_BY"));
     }
     for (uint32_t i = 0; i < g->groups; i++) {
-        group[i] = acmedb_allocate_node_id(db);
-        acmedb_add_node(db, group[i], S("Group"));
-        acmedb_set_property_int64(db, group[i], S("id"), i);
-        snprintf(name, sizeof name, "group-%u", i); acmedb_set_property_string(db, group[i], S("name"), S(name));
+        group[i] = zypherdb_allocate_node_id(db);
+        zypherdb_add_node(db, group[i], S("Group"));
+        zypherdb_set_property_int64(db, group[i], S("id"), i);
+        snprintf(name, sizeof name, "group-%u", i); zypherdb_set_property_string(db, group[i], S("name"), S(name));
     }
     for (uint32_t i = 0; i < g->zones; i++) {
-        zone[i] = acmedb_allocate_node_id(db);
-        acmedb_add_node(db, zone[i], S("Zone"));
-        acmedb_set_property_int64(db, zone[i], S("id"), i);
+        zone[i] = zypherdb_allocate_node_id(db);
+        zypherdb_add_node(db, zone[i], S("Zone"));
+        zypherdb_set_property_int64(db, zone[i], S("id"), i);
     }
     for (uint32_t i = 0; i < g->doors; i++) {
-        uint64_t door = acmedb_allocate_node_id(db);
-        acmedb_add_node(db, door, S("Door"));
-        acmedb_set_property_int64(db, door, S("id"), i);
-        acmedb_add_edge(db, door, zone[i % g->zones], S("LOCATED_IN"));
+        uint64_t door = zypherdb_allocate_node_id(db);
+        zypherdb_add_node(db, door, S("Door"));
+        zypherdb_set_property_int64(db, door, S("id"), i);
+        zypherdb_add_edge(db, door, zone[i % g->zones], S("LOCATED_IN"));
     }
-    for (size_t i = 0; i < g->membership_count; i++) acmedb_add_edge(db, person[g->memberships[i].a], group[g->memberships[i].b], S("MEMBER_OF"));
-    for (uint32_t i = 10; i < g->groups; i++) acmedb_add_edge(db, group[i], group[i / 10], S("MEMBER_OF"));
-    acmedb_commit_write(db);
+    for (size_t i = 0; i < g->membership_count; i++) zypherdb_add_edge(db, person[g->memberships[i].a], group[g->memberships[i].b], S("MEMBER_OF"));
+    for (uint32_t i = 10; i < g->groups; i++) zypherdb_add_edge(db, group[i], group[i / 10], S("MEMBER_OF"));
+    zypherdb_commit_write(db);
     /* Edge properties have no C mutator: one UNWIND query with the grants as a parameter. */
     size_t size = 32 + g->grant_count * 24; char *json = malloc(size); size_t at = 0;
     at += snprintf(json + at, size - at, "{\"grants\": [");
@@ -295,9 +295,9 @@ static void load(const Graph *g) {
     at += snprintf(json + at, size - at, "]}");
     const char *text = "UNWIND $grants AS grant MATCH (g:Group {id: grant[0]}), (z:Zone {id: grant[1]}) "
                        "CREATE (g)-[:MAY_ENTER {days: [1, 2, 3, 4, 5], from: 9, until: 18}]->(z)";
-    acmedb_result *r = acmedb_query_with_parameters(db, S(text), json, at);
-    if (!r) { size_t n; fprintf(stderr, "grants: %s\n", acmedb_last_error(db, &n)); exit(1); }
-    acmedb_result_free(r);
+    zypherdb_result *r = zypherdb_query_with_parameters(db, S(text), json, at);
+    if (!r) { size_t n; fprintf(stderr, "grants: %s\n", zypherdb_last_error(db, &n)); exit(1); }
+    zypherdb_result_free(r);
 }
 
 typedef const char *Prepared; /* no prepared queries: the text itself */
@@ -312,18 +312,18 @@ static bool run(Prepared text, const Query *spec, const Parameters *p, uint64_t 
     if (spec->parameters & P_DOOR) at += snprintf(json + at, sizeof json - at, "\"door\": %lld,", (long long)p->door);
     if (json[at - 1] == ',') at--;
     at += snprintf(json + at, sizeof json - at, "}");
-    acmedb_result *result = acmedb_query_with_parameters(db, text, strlen(text), json, at);
-    if (!result) { size_t n; snprintf(error, error_size, "%s", acmedb_last_error(db, &n)); return false; }
-    size_t row_count = acmedb_result_row_count(result), columns = acmedb_result_column_count(result);
+    zypherdb_result *result = zypherdb_query_with_parameters(db, text, strlen(text), json, at);
+    if (!result) { size_t n; snprintf(error, error_size, "%s", zypherdb_last_error(db, &n)); return false; }
+    size_t row_count = zypherdb_result_row_count(result), columns = zypherdb_result_column_count(result);
     uint64_t sum = 0xcbf29ce484222325ull;
     for (size_t r = 0; r < row_count; r++) {
         for (size_t c = 0; c < columns; c++) {
-            switch (acmedb_result_type(result, r, c)) {
-            case ACMEDB_TYPE_INT64: sum = fold(sum, (uint64_t)acmedb_result_int(result, r, c)); break;
-            case ACMEDB_TYPE_BOOLEAN: sum = fold(sum, acmedb_result_bool(result, r, c)); break;
-            case ACMEDB_TYPE_FLOAT64: sum = fold(sum, (uint64_t)acmedb_result_float(result, r, c)); break;
-            case ACMEDB_TYPE_STRING: {
-                size_t n; const char *s = acmedb_result_string(result, r, c, &n);
+            switch (zypherdb_result_type(result, r, c)) {
+            case ZYPHERDB_TYPE_INT64: sum = fold(sum, (uint64_t)zypherdb_result_int(result, r, c)); break;
+            case ZYPHERDB_TYPE_BOOLEAN: sum = fold(sum, zypherdb_result_bool(result, r, c)); break;
+            case ZYPHERDB_TYPE_FLOAT64: sum = fold(sum, (uint64_t)zypherdb_result_float(result, r, c)); break;
+            case ZYPHERDB_TYPE_STRING: {
+                size_t n; const char *s = zypherdb_result_string(result, r, c, &n);
                 for (size_t i = 0; i < n; i++) sum = fold(sum, (uint8_t)s[i]);
                 break;
             }
@@ -331,14 +331,14 @@ static bool run(Prepared text, const Query *spec, const Parameters *p, uint64_t 
             }
         }
     }
-    acmedb_result_free(result);
+    zypherdb_result_free(result);
     bool writes = strncmp(text, "CREATE", 6) == 0 || strstr(text, " CREATE ") != NULL;
     *checksum = writes ? 0 : sum; *rows = writes ? 0 : row_count;
     return true;
 }
 
 static void finish(Prepared query) { (void)query; }
-static void close_engine(void) { acmedb_close(db); }
+static void close_engine(void) { zypherdb_close(db); }
 static const char *engine_name(void) { return durability_name; }
 
 #endif

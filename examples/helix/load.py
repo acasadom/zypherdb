@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import acmedb
+import zypherdb
 
 HERE = Path(__file__).parent
 
@@ -113,7 +113,7 @@ STAFF = [
 ]
 
 
-def load(db: acmedb.Database, site_file: Path = HERE / "site.json", staff_file: Path = HERE / "staff.json") -> None:
+def load(db: zypherdb.Database, site_file: Path = HERE / "site.json", staff_file: Path = HERE / "staff.json") -> None:
     """Loads the site and its people into `db`, which must be empty."""
     site = json.loads(site_file.read_text())
     staff = json.loads(staff_file.read_text())
@@ -123,7 +123,7 @@ def load(db: acmedb.Database, site_file: Path = HERE / "site.json", staff_file: 
         db.query(query, staff=staff)
 
 
-def summary(db: acmedb.Database) -> str:
+def summary(db: zypherdb.Database) -> str:
     """One line on what was loaded."""
     (rooms, people, badges), = db.query("""
         MATCH (r:Room) WITH count(r) AS rooms

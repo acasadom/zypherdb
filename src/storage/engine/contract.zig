@@ -1,5 +1,5 @@
 //! What a storage engine provides to the layers above it: the one boundary
-//! between acmedb and the key-value store underneath (LMDB, libmdbx, ...).
+//! between zypherdb and the key-value store underneath (LMDB, libmdbx, ...).
 //!
 //! An engine is a namespace (a Zig file) chosen at compile time (see
 //! `engine.zig`), with three types:

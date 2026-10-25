@@ -2,19 +2,19 @@
 
 Over this tutorial we build the access-control system of **Helix Biolabs**, a biomedical research
 lab where security is not optional: who may enter which room, at what time, with which training,
-and — at every moment — who is where. Each step adds one capability of acmedb and grows the same
+and — at every moment — who is where. Each step adds one capability of zypherdb and grows the same
 database, from an empty directory to a working door controller and an alarm monitor.
 
-This first step installs acmedb, opens a database, stores the lab's first building and its first
+This first step installs zypherdb, opens a database, stores the lab's first building and its first
 employee, and reads them back.
 
 ## Install
 
 ```bash
-pip install acmedb
+pip install zypherdb
 ```
 
-acmedb is an embedded database: there is no server to start. The package carries the engine as a
+zypherdb is an embedded database: there is no server to start. The package carries the engine as a
 native extension module and needs Python 3.10 or later. (To build it from a source checkout
 instead, see [contributing](../guide/contributing).)
 
@@ -23,7 +23,7 @@ instead, see [contributing](../guide/contributing).)
 A database lives in a directory. Opening one that does not exist yet creates it:
 
 ```python
-from acmedb import Database
+from zypherdb import Database
 
 db = Database("helix")
 ```
