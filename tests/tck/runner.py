@@ -1,4 +1,4 @@
-"""Runs the openCypher TCK against acmedb and reports how much of it passes.
+"""Runs the openCypher TCK against zypherdb and reports how much of it passes.
 
     python tests/tck/runner.py                     # run everything, print a summary
     python tests/tck/runner.py --report tests/tck/REPORT.md
@@ -39,7 +39,7 @@ DEVIATIONS = HERE / "deviations.txt"
 
 
 def load_deviations() -> set[str]:
-    """Scenarios acmedb deliberately answers differently (its extensions to
+    """Scenarios zypherdb deliberately answers differently (its extensions to
     openCypher): not run, and reported apart. One scenario id per line;
     `#` lines explain them."""
     if not DEVIATIONS.exists():
@@ -50,7 +50,7 @@ sys.path.insert(0, str(HERE))
 import cypher_values  # noqa: E402
 from gherkin import Scenario, Step, load_scenarios  # noqa: E402
 
-# TCK error classes -> the acmedb exception classes that count as raising it.
+# TCK error classes -> the zypherdb exception classes that count as raising it.
 _ERROR_CLASSES = {
     "SyntaxError": ("ParseError", "UnknownVariableError", "InvalidExpressionError"),
     "SemanticError": ("ParseError", "UnknownVariableError", "InvalidExpressionError"),
@@ -59,11 +59,11 @@ _ERROR_CLASSES = {
 
 
 class Unsupported(Exception):
-    """The scenario needs a TCK step the runner cannot set up for acmedb."""
+    """The scenario needs a TCK step the runner cannot set up for zypherdb."""
 
 
 class Failed(Exception):
-    """The scenario ran and acmedb's behaviour did not match."""
+    """The scenario ran and zypherdb's behaviour did not match."""
 
 
 # ---------------------------------------------------------------------------
@@ -155,13 +155,13 @@ def _check_side_effects(step: Step, outcome: dict):
 
 
 def _execute(db, query: str, parameters: dict, measure: bool) -> dict:
-    from acmedb import AcmedbError
+    from zypherdb import ZypherDBError
 
     before = _graph_state(db) if measure else None
     outcome = {"rows": None, "error": None, "error_class": None, "side_effects": None}
     try:
         outcome["rows"] = db.query(query, parameters)
-    except (AcmedbError, TypeError, OverflowError) as error:  # Python-side refusals count too
+    except (ZypherDBError, TypeError, OverflowError) as error:  # Python-side refusals count too
         outcome["error"] = str(error)
         outcome["error_class"] = type(error).__name__
     if measure:
@@ -171,11 +171,11 @@ def _execute(db, query: str, parameters: dict, measure: bool) -> dict:
 
 def _setup(db, query: str):
     """Runs a setup query; its failure fails the scenario."""
-    from acmedb import AcmedbError
+    from zypherdb import ZypherDBError
 
     try:
         db.query(query)
-    except AcmedbError as error:
+    except ZypherDBError as error:
         raise Failed(f"setup query failed: {type(error).__name__}: {error}")
 
 
@@ -202,12 +202,12 @@ def _define_procedure(db, text: str, table) -> None:
 
 def run_scenario(scenario: Scenario) -> dict:
     """Runs one scenario in a fresh database; returns its status and reason."""
-    from acmedb import Database
+    from zypherdb import Database
 
     negative = any(s.keyword == "Then" and "should be raised" in s.text for s in scenario.steps)
     # Temporal values as their exact ISO text: the TCK writes them that way,
     # with nanoseconds the datetime module cannot hold.
-    with tempfile.TemporaryDirectory(prefix="acmedb-tck-") as path, Database(path, temporals="iso") as db:
+    with tempfile.TemporaryDirectory(prefix="zypherdb-tck-") as path, Database(path, temporals="iso") as db:
         outcome = None
         parameters = {}
         try:
@@ -367,7 +367,7 @@ def summarize(scenarios: list[Scenario], results: dict[str, dict]) -> str:
         f"TCK 2024.3, {len(scenarios)} scenarios (outlines expanded; `@ignore` scenarios excluded).",
         "",
         "- **Positive** scenarios expect a result: the headline measure of what works.",
-        "- **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects",
+        "- **Negative** scenarios expect an error. Their pass rate overstates support: zypherdb rejects",
         "  much syntax it does not implement yet, which can coincide with an expected SyntaxError.",
         "",
         f"**Positive: {rate(total, 'positive')}** · Negative: {rate(total, 'negative')}",
@@ -409,7 +409,7 @@ def main():
     summary = summarize(scenarios, results)
     excluded = len(selected) - len(scenarios)
     if excluded:
-        summary += f"\n{excluded} scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.\n"
+        summary += f"\n{excluded} scenarios not run: intentional deviations (zypherdb extensions), listed in tests/tck/deviations.txt.\n"
     print(summary)
     if args.verbose:
         for scenario in scenarios:

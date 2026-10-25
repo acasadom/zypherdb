@@ -1,10 +1,10 @@
-//! `acmedb._native`: the Python extension module, written in Zig on the
+//! `zypherdb._native`: the Python extension module, written in Zig on the
 //! Python limited C API (abi3, Python 3.10 and later), so one build works with
 //! every Python version of a platform.
 //!
 //! Values cross between Python and the engine by direct conversion: no JSON,
 //! no intermediate buffers. A query runs with the GIL released. The Python
-//! package (`acmedb/db.py`) wraps these functions in the `Database` class and
+//! package (`zypherdb/db.py`) wraps these functions in the `Database` class and
 //! registers, through `configure`, the Python classes results are built with
 //! (`Node`, `Date`, ...) and the exceptions errors are raised as.
 //!
@@ -18,18 +18,18 @@
 //!     add_edge(db, source, target, type)  set_property(db, id, name, value)
 
 const std = @import("std");
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
 const py = @import("python"); // python.h, translated by the build
 const temporals = @import("temporals.zig");
 
-const Value = acmedb.Value;
-const MapEntry = acmedb.value.MapEntry;
-const Graph = acmedb.Graph;
-const KeyValueStore = acmedb.KeyValueStore;
-const Executor = acmedb.Executor;
-const Diagnostic = acmedb.Diagnostic;
-const Statement = acmedb.Statement;
+const Value = zypherdb.Value;
+const MapEntry = zypherdb.value.MapEntry;
+const Graph = zypherdb.Graph;
+const KeyValueStore = zypherdb.KeyValueStore;
+const Executor = zypherdb.Executor;
+const Diagnostic = zypherdb.Diagnostic;
+const Statement = zypherdb.Statement;
 const EntitySnapshot = @FieldType(Executor, "entities");
 
 const allocator = std.heap.c_allocator;
@@ -43,12 +43,12 @@ const Database = struct {
     iso_temporals: bool,
     /// Procedures defined by `define_procedure` (the TCK's test procedures),
     /// with their values in `procedure_arena`.
-    table_procedures: std.ArrayList(acmedb.procedures.TableProcedure) = .empty,
+    table_procedures: std.ArrayList(zypherdb.procedures.TableProcedure) = .empty,
     procedure_arena: std.heap.ArenaAllocator,
     /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
     import_directory: ?[]u8 = null,
     /// The statements `query` prepared, by text.
-    statements: acmedb.StatementCache,
+    statements: zypherdb.StatementCache,
     /// The memory a query runs in, kept from one query to the next (up to
     /// `retained_scratch` bytes) instead of asked for again each time.
     scratch: std.heap.ArenaAllocator,
@@ -96,7 +96,7 @@ const Output = struct {
     iso_temporals: bool,
 };
 
-const capsule_name = "acmedb.Database";
+const capsule_name = "zypherdb.Database";
 
 // --- Registered Python classes -------------------------------------------------
 
@@ -244,7 +244,7 @@ fn valueOf(object: *py.PyObject, arena: std.mem.Allocator, inside_map: bool) ?Va
             }
             entries[i] = .{ .key = stringOf(key.?, arena) orelse return null, .value = valueOf(entry_value.?, arena, true) orelse return null };
         }
-        return acmedb.value.mapOf(entries);
+        return zypherdb.value.mapOf(entries);
     }
     return switch (temporals.fromPython(object)) {
         .value => |v| v,
@@ -372,7 +372,7 @@ fn setItem(dict: *py.PyObject, key: []const u8, value: ?*py.PyObject) bool {
 }
 
 // The entity classes are built field by field, without their `__init__`
-// (see acmedb/entities.py): `object.__new__(class)`, then each slot set with
+// (see zypherdb/entities.py): `object.__new__(class)`, then each slot set with
 // the generic setter, which bypasses the class's immutability guard.
 var object_new: ?*py.PyObject = null;
 var node_fields: [3]?*py.PyObject = @splat(null);
@@ -442,15 +442,15 @@ fn defineProcedure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyOb
     const database = databaseOf(capsule) orelse return null;
     const arena = database.procedure_arena.allocator();
 
-    const arguments = arena.alloc(acmedb.procedures.Argument, @intCast(py.PyList_Size(arguments_object))) catch return py.PyErr_NoMemory();
+    const arguments = arena.alloc(zypherdb.procedures.Argument, @intCast(py.PyList_Size(arguments_object))) catch return py.PyErr_NoMemory();
     for (arguments, 0..) |*argument, i| {
         const declared = declaredPair(py.PyList_GetItem(arguments_object, @intCast(i)), arena) orelse return null;
-        argument.* = .{ .name = declared[0], .type = acmedb.procedures.argumentType(declared[1]) orelse return raise(py.PyExc_ValueError, "unknown type {s}", .{declared[1]}) };
+        argument.* = .{ .name = declared[0], .type = zypherdb.procedures.argumentType(declared[1]) orelse return raise(py.PyExc_ValueError, "unknown type {s}", .{declared[1]}) };
     }
-    const columns = arena.alloc(acmedb.procedures.Column, @intCast(py.PyList_Size(columns_object))) catch return py.PyErr_NoMemory();
+    const columns = arena.alloc(zypherdb.procedures.Column, @intCast(py.PyList_Size(columns_object))) catch return py.PyErr_NoMemory();
     for (columns, 0..) |*column, i| {
         const declared = declaredPair(py.PyList_GetItem(columns_object, @intCast(i)), arena) orelse return null;
-        const column_type = acmedb.procedures.argumentType(declared[1]) orelse return raise(py.PyExc_ValueError, "unknown type {s}", .{declared[1]});
+        const column_type = zypherdb.procedures.argumentType(declared[1]) orelse return raise(py.PyExc_ValueError, "unknown type {s}", .{declared[1]});
         column.* = .{ .name = declared[0], .kind = switch (column_type) {
             .node => .node,
             .relationship => .relationship,
@@ -523,7 +523,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     database.table_procedures = .empty;
     database.procedure_arena = std.heap.ArenaAllocator.init(allocator);
     database.import_directory = null;
-    database.statements = acmedb.StatementCache.init(allocator);
+    database.statements = zypherdb.StatementCache.init(allocator);
     database.scratch = std.heap.ArenaAllocator.init(allocator);
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
         release(database);
@@ -538,7 +538,7 @@ fn close(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     // The capsule is emptied so a later call fails cleanly, not on freed memory.
     _ = py.PyCapsule_SetDestructor(capsule, null);
     release(database);
-    _ = py.PyCapsule_SetName(capsule, "acmedb.Database.closed");
+    _ = py.PyCapsule_SetName(capsule, "zypherdb.Database.closed");
     return none();
 }
 
@@ -590,7 +590,7 @@ fn environmentOf(database: *Database) Statement.Environment {
 /// Runs `statement` with the call's parameters, with the GIL released
 /// (other Python threads go on meanwhile); null on failure, with the
 /// diagnostic set. `executor` is the statement's, allocating in the call's arena.
-fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]const acmedb.Row {
+fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]const zypherdb.Row {
     const database = call.database;
     database.diagnostic.clear();
     executor.diagnostic = &database.diagnostic;
@@ -606,7 +606,7 @@ fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]
 }
 
 fn noteFailure(diagnostic: *Diagnostic, err: anyerror) void {
-    if (diagnostic.message().len == 0) diagnostic.set(acmedb.diagnostics.codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
+    if (diagnostic.message().len == 0) diagnostic.set(zypherdb.diagnostics.codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
 }
 
 /// The statement prepared for the call's text: the cached one, or a new one
@@ -693,7 +693,7 @@ fn statementQuery(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
     return rowsObject(rows, &executor, database);
 }
 
-const statement_capsule_name = "acmedb.Statement";
+const statement_capsule_name = "zypherdb.Statement";
 
 fn destroyStatementCapsule(capsule: ?*py.PyObject) callconv(.c) void {
     const pointer = py.PyCapsule_GetPointer(capsule, statement_capsule_name) orelse return;
@@ -746,7 +746,7 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 }
 
 /// `rows` as a list of lists of Python values.
-fn rowsObject(rows: []const acmedb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
+fn rowsObject(rows: []const zypherdb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
     // Building a large result makes thousands of containers, which would set
     // off Python's cycle collector over and over; none of them can be part of
     // a cycle yet, so it is paused meanwhile.
@@ -845,7 +845,7 @@ fn addNode(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 
 /// Raises ValueError for a label, type or property name storage cannot keep.
 fn requireStorableName(kind: []const u8, name: []const u8) bool {
-    if (acmedb.layout.isStorableName(name)) return true;
+    if (zypherdb.layout.isStorableName(name)) return true;
     _ = raise(py.PyExc_ValueError, "a {s} cannot be empty or contain the character U+0000", .{kind});
     return false;
 }
@@ -909,10 +909,10 @@ fn setProperty(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
 /// `{"nodes": [{"id", "labels", "properties"}], "relationships": [{"source",
 /// "target", "type", "properties"}]}`, read from storage in one snapshot.
 /// `{"ok": bool, "problem_count": int, "problems": [str]}` (see
-/// `acmedb.integrity.check`).
+/// `zypherdb.integrity.check`).
 fn check(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = parseDatabase(args) orelse return null;
-    var report = acmedb.integrity.check(&database.graph, allocator) catch return storageFailure();
+    var report = zypherdb.integrity.check(&database.graph, allocator) catch return storageFailure();
     defer report.deinit();
     const result = py.PyDict_New() orelse return null;
     if (!fillReport(result, &report)) {
@@ -922,7 +922,7 @@ fn check(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     return result;
 }
 
-fn fillReport(result: *py.PyObject, report: *const acmedb.integrity.Report) bool {
+fn fillReport(result: *py.PyObject, report: *const zypherdb.integrity.Report) bool {
     if (!setItem(result, "ok", py.PyBool_FromLong(@intFromBool(report.ok())))) return false;
     if (!setItem(result, "problem_count", py.PyLong_FromUnsignedLongLong(report.count))) return false;
     const problems = py.PyList_New(0) orelse return false;
@@ -996,7 +996,7 @@ fn exportIn(graph: *Graph, iso_temporals: bool) !*py.PyObject {
     return result;
 }
 
-fn propertiesFrom(properties: *acmedb.graph.PropertyIterator, arena: std.mem.Allocator, iso_temporals: bool) !*py.PyObject {
+fn propertiesFrom(properties: *zypherdb.graph.PropertyIterator, arena: std.mem.Allocator, iso_temporals: bool) !*py.PyObject {
     const result = py.PyDict_New() orelse return error.PythonError;
     errdefer py.Py_DecRef(result);
     while (try properties.next()) |property| {
@@ -1046,8 +1046,8 @@ var methods = [_]py.PyMethodDef{
 
 var module_definition = py.PyModuleDef{
     .m_base = std.mem.zeroes(py.PyModuleDef_Base),
-    .m_name = "acmedb._native",
-    .m_doc = "The acmedb engine, for the acmedb package.",
+    .m_name = "zypherdb._native",
+    .m_doc = "The zypherdb engine, for the zypherdb package.",
     .m_size = -1,
     .m_methods = &methods,
     .m_slots = null,

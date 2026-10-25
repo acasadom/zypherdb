@@ -8,8 +8,8 @@ import math
 
 import pytest
 
-from acmedb import (
-    AcmedbError,
+from zypherdb import (
+    ZypherDBError,
     ArithmeticQueryError,
     ClosedError,
     ConstraintViolationError,
@@ -282,7 +282,7 @@ def test_names_that_cannot_be_stored_are_refused(db):
 
 
 def test_query_inside_write_is_refused(db):
-    with pytest.raises(AcmedbError):
+    with pytest.raises(ZypherDBError):
         with db.write():
             db.add_node(1, "P")
             db.query("RETURN 1")
@@ -373,7 +373,7 @@ def test_table_procedures(db):
     assert db.query("CALL test.city", name="Ana", id=1) == [["Madrid"]]
     db.query("CREATE (:P), (:P)")
     assert db.query("MATCH (p:P) CALL test.nothing() RETURN count(p)") == [[2]]
-    with pytest.raises(AcmedbError):
+    with pytest.raises(ZypherDBError):
         db.query("CALL test.city(true, 1)")
-    with pytest.raises(AcmedbError):
+    with pytest.raises(ZypherDBError):
         db.query("CALL test.city YIELD city RETURN city", name="Ana", id=1)

@@ -3,17 +3,17 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const KeyValueStore = acmedb.KeyValueStore;
-const NodeId = acmedb.NodeId;
-const Row = acmedb.Row;
-const Value = acmedb.Value;
-const Executor = acmedb.Executor;
-const parser = acmedb.parser;
-const eqlSequences = acmedb.eqlSequences;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const KeyValueStore = zypherdb.KeyValueStore;
+const NodeId = zypherdb.NodeId;
+const Row = zypherdb.Row;
+const Value = zypherdb.Value;
+const Executor = zypherdb.Executor;
+const parser = zypherdb.parser;
+const eqlSequences = zypherdb.eqlSequences;
 
 /// Equal values of the same types, element by element: `Value.eql` holds
 /// 1 and 1.0 equal (as grouping does), a test result must not.

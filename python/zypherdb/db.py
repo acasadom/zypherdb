@@ -1,4 +1,4 @@
-"""The acmedb `Database` object: open a graph, write data, run queries."""
+"""The zypherdb `Database` object: open a graph, write data, run queries."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import os
 import threading
 
 from ._engine import native
-from .errors import AcmedbError, ClosedError
+from .errors import ZypherDBError, ClosedError
 
 _U64_MAX = 2**64 - 1
 
@@ -59,7 +59,7 @@ class PreparedQuery:
         with database._lock:
             db = database._handle()
             if database._in_write:
-                raise AcmedbError("query() cannot run inside a write() block")
+                raise ZypherDBError("query() cannot run inside a write() block")
             return native.statement_query(db, self._statement, values)
 
     def __repr__(self) -> str:
@@ -67,7 +67,7 @@ class PreparedQuery:
 
 
 class Database:
-    """A handle to one acmedb database (a storage-engine environment in directory `path`).
+    """A handle to one zypherdb database (a storage-engine environment in directory `path`).
 
     The directory must exist. Use it as a context manager to close on exit::
 
@@ -149,7 +149,7 @@ class Database:
 
         Parameter values may be `int` (64-bit), `float`, `str`, `bool`, `None`,
         lists, tuples and dicts (with `str` keys) of those, and temporal values
-        (`datetime.date`, `time`, `datetime`, `timedelta`, or acmedb's own).
+        (`datetime.date`, `time`, `datetime`, `timedelta`, or zypherdb's own).
 
         Cells become `int`, `float`, `str`, `bool`, `None` (null), a `list`, a
         `dict`, a whole :class:`Node` / :class:`Relationship` / :class:`Path`,
@@ -161,7 +161,7 @@ class Database:
         with self._lock:
             db = self._handle()
             if self._in_write:
-                raise AcmedbError("query() cannot run inside a write() block")
+                raise ZypherDBError("query() cannot run inside a write() block")
             return native.query(db, text, values)
 
     def prepare(self, text: str) -> "PreparedQuery":
@@ -203,7 +203,7 @@ class Database:
         with self._lock:
             db = self._handle()
             if self._in_write:
-                raise AcmedbError("explain() cannot run inside a write() block")
+                raise ZypherDBError("explain() cannot run inside a write() block")
             _, lines, parents = native.plan(db, "EXPLAIN " + text, values)
         return _plan_tree(lines, parents)
 
@@ -220,7 +220,7 @@ class Database:
         with self._lock:
             db = self._handle()
             if self._in_write:
-                raise AcmedbError("profile() cannot run inside a write() block")
+                raise ZypherDBError("profile() cannot run inside a write() block")
             rows, lines, parents = native.plan(db, "PROFILE " + text, values)
         return rows, _plan_tree(lines, parents)
 
@@ -239,7 +239,7 @@ class Database:
     def check(self) -> dict:
         """Check that every index and counter agrees with the stored records.
 
-        **A diagnostic, not a routine call.** Use it when you suspect acmedb
+        **A diagnostic, not a routine call.** Use it when you suspect zypherdb
         itself has a bug (a query that misses nodes it should find, counts
         that do not add up), after a crash if you want to be sure, or to
         attach its output to a bug report. It reads the whole database and
@@ -283,7 +283,7 @@ class Database:
         with self._lock:
             db = self._handle()
             if self._in_write:
-                raise AcmedbError("write() blocks cannot be nested")
+                raise ZypherDBError("write() blocks cannot be nested")
             native.begin_write(db)
             self._in_write = True
             try:

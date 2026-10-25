@@ -4,12 +4,12 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
-const Statement = acmedb.Statement;
-const StatementCache = acmedb.StatementCache;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
+const Statement = zypherdb.Statement;
+const StatementCache = zypherdb.StatementCache;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -144,7 +144,7 @@ test "preparing a statement that does not parse or check fails" {
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
-    var diagnostic = acmedb.Diagnostic.init();
+    var diagnostic = zypherdb.Diagnostic.init();
     try testing.expectError(error.ParseFailed, Statement.prepare(testing.allocator, "MATCH (n RETURN n", .{ .graph = &g, .diagnostic = &diagnostic }));
     try testing.expect(diagnostic.message().len > 0);
     try testing.expectError(error.InvalidExpression, Statement.prepare(testing.allocator, "MATCH (n) RETURN m", .{ .graph = &g, .diagnostic = &diagnostic }));

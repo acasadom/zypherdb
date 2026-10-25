@@ -8,7 +8,7 @@
 //! | time            | `datetime.time` with a fixed-offset `timezone`     |
 //! | local date-time | `datetime.datetime` (naive)                        |
 //! | date-time       | `datetime.datetime` in its `ZoneInfo` zone, or at its fixed offset |
-//! | duration        | `datetime.timedelta`; `acmedb.Duration` when it has months |
+//! | duration        | `datetime.timedelta`; `zypherdb.Duration` when it has months |
 //!
 //! Python's types stop at microseconds and at years 1 to 9999: nanoseconds
 //! are truncated, and a year outside that range raises `ValueError` (a
@@ -16,17 +16,17 @@
 //! instead).
 
 const std = @import("std");
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 const py = @import("python");
 
-const Value = acmedb.Value;
-const types = acmedb.temporal.types;
-const calendar = acmedb.temporal.calendar;
-const zones = acmedb.temporal.zones;
+const Value = zypherdb.Value;
+const types = zypherdb.temporal.types;
+const calendar = zypherdb.temporal.calendar;
+const zones = zypherdb.temporal.zones;
 
 const nanoseconds_per_second = calendar.nanoseconds_per_second;
 
-/// The `datetime`-module classes and acmedb's `Duration`, registered by
+/// The `datetime`-module classes and zypherdb's `Duration`, registered by
 /// `configure` (new references, kept for the life of the process).
 pub const Classes = struct {
     date: ?*py.PyObject = null,
@@ -208,7 +208,7 @@ fn namedZone(name: []const u8) ?*py.PyObject {
 
 pub const Conversion = union(enum) { value: Value, not_temporal, failed };
 
-/// A `datetime`-module value or an `acmedb.Duration` as an engine value.
+/// A `datetime`-module value or a `zypherdb.Duration` as an engine value.
 pub fn fromPython(object: *py.PyObject) Conversion {
     // `datetime` is a subclass of `date`: test it first.
     if (isInstance(object, classes.datetime)) return dateTimeOf(object);
@@ -315,7 +315,7 @@ fn zoneNameOf(object: *py.PyObject) ??[]const u8 {
     return @as(?[]const u8, canonical);
 }
 
-/// Renders a duration as ISO 8601 text (`acmedb.Duration.__str__`).
+/// Renders a duration as ISO 8601 text (`zypherdb.Duration.__str__`).
 pub fn durationText(months: i64, days: i64, seconds: i64, nanoseconds: u32) ?*py.PyObject {
     return isoText(.{ .duration = .{ .months = months, .days = days, .seconds = seconds, .nanoseconds = nanoseconds } });
 }

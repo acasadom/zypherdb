@@ -6,9 +6,9 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
-const Value = acmedb.Value;
-const Row = acmedb.Row;
+const zypherdb = @import("zypherdb");
+const Value = zypherdb.Value;
+const Row = zypherdb.Row;
 
 pub const Outcome = union(enum) {
     rows: []const []const Value,

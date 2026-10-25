@@ -4,13 +4,13 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 const workload = @import("fault_workload.zig");
 const Outcome = @import("query_results.zig").Outcome;
 
-const Graph = acmedb.Graph;
-const KeyValueStore = acmedb.KeyValueStore;
-const Statement = acmedb.Statement;
+const Graph = zypherdb.Graph;
+const KeyValueStore = zypherdb.KeyValueStore;
+const Statement = zypherdb.Statement;
 
 const Database = @This();
 
@@ -37,7 +37,7 @@ pub fn close(self: *Database, allocator: Allocator) void {
 
 /// Runs `step`'s statement (prepared, or kept from an earlier run, if
 /// `prepared`); rows and the run's memory go to `arena`.
-pub fn run(self: *Database, allocator: Allocator, arena: Allocator, step: workload.Step, prepared: bool, parameters: acmedb.Executor.Parameters) Allocator.Error!Outcome {
+pub fn run(self: *Database, allocator: Allocator, arena: Allocator, step: workload.Step, prepared: bool, parameters: zypherdb.Executor.Parameters) Allocator.Error!Outcome {
     const rows = if (prepared) rows: {
         const statement = self.statements.get(step.text) orelse made: {
             const statement = Statement.prepare(allocator, step.text, .{ .graph = &self.graph }) catch |err| return failure(err);
@@ -49,10 +49,10 @@ pub fn run(self: *Database, allocator: Allocator, arena: Allocator, step: worklo
         executor.parameters = parameters;
         break :rows statement.run(&executor) catch |err| return failure(err);
     } else rows: {
-        const ast = try arena.create(acmedb.Ast);
-        ast.* = acmedb.Ast.init(arena);
-        const root = acmedb.parser.parse(ast, step.text, null) catch |err| return failure(err);
-        var executor = acmedb.Executor.init(ast, &self.graph, arena);
+        const ast = try arena.create(zypherdb.Ast);
+        ast.* = zypherdb.Ast.init(arena);
+        const root = zypherdb.parser.parse(ast, step.text, null) catch |err| return failure(err);
+        var executor = zypherdb.Executor.init(ast, &self.graph, arena);
         executor.parameters = parameters;
         break :rows executor.run(root) catch |err| return failure(err);
     };
@@ -100,7 +100,7 @@ pub fn entries(self: *Database, arena: Allocator) !std.ArrayList(Pair) {
 }
 
 pub fn checkIntegrity(self: *Database, allocator: Allocator, out: *std.Io.Writer) !bool {
-    var report = try acmedb.integrity.check(&self.graph, allocator);
+    var report = try zypherdb.integrity.check(&self.graph, allocator);
     defer report.deinit();
     if (report.ok()) return true;
     try out.print("{f}", .{report});

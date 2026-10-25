@@ -3,7 +3,7 @@
 //! (model.zig) that predicts which ones must fail. After every commit and
 //! every abort it checks that the database equals the model
 //! (storage_compare.zig) and that every derived structure agrees with the
-//! primary records (`acmedb.integrity`).
+//! primary records (`zypherdb.integrity`).
 //!
 //! Swarm testing: each seed chooses which operations run and how often, and
 //! the pools of labels, properties and types (a small pool makes collisions).
@@ -12,11 +12,11 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
-const Graph = acmedb.Graph;
-const KeyValueStore = acmedb.KeyValueStore;
-const Value = acmedb.Value;
-const value_encoding = acmedb.value_encoding;
+const zypherdb = @import("zypherdb");
+const Graph = zypherdb.Graph;
+const KeyValueStore = zypherdb.KeyValueStore;
+const Value = zypherdb.Value;
+const value_encoding = zypherdb.value_encoding;
 
 const model_module = @import("model.zig");
 const Model = model_module.Model;
@@ -387,7 +387,7 @@ const Fuzzer = struct {
         const value = other.properties.values()[index];
         const equal: Value = if (self.random().boolean()) switch (value) {
             .int => |n| .{ .float = @floatFromInt(n) },
-            .float => |x| if (acmedb.value.exactInteger(x)) |n| .{ .int = n } else value,
+            .float => |x| if (zypherdb.value.exactInteger(x)) |n| .{ .int = n } else value,
             else => value,
         } else value;
         return self.setPropertyTo(id, other.properties.keys()[index], equal);
@@ -545,10 +545,10 @@ const Fuzzer = struct {
     /// `expected` said it must, or fails the run).
     fn runStatement(self: *Fuzzer, statement: []const u8, expected: ?anyerror) !bool {
         self.note("run: {s}", .{statement});
-        var ast = acmedb.Ast.init(self.allocator);
+        var ast = zypherdb.Ast.init(self.allocator);
         defer ast.deinit();
-        const root = acmedb.parser.parse(&ast, statement, null) catch |err| return self.fail("cannot parse the statement: {t}", .{err});
-        var executor = acmedb.Executor.init(&ast, &self.graph, self.scratch.allocator());
+        const root = zypherdb.parser.parse(&ast, statement, null) catch |err| return self.fail("cannot parse the statement: {t}", .{err});
+        var executor = zypherdb.Executor.init(&ast, &self.graph, self.scratch.allocator());
         const result: anyerror!void = if (executor.run(root)) |_| {} else |err| err;
         const succeeded = try self.expectOutcome(result, expected);
         try self.verify();
@@ -559,7 +559,7 @@ const Fuzzer = struct {
 
     /// The database equals the model, and its derived structures agree.
     fn verify(self: *Fuzzer) !void {
-        var report = try acmedb.integrity.check(&self.graph, self.allocator);
+        var report = try zypherdb.integrity.check(&self.graph, self.allocator);
         defer report.deinit();
         if (!report.ok()) return self.fail("{f}", .{report});
         const pools = storage_compare.Pools{ .labels = self.swarm.labels, .types = self.swarm.types };
@@ -593,8 +593,8 @@ const Fuzzer = struct {
 
     fn fail(self: *Fuzzer, comptime fmt: []const u8, args: anytype) error{ FuzzFailed, WriteFailed } {
         const out = self.out;
-        try out.print("\nstorage fuzzer FAILED at step {d} of seed {d} ({s})\n", .{ self.step, self.options.seed, acmedb.storage_engine });
-        try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- storage --seed {d} --steps {d} --verbose\n", .{ acmedb.storage_engine, self.options.seed, self.step + 1 });
+        try out.print("\nstorage fuzzer FAILED at step {d} of seed {d} ({s})\n", .{ self.step, self.options.seed, zypherdb.storage_engine });
+        try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- storage --seed {d} --steps {d} --verbose\n", .{ zypherdb.storage_engine, self.options.seed, self.step + 1 });
         try out.print("swarm: {f}\nlast operations:\n{f}problem: ", .{ self.swarm, self.history });
         try out.print(fmt, args);
         try out.writeAll("\n");

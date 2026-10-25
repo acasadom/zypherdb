@@ -30,11 +30,11 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 const workload = @import("fault_workload.zig");
 const Database = @import("database.zig");
 
-const Durability = acmedb.KeyValueStore.Durability;
+const Durability = zypherdb.KeyValueStore.Durability;
 
 pub const Options = struct {
     seed: u64,
@@ -126,7 +126,7 @@ fn chooseEndingFor(plan: *Plan, twin: Twin, done: u32) Ending {
     return .{ .crash_point = random.uintLessThan(u64, @max(1, (twin.crash_points[plan.steps.len] - start) / 2)) };
 }
 
-fn storeOptions(durability: Durability) acmedb.KeyValueStore.Options {
+fn storeOptions(durability: Durability) zypherdb.KeyValueStore.Options {
     return .{ .durability = durability };
 }
 
@@ -186,7 +186,7 @@ pub fn run(allocator: Allocator, io: std.Io, executable: []const u8, path: []con
 const Twin = struct { digests: []u64, crash_points: []u64 };
 
 fn runTwin(allocator: Allocator, arena: Allocator, twin_path: []const u8, plan: Plan) !Twin {
-    const counts = &acmedb.faults.faults;
+    const counts = &zypherdb.faults.faults;
     counts.* = .{};
     var twin: Database = undefined;
     try twin.open(allocator, twin_path, storeOptions(plan.swarm.durability));
@@ -277,8 +277,8 @@ pub fn writerMain(allocator: Allocator, arguments: []const [:0]const u8, out: *s
     try database.open(allocator, path, storeOptions(plan.swarm.durability));
     defer database.close(allocator);
     // Counted from here, as the twin counts them.
-    acmedb.faults.faults.crash_points = 0;
-    acmedb.faults.faults.crash_at = crash_at;
+    zypherdb.faults.faults.crash_points = 0;
+    zypherdb.faults.faults.crash_at = crash_at;
     try out.writeAll("open\n");
     try out.flush();
     var scratch = std.heap.ArenaAllocator.init(allocator);
@@ -292,10 +292,10 @@ pub fn writerMain(allocator: Allocator, arguments: []const [:0]const u8, out: *s
 }
 
 fn fail(out: *std.Io.Writer, options: Options, swarm: Swarm, comptime fmt: []const u8, args: anytype) error{ FuzzFailed, WriteFailed } {
-    try out.print("\ncrash fuzzer FAILED in seed {d} ({s}): ", .{ options.seed, acmedb.storage_engine });
+    try out.print("\ncrash fuzzer FAILED in seed {d} ({s}): ", .{ options.seed, zypherdb.storage_engine });
     try out.print(fmt, args);
     try out.print("swarm: {f}\n", .{swarm});
-    try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- crash --seed {d} --steps {d} --verbose\n", .{ acmedb.storage_engine, options.seed, options.steps });
+    try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- crash --seed {d} --steps {d} --verbose\n", .{ zypherdb.storage_engine, options.seed, options.steps });
     try out.flush();
     return error.FuzzFailed;
 }

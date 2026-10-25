@@ -9,13 +9,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from acmedb import Database
+from zypherdb import Database
 
 _PYTHON_DIR = str(Path(__file__).resolve().parent.parent)  # .../python
 
 _WRITER = r"""
 import sys
-from acmedb import Database
+from zypherdb import Database
 
 path, n = sys.argv[1], int(sys.argv[2])
 with Database(path) as db:

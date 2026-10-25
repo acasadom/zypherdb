@@ -1,22 +1,22 @@
 # Python reference
 
-The `acmedb` package: one class, `Database`, plus the types results are built with and the
+The `zypherdb` package: one class, `Database`, plus the types results are built with and the
 exceptions errors are raised as. The [tutorial](../tutorial/01-getting-started) introduces all of
 it by example; this page is the complete list.
 
 ```bash
-pip install acmedb
+pip install zypherdb
 ```
 
-acmedb needs Python 3.10 or later. The package carries the engine as a native extension module
+zypherdb needs Python 3.10 or later. The package carries the engine as a native extension module
 (see [the end of this page](#under-the-hood)).
 
 ## `Database`
 
 ```python
-import acmedb, tempfile
+import zypherdb, tempfile
 
-db = acmedb.Database(tempfile.mkdtemp())
+db = zypherdb.Database(tempfile.mkdtemp())
 ```
 
 ### `Database(path, durability="full", temporals="python", import_directory=None)`
@@ -174,10 +174,10 @@ Direct writes, each its own transaction unless inside `write()`:
   32).
 
   > **Warning.** It is **a diagnostic, not a routine call**. Run it only with a reason: a query that misses
-  > data it should find or counts that do not add up (a suspected bug in acmedb), to be sure after a
+  > data it should find or counts that do not add up (a suspected bug in zypherdb), to be sure after a
   > crash, or to attach its output to a bug report. It reads the whole database and holds memory in
   > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
-  > reports is a bug in acmedb: please report it with the output.
+  > reports is a bug in zypherdb: please report it with the output.
 - `sync()` — writes every commit so far to disk (for `"deferred"` durability).
 - `close()` — releases the database. Using it afterwards raises `ClosedError`.
 
@@ -199,14 +199,14 @@ How values cross between Python and Cypher, both ways:
 | time | `datetime.time` with a fixed-offset `datetime.timezone` |
 | local date-time | `datetime.datetime`, naive |
 | date-time | `datetime.datetime` in its `zoneinfo.ZoneInfo` zone, or at a fixed offset |
-| duration | `datetime.timedelta`, or `acmedb.Duration` when it has months |
-| node | `acmedb.Node` (results only) |
-| relationship | `acmedb.Relationship` (results only) |
-| path | `acmedb.Path` (results only) |
+| duration | `datetime.timedelta`, or `zypherdb.Duration` when it has months |
+| node | `zypherdb.Node` (results only) |
+| relationship | `zypherdb.Relationship` (results only) |
+| path | `zypherdb.Path` (results only) |
 
 As **properties**, a node or relationship can store booleans, numbers, strings, temporal values,
 lists of one of those types, and maps — documents, which may nest maps and lists of any values,
-`null`s included (an acmedb extension to openCypher).
+`null`s included (a zypherdb extension to openCypher).
 
 Python's `datetime` types hold microseconds and years 1 to 9999: nanoseconds are truncated, and a
 value outside those years raises `ValueError` — open the database with `temporals="iso"` to get the
@@ -227,9 +227,9 @@ print(db.query("RETURN $at.timezone, $at + duration('P1D')", at=datetime.datetim
 
 `Node`, `Relationship` and `Path` are immutable values, equal when all their fields are:
 
-- `Node(id, labels, properties)` — `id` is acmedb's id for the node; `labels` a tuple of strings
+- `Node(id, labels, properties)` — `id` is zypherdb's id for the node; `labels` a tuple of strings
   in byte order; `properties` a dict.
-- `Relationship(id, source, target, type, properties)` — `id` is acmedb's id for the relationship
+- `Relationship(id, source, target, type, properties)` — `id` is zypherdb's id for the relationship
   (counted apart from node ids); `source` and `target` are node ids.
 - `Path(nodes, relationships)` — tuples; `relationships[i]` joins `nodes[i]` and `nodes[i + 1]`.
 
@@ -247,14 +247,14 @@ print(node.labels, node.properties)
 
 ## `Duration`
 
-`acmedb.Duration(months=0, days=0, seconds=0, nanoseconds=0)` — a duration with a months part,
+`zypherdb.Duration(months=0, days=0, seconds=0, nanoseconds=0)` — a duration with a months part,
 which `timedelta` cannot express (a month is not a fixed number of days). Its parts are separate:
 `months`, `days`, `seconds` (rounded down) and `nanoseconds` (0 to 999,999,999). `str()` gives its
 ISO 8601 text; `to_timedelta()` converts one without months. Equal to a `timedelta` of the same
 length when it has no months.
 
 ```python
-print(db.query("RETURN duration('P1M2DT3H')"), str(acmedb.Duration(months=14, days=3)))
+print(db.query("RETURN duration('P1M2DT3H')"), str(zypherdb.Duration(months=14, days=3)))
 ```
 
 ```text
@@ -263,7 +263,7 @@ print(db.query("RETURN duration('P1M2DT3H')"), str(acmedb.Duration(months=14, da
 
 ## Exceptions
 
-Every exception is an `acmedb.AcmedbError`. A failed query raises a `QueryError`, with `code` and
+Every exception is a `zypherdb.ZypherDBError`. A failed query raises a `QueryError`, with `code` and
 `message` attributes:
 
 | Exception | Code | Raised when |
@@ -301,17 +301,17 @@ character U+0000 raises `ValueError` (a query with one raises `InvalidExpression
 
 ## Under the hood
 
-The package's engine is `acmedb._native`, an extension module written in Zig on the Python limited
+The package's engine is `zypherdb._native`, an extension module written in Zig on the Python limited
 C API (`python/native/module.zig`). It uses only the stable ABI of Python 3.10, so one build serves
 every later Python version. It converts values directly — parameters into engine values, rows
 into Python objects (entities without running their `__init__`, temporal values field by field in
 `python/native/temporals.zig`) — runs the engine with the global interpreter lock released, and
-pauses Python's cycle collector while it builds a large result. `acmedb/db.py` adds the `Database`
-class (locking, `write()` blocks, argument checks); `acmedb/_engine.py` loads the module and
+pauses Python's cycle collector while it builds a large result. `zypherdb/db.py` adds the `Database`
+class (locking, `write()` blocks, argument checks); `zypherdb/_engine.py` loads the module and
 registers the classes and exceptions it builds with.
 
 From a source checkout, `make python` builds the module into `zig-out/python/`, where the package
-finds it. Measured costs are in `bench/RESULTS.md`. To embed acmedb from another language, see the
+finds it. Measured costs are in `bench/RESULTS.md`. To embed zypherdb from another language, see the
 [C ABI](c-api).
 
 ```python

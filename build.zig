@@ -1,6 +1,6 @@
 const std = @import("std");
 
-/// The storage engines acmedb can be built with (src/storage/engine/).
+/// The storage engines zypherdb can be built with (src/storage/engine/).
 const StorageEngine = enum { lmdb, mdbx };
 
 pub fn build(b: *std.Build) void {
@@ -10,26 +10,26 @@ pub fn build(b: *std.Build) void {
     // The storage engine under the key-value store (src/storage/engine.zig).
     const storage_engine = b.option(StorageEngine, "storage-engine", "The storage engine: lmdb (default) or mdbx") orelse .lmdb;
 
-    // Single acmedb module: engine logic + the vendored storage engine (C) linked in.
-    const acmedb = acmedbModule(b, "acmedb", target, optimize, storage_engine, false);
+    // Single zypherdb module: engine logic + the vendored storage engine (C) linked in.
+    const zypherdb = zypherdbModule(b, "zypherdb", target, optimize, storage_engine, false);
 
     // The same module over an engine that fails on purpose
     // (src/storage/engine/faulty.zig), for the fault tests and the fuzzers.
-    const acmedb_with_faults = acmedbModule(b, null, target, optimize, storage_engine, true);
+    const zypherdb_with_faults = zypherdbModule(b, null, target, optimize, storage_engine, true);
 
     // Static library: the embeddable artifact, with the C ABI of src/c_api.zig.
     const lib = b.addLibrary(.{
-        .name = "acmedb",
-        .root_module = acmedb,
+        .name = "zypherdb",
+        .root_module = zypherdb,
         .linkage = .static,
     });
-    lib.installHeader(b.path("include/acmedb.h"), "acmedb.h");
+    lib.installHeader(b.path("include/zypherdb.h"), "zypherdb.h");
     b.installArtifact(lib);
 
     // Shared library with the same C ABI, for C programs and other languages' FFIs.
     const shared = b.addLibrary(.{
-        .name = "acmedb",
-        .root_module = acmedb,
+        .name = "zypherdb",
+        .root_module = zypherdb,
         .linkage = .dynamic,
     });
     b.installArtifact(shared);
@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
 
     // Unit tests: the `test` blocks next to the code in src/ (private helpers).
     const unit_tests = b.addTest(.{
-        .root_module = acmedb,
+        .root_module = zypherdb,
     });
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/root.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+            .imports = &.{.{ .name = "zypherdb", .module = zypherdb }},
         }),
     });
     test_step.dependOn(&b.addRunArtifact(suite).step);
@@ -59,7 +59,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/faults_root.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "acmedb", .module = acmedb_with_faults }},
+            .imports = &.{.{ .name = "zypherdb", .module = zypherdb_with_faults }},
         }),
     });
     test_step.dependOn(&b.addRunArtifact(fault_tests).step);
@@ -74,7 +74,7 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
-            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+            .imports = &.{.{ .name = "zypherdb", .module = zypherdb }},
         });
         const python_api = b.addTranslateC(.{ .root_source_file = b.path("python/native/python.h"), .target = target, .optimize = optimize });
         python_api.addIncludePath(.{ .cwd_relative = include });
@@ -94,7 +94,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/fuzz/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "acmedb", .module = acmedb_with_faults }},
+            .imports = &.{.{ .name = "zypherdb", .module = zypherdb_with_faults }},
         }),
     });
     const run_fuzz = b.addRunArtifact(fuzz);
@@ -115,7 +115,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("bench/access_control.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "acmedb", .module = acmedb }},
+            .imports = &.{.{ .name = "zypherdb", .module = zypherdb }},
         }),
     });
     const run_bench = b.addRunArtifact(bench);
@@ -123,10 +123,10 @@ pub fn build(b: *std.Build) void {
     b.step("bench", "Run the access-control benchmark").dependOn(&run_bench.step);
 }
 
-/// The acmedb library over `storage_engine` (its C sources compiled in),
+/// The zypherdb library over `storage_engine` (its C sources compiled in),
 /// wrapped by the fault-injecting engine if `fault_injection`; exported
 /// under `name` if one is given.
-fn acmedbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, storage_engine: StorageEngine, fault_injection: bool) *std.Build.Module {
+fn zypherdbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, storage_engine: StorageEngine, fault_injection: bool) *std.Build.Module {
     const options: std.Build.Module.CreateOptions = .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -159,7 +159,7 @@ fn acmedbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTarg
             // ReleaseSafe) sanitize C code too: they drop the alignment
             // sanitizer, as libmdbx reads and writes unaligned words on
             // purpose where the CPU allows it.
-            const common = .{ "-O2", "-DNDEBUG", "-DMDBX_BUILD_SHARED_LIBRARY=0", "-DMDBX_HAVE_BUILTIN_CPU_SUPPORTS=0", "-DMDBX_BUILD_TIMESTAMP=\"unknown\"", "-DMDBX_BUILD_FLAGS=\"acmedb\"" };
+            const common = .{ "-O2", "-DNDEBUG", "-DMDBX_BUILD_SHARED_LIBRARY=0", "-DMDBX_HAVE_BUILTIN_CPU_SUPPORTS=0", "-DMDBX_BUILD_TIMESTAMP=\"unknown\"", "-DMDBX_BUILD_FLAGS=\"zypherdb\"" };
             module.addCSourceFiles(.{
                 .files = &.{"vendor/libmdbx/mdbx.c"},
                 .flags = switch (optimize) {

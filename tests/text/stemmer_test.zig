@@ -4,8 +4,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
-const text = acmedb.text;
+const zypherdb = @import("zypherdb");
+const text = zypherdb.text;
 
 fn codePoints(allocator: std.mem.Allocator, utf8: []const u8) ![]const u21 {
     var codes = std.ArrayList(u21).empty;

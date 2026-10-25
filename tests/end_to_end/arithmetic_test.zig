@@ -2,11 +2,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -79,6 +79,6 @@ test "overflow, division by zero and literal limits are errors" {
     // A literal of the wrong type fails before running; a runtime value at run time.
     try expectQueryError(&ast, &g, "RETURN true + 1", error.InvalidExpression);
     try expectQueryError(&ast, &g, "WITH true AS t RETURN t + 1", error.TypeMismatch);
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "RETURN 9223372036854775808", null));
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "RETURN -9223372036854775809", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "RETURN 9223372036854775808", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "RETURN -9223372036854775809", null));
 }

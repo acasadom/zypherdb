@@ -2,11 +2,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -59,7 +59,7 @@ test "FOREACH runs its updating clauses once per element" {
     try expectQueryError(&ast, &g, "MATCH (t:Tag) FOREACH (t IN [1] | CREATE (:Made)) RETURN 1", error.InvalidExpression);
     try expectQueryError(&ast, &g, "FOREACH (x IN 5 | CREATE (:Made))", error.TypeMismatch);
     // Only updating clauses go inside.
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "FOREACH (x IN [1] | MATCH (n) SET n.x = x)", null));
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "FOREACH (x IN [1] | )", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "FOREACH (x IN [1] | MATCH (n) SET n.x = x)", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "FOREACH (x IN [1] | )", null));
     try expectQuery(&ast, &g, "MATCH (m:Made) RETURN count(m)", &.{&.{int(0)}});
 }

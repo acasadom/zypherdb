@@ -1,23 +1,23 @@
-"""Typed exceptions, mapped from acmedb's stable error codes."""
+"""Typed exceptions, mapped from zypherdb's stable error codes."""
 
 
-class AcmedbError(Exception):
-    """Base class for every acmedb error."""
+class ZypherDBError(Exception):
+    """Base class for every zypherdb error."""
 
 
-class StorageError(AcmedbError):
+class StorageError(ZypherDBError):
     """A storage-layer failure (I/O, the storage engine)."""
 
 
-class ClosedError(AcmedbError):
+class ClosedError(ZypherDBError):
     """The `Database` was used after `close()`."""
 
 
-class NodeNotFoundError(AcmedbError):
+class NodeNotFoundError(ZypherDBError):
     """A mutator referenced a node id that does not exist."""
 
 
-class QueryError(AcmedbError):
+class QueryError(ZypherDBError):
     """A query failed to run. Carries the error code and message."""
 
     def __init__(self, code: int, message: str):
@@ -76,7 +76,7 @@ _CODE_TO_ERROR = {
 }
 
 
-def error_from_code(code: int, message: str) -> AcmedbError:
+def error_from_code(code: int, message: str) -> ZypherDBError:
     cls = _CODE_TO_ERROR.get(code, QueryError)
     if cls is QueryError and code == 7:
         return StorageError(f"{message} (code 7)")

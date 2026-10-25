@@ -2,10 +2,10 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -202,7 +202,7 @@ test "any sequence of clauses" {
 test "clause order rules" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
-    const parse = acmedb.parser.parse;
+    const parse = zypherdb.parser.parse;
 
     // Reading after an update needs a WITH; RETURN comes last; a query cannot
     // end with a reading clause.

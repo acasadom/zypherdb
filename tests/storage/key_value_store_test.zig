@@ -2,9 +2,9 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const KeyValueStore = acmedb.KeyValueStore;
+const KeyValueStore = zypherdb.KeyValueStore;
 
 const testPath = @import("../support.zig").testPath;
 
@@ -18,12 +18,12 @@ test "KeyValueStore opens, writes and reads a key" {
     var store = try KeyValueStore.open(testing.allocator, path);
     defer store.deinit();
 
-    try store.put("greeting", "hello acmedb");
+    try store.put("greeting", "hello zypherdb");
 
     const got = try store.get("greeting");
     defer if (got) |g| testing.allocator.free(g);
     try testing.expect(got != null);
-    try testing.expectEqualStrings("hello acmedb", got.?);
+    try testing.expectEqualStrings("hello zypherdb", got.?);
 }
 
 test "get of a missing key returns null" {

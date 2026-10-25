@@ -3,11 +3,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -168,13 +168,13 @@ test "rand() draws from the executor's generator when it has one" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
 
-    const query = try acmedb.parser.parse(&ast, "UNWIND range(1, 3) AS i RETURN i, rand() ORDER BY i", null);
+    const query = try zypherdb.parser.parse(&ast, "UNWIND range(1, 3) AS i RETURN i, rand() ORDER BY i", null);
     var draws: [2][3]f64 = undefined;
     for (&draws) |*draw| {
         var arena = std.heap.ArenaAllocator.init(testing.allocator);
         defer arena.deinit();
         var prng = std.Random.DefaultPrng.init(42);
-        var executor = acmedb.Executor.init(&ast, &g, arena.allocator());
+        var executor = zypherdb.Executor.init(&ast, &g, arena.allocator());
         executor.random = prng.random();
         const rows = try executor.run(query);
         try testing.expectEqual(@as(usize, 3), rows.len);

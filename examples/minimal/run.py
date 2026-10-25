@@ -1,15 +1,15 @@
-"""The smallest acmedb program: open a database, store a little graph, ask it a question.
+"""The smallest zypherdb program: open a database, store a little graph, ask it a question.
 
     python -m examples.minimal.run
 """
 
 import tempfile
 
-import acmedb
+import zypherdb
 
 
 def main() -> None:
-    with tempfile.TemporaryDirectory() as path, acmedb.Database(path) as db:
+    with tempfile.TemporaryDirectory() as path, zypherdb.Database(path) as db:
         db.query("""
             CREATE (ada:Person {name: 'Ada Okafor'}), (dalia:Person {name: 'Dalia Haddad'}),
                    (lab:Room {name: 'BSL-3 Lab'}), (office:Room {name: 'Genomics Office'}),

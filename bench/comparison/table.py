@@ -1,6 +1,6 @@
 """Prints result files side by side, and the queries whose answers differ.
 
-    python bench/comparison/table.py results/python-acmedb-10k.jsonl results/python-kuzu-10k.jsonl ...
+    python bench/comparison/table.py results/python-zypherdb-10k.jsonl results/python-kuzu-10k.jsonl ...
 """
 import json, sys
 files = sys.argv[1:]

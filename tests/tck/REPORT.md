@@ -3,7 +3,7 @@
 TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 
 - **Positive** scenarios expect a result: the headline measure of what works.
-- **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
+- **Negative** scenarios expect an error. Their pass rate overstates support: zypherdb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
 **Positive: 3202/3202 (100.0%)** · Negative: 694/694 (100.0%)
@@ -53,4 +53,4 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | Scenarios | Reason |
 | --- | --- |
 
-1 scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.
+1 scenarios not run: intentional deviations (zypherdb extensions), listed in tests/tck/deviations.txt.

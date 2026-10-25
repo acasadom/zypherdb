@@ -1,14 +1,14 @@
-//! The integrity checker (`acmedb.integrity`): it passes on a sound
+//! The integrity checker (`zypherdb.integrity`): it passes on a sound
 //! database, and finds each kind of damage done to one by hand.
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 const support = @import("../support.zig");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const integrity = acmedb.integrity;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const integrity = zypherdb.integrity;
 
 /// Expects the check to fail with one problem whose text contains `needle`.
 fn expectProblem(g: *Graph, needle: []const u8) !void {

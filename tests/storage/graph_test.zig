@@ -2,11 +2,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Graph = acmedb.Graph;
-const NodeId = acmedb.NodeId;
-const NodeIdIterator = acmedb.NodeIdIterator;
+const Graph = zypherdb.Graph;
+const NodeId = zypherdb.NodeId;
+const NodeIdIterator = zypherdb.NodeIdIterator;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -364,7 +364,7 @@ test "edge-type cardinality tracks add and delete" {
     try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
 }
 
-fn rangeIds(g: *Graph, name: []const u8, lower: ?acmedb.Value, upper: ?acmedb.Value) ![]NodeId {
+fn rangeIds(g: *Graph, name: []const u8, lower: ?zypherdb.Value, upper: ?zypherdb.Value) ![]NodeId {
     var iterator = (try g.nodesInRange(name, lower, upper)).?;
     defer iterator.deinit();
     var ids = std.ArrayList(NodeId).empty;
@@ -373,7 +373,7 @@ fn rangeIds(g: *Graph, name: []const u8, lower: ?acmedb.Value, upper: ?acmedb.Va
     return ids.toOwnedSlice(testing.allocator);
 }
 
-fn expectRange(g: *Graph, name: []const u8, lower: ?acmedb.Value, upper: ?acmedb.Value, expected: []const NodeId) !void {
+fn expectRange(g: *Graph, name: []const u8, lower: ?zypherdb.Value, upper: ?zypherdb.Value, expected: []const NodeId) !void {
     const ids = try rangeIds(g, name, lower, upper);
     defer testing.allocator.free(ids);
     try testing.expectEqualSlices(NodeId, expected, ids);
@@ -389,7 +389,7 @@ test "range lookups over the property index: numbers and dates in order" {
     var g = Graph.init(&store, testing.allocator);
 
     // Integers of both signs and floats, integral or not, under one property.
-    const values = [_]acmedb.Value{ .{ .int = -5 }, .{ .int = -1 }, .{ .int = 0 }, .{ .float = 0.5 }, .{ .int = 3 }, .{ .float = 3.0 }, .{ .float = -2.5 }, .{ .int = 100 }, .{ .float = std.math.nan(f64) }, .{ .string = "7" } };
+    const values = [_]zypherdb.Value{ .{ .int = -5 }, .{ .int = -1 }, .{ .int = 0 }, .{ .float = 0.5 }, .{ .int = 3 }, .{ .float = 3.0 }, .{ .float = -2.5 }, .{ .int = 100 }, .{ .float = std.math.nan(f64) }, .{ .string = "7" } };
     for (values, 1..) |value, id| {
         try g.addNode(id, "N");
         try g.setProperty(id, "x", value);

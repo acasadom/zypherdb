@@ -3,9 +3,9 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
+const Ast = zypherdb.Ast;
 
 /// Parses `RETURN expression` and prints the expression back.
 fn expectPrinted(expression: []const u8, expected: []const u8) !void {
@@ -13,10 +13,10 @@ fn expectPrinted(expression: []const u8, expected: []const u8) !void {
     defer arena.deinit();
     var ast = Ast.init(arena.allocator());
     const source = try std.fmt.allocPrint(arena.allocator(), "RETURN {s}", .{expression});
-    const query = try acmedb.parser.parse(&ast, source, null);
+    const query = try zypherdb.parser.parse(&ast, source, null);
     const return_clause = ast.nodeChildren(query)[0];
     const item = ast.nodeChildren(ast.nodeChildren(return_clause)[0])[0];
-    const printed = try acmedb.printer.text(&ast, arena.allocator(), ast.nodeChildren(item)[0]);
+    const printed = try zypherdb.printer.text(&ast, arena.allocator(), ast.nodeChildren(item)[0]);
     try testing.expectEqualStrings(expected, printed);
 }
 

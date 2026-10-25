@@ -1,6 +1,6 @@
 # Cypher reference
 
-acmedb speaks **openCypher**, the query language of graph databases. It adds a few extensions and
+zypherdb speaks **openCypher**, the query language of graph databases. It adds a few extensions and
 leaves out a few features; both are listed below. This page is the complete reference, and the
 [tutorial](../tutorial/01-getting-started) introduces each feature by example.
 
@@ -94,7 +94,7 @@ path = allShortestPaths((a)-[*..10]->(b))          every shortest path between t
   without a type matches any type.
 - A node with several labels must have all of them.
 - `{prop: value}` is an equality test on the property. When the value is a constant or a
-  parameter, acmedb answers it with an index seek.
+  parameter, zypherdb answers it with an index seek.
 - A variable-length relationship binds its variable to the list of the path's relationships, in
   pattern order. `*0..` includes the start node itself.
 - Within one `MATCH`, each relationship is used at most once, so a path never goes back over the
@@ -237,7 +237,7 @@ A **property** of a node or relationship may hold:
 
 Setting a property to `null` removes it.
 
-**Documents** (maps stored as properties) are an acmedb extension, since openCypher does not store
+**Documents** (maps stored as properties) are a zypherdb extension, since openCypher does not store
 maps. A document may nest maps and lists of any values, `null`s included, but it cannot contain
 nodes, relationships or paths.
 
@@ -367,7 +367,7 @@ SHOW CONSTRAINTS
 - A full-text node index covers the nodes with any of the labels; a relationship index covers
   the relationships of any of the types. `CREATE` indexes what the graph holds already. From then
   on, every change keeps the index current, in the transaction that makes it.
-  `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since acmedb's
+  `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since zypherdb's
   indexes are always current.
 - A `RANGE` or `TEXT` index (or one with no kind) is recorded and listed, and every query runs as
   before: the property index already answers equality and range lookups. Its `OPTIONS` are
@@ -493,7 +493,7 @@ depth  operator        details                                    estimated_rows
 
 ## Not supported
 
-acmedb does not implement these parts of openCypher (and of common Neo4j extensions):
+zypherdb does not implement these parts of openCypher (and of common Neo4j extensions):
 
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
   inside `CALL { … }`; `LOAD CSV` from URLs other than `file:` in the import directory;

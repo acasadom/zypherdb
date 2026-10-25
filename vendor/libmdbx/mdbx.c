@@ -32923,7 +32923,7 @@ __cold int mdbx_get_sysraminfo(intptr_t *page_size, intptr_t *total_pages, intpt
 #elif defined(__MACH__)
     mach_port_t mport = mach_host_self();
 #if defined(__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__) && __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ >= 100600
-    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT; /* acmedb patch, see PATCHES.md */
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT; /* zypherdb patch, see PATCHES.md */
     struct vm_statistics64 vmstat;
     kern_return_t kerr = host_statistics64(mport, HOST_VM_INFO64, (host_info64_t)&vmstat, &count);
     const intptr_t avail_ram_pages = vmstat.free_count + vmstat.purgeable_count;

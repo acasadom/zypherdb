@@ -27,17 +27,17 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 const workload = @import("fault_workload.zig");
 const generator = @import("query_generator.zig");
 const Outcome = @import("query_results.zig").Outcome;
 const Database = @import("database.zig");
 
-const Operation = acmedb.faults.Operation;
-const plan = &acmedb.faults.faults;
+const Operation = zypherdb.faults.Operation;
+const plan = &zypherdb.faults.faults;
 
 comptime {
-    if (!acmedb.fault_injection) @compileError("the fault fuzzer needs the acmedb module built with fault_injection (see build.zig)");
+    if (!zypherdb.fault_injection) @compileError("the fault fuzzer needs the zypherdb module built with fault_injection (see build.zig)");
 }
 
 pub const Options = struct {
@@ -116,7 +116,7 @@ pub fn run(backing_allocator: Allocator, path: []const u8, twin_path: []const u8
     }
     plan.* = .{};
     if (debug_allocator.deinit() == .leak) {
-        try out.print("\nfault fuzzer FAILED: memory leaked in seed {d} ({s})\n", .{ options.seed, acmedb.storage_engine });
+        try out.print("\nfault fuzzer FAILED: memory leaked in seed {d} ({s})\n", .{ options.seed, zypherdb.storage_engine });
         return error.FuzzFailed;
     }
     return statistics;
@@ -130,7 +130,7 @@ const Fuzzer = struct {
     swarm: Swarm,
     failing: Database,
     twin: Database,
-    parameters: acmedb.Executor.Parameters = .empty,
+    parameters: zypherdb.Executor.Parameters = .empty,
     /// The workload's texts, for the whole run.
     texts: std.heap.ArenaAllocator,
     /// Memory for one statement's runs.
@@ -159,7 +159,7 @@ const Fuzzer = struct {
         try self.twin.open(allocator, twin_path, Database.fuzz_options);
         errdefer self.twin.close(allocator);
         // The query generator's parameters.
-        const values = [_]acmedb.Value{ .{ .int = 1 }, .{ .string = "red" }, .{ .float = 2.0 } };
+        const values = [_]zypherdb.Value{ .{ .int = 1 }, .{ .string = "red" }, .{ .float = 2.0 } };
         for (generator.parameter_names, values) |name, value| try self.parameters.put(allocator, name, value);
     }
 
@@ -259,10 +259,10 @@ const Fuzzer = struct {
 
     fn fail(self: *Fuzzer, comptime fmt: []const u8, args: anytype) error{ FuzzFailed, WriteFailed } {
         const out = self.out;
-        try out.print("\nfault fuzzer FAILED at statement {d} of seed {d} ({s}): ", .{ self.step_number, self.options.seed, acmedb.storage_engine });
+        try out.print("\nfault fuzzer FAILED at statement {d} of seed {d} ({s}): ", .{ self.step_number, self.options.seed, zypherdb.storage_engine });
         try out.print(fmt, args);
         try out.print("swarm: {f}\n", .{self.swarm});
-        try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- faults --seed {d} --steps {d} --verbose\n", .{ acmedb.storage_engine, self.options.seed, self.step_number + 1 });
+        try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- faults --seed {d} --steps {d} --verbose\n", .{ zypherdb.storage_engine, self.options.seed, self.step_number + 1 });
         try out.flush();
         return error.FuzzFailed;
     }

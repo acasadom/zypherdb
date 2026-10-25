@@ -3,11 +3,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -42,8 +42,8 @@ test "UNION removes duplicate rows, UNION ALL keeps them, columns must agree" {
     try expectQuery(&ast, &g, "RETURN 1 AS x UNION ALL RETURN 1 AS x", &.{ &.{int(1)}, &.{int(1)} });
     // Each part reads with the writes of the parts before it.
     try expectQuery(&ast, &g, "CREATE (:Door {name: 'a'}) RETURN 'created' AS x UNION MATCH (d:Door) RETURN d.name AS x", &.{ &.{string("created")}, &.{string("a")} });
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "RETURN 1 AS a UNION RETURN 2 AS b", null));
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "RETURN 1 AS a UNION RETURN 2 AS a UNION ALL RETURN 3 AS a", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "RETURN 1 AS a UNION RETURN 2 AS b", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "RETURN 1 AS a UNION RETURN 2 AS a UNION ALL RETURN 3 AS a", null));
 }
 
 test "simple CASE, XOR and chained comparisons" {
@@ -106,11 +106,11 @@ test "patterns in expressions: predicates, comprehensions and EXISTS" {
     // A pattern predicate cannot introduce variables.
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const query = try acmedb.parser.parse(&ast, "MATCH (p:Person) WHERE (p)-->(other) RETURN p", null);
-    var executor = acmedb.Executor.init(&ast, &g, arena.allocator());
+    const query = try zypherdb.parser.parse(&ast, "MATCH (p:Person) WHERE (p)-->(other) RETURN p", null);
+    var executor = zypherdb.Executor.init(&ast, &g, arena.allocator());
     try testing.expectError(error.InvalidExpression, executor.run(query));
     // Outside a WHERE, a pattern is not an expression.
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(&ast, "MATCH (p) RETURN (p)-->()", null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, "MATCH (p) RETURN (p)-->()", null));
 }
 
 test "a WITH's WHERE also sees the variables from before it" {

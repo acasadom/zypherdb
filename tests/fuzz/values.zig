@@ -6,9 +6,9 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
-const Value = acmedb.Value;
-const MapEntry = acmedb.value.MapEntry;
+const zypherdb = @import("zypherdb");
+const Value = zypherdb.Value;
+const MapEntry = zypherdb.value.MapEntry;
 
 const integers = [_]i64{ -1, 0, 1, 2, 42, std.math.minInt(i64), std.math.maxInt(i64) };
 const floats = [_]f64{ 0.0, -0.0, 1.0, 2.0, 2.5, -3.75, std.math.nan(f64), std.math.inf(f64), -std.math.inf(f64), 1e300, 5e-324 };

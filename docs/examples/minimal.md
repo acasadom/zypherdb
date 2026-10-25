@@ -1,6 +1,6 @@
 # The smallest program
 
-`examples/minimal/run.py` is the least a program needs to use acmedb: open a database, store a
+`examples/minimal/run.py` is the least a program needs to use zypherdb: open a database, store a
 small graph, and ask it a question with a parameter.
 
 ```{literalinclude} ../../examples/minimal/run.py
@@ -8,7 +8,7 @@ small graph, and ask it a question with a parameter.
 :start-at: import tempfile
 ```
 
-Run it from the repository root, with the package installed (`pip install acmedb`) or built from
+Run it from the repository root, with the package installed (`pip install zypherdb`) or built from
 source (`make python`, then `PYTHONPATH=python`):
 
 ```bash
@@ -19,7 +19,7 @@ python -m examples.minimal.run
 BSL-3 Lab: Ada Okafor, Dalia Haddad
 ```
 
-- `acmedb.Database(path)` opens the database in that directory, creating it if needed, and the
+- `zypherdb.Database(path)` opens the database in that directory, creating it if needed, and the
   `with` block closes it. Here the directory is temporary, so the data is gone at the end; give it
   a lasting path to keep it.
 - One `CREATE` stores five nodes and three relationships, in one transaction.

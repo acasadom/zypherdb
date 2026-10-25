@@ -1,4 +1,4 @@
-//! Fault tests root: built against the acmedb module whose storage engine
+//! Fault tests root: built against the zypherdb module whose storage engine
 //! fails when a test says (build option `fault_injection`, see build.zig).
 
 test {

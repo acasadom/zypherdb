@@ -2,11 +2,11 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
+const zypherdb = @import("zypherdb");
 
-const Ast = acmedb.Ast;
-const Graph = acmedb.Graph;
-const Value = acmedb.Value;
+const Ast = zypherdb.Ast;
+const Graph = zypherdb.Graph;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
@@ -15,7 +15,7 @@ const expectOrdered = support.expectOrdered;
 const expectQueryError = support.expectQueryError;
 
 fn expectParseError(ast: *Ast, src: []const u8) !void {
-    try testing.expectError(error.UnexpectedToken, acmedb.parser.parse(ast, src, null));
+    try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(ast, src, null));
 }
 
 fn string(text: []const u8) Value {

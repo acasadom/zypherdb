@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from acmedb import Database  # noqa: E402
+from zypherdb import Database  # noqa: E402
 
 QUERIES = [
     ("card lookup", "MATCH (c:Card {number: $card}) RETURN c.number", ("card",)),
@@ -61,7 +61,7 @@ def main() -> None:
     if not args.cold:
         # Bring the file into the OS page cache, as in a process that has been
         # running a while: otherwise the first reads of each page go to disk,
-        # which measures the disk, not acmedb.
+        # which measures the disk, not zypherdb.
         # The data file of either engine: LMDB's data.mdb, libmdbx's mdbx.dat.
         data_file = next(p for p in (Path(args.dir) / "data.mdb", Path(args.dir) / "mdbx.dat") if p.exists())
         with open(data_file, "rb") as data:

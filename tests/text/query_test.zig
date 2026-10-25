@@ -2,8 +2,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const acmedb = @import("acmedb");
-const query = acmedb.text.query;
+const zypherdb = @import("zypherdb");
+const query = zypherdb.text.query;
 
 fn parse(arena: std.mem.Allocator, text: []const u8) ![]const query.Clause {
     var message: []const u8 = "";

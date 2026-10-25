@@ -2,12 +2,12 @@
 
 A door controller runs unattended, around the clock, with many readers talking to it at once. It
 must handle bad input without falling over, keep the data consistent when something fails, and
-serve many requests concurrently. This step covers how acmedb reports errors, what a failed query
+serve many requests concurrently. This step covers how zypherdb reports errors, what a failed query
 leaves behind, and how to use one database from many threads or processes.
 
 ## Typed errors
 
-Every error is an `acmedb.AcmedbError`. A query that cannot run raises a `QueryError` subclass
+Every error is a `zypherdb.ZypherDBError`. A query that cannot run raises a `QueryError` subclass
 that says why, with a message and a stable code:
 
 | Exception | Raised when |
@@ -25,7 +25,7 @@ Outside queries there are `StorageError` (the disk), `NodeNotFoundError` (a muta
 that does not exist) and `ClosedError` (a closed `Database`).
 
 ```python
-from acmedb import ParseError, TypeMismatchError, QueryError
+from zypherdb import ParseError, TypeMismatchError, QueryError
 
 for query in [
     "MATCH (p:Person RETURN p",
@@ -43,7 +43,7 @@ TypeMismatchError - arithmetic needs numbers
 ```
 
 `error.code` is the numeric code, `error.message` the text. Catch the specific classes where the
-program can do something about them, and `QueryError` (or `AcmedbError`) at the edge.
+program can do something about them, and `QueryError` (or `ZypherDBError`) at the edge.
 
 ## A failed query writes nothing
 
@@ -123,5 +123,5 @@ Three rules:
 Writes that are many and small — the swipe log — are where processes contend. Batching them
 ([step 15](15-loading)) keeps each writer's turn short.
 
-The controller is correct and concurrent. [Next](17-performance), fast: what acmedb does with a
+The controller is correct and concurrent. [Next](17-performance), fast: what zypherdb does with a
 query, and how to write the ones that must answer in microseconds.

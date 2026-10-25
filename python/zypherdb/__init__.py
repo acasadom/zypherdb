@@ -1,8 +1,8 @@
-"""acmedb — Python bindings for the embedded graph database.
+"""zypherdb — Python bindings for the embedded graph database.
 
 Usage::
 
-    from acmedb import Database
+    from zypherdb import Database
 
     with Database("/tmp/movies") as db:
         db.add_node(1, "Movie")
@@ -14,7 +14,7 @@ from .db import Database, PreparedQuery
 from .entities import Node, Path, Relationship
 from .temporal import Duration
 from .errors import (
-    AcmedbError,
+    ZypherDBError,
     ArithmeticQueryError,
     ClosedError,
     InvalidExpressionError,
@@ -37,7 +37,7 @@ __all__ = [
     "Path",
     "Relationship",
     "Duration",
-    "AcmedbError",
+    "ZypherDBError",
     "ArithmeticQueryError",
     "QueryError",
     "ParseError",

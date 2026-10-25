@@ -3,7 +3,7 @@
 TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 
 - **Positive** scenarios expect a result: the headline measure of what works.
-- **Negative** scenarios expect an error. Their pass rate overstates support: acmedb rejects
+- **Negative** scenarios expect an error. Their pass rate overstates support: zypherdb rejects
   much syntax it does not implement yet, which can coincide with an expected SyntaxError.
 
 **Positive: 3000/3202 (93.7%)** · Negative: 659/694 (95.0%)
@@ -86,4 +86,4 @@ TCK 2024.3, 3896 scenarios (outlines expanded; `@ignore` scenarios excluded).
 | 1 | fail: setup query failed: ParseError: expected an expression, found '*' |
 | 1 | fail: unexpected error: expected '}', found WITH |
 
-1 scenarios not run: intentional deviations (acmedb extensions), listed in tests/tck/deviations.txt.
+1 scenarios not run: intentional deviations (zypherdb extensions), listed in tests/tck/deviations.txt.

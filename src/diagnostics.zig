@@ -4,7 +4,7 @@
 
 const std = @import("std");
 
-/// Stable error categories, surfaced through the C ABI (`acmedb_error_code`).
+/// Stable error categories, surfaced through the C ABI (`zypherdb_error_code`).
 /// Keep the numeric values stable — the Python wrapper maps them to exceptions.
 pub const ErrorCode = enum(u32) {
     none = 0,

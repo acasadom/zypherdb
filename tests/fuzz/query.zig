@@ -3,7 +3,7 @@
 //! engine. The same query must give the same rows
 //!
 //! - with the planner's optimizations off, in random combinations
-//!   (`acmedb.PlanOptions`);
+//!   (`zypherdb.PlanOptions`);
 //! - prepared, run twice (the second run reuses the plan), and after the
 //!   graph changed under a statement prepared before;
 //! - as the union of its rows WHERE p, WHERE NOT p and WHERE p IS NULL
@@ -18,12 +18,12 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const acmedb = @import("acmedb");
-const Graph = acmedb.Graph;
-const KeyValueStore = acmedb.KeyValueStore;
-const Value = acmedb.Value;
-const Statement = acmedb.Statement;
-const PlanOptions = acmedb.PlanOptions;
+const zypherdb = @import("zypherdb");
+const Graph = zypherdb.Graph;
+const KeyValueStore = zypherdb.KeyValueStore;
+const Value = zypherdb.Value;
+const Statement = zypherdb.Statement;
+const PlanOptions = zypherdb.PlanOptions;
 const NodeId = u64;
 const RelationshipId = u64;
 
@@ -142,7 +142,7 @@ const Fuzzer = struct {
     swarm: Swarm,
     store: KeyValueStore,
     graph: Graph,
-    parameters: acmedb.Executor.Parameters = .empty,
+    parameters: zypherdb.Executor.Parameters = .empty,
     node_ids: std.ArrayList(NodeId) = .empty,
     relationship_ids: std.ArrayList(RelationshipId) = .empty,
     next_node_id: NodeId = 1,
@@ -388,10 +388,10 @@ const Fuzzer = struct {
     fn runOnce(self: *Fuzzer, text: []const u8, options: PlanOptions, ordered: bool) !Outcome {
         const arena = self.scratch.allocator();
         // The AST lives in the scratch memory: rows may point into it.
-        const ast = try arena.create(acmedb.Ast);
-        ast.* = acmedb.Ast.init(arena);
-        const root = acmedb.parser.parse(ast, text, null) catch |err| return .{ .failure = err };
-        var executor = acmedb.Executor.init(ast, &self.graph, arena);
+        const ast = try arena.create(zypherdb.Ast);
+        ast.* = zypherdb.Ast.init(arena);
+        const root = zypherdb.parser.parse(ast, text, null) catch |err| return .{ .failure = err };
+        var executor = zypherdb.Executor.init(ast, &self.graph, arena);
         executor.parameters = self.parameters;
         executor.plan_options = options;
         const rows = executor.run(root) catch |err| {
@@ -422,8 +422,8 @@ const Fuzzer = struct {
 
     fn fail(self: *Fuzzer, expected: Outcome, actual: Outcome, comptime fmt: []const u8, args: anytype) error{ FuzzFailed, WriteFailed } {
         const out = self.out;
-        try out.print("\nquery fuzzer FAILED at query {d} of seed {d} ({s})\n", .{ self.query_number, self.options.seed, acmedb.storage_engine });
-        try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- query --seed {d} --steps {d} --verbose\n", .{ acmedb.storage_engine, self.options.seed, self.query_number + 1 });
+        try out.print("\nquery fuzzer FAILED at query {d} of seed {d} ({s})\n", .{ self.query_number, self.options.seed, zypherdb.storage_engine });
+        try out.print("reproduce: zig build fuzz -Dstorage-engine={s} -- query --seed {d} --steps {d} --verbose\n", .{ zypherdb.storage_engine, self.options.seed, self.query_number + 1 });
         try out.print("swarm: {f}\nparameters:", .{self.swarm});
         for (generator.parameter_names) |name| try out.print(" ${s} = {any}", .{ name, self.parameters.get(name).? });
         try out.print("\nquery: {s}\noracle: ", .{self.text});

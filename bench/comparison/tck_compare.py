@@ -1,8 +1,8 @@
-"""Runs the openCypher TCK against acmedb or LatticeDB with the same criteria.
+"""Runs the openCypher TCK against zypherdb or LatticeDB with the same criteria.
 
-    python bench/comparison/tck_compare.py --engine acmedb|latticedb [--report FILE]
+    python bench/comparison/tck_compare.py --engine zypherdb|latticedb [--report FILE]
 
-Needs the acmedb module built (`make python`) and, for LatticeDB, `pip install latticedb`.
+Needs the zypherdb module built (`make python`) and, for LatticeDB, `pip install latticedb`.
 
 Results-only mode, for both engines: a scenario passes when its result rows
 (or its expected error) match. Side-effect steps are not checked, because
@@ -24,15 +24,15 @@ sys.path.insert(0, str(REPO / "python"))
 import runner  # noqa: E402
 import cypher_values  # noqa: E402
 
-ENGINE = os.environ.get("TCK_ENGINE", "acmedb")
+ENGINE = os.environ.get("TCK_ENGINE", "zypherdb")
 
 
-class AcmedbAdapter:
+class ZypherDBAdapter:
     def __init__(self, path):
-        import acmedb
+        import zypherdb
 
-        self.db = acmedb.Database(path, temporals="iso")
-        self.error_types = (acmedb.AcmedbError, TypeError, OverflowError)
+        self.db = zypherdb.Database(path, temporals="iso")
+        self.error_types = (zypherdb.ZypherDBError, TypeError, OverflowError)
 
     def query(self, text, parameters):
         return self.db.query(text, parameters)
@@ -57,14 +57,14 @@ class LatticeAdapter:
         self.db.close()
 
 
-ADAPTERS = {"acmedb": AcmedbAdapter, "latticedb": LatticeAdapter}
+ADAPTERS = {"zypherdb": ZypherDBAdapter, "latticedb": LatticeAdapter}
 
 
 _original_from_python = cypher_values.from_python
 
 
 def _from_python(value):
-    """Like cypher_values.from_python, without requiring acmedb types."""
+    """Like cypher_values.from_python, without requiring zypherdb types."""
     try:
         return _original_from_python(value)
     except (TypeError, ImportError):
