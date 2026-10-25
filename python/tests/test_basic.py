@@ -16,6 +16,7 @@ from acmedb import (
     Database,
     Duration,
     ExternalResourceError,
+    InvalidExpressionError,
     NodeNotFoundError,
     Node,
     ParameterMissingError,
@@ -258,6 +259,26 @@ def test_mutators_reject_missing_nodes(db):
     with pytest.raises(NodeNotFoundError):
         db.set_property(999, "v", 1)
     assert db.query("MATCH (a)-[:X]->(b) RETURN count(*)") == [[0]]
+
+
+def test_names_that_cannot_be_stored_are_refused(db):
+    # 0x00 ends names inside index keys; records hold no empty names.
+    db.add_node(1, "")
+    db.add_node(2, "P")
+    with pytest.raises(ValueError):
+        db.add_node(3, "A\x00B")
+    with pytest.raises(ValueError):
+        db.add_edge(1, 2, "")
+    with pytest.raises(ValueError):
+        db.add_edge(1, 2, "R\x00S")
+    with pytest.raises(ValueError):
+        db.set_property(1, "", 1)
+    db.set_property(1, "", None)  # removing a missing property does nothing
+    with pytest.raises(InvalidExpressionError, match="U\\+0000"):
+        db.query("MATCH (n) SET n += $map", map={"": 1})
+    with pytest.raises(InvalidExpressionError, match="U\\+0000"):
+        db.query("CREATE (:`A\x00B`)")
+    assert db.check()["ok"]
 
 
 def test_query_inside_write_is_refused(db):

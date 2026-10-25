@@ -23,6 +23,9 @@ pub const NodeIdIterator = graph.NodeIdIterator;
 /// Checks that every derived structure agrees with the primary records.
 pub const integrity = @import("storage/integrity.zig");
 
+/// The layout of stored bytes, checked; and which names can be stored.
+pub const layout = @import("storage/layout.zig");
+
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
 pub const storage_engine = @tagName(@import("build_options").storage_engine);
 
@@ -106,6 +109,7 @@ test {
     // Modules with unit tests that no declaration above reaches yet.
     _ = @import("storage/value_encoding.zig");
     _ = @import("storage/node_record.zig");
+    _ = @import("storage/layout.zig");
     _ = @import("storage/engine/contract.zig");
     _ = @import("text/regex.zig");
     _ = @import("text/csv.zig");

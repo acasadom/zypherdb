@@ -7,6 +7,7 @@ const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
 const Relationship = @import("../value.zig").Relationship;
 const GraphError = @import("../storage/graph.zig").GraphError;
+const layout = @import("../storage/layout.zig");
 
 const Executor = @import("Executor.zig");
 const pattern_matching = @import("pattern_matching.zig");
@@ -63,7 +64,7 @@ pub fn createNode(self: *Executor, node_pattern_index: Index, bindings: *Binding
     const node_pattern = self.ast.data(node_pattern_index).node_pattern;
     const id = try self.graph.allocateNodeId();
     try self.graph.addNode(id, ""); // node marker
-    for (node_pattern.labels) |label| try self.graph.addLabel(id, label);
+    for (node_pattern.labels) |label| try addLabel(self, id, label);
     for (self.ast.nodeChildren(node_pattern_index)) |property_node| {
         const property_name = self.ast.data(property_node).text;
         const value = try expressions.evaluate(self, self.ast.nodeChildren(property_node)[0], bindings);
@@ -132,6 +133,7 @@ pub fn applyEdges(self: *Executor, chain: []const Index, node_ids: []const NodeI
         // MERGE without a direction matches either way and creates left to right.
         const src: NodeId = if (edge_pattern.direction == .right_to_left) right_id else left_id;
         const dst: NodeId = if (edge_pattern.direction == .right_to_left) left_id else right_id;
+        try requireStorableName(self, "relationship type", edge_type);
         const id = try self.graph.addEdge(src, dst, edge_type);
         for (self.ast.nodeChildren(edge_pattern_index)) |property_node| {
             const property_name = self.ast.data(property_node).text;
@@ -161,7 +163,7 @@ pub fn applySet(self: *Executor, set_clause: Index, bindings: *Bindings) Executi
                 try setProperties(self, entity, try expressions.evaluate(self, item_children[1], bindings), replace);
             },
             .label_reference => switch (try writeTarget(self, item_children[0], bindings, "SET")) {
-                .node => |id| try self.graph.addLabel(id, self.ast.data(item).text),
+                .node => |id| try addLabel(self, id, self.ast.data(item).text),
                 .null => {},
                 else => return labelsOnNodesOnly(self),
             },
@@ -285,13 +287,30 @@ fn deleteNode(self: *Executor, id: NodeId, detach: bool, name: []const u8) Execu
     };
 }
 
+fn addLabel(self: *Executor, id: NodeId, label: []const u8) ExecutionError!void {
+    try requireStorableName(self, "label", label);
+    try self.graph.addLabel(id, label);
+}
+
+/// Refuses a label, relationship type or property name that storage cannot
+/// keep: empty, or holding U+0000, the separator inside index keys. (Names in
+/// a query are never empty; names from a map parameter can be.)
+pub fn requireStorableName(self: *Executor, kind: []const u8, name: []const u8) ExecutionError!void {
+    if (layout.isStorableName(name)) return;
+    self.fail(.invalid_expression, "a {s} cannot be empty or contain the character U+0000", .{kind});
+    return error.InvalidExpression;
+}
+
 /// Sets a node property, explaining an unstorable value in the diagnostic.
+/// (Setting a property to null removes it: any name is accepted then.)
 fn setNodeProperty(self: *Executor, id: NodeId, name: []const u8, value: Value) ExecutionError!void {
+    if (!value.isNull()) try requireStorableName(self, "property name", name);
     self.graph.setProperty(id, name, value) catch |err| return reportPropertyError(self, name, err);
 }
 
 /// Sets an edge property, explaining an unstorable value in the diagnostic.
 fn setEdgeProperty(self: *Executor, id: u64, name: []const u8, value: Value) ExecutionError!void {
+    if (!value.isNull()) try requireStorableName(self, "property name", name);
     self.graph.setEdgeProperty(id, name, value) catch |err| return reportPropertyError(self, name, err);
 }
 

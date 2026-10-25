@@ -33,6 +33,7 @@ const TYPE_STRING = c_api.TYPE_STRING;
 const TYPE_LIST = c_api.TYPE_LIST;
 const RETURN_OK = c_api.RETURN_OK;
 const RETURN_NODE_NOT_FOUND = c_api.RETURN_NODE_NOT_FOUND;
+const RETURN_INVALID_NAME = c_api.RETURN_INVALID_NAME;
 
 test "C ABI: open, load, query and read results" {
     var tmp = testing.tmpDir(.{});
@@ -196,6 +197,70 @@ test "C ABI: mutators reject nodes that do not exist" {
 
     try testing.expectEqual(RETURN_OK, acmedb_add_node(context, 2, "P".ptr, "P".len));
     try testing.expectEqual(RETURN_OK, acmedb_add_edge(context, 1, 2, "X".ptr, "X".len));
+}
+
+test "C ABI: names that are empty or hold a 0x00 byte are refused" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+
+    const context = acmedb_open(path.ptr, path.len).?;
+    defer acmedb_close(context);
+
+    // 0x00 ends names inside index keys: a label "A\x00B" would be found as "A".
+    try testing.expectEqual(RETURN_INVALID_NAME, acmedb_add_node(context, 1, "A\x00B".ptr, 3));
+    try testing.expectEqual(RETURN_OK, acmedb_add_node(context, 1, "".ptr, 0)); // no label
+    try testing.expectEqual(RETURN_OK, acmedb_add_node(context, 2, "A".ptr, 1));
+    try testing.expectEqual(RETURN_INVALID_NAME, acmedb_add_edge(context, 1, 2, "R\x00S".ptr, 3));
+    try testing.expectEqual(RETURN_INVALID_NAME, acmedb_add_edge(context, 1, 2, "".ptr, 0));
+    try testing.expectEqual(RETURN_INVALID_NAME, acmedb_set_property_int64(context, 1, "".ptr, 0, 1));
+    try testing.expectEqual(RETURN_INVALID_NAME, acmedb_set_property_string(context, 1, "p\x00q".ptr, 3, "a".ptr, 1));
+
+    // In queries: names in the text, and keys of a map parameter.
+    const queries = [_][]const u8{
+        "CREATE (:`A\x00B`)",
+        "CREATE ()-[:`R\x00S`]->()",
+        "MATCH (n) SET n:`A\x00B`",
+        "CREATE ({`p\x00q`: 1})",
+        "CREATE INDEX `i\x00j` FOR (n:A) ON (n.x)",
+        "CREATE CONSTRAINT FOR (n:`A\x00B`) REQUIRE n.x IS UNIQUE",
+        "CREATE FULLTEXT INDEX f FOR ()-[r:`R\x00S`]-() ON EACH [r.x]",
+        "CREATE FULLTEXT INDEX f FOR (n:A) ON EACH [n.`x\x00y`]",
+    };
+    const messages = [_][]const u8{
+        "a label cannot be empty or contain the character U+0000",
+        "a relationship type cannot be empty or contain the character U+0000",
+        "a label cannot be empty or contain the character U+0000",
+        "a property name cannot be empty or contain the character U+0000",
+        "a name for an index or constraint cannot be empty or contain the character U+0000",
+        "a label cannot be empty or contain the character U+0000",
+        "a relationship type cannot be empty or contain the character U+0000",
+        "a property name cannot be empty or contain the character U+0000",
+    };
+    for (queries, messages) |query, message| {
+        try testing.expect(acmedb_query(context, query.ptr, query.len) == null);
+        var length: usize = 0;
+        try testing.expectEqualStrings(message, acmedb_last_error(context, &length)[0..length]);
+    }
+    const set_query = "MATCH (n) SET n += $map";
+    const create_query = "CREATE ()-[r:R]->() SET r += $map";
+    for ([_][]const u8{ set_query, create_query }) |query| {
+        for ([_][]const u8{ "{\"map\": {\"\": 1}}", "{\"map\": {\"a\\u0000\": 1}}" }) |parameters| {
+            try testing.expect(c_api.acmedb_query_with_parameters(context, query.ptr, query.len, parameters.ptr, parameters.len) == null);
+            var length: usize = 0;
+            try testing.expectEqualStrings(messages[3], acmedb_last_error(context, &length)[0..length]);
+        }
+    }
+    // Removing such a property is a no-op, as for any missing property.
+    const remove = "MATCH (n) SET n += $map RETURN count(n)";
+    const nothing = "{\"map\": {\"\": null}}";
+    acmedb_result_free(c_api.acmedb_query_with_parameters(context, remove.ptr, remove.len, nothing.ptr, nothing.len).?);
+
+    var length: usize = 0;
+    const report = c_api.acmedb_check(context, &length).?[0..length];
+    try testing.expect(std.mem.indexOf(u8, report, "\"problem_count\":0") != null);
 }
 
 test "C ABI: export the whole graph as JSON" {
