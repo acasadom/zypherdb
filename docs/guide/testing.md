@@ -354,6 +354,26 @@ Two measurements keep ZypherDB's honest.
   measured this way when it was written: nine of nine mutations in the storage layer, six of six in the
   planner, nine of ten for faults, two of two for crashes, three of three for the pair assertions.
 
+## Fuzzing in CI
+
+A fuzzer finds what its seeds reach, so the more seeds it runs, the more it finds. CI runs the fuzzers
+on every change and again every night, each time from a new first seed (the run's id), so the seeds
+covered grow every day instead of repeating the same ones.
+
+- **On every push and pull request** (`.github/workflows/ci.yml`), a short run of each fuzzer: ten
+  seeds of the storage, query and fault fuzzers and two of the crash fuzzer, in Debug, under a minute.
+- **Every night, and on demand** (`.github/workflows/fuzz.yml`), a long run in ReleaseSafe: 300 seeds
+  of each fuzzer (30 of the crash fuzzer), on LMDB and libmdbx, on Linux and macOS. A last job
+  compares the query fuzzer's digests: the four builds must give every generated query the same
+  results.
+- **When one fails**, the job summary shows the seed and the command that replays it, and the
+  database the fuzzer kept is attached to the run, so the failure can be studied on any machine.
+
+What it buys: more seeds, every day, without anyone running them, and the same tests on both engines
+and both systems, so a difference between them is found rather than shipped. What it does not: a
+nightly failure can come after the change that caused it was merged; and the fuzzers still only reach
+what their generators produce.
+
 ## Not adopted from TigerBeetle, and why
 
 - **The VOPR**, TigerBeetle's deterministic simulator of a whole cluster: network, clocks, disks and

@@ -34,6 +34,15 @@ jobs:
       - name: Zig tests
         run: zig build test --summary all
 
+      # A short run of each fuzzer from a new first seed (the run id); the long runs are
+      # in fuzz.yml. Replay a failure with: zig build fuzz -- <fuzzer> --seed <seed>
+      - name: Fuzzers (short run)
+        run: |
+          zig build fuzz -- storage --seed ${{ github.run_id }} --seeds 10 --quiet
+          zig build fuzz -- query --seed ${{ github.run_id }} --seeds 10 --quiet
+          zig build fuzz -- faults --seed ${{ github.run_id }} --seeds 10 --steps 60 --quiet
+          zig build fuzz -- crash --seed ${{ github.run_id }} --seeds 2 --quiet
+
       - name: Build the shared library
         run: zig build
 

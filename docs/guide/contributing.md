@@ -12,6 +12,7 @@ SNAP_UPDATE=1 zig build test   # rewrite the snapshots that differ (review with 
 zig build fuzz -- storage --seeds 100   # the storage fuzzer, from a random seed
 zig build fuzz -- faults --seeds 100    # the fault fuzzer: storage that fails on purpose
 zig build fuzz -- crash --seeds 100     # the crash fuzzer: a writer killed with SIGKILL
+                  # (CI runs them all on each change and nightly: see testing.md, "Fuzzing in CI")
 zig build         # static + shared libraries and zypherdb.h into zig-out/
 make python       # the Python extension module into zig-out/python/
 make test-py      # Python tests and documentation tests (pip install -e "python[dev]" once)
