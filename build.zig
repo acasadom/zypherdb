@@ -83,13 +83,15 @@ pub fn build(b: *std.Build) void {
         native_module.addImport("python", python_api.createModule());
         const native = b.addLibrary(.{ .name = "_native", .root_module = native_module, .linkage = .dynamic });
         const is_windows = target.result.os.tag == .windows;
+        // Declared on every platform (and ignored off Windows), so one command builds everywhere.
+        const python_libs = b.option([]const u8, "python-libs", "Directory with python3.lib (Windows only)");
         if (is_windows) {
             // A Windows DLL cannot leave symbols undefined: link the stable-ABI import
             // library (python3.lib, in the `libs` directory of a Python install).
-            const libs = b.option([]const u8, "python-libs", "Directory with python3.lib (Windows only)") orelse
+            const libs = python_libs orelse
                 @panic("building the Python module for Windows needs -Dpython-libs=<python>/libs");
             native_module.addLibraryPath(.{ .cwd_relative = libs });
-            native_module.linkSystemLibrary("python3", .{});
+            native_module.linkSystemLibrary("python3", .{ .use_pkg_config = .no });
         } else {
             // Python's symbols come from the interpreter that loads the module.
             native.linker_allow_shlib_undefined = true;

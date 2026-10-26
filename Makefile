@@ -5,12 +5,14 @@
 
 PYTHON ?= python3
 PYTHON_INCLUDE = $(shell $(PYTHON) -c "import sysconfig; print(sysconfig.get_paths()['include'])")
+# python3.lib, which a Windows build links (ignored elsewhere)
+PYTHON_LIBS = $(shell $(PYTHON) -c "import os, sys; print(os.path.join(sys.base_prefix, 'libs'))")
 
 build: ## Compile the static + shared libraries (into zig-out/)
 	zig build
 
 python: ## Compile the Python extension module (into zig-out/python/)
-	zig build python -Dpython-include="$(PYTHON_INCLUDE)"
+	zig build python -Dpython-include="$(PYTHON_INCLUDE)" -Dpython-libs="$(PYTHON_LIBS)"
 
 test: ## Build and run the test suite
 	zig build test

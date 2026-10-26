@@ -29,6 +29,7 @@
 //! are not tested (they need a simulated disk).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const zypherdb = @import("zypherdb");
 const workload = @import("fault_workload.zig");
@@ -248,13 +249,18 @@ fn runWriter(io: std.Io, arena: Allocator, executable: []const u8, path: []const
         if (!std.mem.eql(u8, line, "open")) reported = try std.fmt.parseInt(u32, line, 10) - from;
         if (ending == .timed and !signalled and reported == ending.timed.reports) {
             if (ending.timed.delay > 0) try io.sleep(.fromMicroseconds(ending.timed.delay), .awake);
-            std.posix.kill(child.id.?, .KILL) catch {};
+            zypherdb.faults.kill(child.id.?);
             signalled = true;
         }
     }
     return switch (try child.wait(io)) {
-        .exited => |code| if (code == 0) .{ .reported = reported, .killed = false } else error.WriterFailed,
-        .signal => |signal| if (signal == .KILL and ending != .run_to_end) .{ .reported = reported, .killed = true } else error.WriterFailed,
+        .exited => |code| if (code == 0)
+            .{ .reported = reported, .killed = false }
+        else if (code == zypherdb.faults.killed_exit_code and builtin.os.tag == .windows and ending != .run_to_end)
+            .{ .reported = reported, .killed = true }
+        else
+            error.WriterFailed,
+        .signal => |signal| if (builtin.os.tag != .windows and signal == .KILL and ending != .run_to_end) .{ .reported = reported, .killed = true } else error.WriterFailed,
         else => error.WriterFailed,
     };
 }
