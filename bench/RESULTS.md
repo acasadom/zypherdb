@@ -176,7 +176,7 @@ Two changes, each measured against the commit before it (ReleaseFast, 100k peopl
 for the heavy queries, three alternating rounds at load average < 3, best median; plain and
 `--prepared` agree unless shown):
 
-- **RETURN rows** (bd6a55d): the projected expressions are found once per run, not once per row
+- **RETURN rows** (6be0e78): the projected expressions are found once per run, not once per row
   for the ORDER BY key; rows are allocated at their width instead of grown.
 - **Compiled expressions** (`planning/expression_program.zig`): one instruction per AST node, made
   with the plan. A constant carries its value, a variable its slot, `n.name` its slot and name, a
@@ -198,7 +198,7 @@ own neighbour.) Nothing measured slower; writes vary ±7% from round to round as
 expression-heavy query the gain is 6%: with 100k people reading three properties a row from
 storage costs more than evaluating the expressions.
 
-Both ideas come from a parallel review of this branch (another agent continued from 33a78fa).
+Both ideas come from a parallel review of this branch (another agent continued from 95dc7c9).
 Against that tree, at the same harness: these commits are 25-44% faster on multi-hop queries,
 9-14% on aggregates (both measured before these two commits), on par on ORDER BY + LIMIT, its
 one lead before (17.1 ms here, 17.8-18.3 ms there, in different sessions), and 2% faster on the
