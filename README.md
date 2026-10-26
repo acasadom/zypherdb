@@ -2,6 +2,12 @@
 
 *An embedded graph database in Zig, speaking openCypher, on LMDB or libmdbx.*
 
+[![CI](https://github.com/acasadom/zypherdb/actions/workflows/ci.yml/badge.svg)](https://github.com/acasadom/zypherdb/actions/workflows/ci.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+![Zig](https://img.shields.io/badge/zig-0.17-f7a41d)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+[![Docs](https://img.shields.io/badge/docs-acasadom.github.io%2Fzypherdb-blue)](https://acasadom.github.io/zypherdb/)
+
 A small, embeddable **graph database**: link it into your process through its C ABI, or
 `import zypherdb` in Python, store nodes and relationships, and query them in **openCypher** — over
 an **index-free adjacency** graph stored in **LMDB** (or **libmdbx**). No server, no configuration,
@@ -149,4 +155,4 @@ lists what ZypherDB does not implement yet.
 
 ## License
 
-MIT (see [LICENSE](LICENSE)). ZypherDB includes LMDB, libmdbx and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Apache License 2.0 (see [LICENSE](LICENSE)). ZypherDB includes LMDB, libmdbx and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
