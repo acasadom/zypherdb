@@ -23,6 +23,12 @@ const zypherdb = @import("zypherdb");
 const py = @import("python"); // python.h, translated by the build
 const temporals = @import("temporals.zig");
 
+// PyArg_ParseTuple with Py_ssize_t lengths for `#` formats. Before Python 3.13 C code
+// gets this variant through the PY_SSIZE_T_CLEAN macro, which Zig code does not see;
+// it is part of the stable ABI in every version, even where headers no longer declare it.
+extern fn _PyArg_ParseTuple_SizeT(args: ?*py.PyObject, format: [*:0]const u8, ...) c_int;
+const parseTuple = _PyArg_ParseTuple_SizeT;
+
 const Value = zypherdb.Value;
 const MapEntry = zypherdb.value.MapEntry;
 const Graph = zypherdb.Graph;
@@ -81,7 +87,7 @@ fn setImportDirectory(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.P
     var capsule: ?*py.PyObject = null;
     var path_pointer: [*c]const u8 = null;
     var path_length: py.Py_ssize_t = 0;
-    if (py.PyArg_ParseTuple(args, "Oz#", &capsule, &path_pointer, &path_length) == 0) return null;
+    if (parseTuple(args, "Oz#", &capsule, &path_pointer, &path_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     const directory: ?[]u8 = if (path_pointer == null) null else allocator.dupe(u8, path_pointer[0..@intCast(path_length)]) catch return py.PyErr_NoMemory();
     if (database.import_directory) |old| allocator.free(old);
@@ -116,7 +122,7 @@ var classes = Classes{};
 
 fn configure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var table: ?*py.PyObject = null;
-    if (py.PyArg_ParseTuple(args, "O", &table) == 0) return null;
+    if (parseTuple(args, "O", &table) == 0) return null;
     inline for (@typeInfo(Classes).@"struct".field_names) |name| {
         const entry = py.PyDict_GetItemString(table, name) orelse return raise(py.PyExc_KeyError, "configure: missing " ++ name, .{});
         py.Py_IncRef(entry);
@@ -438,7 +444,7 @@ fn defineProcedure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyOb
     var arguments_object: ?*py.PyObject = null;
     var columns_object: ?*py.PyObject = null;
     var rows_object: ?*py.PyObject = null;
-    if (py.PyArg_ParseTuple(args, "OUO!O!O!", &capsule, &name_object, &py.PyList_Type, &arguments_object, &py.PyList_Type, &columns_object, &py.PyList_Type, &rows_object) == 0) return null;
+    if (parseTuple(args, "OUO!O!O!", &capsule, &name_object, &py.PyList_Type, &arguments_object, &py.PyList_Type, &columns_object, &py.PyList_Type, &rows_object) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     const arena = database.procedure_arena.allocator();
 
@@ -498,7 +504,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var path_length: py.Py_ssize_t = 0;
     var durability: c_int = 0;
     var iso_temporals: c_int = 0;
-    if (py.PyArg_ParseTuple(args, "s#ii", &path_pointer, &path_length, &durability, &iso_temporals) == 0) return null;
+    if (parseTuple(args, "s#ii", &path_pointer, &path_length, &durability, &iso_temporals) == 0) return null;
     const mode: KeyValueStore.Durability = switch (durability) {
         0 => .full,
         1 => .relaxed,
@@ -533,7 +539,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 
 fn close(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var capsule: ?*py.PyObject = null;
-    if (py.PyArg_ParseTuple(args, "O", &capsule) == 0) return null;
+    if (parseTuple(args, "O", &capsule) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     // The capsule is emptied so a later call fails cleanly, not on freed memory.
     _ = py.PyCapsule_SetDestructor(capsule, null);
@@ -559,7 +565,7 @@ fn queryCall(args: ?*py.PyObject, arena: std.mem.Allocator) ?QueryCall {
     var text_pointer: [*c]const u8 = undefined;
     var text_length: py.Py_ssize_t = 0;
     var parameters_object: ?*py.PyObject = null;
-    if (py.PyArg_ParseTuple(args, "Os#O", &capsule, &text_pointer, &text_length, &parameters_object) == 0) return null;
+    if (parseTuple(args, "Os#O", &capsule, &text_pointer, &text_length, &parameters_object) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     const parameters = parametersOf(parameters_object, arena) orelse return null;
     const text = arena.dupe(u8, text_pointer[0..@intCast(text_length)]) catch return noMemory(QueryCall);
@@ -648,7 +654,7 @@ fn prepare(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var capsule: ?*py.PyObject = null;
     var text_pointer: [*c]const u8 = undefined;
     var text_length: py.Py_ssize_t = 0;
-    if (py.PyArg_ParseTuple(args, "Os#", &capsule, &text_pointer, &text_length) == 0) return null;
+    if (parseTuple(args, "Os#", &capsule, &text_pointer, &text_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     database.diagnostic.clear();
     const thread_state = py.PyEval_SaveThread();
@@ -679,7 +685,7 @@ fn statementQuery(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
     var capsule: ?*py.PyObject = null;
     var statement_capsule: ?*py.PyObject = null;
     var parameters_object: ?*py.PyObject = null;
-    if (py.PyArg_ParseTuple(args, "OOO", &capsule, &statement_capsule, &parameters_object) == 0) return null;
+    if (parseTuple(args, "OOO", &capsule, &statement_capsule, &parameters_object) == 0) return null;
     const pointer = py.PyCapsule_GetPointer(statement_capsule, statement_capsule_name) orelse return null;
     const statement: *Statement = @ptrCast(@alignCast(pointer));
 
@@ -836,7 +842,7 @@ fn addNode(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var id: c_ulonglong = 0;
     var label_pointer: [*c]const u8 = undefined;
     var label_length: py.Py_ssize_t = 0;
-    if (py.PyArg_ParseTuple(args, "OKs#", &capsule, &id, &label_pointer, &label_length) == 0) return null;
+    if (parseTuple(args, "OKs#", &capsule, &id, &label_pointer, &label_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     if (label_length > 0 and !requireStorableName("label", label_pointer[0..@intCast(label_length)])) return null;
     writing(database, Graph.addNode, .{ &database.graph, id, label_pointer[0..@intCast(label_length)] }) catch |err| return writeFailure(database, err);
@@ -870,7 +876,7 @@ fn addEdge(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var target: c_ulonglong = 0;
     var type_pointer: [*c]const u8 = undefined;
     var type_length: py.Py_ssize_t = 0;
-    if (py.PyArg_ParseTuple(args, "OKKs#", &capsule, &source, &target, &type_pointer, &type_length) == 0) return null;
+    if (parseTuple(args, "OKKs#", &capsule, &source, &target, &type_pointer, &type_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     if (!requireStorableName("relationship type", type_pointer[0..@intCast(type_length)])) return null;
     if (!requireNodes(database, &.{ source, target })) return null;
@@ -890,7 +896,7 @@ fn setProperty(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     var name_pointer: [*c]const u8 = undefined;
     var name_length: py.Py_ssize_t = 0;
     var value_object: ?*py.PyObject = null;
-    if (py.PyArg_ParseTuple(args, "OKs#O", &capsule, &id, &name_pointer, &name_length, &value_object) == 0) return null;
+    if (parseTuple(args, "OKs#O", &capsule, &id, &name_pointer, &name_length, &value_object) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     if (!requireNodes(database, &.{id})) return null;
     var arena_state = std.heap.ArenaAllocator.init(allocator);
@@ -1010,7 +1016,7 @@ fn durationText(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObjec
     var days: c_longlong = 0;
     var seconds: c_longlong = 0;
     var nanoseconds: c_uint = 0;
-    if (py.PyArg_ParseTuple(args, "LLLI", &months, &days, &seconds, &nanoseconds) == 0) return null;
+    if (parseTuple(args, "LLLI", &months, &days, &seconds, &nanoseconds) == 0) return null;
     return temporals.durationText(months, days, seconds, nanoseconds);
 }
 

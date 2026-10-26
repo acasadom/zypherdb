@@ -21,7 +21,8 @@ def _load():
         pass
     # A source checkout: `zig build python -Dpython-include=...` puts it in zig-out/python.
     repository = Path(__file__).resolve().parent.parent.parent
-    for candidate in (repository / "zig-out" / "python" / "_native.abi3.so", Path.cwd() / "zig-out" / "python" / "_native.abi3.so"):
+    candidates = [root / "zig-out" / "python" / name for root in (repository, Path.cwd()) for name in ("_native.abi3.so", "_native.pyd")]
+    for candidate in candidates:
         if candidate.is_file():
             loader = importlib.machinery.ExtensionFileLoader("zypherdb._native", str(candidate))
             spec = importlib.util.spec_from_file_location("zypherdb._native", candidate, loader=loader)

@@ -15,13 +15,21 @@ zig build fuzz -- crash --seeds 100     # the crash fuzzer: a writer killed with
                   # (CI runs them all on each change and nightly: see testing.md, "Fuzzing in CI")
 zig build         # static + shared libraries and zypherdb.h into zig-out/
 make python       # the Python extension module into zig-out/python/
-make test-py      # Python tests and documentation tests (pip install -e "python[dev]" once)
+make test-py      # Python tests and documentation tests (pip install -e ".[dev]" once)
 make tck          # the openCypher TCK
 make docs         # the HTML documentation
 ```
 
 `make python` and the targets that use it find the Python headers through `PYTHON` (default
 `python3`); point it at a virtual environment with `make test-py PYTHON=.venv/bin/python`.
+
+Wheels and the sdist come from an in-tree build backend, `tools/build_backend/zypherdb_build.py`
+(declared in the root `pyproject.toml`): `python -m build` (or `pip wheel .`) runs
+`zig build python` in ReleaseSafe, stripped, and packs the module with `python/zypherdb` into one
+`cp310-abi3` wheel for the platform. It uses a `zig` of the version `build.zig.zon` names, or
+`$ZIG`, or else installs the `ziglang` package for the build. Linux wheels target glibc 2.17
+(manylinux2014), macOS wheels 10.13 (x86_64) and 11.0 (arm64). `pip install -e .` only puts
+`python/` on the path; the package then loads the module `make python` built.
 
 `zig build test` runs two executables:
 
