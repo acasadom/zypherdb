@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,37 @@ name = "zypherdb"
 version = "0.1.0"
 description = "Python bindings for ZypherDB, an embedded graph database (openCypher on LMDB or libmdbx)"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+license = "Apache-2.0"
+authors = [{ name = "Alberto Casado" }]
+keywords = [
+    "graph database", "graph-database",
+    "embedded database", "embedded-database",
+    "opencypher", "cypher",
+    "lmdb", "libmdbx", "zig",
+    "full-text search", "access control",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Database",
+    "Topic :: Database :: Database Engines/Servers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Zig",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+[project.urls]
+Homepage = "https://github.com/acasadom/zypherdb"
+Repository = "https://github.com/acasadom/zypherdb"
+Documentation = "https://acasadom.github.io/zypherdb/"
+Issues = "https://github.com/acasadom/zypherdb/issues"
+Changelog = "https://github.com/acasadom/zypherdb/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

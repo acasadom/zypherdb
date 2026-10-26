@@ -37,8 +37,8 @@ pub const Definition = struct {
 
     fn encode(self: Definition, allocator: Allocator) Allocator.Error![]u8 {
         var bytes = std.ArrayList(u8).empty;
-        try bytes.append(allocator, @intFromEnum(self.kind));
-        try bytes.append(allocator, @intFromEnum(self.entity));
+        try bytes.append(allocator, @backingInt(self.kind));
+        try bytes.append(allocator, @backingInt(self.entity));
         try appendString(&bytes, allocator, self.analyzer);
         for ([_][]const []const u8{ self.labels_or_types, self.properties }) |list| {
             try appendCount(&bytes, allocator, list.len);
@@ -50,8 +50,8 @@ pub const Definition = struct {
     /// The definition `name` stored as `bytes`, its strings copied with `allocator`.
     fn decode(name: []const u8, bytes: []const u8, allocator: Allocator) Allocator.Error!Definition {
         var reader = Reader{ .bytes = bytes };
-        const kind: Kind = @enumFromInt(reader.byte());
-        const entity: Entity = @enumFromInt(reader.byte());
+        const kind: Kind = @fromBackingInt(@intCast(reader.byte()));
+        const entity: Entity = @fromBackingInt(@intCast(reader.byte()));
         const analyzer = try allocator.dupe(u8, reader.string());
         var lists: [2][]const []const u8 = undefined;
         for (&lists) |*list| {

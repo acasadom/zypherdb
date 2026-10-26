@@ -34,7 +34,7 @@ fn expectErrors(setup: []const u8, queries: []const []const u8, expected: Snap) 
         }
         var len: usize = 0;
         const message = c_api.zypherdb_last_error(context, &len)[0..len];
-        const code: ErrorCode = @enumFromInt(c_api.zypherdb_error_code(context));
+        const code: ErrorCode = @fromBackingInt(@intCast(c_api.zypherdb_error_code(context)));
         try text.writer.print("  {t}: {s}\n", .{ code, message });
     }
     try expected.diff(text.written());

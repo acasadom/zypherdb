@@ -85,7 +85,7 @@ pub const Options = struct { durability: Durability = .full };
 /// of the contract (signatures are checked by their use).
 pub fn check(comptime Engine: type) void {
     const required = .{
-        .{ Engine, &.{"Environment", "Transaction", "Cursor"} },
+        .{ Engine, &.{ "Environment", "Transaction", "Cursor" } },
         .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite" } },
         .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },

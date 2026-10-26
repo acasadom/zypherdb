@@ -66,9 +66,9 @@ pub const Environment = struct {
         // than the main one, and integer comparisons instead of byte-string
         // ones. (Their names are keys of the main table; `#` starts no key the
         // graph writes.)
-        if (c.mdb_dbi_open(transaction, null, 0, &tables[@intFromEnum(Table.main)]) != 0) return error.OpenFailed;
-        if (c.mdb_dbi_open(transaction, "#nodes", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@intFromEnum(Table.nodes)]) != 0) return error.OpenFailed;
-        if (c.mdb_dbi_open(transaction, "#relationships", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@intFromEnum(Table.relationships)]) != 0) return error.OpenFailed;
+        if (c.mdb_dbi_open(transaction, null, 0, &tables[@backingInt(Table.main)]) != 0) return error.OpenFailed;
+        if (c.mdb_dbi_open(transaction, "#nodes", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@backingInt(Table.nodes)]) != 0) return error.OpenFailed;
+        if (c.mdb_dbi_open(transaction, "#relationships", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@backingInt(Table.relationships)]) != 0) return error.OpenFailed;
         return tables;
     }
 
@@ -129,7 +129,7 @@ pub const Transaction = struct {
     pub fn get(self: Transaction, table: Table, key: []const u8) Error!?[]const u8 {
         var key_val = makeVal(key);
         var data_val = empty_val;
-        const rc = c.mdb_get(self.handle, self.tables[@intFromEnum(table)], &key_val, &data_val);
+        const rc = c.mdb_get(self.handle, self.tables[@backingInt(table)], &key_val, &data_val);
         if (rc == c.MDB_NOTFOUND) return null;
         if (rc != 0) return error.ReadFailed;
         return valSlice(data_val);
@@ -138,18 +138,18 @@ pub const Transaction = struct {
     pub fn put(self: Transaction, table: Table, key: []const u8, value: []const u8) Error!void {
         var key_val = makeVal(key);
         var data_val = makeVal(value);
-        if (c.mdb_put(self.handle, self.tables[@intFromEnum(table)], &key_val, &data_val, 0) != 0) return error.WriteFailed;
+        if (c.mdb_put(self.handle, self.tables[@backingInt(table)], &key_val, &data_val, 0) != 0) return error.WriteFailed;
     }
 
     pub fn delete(self: Transaction, table: Table, key: []const u8) Error!void {
         var key_val = makeVal(key);
-        const rc = c.mdb_del(self.handle, self.tables[@intFromEnum(table)], &key_val, null);
+        const rc = c.mdb_del(self.handle, self.tables[@backingInt(table)], &key_val, null);
         if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
     }
 
     pub fn openCursor(self: Transaction, table: Table) Error!Cursor {
         var cursor: ?*c.MDB_cursor = null;
-        if (c.mdb_cursor_open(self.handle, self.tables[@intFromEnum(table)], &cursor) != 0) return error.ReadFailed;
+        if (c.mdb_cursor_open(self.handle, self.tables[@backingInt(table)], &cursor) != 0) return error.ReadFailed;
         return .{ .handle = cursor.? };
     }
 };

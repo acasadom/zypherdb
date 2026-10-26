@@ -208,4 +208,3 @@ pub fn appendResult(executor: *Executor, values: []const Value) ExecutionError!v
     try row.appendSlice(executor.allocator, values);
     try executor.rows.append(executor.allocator, .{ .item = row, .sort_key = &.{} });
 }
-
