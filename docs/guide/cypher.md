@@ -311,7 +311,9 @@ The **maps** a constructor accepts:
 - Values of the same type compare in time. Durations compare only for equality.
 
 Precision is the nanosecond, and years range over ±999,999,999. The default time zone is UTC. Named
-zones come from the system's time zone database.
+zones (`Europe/Madrid`, matched exactly, case included) come from the IANA time zone database
+embedded in ZypherDB (`vendor/tzdata`), not the system's, so a zone's history is the same on every
+machine.
 
 ## Procedures
 
