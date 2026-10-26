@@ -150,7 +150,7 @@ job), and one process with one writer.
 
 **What it found.** A composite uniqueness constraint on `(a, b)` compared `b` by its raw stored bytes,
 so a node with `b = 1` and another with `b = 1.0` were both accepted, although the language says
-they are equal. Fixed in `06adb6a`: properties after the first are now compared by their index
+they are equal. Fixed in `3c52e7e`: properties after the first are now compared by their index
 encoding, as the first one already was.
 
 ## The query fuzzer
