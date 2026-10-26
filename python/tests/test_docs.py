@@ -132,7 +132,9 @@ def test_c_program(page, index, code, expected, scratch):
     )
     database = scratch / "db"
     database.mkdir()
-    run = subprocess.run([str(scratch / "program"), str(database)], capture_output=True, text=True, timeout=60)
+    # Windows has no rpath: it finds zypherdb.dll (installed in bin/) through PATH.
+    environment = {**os.environ, "PATH": os.pathsep.join([str(BUILD / "bin"), os.environ.get("PATH", "")])}
+    run = subprocess.run([str(scratch / "program"), str(database)], env=environment, capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, f"{page.name} C block {index} exited with {run.returncode}:\n{run.stderr}"
     if expected is not None:
         assert _matches(run.stdout, expected), f"{page.name} C block {index} printed:\n{run.stdout}\n--- the page shows ---\n{expected}"

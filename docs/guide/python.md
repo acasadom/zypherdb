@@ -9,7 +9,8 @@ pip install zypherdb
 ```
 
 ZypherDB needs Python 3.10 or later. The package carries the engine as a native extension module
-(see [the end of this page](#under-the-hood)).
+(see [the end of this page](#under-the-hood)). It has no dependencies, except on Windows: there `tzdata` comes with it,
+because Python's `zoneinfo` finds no system time-zone database.
 
 ## `Database`
 
