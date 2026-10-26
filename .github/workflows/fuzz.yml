@@ -1,0 +1,116 @@
+# Long fuzzer runs, nightly and on demand (see docs/guide/testing.md).
+# Each run starts from a new first seed (the run id, unless one is given), printed in the
+# job summary, so every night explores new cases and any failure can be replayed locally:
+#   zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=<engine> -- <fuzzer> --seed <seed>
+name: fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "First seed (empty: the run id)"
+        required: false
+      seeds:
+        description: "Seeds per fuzzer (the crash fuzzer runs a tenth)"
+        required: false
+        default: "300"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+
+# bash with pipefail, so a fuzzer's exit status survives `| tee`
+defaults:
+  run:
+    shell: bash
+
+env:
+  FIRST_SEED: ${{ inputs.seed || github.run_id }}
+  SEEDS: ${{ inputs.seeds || '300' }}
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.os }}, ${{ matrix.engine }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        engine: [lmdb, mdbx]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      - name: Seeds
+        run: |
+          echo "First seed **$FIRST_SEED**, $SEEDS seeds per fuzzer, engine ${{ matrix.engine }}." >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p fuzz-logs
+
+      - name: Storage fuzzer (with the integrity checker)
+        run: zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=${{ matrix.engine }} -- storage --seed "$FIRST_SEED" --seeds "$SEEDS" --dir fuzz-out | tee fuzz-logs/storage.txt
+
+      - name: Query fuzzer
+        run: zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=${{ matrix.engine }} -- query --seed "$FIRST_SEED" --seeds "$SEEDS" --dir fuzz-out | tee fuzz-logs/query.txt
+
+      - name: Fault fuzzer
+        run: zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=${{ matrix.engine }} -- faults --seed "$FIRST_SEED" --seeds "$SEEDS" --steps 60 --dir fuzz-out | tee fuzz-logs/faults.txt
+
+      - name: Crash fuzzer
+        run: zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=${{ matrix.engine }} -- crash --seed "$FIRST_SEED" --seeds "$(( SEEDS / 10 ))" --dir fuzz-out | tee fuzz-logs/crash.txt
+
+      - name: How to replay the failure
+        if: failure()
+        run: |
+          {
+            echo "### Failure"
+            echo '```'
+            grep -h -B3 "database kept in" fuzz-logs/*.txt || tail -n 20 fuzz-logs/*.txt
+            echo '```'
+            echo "Replay: \`zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=${{ matrix.engine }} -- <fuzzer> --seed <seed>\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the failing databases
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-failure-${{ matrix.os }}-${{ matrix.engine }}
+          path: |
+            fuzz-out/
+            fuzz-logs/
+
+      - name: Keep the query digests
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.os }}-${{ matrix.engine }}
+          path: fuzz-logs/query.txt
+
+  # Both engines, on both systems, must give every generated query the same results.
+  digests:
+    needs: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+      - name: Compare the query digests
+        run: |
+          for file in digests-*/query.txt; do grep ': digest ' "$file" > "$file.digests"; done
+          reference=digests-ubuntu-latest-lmdb/query.txt.digests
+          status=0
+          for file in digests-*/query.txt.digests; do
+            if ! diff -q "$reference" "$file" > /dev/null; then
+              echo "$file differs from $reference:"; diff "$reference" "$file" | head -20; status=1
+            fi
+          done
+          echo "$(wc -l < "$reference") seeds compared across $(ls -d digests-* | wc -l) builds" >> "$GITHUB_STEP_SUMMARY"
+          exit $status
