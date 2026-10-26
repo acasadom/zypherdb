@@ -92,8 +92,8 @@ def test_uniqueness_constraint(db):
 def test_load_csv_reads_only_from_the_import_directory(tmp_path):
     imports = tmp_path / "imports"
     imports.mkdir()
-    (imports / "cards.csv").write_text("number,holder\n1001,Ana\n1002,Bo\n")
-    (tmp_path / "secret.csv").write_text("x\n")
+    (imports / "cards.csv").write_text("number,holder\n1001,Ana\n1002,Bo\n", encoding="utf-8")
+    (tmp_path / "secret.csv").write_text("x\n", encoding="utf-8")
     with Database(str(tmp_path / "db"), import_directory=str(imports)) as db:
         db.query("LOAD CSV WITH HEADERS FROM 'file:///cards.csv' AS row CREATE (:Card {number: toInteger(row.number), holder: row.holder})")
         assert db.query("MATCH (c:Card) RETURN c.holder ORDER BY c.number") == [["Ana"], ["Bo"]]

@@ -29,13 +29,13 @@ import sys
 from pathlib import Path
 
 ucd = Path(sys.argv[1])
-version = (ucd / "version.txt").read_text().strip() if (ucd / "version.txt").exists() else "16.0.0"
+version = (ucd / "version.txt").read_text(encoding="utf-8").strip() if (ucd / "version.txt").exists() else "16.0.0"
 
 categories = {}
 decompositions = {}
 simple_upper = {}
 simple_lower = {}
-lines = (ucd / "UnicodeData.txt").read_text().splitlines()
+lines = (ucd / "UnicodeData.txt").read_text(encoding="utf-8").splitlines()
 index = 0
 while index < len(lines):
     fields = lines[index].split(";")
@@ -59,7 +59,7 @@ while index < len(lines):
     index += 1
 
 case_folding = {}
-for line in (ucd / "CaseFolding.txt").read_text().splitlines():
+for line in (ucd / "CaseFolding.txt").read_text(encoding="utf-8").splitlines():
     line = line.split("#")[0].strip()
     if not line:
         continue
@@ -70,7 +70,7 @@ for line in (ucd / "CaseFolding.txt").read_text().splitlines():
 
 special_lower = {}
 special_upper = {}
-for line in (ucd / "SpecialCasing.txt").read_text().splitlines():
+for line in (ucd / "SpecialCasing.txt").read_text(encoding="utf-8").splitlines():
     line = line.split("#")[0].strip()
     if not line:
         continue

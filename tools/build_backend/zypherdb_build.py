@@ -108,7 +108,7 @@ def build_sdist(sdist_directory, config_settings=None):
 
 
 def _required_zig_version():
-    zon = (SOURCE_ROOT / "build.zig.zon").read_text()
+    zon = (SOURCE_ROOT / "build.zig.zon").read_text(encoding="utf-8")
     return re.search(r'\.minimum_zig_version\s*=\s*"([^"]+)"', zon).group(1)
 
 
