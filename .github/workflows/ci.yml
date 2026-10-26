@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # tzdata.yml starts CI on the pull requests it opens (theirs start no workflows by themselves)
+  workflow_dispatch:
 
 permissions:
   contents: read
