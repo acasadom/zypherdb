@@ -79,9 +79,9 @@ pub const Environment = struct {
         // The main table is the default (unnamed) one. The record tables are
         // named ones, keyed by the id as an integer: smaller trees than the
         // main one, and integer comparisons instead of byte-string ones.
-        if (c.mdbx_dbi_open(transaction, null, c.MDBX_DB_DEFAULTS, &tables[@intFromEnum(Table.main)]) != c.MDBX_SUCCESS) return error.OpenFailed;
-        if (c.mdbx_dbi_open(transaction, "#nodes", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@intFromEnum(Table.nodes)]) != c.MDBX_SUCCESS) return error.OpenFailed;
-        if (c.mdbx_dbi_open(transaction, "#relationships", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@intFromEnum(Table.relationships)]) != c.MDBX_SUCCESS) return error.OpenFailed;
+        if (c.mdbx_dbi_open(transaction, null, c.MDBX_DB_DEFAULTS, &tables[@backingInt(Table.main)]) != c.MDBX_SUCCESS) return error.OpenFailed;
+        if (c.mdbx_dbi_open(transaction, "#nodes", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@backingInt(Table.nodes)]) != c.MDBX_SUCCESS) return error.OpenFailed;
+        if (c.mdbx_dbi_open(transaction, "#relationships", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@backingInt(Table.relationships)]) != c.MDBX_SUCCESS) return error.OpenFailed;
         return tables;
     }
 
@@ -143,7 +143,7 @@ pub const Transaction = struct {
     pub fn get(self: Transaction, table: Table, key: []const u8) Error!?[]const u8 {
         const key_val = makeVal(key);
         var data_val = empty_val;
-        const rc = c.mdbx_get(self.handle, self.tables[@intFromEnum(table)], &key_val, &data_val);
+        const rc = c.mdbx_get(self.handle, self.tables[@backingInt(table)], &key_val, &data_val);
         if (rc == c.MDBX_NOTFOUND) return null;
         if (rc != c.MDBX_SUCCESS) return error.ReadFailed;
         return valSlice(data_val);
@@ -152,18 +152,18 @@ pub const Transaction = struct {
     pub fn put(self: Transaction, table: Table, key: []const u8, value: []const u8) Error!void {
         const key_val = makeVal(key);
         var data_val = makeVal(value);
-        if (c.mdbx_put(self.handle, self.tables[@intFromEnum(table)], &key_val, &data_val, c.MDBX_UPSERT) != c.MDBX_SUCCESS) return error.WriteFailed;
+        if (c.mdbx_put(self.handle, self.tables[@backingInt(table)], &key_val, &data_val, c.MDBX_UPSERT) != c.MDBX_SUCCESS) return error.WriteFailed;
     }
 
     pub fn delete(self: Transaction, table: Table, key: []const u8) Error!void {
         const key_val = makeVal(key);
-        const rc = c.mdbx_del(self.handle, self.tables[@intFromEnum(table)], &key_val, null);
+        const rc = c.mdbx_del(self.handle, self.tables[@backingInt(table)], &key_val, null);
         if (rc != c.MDBX_SUCCESS and rc != c.MDBX_NOTFOUND) return error.DeleteFailed;
     }
 
     pub fn openCursor(self: Transaction, table: Table) Error!Cursor {
         var cursor: ?*c.MDBX_cursor = null;
-        if (c.mdbx_cursor_open(self.handle, self.tables[@intFromEnum(table)], &cursor) != c.MDBX_SUCCESS) return error.ReadFailed;
+        if (c.mdbx_cursor_open(self.handle, self.tables[@backingInt(table)], &cursor) != c.MDBX_SUCCESS) return error.ReadFailed;
         return .{ .handle = cursor.? };
     }
 };

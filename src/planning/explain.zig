@@ -337,7 +337,6 @@ const Explainer = struct {
         if (pattern.nodes[to].bound or pattern.nodes[to].seeks.len > 0) per_node = @min(per_node, 1);
         return per_node;
     }
-
 };
 
 /// A label of `node`: its own, or, for a node bound before its pattern

@@ -93,7 +93,7 @@ pub fn withClauseParts(self: *Executor, with_clause: Index) WithClauseParts {
         .distinct = if (is_return) self.ast.data(with_clause).return_.distinct else self.ast.data(with_clause).with_.distinct,
         .requires_aliases = !is_return,
     };
-    for (children[1 .. if (is_return) children.len else children.len - 1]) |child| {
+    for (children[1..if (is_return) children.len else children.len - 1]) |child| {
         switch (self.ast.kind(child)) {
             .order_by => info.order_by = child,
             .skip => info.skip = child,

@@ -125,7 +125,8 @@ test "full-text search finds, ranks and follows changes to nodes and relationshi
 
     // Case and accents fold; more occurrences in a shorter text rank higher.
     try expectOrdered(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'Contencion') YIELD node, score RETURN node.title", &.{
-        &.{string("CONTENCION")}, &.{string("Contención biológica")},
+        &.{string("CONTENCION")},
+        &.{string("Contención biológica")},
     });
     try expectQuery(&ast, &g, "CALL db.index.fulltext.queryNodes('docs', 'contención') YIELD node, score WHERE score > 0 RETURN count(*)", &.{&.{.{ .int = 2 }}});
     // OR of the terms, by default.

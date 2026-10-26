@@ -483,7 +483,7 @@ test "range comparisons use the property index and keep exactly the matching nod
     try expectQuery(&ast, &g, "MATCH (p:P) WHERE 3 <= p.x RETURN count(*)", &.{&.{.{ .int = 3 }}});
     // The index holds every label's nodes: the label is still checked.
     try expectQuery(&ast, &g, "MATCH (q:Q) WHERE q.x < 0 RETURN q.x", &.{&.{.{ .int = -100 }}});
-    try expectQuery(&ast, &g, "MATCH (n) WHERE n.x > 4 RETURN n.x", &.{&.{.{ .int = 10 }}, &.{.{ .int = 5 }}});
+    try expectQuery(&ast, &g, "MATCH (n) WHERE n.x > 4 RETURN n.x", &.{ &.{.{ .int = 10 }}, &.{.{ .int = 5 }} });
     // Parameters; a null bound matches nothing; a string bound compares strings.
     try expectQueryWithParameters(&ast, &g, "MATCH (p:P) WHERE p.x < $high RETURN p.x", &.{.{ "high", .{ .int = -1 } }}, &.{&.{.{ .int = -7 }}});
     try expectQueryWithParameters(&ast, &g, "MATCH (p:P) WHERE p.x > $low RETURN p.x", &.{.{ "low", .null }}, &.{});

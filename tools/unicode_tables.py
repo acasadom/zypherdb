@@ -1,6 +1,8 @@
 """Generates src/text/unicode_tables.zig from the Unicode Character Database.
 
-    python3 tools/unicode_tables.py UCD_DIR > src/text/unicode_tables.zig
+    python3 tools/unicode_tables.py UCD_DIR | zig fmt --stdin > src/text/unicode_tables.zig
+
+(zig fmt aligns the tables' columns, as CI's formatting check expects.)
 
 UCD_DIR holds UnicodeData.txt, CaseFolding.txt and SpecialCasing.txt of one Unicode version
 (https://www.unicode.org/Public/<version>/ucd/). The tables are data under

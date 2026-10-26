@@ -265,9 +265,9 @@ fn step1c(env: *Env, regions: Regions) Allocator.Error!bool {
 }
 
 const step2_suffixes = us(&.{
-    "tional", "enci",   "anci",   "abli",   "entli",   "izer",    "ization", "ational", "ation",  "ator",
-    "alism",  "aliti",  "alli",   "fulness", "ousli",  "ousness", "iveness", "iviti",   "biliti", "bli",
-    "ogist",  "ogi",    "fulli",  "lessli", "li",
+    "tional", "enci",  "anci",  "abli",    "entli", "izer",    "ization", "ational", "ation",  "ator",
+    "alism",  "aliti", "alli",  "fulness", "ousli", "ousness", "iveness", "iviti",   "biliti", "bli",
+    "ogist",  "ogi",   "fulli", "lessli",  "li",
 });
 const step2_replacements = us(&.{
     "tion", "ence", "ance", "able", "ent", "ize", "ize", "ate", "ate", "ate",

@@ -142,8 +142,8 @@ fn add(tokens: *std.ArrayList(Token), allocator: Allocator, kind: TokenKind, tex
 /// dot and a digit start a float, not a property access.
 fn startsExpression(word: []const u8) bool {
     const keywords = [_][]const u8{
-        "RETURN", "WITH", "WHERE", "AND", "OR", "XOR", "NOT", "IN", "CONTAINS", "CASE", "WHEN",
-        "THEN", "ELSE", "UNWIND", "SKIP", "LIMIT", "BY", "DISTINCT",
+        "RETURN", "WITH", "WHERE",  "AND",  "OR",    "XOR", "NOT",      "IN", "CONTAINS", "CASE", "WHEN",
+        "THEN",   "ELSE", "UNWIND", "SKIP", "LIMIT", "BY",  "DISTINCT",
     };
     for (keywords) |keyword| {
         if (std.ascii.eqlIgnoreCase(word, keyword)) return true;

@@ -75,8 +75,8 @@ pub const Swarm = struct {
 
     pub fn format(self: Swarm, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("{d} nodes, {d} relationships, {s} values, {d} of the few, properties {d}/8, {d} variant(s), writes every {d}; mix: {any}", .{
-            self.nodes,          self.relationships, if (self.all_values) "all" else "narrow", self.value_pool,
-            self.property_chance, self.variants,      self.writes_every,                         self.mix,
+            self.nodes,           self.relationships, if (self.all_values) "all" else "narrow", self.value_pool,
+            self.property_chance, self.variants,      self.writes_every,                        self.mix,
         });
     }
 };
