@@ -96,6 +96,26 @@ test "components, arithmetic and comparison" {
     try expectQueryError(&ast, &g, "RETURN date('2020-01-01') + 1", error.TypeMismatch);
 }
 
+test "time zones come from the embedded IANA database, the same on every machine" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // IANA links Stockholm to Berlin before 1970 (Berlin's local mean time);
+    // Debian's system database keeps Stockholm's own (+01:12:12).
+    try expectQuery(&ast, &g, "RETURN toString(datetime('1818-07-21T21:40:32.142[Europe/Stockholm]'))", &.{
+        &.{string("1818-07-21T21:40:32.142+00:53:28[Europe/Stockholm]")},
+    });
+    // Names match exactly, case included.
+    try expectQueryError(&ast, &g, "RETURN datetime('2020-01-01T12:00[europe/stockholm]')", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "RETURN datetime('2020-01-01T12:00[Nowhere/Land]')", error.InvalidExpression);
+}
+
 test "temporal properties are stored, indexed and ordered" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

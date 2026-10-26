@@ -6,6 +6,7 @@ ZypherDB includes, or is derived from, the following works. Their licenses are r
 | --- | --- | --- |
 | LMDB (Symas Corporation, OpenLDAP Foundation) | `vendor/lmdb/` | OpenLDAP Public License 2.8 (`vendor/lmdb/LICENSE`) |
 | libmdbx 0.14.4 (Leonid Yuriev), with the local change listed in `vendor/libmdbx/PATCHES.md` | `vendor/libmdbx/` | Apache License 2.0 (`vendor/libmdbx/LICENSE`; its NOTICE below) |
+| IANA time zone database 2026.5, as compiled to TZif by the tzdata Python package (Paul Ganssle, Stan Ulbrych) | `vendor/tzdata/` | The data is in the public domain; the package is under the Apache License 2.0 (`vendor/tzdata/LICENSE`, `vendor/tzdata/LICENSE_APACHE`) |
 | Unicode Character Database 16.0 (tables generated from it) | `src/text/unicode_tables.zig` | Unicode License v3 (below) |
 | Snowball stemming algorithms (English "Porter2", Spanish), translated to Zig; the Snowball Spanish stop-word list | `src/text/stem_english.zig`, `src/text/stem_spanish.zig`, `src/text/stop_words.zig` | BSD 3-Clause (below) |
 | Snowball test vocabularies (a sample) | `tests/text/snowball/` (tests only) | BSD 3-Clause (below) |

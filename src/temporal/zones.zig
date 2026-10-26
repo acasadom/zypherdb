@@ -1,14 +1,16 @@
 //! Time zones: fixed UTC offsets (`+01:00`) and named IANA zones
 //! (`Europe/Stockholm`).
 //!
-//! A named zone's rules come from the system's time zone database (the TZif
-//! files under /usr/share/zoneinfo, as on Linux and macOS): its transitions,
-//! and the POSIX TZ rule in the file's footer for instants after the last
-//! one. Each zone is read once per process and kept.
+//! A named zone's rules come from the IANA time zone database embedded in
+//! the library (`vendor/tzdata`, from the tzdata Python package), never the
+//! system's, so a zone's history is the same on every machine: its
+//! transitions, and the POSIX TZ rule in the file's footer for instants
+//! after the last one. Each zone is parsed once per process and kept.
 
 const std = @import("std");
 const Tz = std.Tz;
 const calendar = @import("calendar.zig");
+const tzdata = @import("tzdata");
 
 pub const Error = error{ UnknownTimeZone, InvalidOffset } || std.mem.Allocator.Error;
 
@@ -60,8 +62,8 @@ pub fn isZoneName(name: []const u8) bool {
     return true;
 }
 
-/// The canonical spelling of a zone name (the one the database file has),
-/// owned by the zone cache. Fails if the zone is unknown.
+/// The name of a known zone, owned by the zone cache (names match exactly,
+/// case included, as in Java). Fails if the zone is unknown.
 pub fn canonicalName(name: []const u8) Error![]const u8 {
     return (try load(name)).name;
 }
@@ -119,8 +121,6 @@ var cache_mutex: std.Io.Mutex = .init;
 var cache: std.StringHashMapUnmanaged(*Zone) = .empty;
 const cache_allocator = std.heap.page_allocator;
 
-const database_directories = [_][]const u8{ "/usr/share/zoneinfo", "/usr/lib/zoneinfo", "/usr/share/lib/zoneinfo", "/etc/zoneinfo" };
-
 fn load(name: []const u8) Error!*Zone {
     if (!isZoneName(name)) return error.UnknownTimeZone;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -128,9 +128,7 @@ fn load(name: []const u8) Error!*Zone {
     defer cache_mutex.unlock(io);
     if (cache.get(name)) |zone| return zone;
 
-    const bytes = readZoneFile(io, name) orelse return error.UnknownTimeZone;
-    defer cache_allocator.free(bytes);
-    var reader = std.Io.Reader.fixed(bytes);
+    var reader = std.Io.Reader.fixed(zoneFile(name) orelse return error.UnknownTimeZone);
     const tz = Tz.parse(cache_allocator, &reader) catch return error.UnknownTimeZone;
     const zone = try cache_allocator.create(Zone);
     zone.* = .{
@@ -142,13 +140,19 @@ fn load(name: []const u8) Error!*Zone {
     return zone;
 }
 
-fn readZoneFile(io: std.Io, name: []const u8) ?[]u8 {
-    for (database_directories) |directory| {
-        var path_buffer: [256]u8 = undefined;
-        const path = std.fmt.bufPrint(&path_buffer, "{s}/{s}", .{ directory, name }) catch return null;
-        const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, cache_allocator, .limited(1 << 20)) catch continue;
-        if (bytes.len >= 4 and std.mem.eql(u8, bytes[0..4], "TZif")) return bytes;
-        cache_allocator.free(bytes);
+/// The embedded TZif file of zone `name` (exact, case included), by binary
+/// search of the sorted names. O(log zones).
+fn zoneFile(name: []const u8) ?[]const u8 {
+    var low: usize = 0;
+    var high: usize = tzdata.zones.len;
+    while (low < high) {
+        const middle = (low + high) / 2;
+        const zone = tzdata.zones[middle];
+        switch (std.mem.order(u8, zone.name, name)) {
+            .lt => low = middle + 1,
+            .gt => high = middle,
+            .eq => return tzdata.bytes[zone.start..][0..zone.length],
+        }
     }
     return null;
 }

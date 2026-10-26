@@ -138,6 +138,8 @@ fn zypherdbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTa
     build_options.addOption(StorageEngine, "storage_engine", storage_engine);
     build_options.addOption(bool, "fault_injection", fault_injection);
     module.addOptions("build_options", build_options);
+    // The IANA time zone database, embedded (tools/tzdata.py).
+    module.addAnonymousImport("tzdata", .{ .root_source_file = b.path("vendor/tzdata/tzdata.zig") });
     switch (storage_engine) {
         .lmdb => {
             module.addIncludePath(b.path("vendor/lmdb"));
