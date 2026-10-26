@@ -1,0 +1,4 @@
+# LF everywhere (Windows checkouts too): snapshots and expected outputs compare bytes.
+* text=auto eol=lf
+# The openCypher TCK files as upstream ships them (some have CRLF line endings).
+tests/tck/features/** -text

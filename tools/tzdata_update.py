@@ -27,7 +27,7 @@ def version_key(version):
     return tuple(int(part) for part in re.findall(r"\d+", version))
 
 
-current = re.search(r'pub const version = "([^"]+)";', index.read_text()).group(1)
+current = re.search(r'pub const version = "([^"]+)";', index.read_text(encoding="utf-8")).group(1)
 with urllib.request.urlopen("https://pypi.org/pypi/tzdata/json", timeout=60) as response:
     release = json.load(response)
 latest = release["info"]["version"]
@@ -49,9 +49,9 @@ with tempfile.TemporaryDirectory() as directory:
     path.write_bytes(data)
     subprocess.run([sys.executable, "-I", str(root / "tools/tzdata.py"), str(path), str(root / "vendor/tzdata")], check=True)
 
-text = notices.read_text()
+text = notices.read_text(encoding="utf-8")
 updated = text.replace(f"IANA time zone database {current},", f"IANA time zone database {latest},")
 if updated == text:
     sys.exit(f"THIRD_PARTY_NOTICES.md does not name tzdata {current}")
-notices.write_text(updated)
+notices.write_text(updated, encoding="utf-8")
 print(latest)

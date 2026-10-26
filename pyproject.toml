@@ -45,6 +45,10 @@ classifiers = [
     "Operating System :: MacOS",
 ]
 
+# Windows has no system time-zone database; Python's zoneinfo then reads the IANA data
+# from the tzdata package (data only, maintained by CPython's core developers).
+dependencies = ["tzdata; sys_platform == 'win32'"]
+
 [project.urls]
 Homepage = "https://github.com/acasadom/zypherdb"
 Repository = "https://github.com/acasadom/zypherdb"

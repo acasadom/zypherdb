@@ -44,7 +44,7 @@ def load_deviations() -> set[str]:
     `#` lines explain them."""
     if not DEVIATIONS.exists():
         return set()
-    return {line for line in DEVIATIONS.read_text().splitlines() if line and not line.startswith("#")}
+    return {line for line in DEVIATIONS.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")}
 
 sys.path.insert(0, str(HERE))
 import cypher_values  # noqa: E402
@@ -218,7 +218,7 @@ def run_scenario(scenario: Scenario) -> dict:
                         continue
                     graph = re.match(r"the ([\w-]+) graph$", text)
                     if graph:
-                        _setup(db, (GRAPHS / f"{graph.group(1)}.cypher").read_text().strip().rstrip(";"))
+                        _setup(db, (GRAPHS / f"{graph.group(1)}.cypher").read_text(encoding="utf-8").strip().rstrip(";"))
                         continue
                     if text.startswith("having executed"):
                         _setup(db, step.docstring)
@@ -276,7 +276,7 @@ def _supervise(scenario_ids: list[str], timeout: float, results: dict, lock: thr
     while remaining:
         process = subprocess.Popen(
             [sys.executable, "-I", __file__, "--worker"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
         )
         process.stdin.write(json.dumps(remaining))
         process.stdin.close()
@@ -417,14 +417,14 @@ def main():
             if result["status"] != "pass":
                 print(f"{result['status']:<11} {scenario.id}\n            {result['reason']}")
     if args.report:
-        args.report.write_text(summary)
+        args.report.write_text(summary, encoding="utf-8")
 
     passing = sorted(s.id for s in scenarios if results[s.id]["status"] == "pass")
     if args.update_baseline:
-        BASELINE.write_text("\n".join(passing) + "\n")
+        BASELINE.write_text("\n".join(passing) + "\n", encoding="utf-8")
         print(f"baseline: {len(passing)} passing scenarios recorded in {BASELINE.relative_to(REPO)}")
     if args.check_baseline:
-        baseline = {line for line in BASELINE.read_text().splitlines() if line and args.filter in line and line not in deviations}
+        baseline = {line for line in BASELINE.read_text(encoding="utf-8").splitlines() if line and args.filter in line and line not in deviations}
         regressed = sorted(baseline - set(passing))
         newly_passing = sorted(set(passing) - baseline)
         for scenario_id in regressed:

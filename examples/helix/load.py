@@ -115,8 +115,8 @@ STAFF = [
 
 def load(db: zypherdb.Database, site_file: Path = HERE / "site.json", staff_file: Path = HERE / "staff.json") -> None:
     """Loads the site and its people into `db`, which must be empty."""
-    site = json.loads(site_file.read_text())
-    staff = json.loads(staff_file.read_text())
+    site = json.loads(site_file.read_text(encoding="utf-8"))
+    staff = json.loads(staff_file.read_text(encoding="utf-8"))
     for query in SITE:
         db.query(query, site=site)
     for query in STAFF:

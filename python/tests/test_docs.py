@@ -46,7 +46,7 @@ _SKIP = {"python": "# docs-test: skip", "c": "// docs-test: skip", "bash": "# do
 
 def _examples(page: Path, wanted: str = "python") -> list[tuple[str, str | None]]:
     """The page's blocks in language `wanted`, each with the output the page shows for it."""
-    text = page.read_text()
+    text = page.read_text(encoding="utf-8")
     blocks = [(m.group(1), m.group(2), m.start(), m.end()) for m in _FENCE.finditer(text)]
     examples = []
     for i, (language, body, _, end) in enumerate(blocks):
@@ -123,7 +123,7 @@ def test_c_program(page, index, code, expected, scratch):
     if compiler is None or not (BUILD / "include" / "zypherdb.h").exists():
         pytest.skip("needs zig and the library built with `zig build`")
     source = scratch / "program.c"
-    source.write_text(code)
+    source.write_text(code, encoding="utf-8")
     library = BUILD / "lib"
     subprocess.run(
         [compiler, "cc", f"-I{BUILD / 'include'}", str(source), f"-L{library}", "-lzypherdb",
@@ -132,7 +132,9 @@ def test_c_program(page, index, code, expected, scratch):
     )
     database = scratch / "db"
     database.mkdir()
-    run = subprocess.run([str(scratch / "program"), str(database)], capture_output=True, text=True, timeout=60)
+    # Windows has no rpath: it finds zypherdb.dll (installed in bin/) through PATH.
+    environment = {**os.environ, "PATH": os.pathsep.join([str(BUILD / "bin"), os.environ.get("PATH", "")])}
+    run = subprocess.run([str(scratch / "program"), str(database)], env=environment, capture_output=True, text=True, timeout=60)
     assert run.returncode == 0, f"{page.name} C block {index} exited with {run.returncode}:\n{run.stderr}"
     if expected is not None:
         assert _matches(run.stdout, expected), f"{page.name} C block {index} printed:\n{run.stdout}\n--- the page shows ---\n{expected}"

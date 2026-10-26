@@ -14,7 +14,8 @@
 //! engine does but which shows a write error the layers above ignored: the
 //! transaction then commits without that write.
 //!
-//! The plan can also crash the process (SIGKILL to itself) at a chosen
+//! The plan can also crash the process (SIGKILL to itself; on Windows,
+//! NtTerminateProcess) at a chosen
 //! crash point: before each fallible operation, and after each commit. The
 //! crash tests (tests/fuzz/crash.zig) use it to stop a writer exactly there.
 //!
@@ -22,6 +23,7 @@
 //! a time on one thread.
 
 const std = @import("std");
+const builtin = @import("builtin");
 
 const contract = @import("contract.zig");
 
@@ -82,9 +84,30 @@ pub const Plan = struct {
     fn crashPoint(self: *Plan) void {
         const number = self.crash_points;
         self.crash_points += 1;
-        if (self.crash_at == number) std.posix.raise(.KILL) catch unreachable;
+        if (self.crash_at == number) killSelf();
     }
 };
+
+/// The exit code of a process killed on Windows (128 + SIGKILL, as shells report it).
+pub const killed_exit_code = 137;
+
+/// Ends a process at once, as SIGKILL does: no cleanup, nothing flushed.
+pub fn kill(process: std.process.Child.Id) void {
+    if (builtin.os.tag == .windows) {
+        _ = std.os.windows.ntdll.NtTerminateProcess(process, @fromBackingInt(@intCast(killed_exit_code)));
+    } else {
+        std.posix.kill(process, .KILL) catch {};
+    }
+}
+
+fn killSelf() noreturn {
+    if (builtin.os.tag == .windows) {
+        _ = std.os.windows.ntdll.NtTerminateProcess(std.os.windows.GetCurrentProcess(), @fromBackingInt(@intCast(killed_exit_code)));
+    } else {
+        std.posix.raise(.KILL) catch {};
+    }
+    unreachable;
+}
 
 /// The global plan every wrapped engine follows.
 pub var faults: Plan = .{};
