@@ -48,7 +48,7 @@ ZypherDB from C, C++ or any language with a C FFI (see `docs/guide/c-api.md`).
 ## Quickstart (Python)
 
 The Python package in `python/` runs the engine through a native extension module written in Zig
-(`python/native/`). Build it, point `PYTHONPATH` at the package (or `pip install -e python/`) and
+(`python/native/`). Build it, point `PYTHONPATH` at the package (or `pip install -e .`) and
 use the `Database` object:
 
 ```bash
@@ -111,7 +111,7 @@ make docs    # or: sphinx-build -b html docs docs/_build/html
 zig build test    # unit tests in src/ + the suite in tests/
 zig build         # static + shared libraries into zig-out/
 make docs         # build the HTML documentation
-make test-py      # Python bindings (pip install -e "python[dev]" once)
+make test-py      # Python bindings (pip install -e ".[dev]" once)
 make tck          # the openCypher TCK, against its baseline
 zig build fuzz -- storage --seeds 100   # one of the fuzzers (storage, query, faults, crash)
 ```

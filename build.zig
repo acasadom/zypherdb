@@ -74,15 +74,28 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .link_libc = true,
+            // Wheels are built stripped (debug information is most of their size).
+            .strip = b.option(bool, "python-strip", "Omit debug information from the Python module"),
             .imports = &.{.{ .name = "zypherdb", .module = zypherdb }},
         });
         const python_api = b.addTranslateC(.{ .root_source_file = b.path("python/native/python.h"), .target = target, .optimize = optimize });
         python_api.addIncludePath(.{ .cwd_relative = include });
         native_module.addImport("python", python_api.createModule());
         const native = b.addLibrary(.{ .name = "_native", .root_module = native_module, .linkage = .dynamic });
-        // Python's symbols come from the interpreter that loads the module.
-        native.linker_allow_shlib_undefined = true;
-        const install_native = b.addInstallFileWithDir(native.getEmittedBin(), .{ .custom = "python" }, "_native.abi3.so");
+        const is_windows = target.result.os.tag == .windows;
+        if (is_windows) {
+            // A Windows DLL cannot leave symbols undefined: link the stable-ABI import
+            // library (python3.lib, in the `libs` directory of a Python install).
+            const libs = b.option([]const u8, "python-libs", "Directory with python3.lib (Windows only)") orelse
+                @panic("building the Python module for Windows needs -Dpython-libs=<python>/libs");
+            native_module.addLibraryPath(.{ .cwd_relative = libs });
+            native_module.linkSystemLibrary("python3", .{});
+        } else {
+            // Python's symbols come from the interpreter that loads the module.
+            native.linker_allow_shlib_undefined = true;
+        }
+        const native_name = if (is_windows) "_native.pyd" else "_native.abi3.so";
+        const install_native = b.addInstallFileWithDir(native.getEmittedBin(), .{ .custom = "python" }, native_name);
         b.step("python", "Build the Python extension module into zig-out/python").dependOn(&install_native.step);
     }
 

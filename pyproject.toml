@@ -1,13 +1,26 @@
 [build-system]
-requires = ["setuptools>=77"]
-build-backend = "setuptools.build_meta"
+# An in-tree backend (tools/build_backend) compiles the native module with Zig; it
+# asks for the `ziglang` package itself when no Zig of the right version is installed.
+requires = ["tomli>=1.1; python_version < '3.11'"]
+build-backend = "zypherdb_build"
+backend-path = ["tools/build_backend"]
 
 [project]
 name = "zypherdb"
 version = "0.1.0"
 description = "Python bindings for ZypherDB, an embedded graph database (openCypher on LMDB or libmdbx)"
+readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+# Wheels ship LMDB and the IANA time-zone data; THIRD_PARTY_NOTICES.md covers the rest.
+license-files = [
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "vendor/lmdb/LICENSE",
+    "vendor/lmdb/COPYRIGHT",
+    "vendor/tzdata/LICENSE",
+    "vendor/tzdata/LICENSE_APACHE",
+]
 authors = [{ name = "Alberto Casado" }]
 keywords = [
     "graph database", "graph-database",
@@ -41,6 +54,3 @@ Changelog = "https://github.com/acasadom/zypherdb/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-
-[tool.setuptools]
-packages = ["zypherdb"]

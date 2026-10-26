@@ -57,7 +57,7 @@ jobs:
 
       - name: Python tests
         run: |
-          python -m pip install -e "python[dev]"
+          python -m pip install -e ".[dev]"
           python -m pytest python/tests -q
 
       - name: openCypher TCK (no regressions against the baseline)
