@@ -16,6 +16,12 @@
 //! engine's keys are short (about 2 KB with 4 KB pages), and an index lookup
 //! is a superset that callers recheck anyway. Two long values with one
 //! prefix are one key prefix, found together.
+//!
+//! An index may also cover a field of a document (a map property):
+//! `ON (n.emergency.relation)`. Its definition's property is then the path,
+//! its names joined by `path_separator` (which no stored name holds), and
+//! its entries are the entities whose property holds a map with that field
+//! (not null), by the field's value.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -38,6 +44,30 @@ pub const max_value_bytes: usize = 512;
 /// Follows the first `max_value_bytes` of a longer value. (A lookup may
 /// also find other values' keys: every caller rechecks its candidates.)
 pub const truncated_mark: u8 = 0xff;
+
+/// Joins the names of a document path in a definition's property.
+pub const path_separator: u8 = 0;
+
+/// The property a definition's `property` (a name or a path) is in.
+pub fn topProperty(property: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, property, path_separator) orelse property.len;
+    return property[0..end];
+}
+
+/// The value an index on `property` (a name or a path) keeps of the
+/// property value `value`: `value` itself for a name, its field at the path
+/// for a path; null (no entry) when `value` is absent, null, or holds no
+/// such field.
+pub fn valueAt(value: ?Value, property: []const u8) ?Value {
+    var current = value orelse return null;
+    var names = std.mem.splitScalar(u8, property, path_separator);
+    _ = names.next(); // the property itself
+    while (names.next()) |name| {
+        if (current != .map) return null;
+        current = Value.mapGet(current.map, name);
+    }
+    return if (current == .null) null else current;
+}
 
 /// Appends the first bytes of every key of index `index_id`.
 pub fn appendPrefix(key: *std.ArrayList(u8), allocator: Allocator, index_id: u32) Allocator.Error!void {
@@ -102,12 +132,15 @@ pub fn nodeChanged(graph: *Graph, id: NodeId, old: NodeRecord, new: NodeRecord, 
     for (try fulltext.cachedDefinitions(graph)) |definition| {
         if (!definition.hasPropertyIndex() or definition.entity != .nodes) continue;
         const property = definition.properties[0];
-        if (changed) |name| if (!std.mem.eql(u8, name, property)) continue;
+        const top = topProperty(property);
+        if (changed) |name| if (!std.mem.eql(u8, name, top)) continue;
         const label = definition.labels_or_types[0];
-        const old_value = if (old.hasLabel(label)) old.property(property) else null;
-        const new_value = if (new.hasLabel(label)) new.property(property) else null;
+        const old_value = if (old.hasLabel(label)) old.property(top) else null;
+        const new_value = if (new.hasLabel(label)) new.property(top) else null;
         if (old_value != null and new_value != null and std.mem.eql(u8, old_value.?, new_value.?)) continue;
-        try replaceEntry(graph, arena, definition.index_id, id, try decoded(arena, old_value), try decoded(arena, new_value));
+        const old_entry = valueAt(try decoded(arena, old_value), property);
+        const new_entry = valueAt(try decoded(arena, new_value), property);
+        try replaceEntry(graph, arena, definition.index_id, id, old_entry, new_entry);
     }
 }
 
@@ -120,8 +153,11 @@ pub fn relationshipPropertyChanged(graph: *Graph, id: RelationshipId, edge_type:
     defer scratch.deinit();
     const arena = scratch.allocator();
     for (try fulltext.cachedDefinitions(graph)) |definition| {
-        if (!covers(definition, .relationships, edge_type, name)) continue;
-        try replaceEntry(graph, arena, definition.index_id, id, old, new);
+        if (!definition.hasPropertyIndex() or definition.entity != .relationships) continue;
+        if (!std.mem.eql(u8, definition.labels_or_types[0], edge_type)) continue;
+        const property = definition.properties[0];
+        if (!std.mem.eql(u8, topProperty(property), name)) continue;
+        try replaceEntry(graph, arena, definition.index_id, id, valueAt(old, property), valueAt(new, property));
     }
 }
 
@@ -131,6 +167,7 @@ pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!voi
     defer scratch.deinit();
     const arena = scratch.allocator();
     const property = definition.properties[0];
+    const top = topProperty(property);
     // Collect first: indexing writes, and no scan may be open across writes.
     const Entry = struct { id: u64, value: []const u8 };
     var entries = std.ArrayList(Entry).empty;
@@ -140,7 +177,7 @@ pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!voi
             defer nodes.deinit();
             while (try nodes.next()) |id| {
                 const record = NodeRecord{ .bytes = try graph.recordCopy(id, arena) };
-                const value = record.property(property) orelse continue;
+                const value = record.property(top) orelse continue;
                 try entries.append(arena, .{ .id = id, .value = value });
             }
         },
@@ -149,7 +186,7 @@ pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!voi
             var keys = try graph.store.scanPrefix(&.{key_encoding.edge_property_marker});
             defer keys.deinit();
             while (try keys.next()) |entry| {
-                if (!std.mem.eql(u8, entry.key[9..], property)) continue;
+                if (!std.mem.eql(u8, entry.key[9..], top)) continue;
                 const id = std.mem.readInt(u64, entry.key[1..9], .big);
                 try entries.append(arena, .{ .id = id, .value = try arena.dupe(u8, entry.value) });
             }
@@ -160,7 +197,8 @@ pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!voi
             const stored = try graph.relationship(entry.id, arena) orelse continue;
             if (!std.mem.eql(u8, stored.edge_type, definition.labels_or_types[0])) continue;
         }
-        try replaceEntry(graph, arena, definition.index_id, entry.id, null, try decoded(arena, entry.value));
+        const value = valueAt(try decoded(arena, entry.value), property) orelse continue;
+        try replaceEntry(graph, arena, definition.index_id, entry.id, null, value);
     }
 }
 

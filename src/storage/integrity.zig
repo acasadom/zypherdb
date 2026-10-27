@@ -261,24 +261,28 @@ pub const Checker = struct {
     fn expectPropertyIndex(self: *Checker, definition: fulltext.Definition) StorageError!void {
         const label_or_type = definition.labels_or_types[0];
         const property = definition.properties[0];
+        const top = property_indexes.topProperty(property);
         switch (definition.entity) {
             .nodes => for (self.nodes.keys(), self.nodes.values()) |id, record| {
                 if (!record.hasLabel(label_or_type)) continue;
-                const encoded = record.property(property) orelse continue;
-                try self.expectIndexEntry(definition.index_id, encoded, id);
+                const encoded = record.property(top) orelse continue;
+                try self.expectIndexEntry(definition.index_id, property, encoded, id);
             },
             .relationships => for (self.relationships.keys(), self.relationships.values()) |id, relationship| {
                 if (!std.mem.eql(u8, relationship.edge_type, label_or_type)) continue;
                 for (relationship.properties.items) |stored| {
-                    if (std.mem.eql(u8, stored.name, property)) try self.expectIndexEntry(definition.index_id, stored.encoded, id);
+                    if (std.mem.eql(u8, stored.name, top)) try self.expectIndexEntry(definition.index_id, property, stored.encoded, id);
                 }
             },
         }
     }
 
-    fn expectIndexEntry(self: *Checker, index_id: u32, encoded: []const u8, id: u64) StorageError!void {
+    /// The entry of entity `id` in index `index_id` on `property` (a name or
+    /// a path), whose property is `encoded`; none if the path finds nothing.
+    fn expectIndexEntry(self: *Checker, index_id: u32, property: []const u8, encoded: []const u8, id: u64) StorageError!void {
+        const value = property_indexes.valueAt(try value_encoding.decodeValue(encoded, self.arena), property) orelse return;
         var key = std.ArrayList(u8).empty;
-        try property_indexes.appendKey(&key, self.arena, index_id, try value_encoding.decodeValue(encoded, self.arena), id);
+        try property_indexes.appendKey(&key, self.arena, index_id, value, id);
         try self.expect(key.items, "");
     }
 

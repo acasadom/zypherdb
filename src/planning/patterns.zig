@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("../query/ast.zig").Ast;
 const Index = @import("../query/ast.zig").Index;
 const Direction = @import("../storage/graph.zig").Direction;
+const property_indexes = @import("../storage/property_indexes.zig");
 const Statistics = @import("statistics.zig").Statistics;
 const unknown = @import("statistics.zig").unknown;
 
@@ -273,14 +274,14 @@ const Planner = struct {
     }
 
     fn addSeek(self: *Planner, access_expression: Index, value_expression: Index) Allocator.Error!void {
-        const target = self.seekTarget(access_expression, value_expression) orelse return;
+        const target = try self.seekTarget(access_expression, value_expression) orelse return;
         try self.nodes.items[target.node].seeks.append(self.context.allocator, .{ .property = target.property, .value = value_expression });
     }
 
     /// `node.property <op> value` (or reversed) as a range on the node: `value`
     /// is a lower bound for `>`/`>=`, an upper one for `<`/`<=`.
     fn addRange(self: *Planner, access_expression: Index, value_expression: Index, value_is_lower: bool) Allocator.Error!void {
-        const target = self.seekTarget(access_expression, value_expression) orelse return;
+        const target = try self.seekTarget(access_expression, value_expression) orelse return;
         try self.nodes.items[target.node].ranges.append(self.context.allocator, .{
             .property = target.property,
             .lower = if (value_is_lower) value_expression else null,
@@ -289,19 +290,32 @@ const Planner = struct {
     }
 
     /// The pattern node and property of `access_expression` (`variable.property`
-    /// of a node in this pattern), if `value_expression` is constant for the
-    /// whole query, so usable as an index lookup.
-    fn seekTarget(self: *const Planner, access_expression: Index, value_expression: Index) ?struct { node: usize, property: []const u8 } {
+    /// of a node in this pattern, or a document path `variable.property.field`,
+    /// its names joined by `property_indexes.path_separator`), if
+    /// `value_expression` is constant for the whole query, so usable as an
+    /// index lookup.
+    fn seekTarget(self: *const Planner, access_expression: Index, value_expression: Index) Allocator.Error!?struct { node: usize, property: []const u8 } {
         const ast = self.context.ast;
         if (ast.kind(access_expression) != .property_access) return null;
-        const object = ast.nodeChildren(access_expression)[0];
-        if (ast.kind(object) != .variable) return null;
         switch (ast.kind(value_expression)) {
             .integer_literal, .float_literal, .string_literal, .boolean_literal, .parameter => {},
             else => return null,
         }
+        var object = ast.nodeChildren(access_expression)[0];
+        var depth: usize = 1;
+        while (ast.kind(object) == .property_access) : (depth += 1) object = ast.nodeChildren(object)[0];
+        if (ast.kind(object) != .variable) return null;
         const node_index = self.nodeIndex(ast.data(object).text) orelse return null;
-        return .{ .node = node_index, .property = ast.data(access_expression).text };
+        if (depth == 1) return .{ .node = node_index, .property = ast.data(access_expression).text };
+        // A path: its names from the innermost access out.
+        const names = try self.context.allocator.alloc([]const u8, depth);
+        var access = access_expression;
+        for (0..depth) |position| {
+            names[depth - 1 - position] = ast.data(access).text;
+            access = ast.nodeChildren(access)[0];
+        }
+        const path = try std.mem.join(self.context.allocator, &.{property_indexes.path_separator}, names);
+        return .{ .node = node_index, .property = path };
     }
 
     /// How many candidates node `position` would produce as the anchor.

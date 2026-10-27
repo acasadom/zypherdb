@@ -19,6 +19,7 @@ const StorageError = @import("../storage/key_value_store.zig").StorageError;
 const Value = @import("../value.zig").Value;
 const Relationship = @import("../value.zig").Relationship;
 const NodeRecord = @import("../storage/node_record.zig").NodeRecord;
+const property_indexes = @import("../storage/property_indexes.zig");
 
 const Plan = @import("../planning/Plan.zig");
 const PatternPlan = Plan.PatternPlan;
@@ -454,6 +455,9 @@ pub const MatchingEdges = struct {
 
 pub fn nodeSeeksMatch(self: *Executor, node: PatternNode, id: NodeId, bindings: *Bindings) ExecutionError!bool {
     for (node.seeks) |seek| {
+        // A seek from the WHERE on a document path (`n.a.b = v`) is left to
+        // the WHERE, which fails on a property that is not a map.
+        if (std.mem.indexOfScalar(u8, seek.property, property_indexes.path_separator) != null) continue;
         const expected = try expressions.evaluate(self, seek.value, bindings);
         const actual = (try self.graph.getProperty(id, seek.property, self.allocator)) orelse return false;
         if (!Value.eql(actual, expected)) return false;

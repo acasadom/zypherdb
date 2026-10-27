@@ -13,9 +13,8 @@
 //!     SHOW [FULLTEXT|RANGE] INDEXES
 //!     SHOW CONSTRAINTS
 //!
-//! As in Neo4j. Every property is already indexed for equality (and ranges),
-//! so a RANGE or TEXT index is recorded (SHOW INDEXES lists it) and changes
-//! nothing; FULLTEXT is the kind of index that does.
+//! As in Neo4j, plus one extension: a RANGE (or TEXT) index may be on a field
+//! of a document property, `ON (n.property.field ...)`.
 
 const std = @import("std");
 
@@ -24,6 +23,7 @@ const NodeKind = @import("ast.zig").NodeKind;
 const Parser = @import("parser.zig").Parser;
 const ParseError = @import("parser.zig").ParseError;
 const expression_parser = @import("expression_parser.zig");
+const path_separator = @import("ast.zig").path_separator;
 
 /// True if the statement starting here is a schema command.
 pub fn atSchemaCommand(self: *const Parser) bool {
@@ -81,8 +81,10 @@ fn parseEntity(self: *Parser) ParseError!Entity {
     return .{ .relationships = relationships, .variable = variable, .names = try self.ast.internSlice(names.items) };
 }
 
-/// `v.a, v.b, ...` (`close` ends the list): the property names, each of `variable`.
-fn parseProperties(self: *Parser, variable: []const u8, close: @import("lexer.zig").TokenKind) ParseError![]const []const u8 {
+/// `v.a, v.b, ...` (`close` ends the list): the property names, each of
+/// `variable`. With `paths`, a property may be a document path `v.a.b`,
+/// kept as its names joined by `ast.path_separator`.
+fn parseProperties(self: *Parser, variable: []const u8, close: @import("lexer.zig").TokenKind, paths: bool) ParseError![]const []const u8 {
     var properties = std.ArrayList([]const u8).empty;
     defer properties.deinit(self.ast.allocator);
     while (true) {
@@ -92,12 +94,31 @@ fn parseProperties(self: *Parser, variable: []const u8, close: @import("lexer.zi
             return error.UnexpectedToken;
         }
         try self.expect(.dot);
-        try properties.append(self.ast.allocator, try self.internIdentifier());
+        try properties.append(self.ast.allocator, if (paths) try parsePath(self) else try self.internIdentifier());
         if (!self.at(.comma)) break;
         _ = self.advance();
     }
     try self.expect(close);
     return self.ast.internSlice(properties.items);
+}
+
+/// `a.b.c` after `v.`: the names joined by `ast.path_separator`, which
+/// none of them may hold (`a.b` and `` `a\x00b` `` would be one path).
+fn parsePath(self: *Parser) ParseError![]const u8 {
+    var path = std.ArrayList(u8).empty;
+    defer path.deinit(self.ast.allocator);
+    while (true) {
+        const name = try self.internIdentifier();
+        if (std.mem.indexOfScalar(u8, name, path_separator) != null) {
+            self.fail("a property name cannot be empty or contain the character U+0000", .{});
+            return error.UnexpectedToken;
+        }
+        try path.appendSlice(self.ast.allocator, name);
+        if (!self.at(.dot)) break;
+        _ = self.advance();
+        try path.append(self.ast.allocator, path_separator);
+    }
+    return self.ast.intern(path.items);
 }
 
 /// `[name] [IF NOT EXISTS]`, before FOR (or ON): the name, or one made of
@@ -131,7 +152,7 @@ fn generatedName(self: *Parser, prefix: []const u8, entity: Entity, properties: 
     }
     for (properties) |property| {
         try name.append(self.ast.allocator, '_');
-        try name.appendSlice(self.ast.allocator, property);
+        for (property) |byte| try name.append(self.ast.allocator, if (byte == path_separator) '_' else byte);
     }
     return self.ast.intern(name.items);
 }
@@ -160,10 +181,10 @@ fn parseCreateIndex(self: *Parser) ParseError!Index {
     if (fulltext) {
         try self.expectKeyword("EACH");
         try self.expect(.left_bracket);
-        properties = try parseProperties(self, entity.variable, .right_bracket);
+        properties = try parseProperties(self, entity.variable, .right_bracket, false);
     } else {
         try self.expect(.left_paren);
-        properties = try parseProperties(self, entity.variable, .right_paren);
+        properties = try parseProperties(self, entity.variable, .right_paren, true);
     }
     var children = std.ArrayList(Index).empty;
     defer children.deinit(self.ast.allocator);
@@ -190,7 +211,7 @@ fn parseCreateConstraint(self: *Parser) ParseError!Index {
     if (old_form) try self.expectKeyword("ASSERT") else try self.expectKeyword("REQUIRE");
     const properties = if (self.at(.left_paren)) list: {
         _ = self.advance();
-        break :list try parseProperties(self, entity.variable, .right_paren);
+        break :list try parseProperties(self, entity.variable, .right_paren, false);
     } else try parseSingleProperty(self, entity.variable);
     try self.expectKeyword("IS");
     if (!self.atKeyword("UNIQUE")) {

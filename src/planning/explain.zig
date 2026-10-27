@@ -23,6 +23,7 @@ const Operator = Plan.Operator;
 const OperatorIndex = Plan.OperatorIndex;
 const Statistics = @import("statistics.zig").Statistics;
 const unknown = @import("statistics.zig").unknown;
+const property_indexes = @import("../storage/property_indexes.zig");
 const containsAggregate = @import("builder.zig").containsAggregate;
 
 pub const Line = struct {
@@ -425,7 +426,7 @@ fn scanDetails(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
         }
         try text.name(node.variable_name);
         try text.append(".");
-        try text.name(range.property);
+        try propertyName(text, range.property);
         if (range.upper) |upper| {
             try text.append(" <= ");
             try text.write(upper);
@@ -448,13 +449,23 @@ fn stepDetails(text: *Printer, pattern: Plan.PatternPlan, from: usize, to: usize
     if (edge.variable_length) try text.hops(edge.min_hops, edge.max_hops);
     for (edge.seeks, 0..) |seek, position| {
         try text.append(if (position == 0) " {" else ", ");
-        try text.name(seek.property);
+        try propertyName(text, seek.property);
         try text.append(": ");
         try text.write(seek.value);
     }
     if (edge.seeks.len > 0) try text.append("}");
     try text.append(if (points_right) "]->" else "]-");
     try nodeText(text, pattern.nodes[to]);
+}
+
+/// A seek's property: a name, or a document path as `a.b`.
+fn propertyName(text: *Printer, property: []const u8) Allocator.Error!void {
+    var names = std.mem.splitScalar(u8, property, property_indexes.path_separator);
+    var first = true;
+    while (names.next()) |name| : (first = false) {
+        if (!first) try text.append(".");
+        try text.name(name);
+    }
 }
 
 /// `(a:L {k: v})` for a planned node.
@@ -467,7 +478,7 @@ fn nodeText(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
     }
     for (node.seeks, 0..) |seek, position| {
         try text.append(if (position == 0) " {" else ", ");
-        try text.name(seek.property);
+        try propertyName(text, seek.property);
         try text.append(": ");
         try text.write(seek.value);
     }

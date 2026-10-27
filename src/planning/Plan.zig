@@ -186,6 +186,8 @@ pub const PatternPlan = struct {
 
 /// An equality predicate `node.property = value` pushed down to a node.
 pub const Seek = struct {
+    /// A name, or (from the WHERE) a document path: names joined by
+    /// `property_indexes.path_separator`.
     property: []const u8,
     value: Index,
 };
@@ -194,6 +196,7 @@ pub const Seek = struct {
 /// node: a bound for a range lookup (`Graph.nodesInRange`). The WHERE is still
 /// evaluated on every match, so the bound need only include what it keeps.
 pub const RangeSeek = struct {
+    /// A name or a document path, as in `Seek`.
     property: []const u8,
     lower: ?Index,
     upper: ?Index,

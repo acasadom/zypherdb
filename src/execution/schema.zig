@@ -19,6 +19,11 @@ const ExpressionProgram = @import("../planning/expression_program.zig").Program;
 const expressions = @import("expressions.zig");
 const requireStorableName = @import("writes.zig").requireStorableName;
 
+comptime {
+    // The parser joins a document path's names as the indexes split them.
+    std.debug.assert(@import("../query/ast.zig").path_separator == property_indexes.path_separator);
+}
+
 /// The analyzers a full-text index can use.
 pub const analyzers = [_][]const u8{ "standard", "english", "spanish" };
 
@@ -79,7 +84,13 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
     // Names go into keys, where 0x00 ends them ("f" would find "f\x00g").
     // (A generated name holds the labels and properties: check them first.)
     for (command.labels_or_types) |name| try requireStorableName(executor, if (command.relationships) "relationship type" else "label", name);
-    for (command.properties) |name| try requireStorableName(executor, "property name", name);
+    for (command.properties) |property| {
+        // A range index's property may be a document path (its names joined
+        // by path_separator: the parser refuses it inside a name).
+        if (kind != .range) try requireStorableName(executor, "property name", property);
+        var names = std.mem.splitScalar(u8, property, property_indexes.path_separator);
+        if (kind == .range) while (names.next()) |name| try requireStorableName(executor, "property name", name);
+    }
     try requireStorableName(executor, "name for an index or constraint", command.name);
     if (try fulltext.find(executor.graph, command.name, executor.allocator)) |existing| {
         if (command.if_not_exists) return;
@@ -142,8 +153,8 @@ fn unknownOption(executor: *Executor, key: []const u8) ExecutionError {
     return error.InvalidExpression;
 }
 
-/// One row per index (full-text, or range: declared, and doing nothing):
-/// name, type, entityType, labelsOrTypes, properties, options.
+/// One row per index (full-text or range): name, type, entityType,
+/// labelsOrTypes, properties (a document path as `a.b`), options.
 fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig").Data, "show_indexes")) ExecutionError![]const Row {
     const allocator = executor.allocator;
     var rows = std.ArrayList(Row).empty;
@@ -158,7 +169,7 @@ fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig"
         try row.append(allocator, .{ .string = if (definition.kind == .fulltext) "FULLTEXT" else "RANGE" });
         try row.append(allocator, .{ .string = if (definition.entity == .nodes) "NODE" else "RELATIONSHIP" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
-        try row.append(allocator, try stringList(allocator, definition.properties));
+        try row.append(allocator, try propertyList(allocator, definition.properties));
         const config: []const MapEntry = if (definition.kind == .fulltext)
             try allocator.dupe(MapEntry, &.{.{ .key = "fulltext.analyzer", .value = .{ .string = definition.analyzer } }})
         else
@@ -179,7 +190,7 @@ fn showConstraints(executor: *Executor) ExecutionError![]const Row {
         try row.append(allocator, .{ .string = "UNIQUENESS" });
         try row.append(allocator, .{ .string = "NODE" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
-        try row.append(allocator, try stringList(allocator, definition.properties));
+        try row.append(allocator, try propertyList(allocator, definition.properties));
         try rows.append(allocator, row);
     }
     return rows.items;
@@ -188,5 +199,16 @@ fn showConstraints(executor: *Executor) ExecutionError![]const Row {
 fn stringList(allocator: std.mem.Allocator, strings: []const []const u8) std.mem.Allocator.Error!Value {
     const items = try allocator.alloc(Value, strings.len);
     for (items, strings) |*item, string| item.* = .{ .string = string };
+    return .{ .list = items };
+}
+
+/// The properties of a definition, a document path written `a.b`.
+fn propertyList(allocator: std.mem.Allocator, properties: []const []const u8) std.mem.Allocator.Error!Value {
+    const items = try allocator.alloc(Value, properties.len);
+    for (items, properties) |*item, property| {
+        const text = try allocator.dupe(u8, property);
+        std.mem.replaceScalar(u8, text, property_indexes.path_separator, '.');
+        item.* = .{ .string = text };
+    }
     return .{ .list = items };
 }
