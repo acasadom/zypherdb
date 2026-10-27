@@ -1,158 +1,133 @@
 # ZypherDB
 
-*An embedded graph database in Zig, speaking openCypher, on LMDB or libmdbx.*
+*An embedded graph database that speaks openCypher.*
 
 [![CI](https://github.com/acasadom/zypherdb/actions/workflows/ci.yml/badge.svg)](https://github.com/acasadom/zypherdb/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-![Zig](https://img.shields.io/badge/zig-0.17-f7a41d)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/acasadom/zypherdb/blob/main/LICENSE)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 [![Docs](https://img.shields.io/badge/docs-acasadom.github.io%2Fzypherdb-blue)](https://acasadom.github.io/zypherdb/)
 
-A small, embeddable **graph database**: link it into your process through its C ABI, or
-`import zypherdb` in Python, store nodes and relationships, and query them in **openCypher** — over
-an **index-free adjacency** graph stored in **LMDB** (or **libmdbx**). No server, no configuration,
-one binary toolchain.
+ZypherDB is to graphs what SQLite is to tables: a database that lives inside your process and
+keeps its data in a directory, with no server to run. You store nodes and relationships and
+query them in **openCypher**, the language of Neo4j. Several processes can share a database, and
+a crash never leaves it half-written. The engine is written in Zig, on LMDB.
 
----
-
-## Why this stack
-
-- **Zig 0.17.0** — a fast, self-contained, single-binary toolchain: no Docker, no CMake, no
-  vcpkg. Pre-1.0 (breaking changes until 1.0) and a small ecosystem, but `comptime` generics map
-  cleanly onto the generic-programming style the project uses throughout.
-- **LMDB or libmdbx** as the storage engine — not RocksDB, not SQLite. A graph is traversed by
-  following adjacencies, not by joining tables: ZypherDB encodes its own keys and exploits the
-  engine's lexicographic iteration so *"give me the neighbours of X"* is one prefix scan. Both are
-  single-writer / multi-reader across processes. The engine sits behind a contract
-  (`src/storage/engine/contract.zig`) and is chosen at build time: `-Dstorage-engine=lmdb` (the
-  default) or `mdbx` (libmdbx, a descendant of LMDB: faster commits, a file that grows and shrinks
-  on its own; see [bench/RESULTS.md](bench/RESULTS.md)).
-- **Generic programming (Stepanov).** Data as concrete types, algorithms as free functions, errors
-  as values. The core types are *regular* (equality, a total order and a hash, with their laws
-  tested), and algorithms shared by several types — deduplication, sorting, grouping, pagination —
-  are written once, generically. No class hierarchies, no Visitor; the AST is an arena of nodes
-  with child indices.
-- **A hand-written recursive-descent parser** for openCypher — no ANTLR, no generator.
-
-## Building
+## Install
 
 ```bash
-zig build test    # build and run the test suite
-zig build         # build the static + shared libraries into zig-out/
+pip install zypherdb
 ```
 
-The LMDB and libmdbx C sources under `vendor/` are vendored; the build compiles the chosen one. `zig build` also
-produces `libzypherdb.dylib` (`.so` on Linux) and the header `zig-out/include/zypherdb.h`, for embedding
-ZypherDB from C, C++ or any language with a C FFI (see `docs/guide/c-api.md`).
+Python 3.10 or later, on Linux (x86_64, aarch64), macOS (Apple silicon, Intel) and Windows
+(x86_64). No dependencies (on Windows, only `tzdata`).
 
-## Quickstart (Python)
+## A first look
 
-The Python package in `python/` runs the engine through a native extension module written in Zig
-(`python/native/`). Build it, point `PYTHONPATH` at the package (or `pip install -e .`) and
-use the `Database` object:
+Who may open a door, through groups nested to any depth, and at what times:
 
-```bash
-make python
-PYTHONPATH=python python3 - <<'PY'
+```python
 from zypherdb import Database
-import tempfile
 
-with Database(tempfile.mkdtemp()) as db:
-    nid = db.allocate_node_id()
-    db.add_node(nid, "Person")
-    db.set_property(nid, "name", "Keanu Reeves")
-    db.add_node(100, "Movie")
-    db.set_property(100, "title", "The Matrix")
-    db.add_edge(nid, 100, "ACTED_IN")
-    print(db.query("MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title"))
-PY
+db = Database("lab.db")  # a directory, created if missing
+
+db.query("""
+    CREATE (ana:Person {name: 'Ana'}), (bo:Person {name: 'Bo'}),
+           (staff:Group {name: 'Lab staff'}), (bsl3:Group {name: 'BSL-3'}),
+           (airlock:Door {name: 'BSL-3 airlock'})
+    CREATE (ana)-[:MEMBER_OF]->(bsl3)-[:PART_OF]->(staff),
+           (bo)-[:MEMBER_OF]->(staff),
+           (bsl3)-[:MAY_OPEN {from: localtime('07:00'), until: localtime('19:00')}]->(airlock)
+""")
+
+rows = db.query("""
+    MATCH (:Door {name: $door})<-[rule:MAY_OPEN]-(:Group)<-[:PART_OF*0..]-(:Group)<-[:MEMBER_OF]-(p:Person)
+    RETURN p.name, rule.from, rule.until
+""", door="BSL-3 airlock")
+print(rows)  # [['Ana', datetime.time(7, 0), datetime.time(19, 0)]]
 ```
 
-A query looks like openCypher:
+Results come back as Python values: numbers, strings, lists, dicts, `datetime` types with their
+time zones, and nodes, relationships and paths.
+
+Full-text search, with stemming and BM25 ranking, in Neo4j's syntax:
+
+```python
+db.query("CREATE (:Protocol {title: 'Airlock', body: 'Spray the doors before opening them'})")
+db.query("""
+    CREATE FULLTEXT INDEX protocols FOR (p:Protocol) ON EACH [p.title, p.body]
+    OPTIONS {indexConfig: {`fulltext.analyzer`: 'english'}}
+""")
+print(db.query("""
+    CALL db.index.fulltext.queryNodes('protocols', 'door AND open') YIELD node, score
+    RETURN node.title, score
+"""))  # [['Airlock', 0.5753641449035617]]
+```
+
+And a look at how a query runs: `explain` returns its plan, and `profile` runs it and counts the
+rows each step made:
+
+```python
+def show(plan, depth=0):
+    print("  " * depth + f"{plan['operator']} {plan['details']}   rows: {plan['rows']}")
+    for child in plan["children"]:
+        show(child, depth + 1)
+
+rows, plan = db.profile("""
+    MATCH (:Door {name: $door})<-[rule:MAY_OPEN]-(:Group)<-[:PART_OF*0..]-(:Group)<-[:MEMBER_OF]-(p:Person)
+    RETURN p.name, rule.from, rule.until
+""", door="BSL-3 airlock")
+show(plan)
+```
 
 ```text
-MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WHERE m.released >= 2000 RETURN m.title
+Return p.name, rule.from, rule.until   rows: 1
+  Expand(All) (:Group)<-[:MEMBER_OF]-(p:Person)   rows: 1
+    VarLengthExpand(All) (:Group)<-[:PART_OF*0..]-(:Group)   rows: 1
+      Expand(All) (:Door {name: $door})<-[rule:MAY_OPEN]-(:Group)   rows: 1
+        NodeIndexSeek (:Door {name: $door})   rows: 1
 ```
 
-Cells come back as Python values (`int`, `float`, `str`, `bool`, `None`, `list`, `dict`,
-`datetime` types, and `Node`/`Relationship`/`Path`); errors raise typed
-exceptions (`ParseError`, `UnknownVariableError`, `TypeMismatchError`, …). See the
-[Python guide](docs/guide/python.md) and the raw [C ABI](docs/guide/c-api.md) for the layer
-underneath.
+The [tutorial](https://acasadom.github.io/zypherdb/tutorial/01-getting-started.html) goes from
+here to a complete access-control system in twenty short steps.
+
+## What it can do
+
+- **openCypher**: `MATCH` and `OPTIONAL MATCH`, variable-length and shortest paths, `WITH`,
+  `UNWIND`, `UNION`, subqueries, `EXISTS { }` and `COUNT { }`; `CREATE`, `MERGE`, `SET`,
+  `REMOVE`, `DELETE`, `FOREACH`; `LOAD CSV`; every aggregate; string, list, math, temporal and
+  graph functions.
+- **Values**: integers, floats, strings, booleans, lists, maps, and the six temporal types with
+  time zones. Properties can also hold maps, so a node can carry a document.
+- **Indexes**: every property is indexed for equality and ranges with no setup; full-text indexes
+  in English and Spanish; uniqueness constraints.
+- **Storage**: transactions, crash safety, three durability levels, one writer and any number of
+  readers across processes (readers never wait), and an integrity checker.
+- **Queries**: plans of operators with index seeks, `EXPLAIN` and `PROFILE`, prepared statements
+  and a statement cache.
+
+ZypherDB passes all 3202 scenarios of the [openCypher TCK](https://github.com/acasadom/zypherdb/blob/main/tests/tck/README.md)
+that expect a result, and all 694 that expect an error. The
+[Cypher reference](https://acasadom.github.io/zypherdb/guide/cypher.html) lists what it does not
+support yet. Python is the first language binding; C, C++ and JavaScript come next.
 
 ## Documentation
 
-Read the docs at [`docs/`](docs/) — two tracks:
+[acasadom.github.io/zypherdb](https://acasadom.github.io/zypherdb/) has the tutorial, the
+[Cypher](https://acasadom.github.io/zypherdb/guide/cypher.html) and
+[Python](https://acasadom.github.io/zypherdb/guide/python.html) references, and how it works
+inside: the [architecture](https://acasadom.github.io/zypherdb/guide/architecture.html), the
+storage layout, the query planner, [performance](https://acasadom.github.io/zypherdb/guide/performance.html)
+and [testing](https://acasadom.github.io/zypherdb/guide/testing.html) (fuzzers, crash and fault
+injection, the TCK).
 
-- **Using ZypherDB** — a step-by-step [tutorial](docs/tutorial/01-getting-started.md) (twenty
-  steps building the access-control system of a biomedical lab, every example run by the tests)
-  plus references for the
-  [Cypher](docs/guide/cypher.md) ZypherDB speaks, the [C ABI](docs/guide/c-api.md), and
-  [Python](docs/guide/python.md).
-- **How it works inside** — the [architecture](docs/guide/architecture.md) (design decisions,
-  components, query lifecycle), the [storage encoding](docs/guide/storage.md) (keys, index-free
-  adjacency, indexes, a worked example of the keys), the [lexer/parser](docs/guide/language.md),
-  [planning & execution](docs/guide/planning-execution.md) (plans of operators, anchor selection,
-  pushdown, prepared statements), [performance](docs/guide/performance.md) (known costs),
-  [testing](docs/guide/testing.md) (how ZypherDB tests itself: oracles, fuzzers, crashes, faults),
-  and [contributing](docs/guide/contributing.md).
+## Building from source
 
-Build the HTML locally:
-
-```bash
-make docs    # or: sphinx-build -b html docs docs/_build/html
-```
-
-(requires `pip install -r docs/requirements.txt` — Sphinx + MyST + mermaid.)
-
-## Development
-
-```bash
-zig build test    # unit tests in src/ + the suite in tests/
-zig build         # static + shared libraries into zig-out/
-make docs         # build the HTML documentation
-make test-py      # Python bindings (pip install -e ".[dev]" once)
-make tck          # the openCypher TCK, against its baseline
-zig build fuzz -- storage --seeds 100   # one of the fuzzers (storage, query, faults, crash)
-```
-
-The source is laid out by layer — `src/storage/` (engine, key layout, graph, integrity checker),
-`src/query/` (lexer, parser, AST, semantic checks), `src/planning/` (plans), `src/execution/`
-(running them), `src/statement/` (prepared statements) — plus `src/temporal/` and `src/text/`,
-with the test suite in `tests/`, which uses only the public API. The [architecture](docs/guide/architecture.md) guide maps
-every file; [contributing](docs/guide/contributing.md) has the principles and the recipes.
-
-## What's in the box
-
-- **openCypher**: reading (`MATCH`, `OPTIONAL MATCH`, variable-length and shortest paths, `WITH`,
-  `UNWIND`, `UNION`, `CALL { }` subqueries, `EXISTS { }` and `COUNT { }`, pattern comprehensions),
-  writing (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`, `FOREACH`), `LOAD CSV` from an import
-  directory, procedures (`CALL db.labels()`, full-text queries), and `EXPLAIN` / `PROFILE`.
-- **Values**: integers, floats, strings, booleans, lists, maps, and the six temporal types with
-  time zones; properties can also hold maps (documents, a ZypherDB extension).
-- **Expressions and functions**: the openCypher operators (three-valued `null` logic, `=~` regular
-  expressions), string, numeric, list, temporal and graph functions, and every aggregate
-  (`count`, `sum`, `avg`, `min`, `max`, `collect`, `stDev`, percentiles, with `DISTINCT`).
-- **Schema**: full-text indexes (BM25, Spanish and English stemmers, Lucene's query syntax as in
-  Neo4j) and uniqueness constraints; every property is already indexed for equality and ranges.
-- **Storage**: index-free adjacency, relationships with ids of their own, node records, label,
-  property and edge-property indexes, counters for the planner; transactions, crash safety, three
-  durability modes, several processes on one database (one writer at a time, readers that never
-  wait), and an integrity checker.
-- **Execution**: plans of operators with anchor selection and index seeks, prepared statements and
-  a statement cache, one transaction per query.
-- **A Python package** whose engine is a native extension module written in Zig on the Python
-  limited API (one build per platform for every Python from 3.10), and **a C ABI** for embedding
-  from any language with an FFI.
-
-## Status
-
-ZypherDB is measured against the [openCypher TCK](tests/tck/README.md), the reference scenarios of
-the language: **all 3202 scenarios that expect a result pass**, and all 694 that expect an
-error — see [tests/tck/REPORT.md](tests/tck/REPORT.md) for the results by area. The TCK does not
-cover everything Neo4j users write: the [Cypher reference](docs/guide/cypher.md#not-supported)
-lists what ZypherDB does not implement yet.
+You need [Zig 0.17](https://ziglang.org/download/): `zig build test` runs the tests and
+`pip install .` builds the Python package. The
+[contributing guide](https://acasadom.github.io/zypherdb/guide/contributing.html) has the rest.
 
 ## License
 
-Apache License 2.0 (see [LICENSE](LICENSE)). ZypherDB includes LMDB, libmdbx and data and algorithms from Unicode and Snowball, under their own licenses: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Apache License 2.0. ZypherDB includes LMDB, libmdbx, the IANA time-zone database, and data and
+algorithms from Unicode and Snowball, under their own licenses: see
+[THIRD_PARTY_NOTICES.md](https://github.com/acasadom/zypherdb/blob/main/THIRD_PARTY_NOTICES.md).

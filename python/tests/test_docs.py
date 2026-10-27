@@ -103,6 +103,10 @@ def test_tutorial(scratch):
         _run(page, namespace)
 
 
+def test_readme(scratch):
+    _run(ROOT / "README.md", {"__name__": "__docs__"})
+
+
 @pytest.mark.parametrize("page", _other_pages(), ids=lambda p: str(p.relative_to(DOCS)))
 def test_page(page, scratch):
     _run(page, {"__name__": "__docs__"})
