@@ -34,7 +34,7 @@ The index finds the nodes of its label: `(b:Badge {number: $badge})` uses it, `(
 $badge})` without the label does not. Each index makes the writes to its property a little slower
 and the database a little larger, so index the properties that queries look nodes up by, not
 every property. `SHOW INDEXES` lists them and `DROP INDEX door_id` removes one; a uniqueness
-constraint has an index of its own. Relationships have indexes too, for one type: `CREATE INDEX
+constraint has an index of its own (listed too, named as the constraint, dropped with it). Relationships have indexes too, for one type: `CREATE INDEX
 FOR ()-[g:MAY_ENTER]-() ON (g.days)`.
 
 The decision query of [step 14](14-time) anchors on the badge (an equality) and finds the door

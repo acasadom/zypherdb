@@ -211,7 +211,7 @@ print(search("recepción"), search("acompañadas"))
 `SHOW FULLTEXT INDEXES` lists the indexes and `DROP INDEX` removes one:
 
 ```python
-for name, kind, entity, labels, properties, options in db.query("SHOW FULLTEXT INDEXES"):
+for name, kind, entity, labels, properties, owning_constraint, options in db.query("SHOW FULLTEXT INDEXES"):
     print(name, entity, labels, properties, options["indexConfig"]["fulltext.analyzer"])
 ```
 

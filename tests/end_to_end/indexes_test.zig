@@ -260,7 +260,7 @@ test "an index on a document field follows the document" {
     try expectQuery(&ast, &g, "CREATE INDEX FOR (p:Person) ON (p.emergency.relation)", &.{});
     try testing.expectEqual(@as(usize, 2), try indexEntries(&g));
     const no_config: Value = .{ .map = &.{.{ .key = "indexConfig", .value = .{ .map = &.{} } }} };
-    try expectQuery(&ast, &g, "SHOW INDEXES", &.{&.{ string("index_Person_emergency_relation"), string("RANGE"), string("NODE"), .{ .list = &.{string("Person")} }, .{ .list = &.{string("emergency.relation")} }, no_config }});
+    try expectQuery(&ast, &g, "SHOW INDEXES", &.{&.{ string("index_Person_emergency_relation"), string("RANGE"), string("NODE"), .{ .list = &.{string("Person")} }, .{ .list = &.{string("emergency.relation")} }, .null, no_config }});
     try testing.expect(try seeksByIndex(&g, query));
     try expectQueryWithParameters(&ast, &g, query, &.{.{ "relation", string("mother") }}, &.{&.{string("Ana")}});
     // (A string range scans the label, and would read Leo's `'none'.relation`.)

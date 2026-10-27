@@ -384,8 +384,12 @@ SHOW CONSTRAINTS
   Other constraints (`IS NOT NULL`, `IS NODE KEY`, on relationships) are not supported.
 - `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT` or `RANGE`; a `TEXT` index
   is listed as `RANGE`, since it is one), `entityType`
-  (`NODE` or `RELATIONSHIP`), `labelsOrTypes`, `properties`, `options`. `SHOW CONSTRAINTS`
-  returns `name`, `type` (`UNIQUENESS`), `entityType`, `labelsOrTypes`, `properties`.
+  (`NODE` or `RELATIONSHIP`), `labelsOrTypes`, `properties`, `owningConstraint`, `options`. As in
+  Neo4j 5, a uniqueness constraint's own index is listed: a `RANGE` index named as the
+  constraint, with the constraint's name in `owningConstraint` (null for the others), on the
+  constraint's first property (the one its keys hold); `DROP INDEX` refuses it, `DROP CONSTRAINT`
+  drops both. `SHOW CONSTRAINTS` returns `name`, `type` (`UNIQUENESS`), `entityType`,
+  `labelsOrTypes`, `properties`, `ownedIndex`.
 
 ## Full-text search
 

@@ -153,23 +153,27 @@ fn unknownOption(executor: *Executor, key: []const u8) ExecutionError {
     return error.InvalidExpression;
 }
 
-/// One row per index (full-text or range): name, type, entityType,
-/// labelsOrTypes, properties (a document path as `a.b`), options.
+/// One row per index (full-text or range, a uniqueness constraint's
+/// included, as in Neo4j 5): name, type, entityType, labelsOrTypes,
+/// properties (a document path as `a.b`), owningConstraint (the
+/// constraint's name, else null), options.
 fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig").Data, "show_indexes")) ExecutionError![]const Row {
     const allocator = executor.allocator;
     var rows = std.ArrayList(Row).empty;
     for (try fulltext.all(executor.graph, allocator)) |definition| {
         switch (definition.kind) {
-            .unique => continue,
             .fulltext => if (which == .range) continue,
-            .range => if (which == .fulltext) continue,
+            .range, .unique => if (which == .fulltext) continue,
         }
+        // A constraint's index keys its first property (constraints.zig).
+        const properties = if (definition.kind == .unique) definition.properties[0..1] else definition.properties;
         var row = Row.empty;
         try row.append(allocator, .{ .string = definition.name });
         try row.append(allocator, .{ .string = if (definition.kind == .fulltext) "FULLTEXT" else "RANGE" });
         try row.append(allocator, .{ .string = if (definition.entity == .nodes) "NODE" else "RELATIONSHIP" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
-        try row.append(allocator, try propertyList(allocator, definition.properties));
+        try row.append(allocator, try propertyList(allocator, properties));
+        try row.append(allocator, if (definition.kind == .unique) .{ .string = definition.name } else .null);
         const config: []const MapEntry = if (definition.kind == .fulltext)
             try allocator.dupe(MapEntry, &.{.{ .key = "fulltext.analyzer", .value = .{ .string = definition.analyzer } }})
         else
@@ -180,7 +184,8 @@ fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig"
     return rows.items;
 }
 
-/// One row per constraint: name, type, entityType, labelsOrTypes, properties.
+/// One row per constraint: name, type, entityType, labelsOrTypes,
+/// properties, ownedIndex (its index, listed by SHOW INDEXES: same name).
 fn showConstraints(executor: *Executor) ExecutionError![]const Row {
     const allocator = executor.allocator;
     var rows = std.ArrayList(Row).empty;
@@ -191,6 +196,7 @@ fn showConstraints(executor: *Executor) ExecutionError![]const Row {
         try row.append(allocator, .{ .string = "NODE" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
         try row.append(allocator, try propertyList(allocator, definition.properties));
+        try row.append(allocator, .{ .string = definition.name });
         try rows.append(allocator, row);
     }
     return rows.items;
