@@ -6,10 +6,10 @@
 //! definitions (`i` keys) and the id counters. Derived, and checked here:
 //!
 //! - the label index (`l`) and the label counters (`c`);
-//! - the property index (`p`);
+//! - the entries of every property index (`p`; property_indexes.zig);
 //! - both edge keys of each relationship (`e`), with the labels they keep of
 //!   the node at the other end;
-//! - the relationship-type counters (`t`) and the edge-property index (`g`);
+//! - the relationship-type counters (`t`);
 //! - the postings of every full-text index (`w`, `W`, `v`, `V`;
 //!   integrity_fulltext.zig);
 //! - that every uniqueness constraint holds, and that the id counters are
@@ -42,6 +42,7 @@ const valueProblem = layout.valueProblem;
 const fulltext = @import("fulltext.zig");
 const fulltext_postings = @import("fulltext_postings.zig");
 const integrity_fulltext = @import("integrity_fulltext.zig");
+const property_indexes = @import("property_indexes.zig");
 
 /// What a check found: the first problems, described, and how many there were.
 pub const Report = struct {
@@ -106,8 +107,11 @@ pub fn check(graph: *Graph, allocator: Allocator) StorageError!Report {
     try checker.expectRelationshipKeys();
     for (checker.definitions) |definition| switch (definition.kind) {
         .fulltext => try integrity_fulltext.expectIndex(&checker, definition),
-        .unique => try checker.checkUnique(definition),
-        .range => {},
+        .unique => {
+            try checker.expectPropertyIndex(definition);
+            try checker.checkUnique(definition);
+        },
+        .range => try checker.expectPropertyIndex(definition),
     };
     try checker.checkCounters();
     try checker.compareMainTable();
@@ -209,7 +213,7 @@ pub const Checker = struct {
         }
     }
 
-    /// Label-index and property-index keys, and the label counters.
+    /// Label-index keys and the label counters.
     fn expectNodeKeys(self: *Checker) StorageError!void {
         var label_counts = std.StringArrayHashMapUnmanaged(u64).empty;
         for (self.nodes.keys(), self.nodes.values()) |id, record| {
@@ -221,12 +225,6 @@ pub const Checker = struct {
                 const count = try label_counts.getOrPut(self.arena, label);
                 count.value_ptr.* = if (count.found_existing) count.value_ptr.* + 1 else 1;
             }
-            var properties = record.properties();
-            while (properties.next()) |property| {
-                var key = std.ArrayList(u8).empty;
-                try key_encoding.appendIndexKey(&key, self.arena, property.name, try value_encoding.decodeValue(property.encoded_value, self.arena), id);
-                try self.expect(key.items, "");
-            }
         }
         for (label_counts.keys(), label_counts.values()) |label, count| {
             const key = try std.mem.concat(self.arena, u8, &.{ &.{key_encoding.label_count_marker}, label });
@@ -234,8 +232,7 @@ pub const Checker = struct {
         }
     }
 
-    /// Both edge keys of each relationship, the type counters, and the
-    /// edge-property index.
+    /// Both edge keys of each relationship and the type counters.
     fn expectRelationshipKeys(self: *Checker) StorageError!void {
         var type_counts = std.StringArrayHashMapUnmanaged(u64).empty;
         for (self.relationships.keys(), self.relationships.values()) |id, relationship| {
@@ -252,16 +249,37 @@ pub const Checker = struct {
             }
             const count = try type_counts.getOrPut(self.arena, relationship.edge_type);
             count.value_ptr.* = if (count.found_existing) count.value_ptr.* + 1 else 1;
-            for (relationship.properties.items) |property| {
-                var key = std.ArrayList(u8).empty;
-                try key_encoding.appendEdgeIndexKey(&key, self.arena, property.name, try value_encoding.decodeValue(property.encoded, self.arena), id);
-                try self.expect(key.items, "");
-            }
         }
         for (type_counts.keys(), type_counts.values()) |edge_type, count| {
             const key = try std.mem.concat(self.arena, u8, &.{ &.{key_encoding.edge_type_marker}, edge_type });
             try self.expect(key, try self.countBytes(count));
         }
+    }
+
+    /// The entries of the property index of `definition`: one per entity with
+    /// its label or type and its property.
+    fn expectPropertyIndex(self: *Checker, definition: fulltext.Definition) StorageError!void {
+        const label_or_type = definition.labels_or_types[0];
+        const property = definition.properties[0];
+        switch (definition.entity) {
+            .nodes => for (self.nodes.keys(), self.nodes.values()) |id, record| {
+                if (!record.hasLabel(label_or_type)) continue;
+                const encoded = record.property(property) orelse continue;
+                try self.expectIndexEntry(definition.index_id, encoded, id);
+            },
+            .relationships => for (self.relationships.keys(), self.relationships.values()) |id, relationship| {
+                if (!std.mem.eql(u8, relationship.edge_type, label_or_type)) continue;
+                for (relationship.properties.items) |stored| {
+                    if (std.mem.eql(u8, stored.name, property)) try self.expectIndexEntry(definition.index_id, stored.encoded, id);
+                }
+            },
+        }
+    }
+
+    fn expectIndexEntry(self: *Checker, index_id: u32, encoded: []const u8, id: u64) StorageError!void {
+        var key = std.ArrayList(u8).empty;
+        try property_indexes.appendKey(&key, self.arena, index_id, try value_encoding.decodeValue(encoded, self.arena), id);
+        try self.expect(key.items, "");
     }
 
     /// The value an edge key keeps of node `id` at its other end: its labels
@@ -338,8 +356,7 @@ pub const Checker = struct {
                 fulltext.definition_marker, key_encoding.edge_property_marker => {}, // primary
                 key_encoding.edge_marker,
                 key_encoding.label_marker,
-                key_encoding.index_marker,
-                key_encoding.edge_index_marker,
+                property_indexes.marker,
                 key_encoding.label_count_marker,
                 key_encoding.edge_type_marker,
                 fulltext_postings.posting_marker,
@@ -380,7 +397,7 @@ pub const Checker = struct {
 /// catalog of its tables (LMDB keeps the names of `#nodes` and
 /// `#relationships` in the main table, with their trailing 0x00).
 fn isMetadataKey(key: []const u8) bool {
-    for ([_][]const u8{ key_encoding.counter_key, key_encoding.relationship_counter_key, key_encoding.format_key, fulltext.schema_version_key }) |metadata| {
+    for ([_][]const u8{ key_encoding.counter_key, key_encoding.relationship_counter_key, key_encoding.format_key, fulltext.schema_version_key, fulltext.index_id_key }) |metadata| {
         if (std.mem.eql(u8, key, metadata)) return true;
     }
     const name = if (std.mem.endsWith(u8, key, "\x00")) key[0 .. key.len - 1] else key;

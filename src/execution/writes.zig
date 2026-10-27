@@ -8,6 +8,9 @@ const MapEntry = @import("../value.zig").MapEntry;
 const Relationship = @import("../value.zig").Relationship;
 const GraphError = @import("../storage/graph.zig").GraphError;
 const layout = @import("../storage/layout.zig");
+const fulltext = @import("../storage/fulltext.zig");
+const property_indexes = @import("../storage/property_indexes.zig");
+const Plan = @import("../planning/Plan.zig");
 
 const Executor = @import("Executor.zig");
 const pattern_matching = @import("pattern_matching.zig");
@@ -78,11 +81,10 @@ pub fn findMatchingNode(self: *Executor, node_pattern_index: Index, bindings: *B
     const node_pattern = self.ast.data(node_pattern_index).node_pattern;
     const properties = self.ast.nodeChildren(node_pattern_index);
 
-    if (properties.len > 0) {
-        // Index lookup on the first property.
-        const property_name = self.ast.data(properties[0]).text;
-        const value = try expressions.evaluate(self, self.ast.nodeChildren(properties[0])[0], bindings);
-        var iterator = try self.graph.nodesByProperty(property_name, value);
+    if (try indexedProperty(self, node_pattern.labels, properties)) |found| {
+        // Index lookup on that property.
+        const value = try expressions.evaluate(self, self.ast.nodeChildren(properties[found.position])[0], bindings);
+        var iterator = try self.graph.nodesByIndex(found.index_id, value);
         defer iterator.deinit();
         while (try iterator.next()) |id| {
             if (!(try pattern_matching.hasAllLabels(self, id, node_pattern.labels))) continue;
@@ -97,6 +99,19 @@ pub fn findMatchingNode(self: *Executor, node_pattern_index: Index, bindings: *B
         if (!(try pattern_matching.hasAllLabels(self, id, node_pattern.labels))) continue;
         if (try nodePropertiesMatch(self, node_pattern_index, id, bindings)) return id;
     }
+    return null;
+}
+
+/// A property of the pattern that an index on one of its labels covers, if
+/// there is one.
+fn indexedProperty(self: *Executor, labels: []const []const u8, properties: []const Index) ExecutionError!?Plan.IndexUse {
+    if (labels.len == 0 or properties.len == 0) return null;
+    if (try fulltext.schemaVersion(self.graph) == 0) return null; // no index was ever made
+    const definitions = try fulltext.all(self.graph, self.allocator);
+    for (labels) |label| for (properties, 0..) |property_node, position| {
+        const definition = property_indexes.find(definitions, .nodes, label, self.ast.data(property_node).text) orelse continue;
+        return .{ .index_id = definition.index_id, .position = @intCast(position) };
+    };
     return null;
 }
 

@@ -9,6 +9,7 @@ const MapEntry = @import("../value.zig").MapEntry;
 const fulltext = @import("../storage/fulltext.zig");
 const fulltext_postings = @import("../storage/fulltext_postings.zig");
 const constraints = @import("../storage/constraints.zig");
+const property_indexes = @import("../storage/property_indexes.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -69,6 +70,7 @@ fn drop(executor: *Executor, root: Index, comptime what: []const u8) ExecutionEr
         return error.InvalidExpression;
     }
     if (found.kind == .fulltext) try fulltext_postings.clear(graph, command.name);
+    if (found.hasPropertyIndex()) try property_indexes.clear(graph, found.index_id);
     _ = try fulltext.drop(graph, command.name);
 }
 
@@ -84,6 +86,10 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         executor.fail(.invalid_expression, "{s} named '{s}' already exists", .{ if (existing.kind == .unique) "a constraint" else "an index", command.name });
         return error.InvalidExpression;
     }
+    if (kind == .range and command.properties.len > 1) {
+        executor.fail(.invalid_expression, "an index on several properties is not supported: create one index per property", .{});
+        return error.InvalidExpression;
+    }
     const children = executor.ast.nodeChildren(root);
     const analyzer = if (kind != .fulltext) "" else if (children.len > 0) try analyzerOption(executor, children[0]) else "standard";
     const definition = fulltext.Definition{
@@ -94,17 +100,16 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         .labels_or_types = command.labels_or_types,
         .properties = command.properties,
     };
-    switch (kind) {
-        // A constraint the graph already breaks is refused.
-        .unique => constraints.checkExisting(executor.graph, definition) catch |err| {
-            if (err == error.ConstraintViolation) executor.fail(.constraint_violation, "{s}", .{executor.graph.violationMessage()});
-            return err;
-        },
-        .fulltext, .range => {},
-    }
-    try fulltext.create(executor.graph, definition);
+    const stored = try fulltext.create(executor.graph, definition);
     // Index what the graph holds already.
-    if (kind == .fulltext) try fulltext_postings.populate(executor.graph, definition);
+    if (kind == .fulltext) try fulltext_postings.populate(executor.graph, stored);
+    if (stored.hasPropertyIndex()) try property_indexes.populate(executor.graph, stored);
+    // A constraint the graph already breaks is refused (checked on its index;
+    // the transaction is aborted).
+    if (kind == .unique) constraints.checkExisting(executor.graph, stored) catch |err| {
+        if (err == error.ConstraintViolation) executor.fail(.constraint_violation, "{s}", .{executor.graph.violationMessage()});
+        return err;
+    };
 }
 
 /// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.

@@ -199,12 +199,27 @@ pub const RangeSeek = struct {
     upper: ?Index,
 };
 
+/// The property index a pattern node's or edge's candidates come from.
+pub const IndexUse = struct {
+    /// The index's id in its keys (property_indexes.zig).
+    index_id: u32,
+    /// Which of `seeks` it looks up, or, for a range, the first of `ranges`
+    /// on its property.
+    position: u32,
+};
+
 pub const PatternNode = struct {
     variable_name: []const u8,
     slot: Slot,
     labels: []const []const u8,
     seeks: []const Seek,
     ranges: []const RangeSeek,
+    /// The index an equality seek looks up, if one covers a label and a
+    /// seek's property.
+    seek_index: ?IndexUse = null,
+    /// Else the index a range looks up, if one covers a label and a range's
+    /// property.
+    range_index: ?IndexUse = null,
     /// Bound before the pattern (by an earlier pattern or clause).
     bound: bool,
 };
@@ -227,6 +242,9 @@ pub const PatternEdge = struct {
     variable_name: []const u8,
     slot: Slot,
     seeks: []const Seek, // inline property equality filters
+    /// The index a seek looks up, if the edge names one type and an index
+    /// covers it and the seek's property.
+    seek_index: ?IndexUse = null,
 
     /// True if an edge of type `edge_type` fits the pattern.
     pub fn allowsType(self: PatternEdge, edge_type: []const u8) bool {

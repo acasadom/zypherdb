@@ -28,6 +28,7 @@ test {
     _ = @import("end_to_end/foreach_test.zig");
     _ = @import("end_to_end/shortest_paths_test.zig");
     _ = @import("end_to_end/constraints_test.zig");
+    _ = @import("end_to_end/indexes_test.zig");
     _ = @import("end_to_end/load_csv_test.zig");
     _ = @import("end_to_end/maps_test.zig");
     _ = @import("end_to_end/comprehensions_test.zig");

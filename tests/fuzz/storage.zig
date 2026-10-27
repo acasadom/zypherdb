@@ -51,6 +51,7 @@ pub const Operation = enum {
     abort,
     check_inside_transaction,
     create_fulltext_index,
+    create_index,
     create_constraint,
     drop_definition,
     reopen,
@@ -242,6 +243,7 @@ const Fuzzer = struct {
             .abort => if (self.graph.inWriteTransaction()) try self.abort(),
             .check_inside_transaction => try self.verify(),
             .create_fulltext_index => try self.createFulltextIndex(),
+            .create_index => try self.createIndex(),
             .create_constraint => try self.createConstraint(),
             .drop_definition => try self.dropDefinition(),
             .reopen => try self.reopen(),
@@ -497,6 +499,32 @@ const Fuzzer = struct {
         const expected: ?anyerror = if (exists and !if_not_exists) error.InvalidExpression else null;
         if (try self.runStatement(statement, expected) and !exists) {
             try self.model.definitions.append(self.allocator, .{ .name = name, .kind = .fulltext, .labels_or_types = targets, .properties = properties });
+        }
+    }
+
+    /// A property index on one label or relationship type and one property
+    /// (the integrity checker checks its entries).
+    fn createIndex(self: *Fuzzer) !void {
+        try self.leaveTransaction();
+        const scratch = self.scratch.allocator();
+        const name = self.pickNewName();
+        const on_relationships = self.random().boolean();
+        const target = try scratch.dupe([]const u8, &.{self.pick(if (on_relationships) self.swarm.types else self.swarm.labels)});
+        const property = try scratch.dupe([]const u8, &.{self.pick(self.swarm.properties)});
+        const if_not_exists = self.random().uintLessThan(u8, 4) == 0;
+        const statement = try std.fmt.allocPrint(scratch, "CREATE INDEX {s}{s} FOR {s}{s}{s} ON (e.{s})", .{
+            name,
+            if (if_not_exists) " IF NOT EXISTS" else "",
+            if (on_relationships) "()-[e:" else "(e:",
+            target[0],
+            if (on_relationships) "]-()" else ")",
+            property[0],
+        });
+        const exists = self.model.findDefinition(name) != null;
+        const expected: ?anyerror = if (exists and !if_not_exists) error.InvalidExpression else null;
+        if (try self.runStatement(statement, expected) and !exists) {
+            const kept = self.values.allocator();
+            try self.model.definitions.append(self.allocator, .{ .name = name, .kind = .range, .labels_or_types = try kept.dupe([]const u8, target), .properties = try kept.dupe([]const u8, property) });
         }
     }
 

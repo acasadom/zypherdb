@@ -156,8 +156,8 @@ const Explainer = struct {
             .bound_node => "BoundNode",
             .node_scan => |reference| scan: {
                 const node = self.plan.patterns[reference.pattern].nodes[reference.node];
-                if (node.seeks.len > 0 and self.plan.index_lookups) break :scan "NodeIndexSeek";
-                if (node.ranges.len > 0 and self.plan.index_lookups) break :scan "NodeIndexRangeSeek";
+                if (node.seek_index != null) break :scan "NodeIndexSeek";
+                if (node.range_index != null) break :scan "NodeIndexRangeSeek";
                 if (node.labels.len > 0) break :scan "NodeByLabelScan";
                 break :scan "AllNodesScan";
             },
@@ -308,7 +308,7 @@ const Explainer = struct {
 
     /// How many candidates the anchor scan of `node` gives.
     fn anchorRows(self: *Explainer, node: Plan.PatternNode) Allocator.Error!?f64 {
-        if (node.seeks.len > 0) return 1;
+        if (node.seek_index != null) return 1;
         var smallest: ?f64 = null;
         for (node.labels) |label| {
             const count = try self.statistics.labelCount(label);
@@ -316,7 +316,7 @@ const Explainer = struct {
             const rows: f64 = @floatFromInt(count);
             smallest = if (smallest) |known| @min(known, rows) else rows;
         }
-        if (node.ranges.len > 0) if (smallest) |rows| return rows / 4;
+        if (node.range_index != null) if (smallest) |rows| return rows / 4;
         return smallest;
     }
 
@@ -413,10 +413,10 @@ fn literalCount(ast: *const Ast, clause_part: Index) ?f64 {
 }
 
 /// `(a:L {k: v})`, with the property ranges the scan reads, if it reads
-/// them (it seeks an equality first).
+/// them (from an index, and it seeks no equality first).
 fn scanDetails(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
     try nodeText(text, node);
-    if (node.seeks.len > 0) return;
+    if (node.seek_index != null or node.range_index == null) return;
     for (node.ranges, 0..) |range, range_position| {
         try text.append(if (range_position == 0) " WHERE " else " AND ");
         if (range.lower) |lower| {

@@ -1,7 +1,8 @@
 //! Schema definitions: full-text indexes (whose postings live in the same
-//! keys' space, fulltext_postings.zig), declared indexes that change nothing
-//! (every property is indexed already), and uniqueness constraints
-//! (constraints.zig). One namespace for their names, as in Neo4j.
+//! keys' space, fulltext_postings.zig), property indexes
+//! (property_indexes.zig), and uniqueness constraints (constraints.zig),
+//! each of which owns a property index. One namespace for their names, as
+//! in Neo4j.
 //!
 //! A definition is stored under `i | name`:
 //!
@@ -10,6 +11,7 @@
 //!     analyzer: u16 length, bytes (empty but for full-text)
 //!     labels or types: u16 count, each u16 length, bytes
 //!     properties: u16 count, each u16 length, bytes
+//!     index id: u32              the property index's keys (0 for full-text)
 //!
 //! The key `!schema` counts the changes to the definitions, so a process that
 //! keeps them in memory knows when to read them again.
@@ -22,6 +24,8 @@ const StorageError = @import("key_value_store.zig").StorageError;
 
 pub const definition_marker: u8 = 'i';
 pub const schema_version_key: []const u8 = "!schema";
+/// The last property index id handed out (u32; ids start at 1).
+pub const index_id_key: []const u8 = "!index_id";
 
 pub const Entity = enum(u8) { nodes = 0, relationships = 1 };
 
@@ -34,6 +38,14 @@ pub const Definition = struct {
     analyzer: []const u8,
     labels_or_types: []const []const u8,
     properties: []const []const u8,
+    /// The property index's id in its keys (range and unique; 0 for
+    /// full-text), given by `create`.
+    index_id: u32 = 0,
+
+    /// True if the definition owns a property index (property_indexes.zig).
+    pub fn hasPropertyIndex(self: Definition) bool {
+        return self.kind != .fulltext;
+    }
 
     fn encode(self: Definition, allocator: Allocator) Allocator.Error![]u8 {
         var bytes = std.ArrayList(u8).empty;
@@ -44,6 +56,9 @@ pub const Definition = struct {
             try appendCount(&bytes, allocator, list.len);
             for (list) |item| try appendString(&bytes, allocator, item);
         }
+        var id: [4]u8 = undefined;
+        std.mem.writeInt(u32, &id, self.index_id, .big);
+        try bytes.appendSlice(allocator, &id);
         return bytes.items;
     }
 
@@ -59,7 +74,8 @@ pub const Definition = struct {
             for (items) |*item| item.* = try allocator.dupe(u8, reader.string());
             list.* = items;
         }
-        return .{ .name = try allocator.dupe(u8, name), .kind = kind, .entity = entity, .analyzer = analyzer, .labels_or_types = lists[0], .properties = lists[1] };
+        const index_id = std.mem.readInt(u32, bytes[reader.position..][0..4], .big);
+        return .{ .name = try allocator.dupe(u8, name), .kind = kind, .entity = entity, .analyzer = analyzer, .labels_or_types = lists[0], .properties = lists[1], .index_id = index_id };
     }
 };
 
@@ -91,14 +107,33 @@ pub fn allOfKind(graph: *Graph, allocator: Allocator, kind: Kind) StorageError![
     return definitions.items;
 }
 
-/// Stores `definition` (a new index; the caller checked the name is free).
-pub fn create(graph: *Graph, definition: Definition) StorageError!void {
+/// Stores `definition` (a new index; the caller checked the name is free),
+/// with a fresh index id if it owns a property index, and returns it as
+/// stored.
+pub fn create(graph: *Graph, definition: Definition) StorageError!Definition {
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
+    var stored = definition;
+    if (definition.hasPropertyIndex()) stored.index_id = try nextIndexId(graph);
     var key = std.ArrayList(u8).empty;
     try appendDefinitionKey(&key, scratch.allocator(), definition.name);
-    try graph.store.put(key.items, try definition.encode(scratch.allocator()));
+    try graph.store.put(key.items, try stored.encode(scratch.allocator()));
     try bumpSchemaVersion(graph);
+    return stored;
+}
+
+/// Hands out a property index id never used before (a counter, so the keys
+/// of a dropped index are never read as another's).
+fn nextIndexId(graph: *Graph) StorageError!u32 {
+    const last: u32 = if (try graph.store.get(index_id_key)) |raw| last: {
+        defer graph.store.allocator.free(raw);
+        break :last if (raw.len == 4) std.mem.readInt(u32, raw[0..4], .big) else 0;
+    } else 0;
+    if (last == std.math.maxInt(u32)) return error.WriteFailed; // 4 billion indexes created
+    var buffer: [4]u8 = undefined;
+    std.mem.writeInt(u32, &buffer, last + 1, .big);
+    try graph.store.put(index_id_key, &buffer);
+    return last + 1;
 }
 
 /// Removes index `name`'s definition. False if there was none.

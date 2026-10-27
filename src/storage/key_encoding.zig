@@ -19,14 +19,12 @@
 //! reach storage, and `layout.assertName` asserts it). Each relationship has an id of its own, so two relationships of
 //! one type between the same nodes (parallel ones) are two keys.
 //!
-//! The markers below list the remaining kinds (labels, property and edge
-//! indexes, edge-type counters).
+//! The markers below list the remaining kinds (labels, edge properties,
+//! edge-type counters); property indexes are in property_indexes.zig.
 
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const Value = @import("../value.zig").Value;
-const encodeIndexValue = @import("value_encoding.zig").encodeIndexValue;
 const layout = @import("layout.zig");
 
 /// Node identifiers are fixed-width u64.
@@ -56,9 +54,7 @@ pub const EdgeKey = struct {
 
 pub const edge_marker: u8 = 'e';
 pub const label_marker: u8 = 'l';
-pub const index_marker: u8 = 'p';
 pub const edge_property_marker: u8 = 'f';
-pub const edge_index_marker: u8 = 'g';
 pub const edge_type_marker: u8 = 't';
 pub const label_count_marker: u8 = 'c';
 pub const separator: u8 = 0x00;
@@ -92,21 +88,6 @@ pub fn appendLabelKey(list: *std.ArrayList(u8), allocator: Allocator, label: []c
     try list.appendSlice(allocator, label);
     try list.append(allocator, separator);
     try appendNodeId(list, allocator, id);
-}
-
-/// Appends the key for a property-index entry:
-/// `p | property | 0x00 | value | node_id`.
-pub fn appendIndexKey(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value, id: NodeId) !void {
-    try appendIndexPrefix(list, allocator, property, value);
-    try appendNodeId(list, allocator, id);
-}
-
-/// Appends the lookup prefix for "prop == value": `p | property | 0x00 | value`.
-pub fn appendIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value) !void {
-    try list.append(allocator, index_marker);
-    try list.appendSlice(allocator, property);
-    try list.append(allocator, separator);
-    try encodeIndexValue(list, allocator, value);
 }
 
 /// Appends a relationship's record: `src | dst | edge_type`.
@@ -145,22 +126,6 @@ pub fn appendEdgePrefix(list: *std.ArrayList(u8), allocator: Allocator, id: Node
     try list.append(allocator, separator);
     try list.appendSlice(allocator, edge_type);
     try list.append(allocator, separator);
-}
-
-/// Appends the lookup prefix for "edge prop == value":
-/// `g | property | 0x00 | value`.
-pub fn appendEdgeIndexPrefix(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value) !void {
-    try list.append(allocator, edge_index_marker);
-    try list.appendSlice(allocator, property);
-    try list.append(allocator, separator);
-    try encodeIndexValue(list, allocator, value);
-}
-
-/// Appends the edge-property index key:
-/// `g | property | 0x00 | value | relationship_id`.
-pub fn appendEdgeIndexKey(list: *std.ArrayList(u8), allocator: Allocator, property: []const u8, value: Value, relationship: RelationshipId) !void {
-    try appendEdgeIndexPrefix(list, allocator, property, value);
-    try appendNodeId(list, allocator, relationship);
 }
 
 /// Appends the prefix of the edge keys of `(id, direction, edge_type)` to one

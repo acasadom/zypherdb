@@ -37,17 +37,18 @@ test "CREATE INDEX is recorded and listed, and changes no result" {
 
     try expectQuery(&ast, &g, "CREATE (:Card {number: 1}), (:Card {number: 2})", &.{});
     try expectQuery(&ast, &g, "CREATE INDEX card_numbers FOR (c:Card) ON (c.number)", &.{});
-    try expectQuery(&ast, &g, "CREATE RANGE INDEX IF NOT EXISTS FOR ()-[r:HELD_BY]-() ON (r.since, r.until)", &.{});
+    try expectQuery(&ast, &g, "CREATE RANGE INDEX IF NOT EXISTS FOR ()-[r:HELD_BY]-() ON (r.since)", &.{});
+    try expectQueryError(&ast, &g, "CREATE INDEX FOR ()-[r:HELD_BY]-() ON (r.since, r.until)", error.InvalidExpression);
     try expectQuery(&ast, &g, "CREATE INDEX card_numbers IF NOT EXISTS FOR (c:Card) ON (c.other)", &.{});
     try expectOrdered(&ast, &g, "SHOW INDEXES", &.{
         &.{ string("card_numbers"), string("RANGE"), string("NODE"), .{ .list = &.{string("Card")} }, .{ .list = &.{string("number")} }, no_options },
-        &.{ string("index_HELD_BY_since_until"), string("RANGE"), string("RELATIONSHIP"), .{ .list = &.{string("HELD_BY")} }, .{ .list = &.{ string("since"), string("until") } }, no_options },
+        &.{ string("index_HELD_BY_since"), string("RANGE"), string("RELATIONSHIP"), .{ .list = &.{string("HELD_BY")} }, .{ .list = &.{string("since")} }, no_options },
     });
     try expectQuery(&ast, &g, "SHOW FULLTEXT INDEXES", &.{});
     try expectQuery(&ast, &g, "MATCH (c:Card {number: 2}) RETURN c.number", &.{&.{int(2)}});
     try expectQueryError(&ast, &g, "CREATE INDEX card_numbers FOR (c:Card) ON (c.number)", error.InvalidExpression);
     try expectQuery(&ast, &g, "DROP INDEX card_numbers", &.{});
-    try expectQuery(&ast, &g, "DROP INDEX index_HELD_BY_since_until", &.{});
+    try expectQuery(&ast, &g, "DROP INDEX index_HELD_BY_since", &.{});
     try expectQuery(&ast, &g, "SHOW INDEXES", &.{});
 }
 

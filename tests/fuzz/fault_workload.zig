@@ -86,11 +86,28 @@ fn write(random: std.Random, allocator: Allocator) Allocator.Error![]const u8 {
     };
 }
 
+/// The indexes a workload starts with, as an application makes them before
+/// its queries: one per label and property. (Without them, the queries the
+/// generator makes can cost so much that running each again at every fault
+/// point takes hours.) The schema steps add and drop others, never these.
+pub fn initialIndexes(allocator: Allocator) Allocator.Error![]const Step {
+    var steps = std.ArrayList(Step).empty;
+    for (labels) |label| for (properties) |property| {
+        try steps.append(allocator, .{ .text = try std.fmt.allocPrint(allocator, "CREATE INDEX node_{s}_{s} FOR (n:{s}) ON (n.{s})", .{ label, property, label, property }) });
+    };
+    return steps.items;
+}
+
 fn schema(random: std.Random, allocator: Allocator) Allocator.Error![]const u8 {
     const label = pick(random, &labels);
     const property = pick(random, &properties);
+    const edge_type = pick(random, &types);
     const print = std.fmt.allocPrint;
-    return switch (random.uintLessThan(u8, 5)) {
+    return switch (random.uintLessThan(u8, 9)) {
+        5 => print(allocator, "CREATE INDEX extra_{s}_{s} IF NOT EXISTS FOR (n:{s}) ON (n.{s})", .{ label, property, label, property }),
+        6 => print(allocator, "DROP INDEX extra_{s}_{s} IF EXISTS", .{ label, property }),
+        7 => print(allocator, "CREATE INDEX edge_{s}_{s} IF NOT EXISTS FOR ()-[r:{s}]-() ON (r.{s})", .{ edge_type, property, edge_type, property }),
+        8 => print(allocator, "DROP INDEX edge_{s}_{s} IF EXISTS", .{ edge_type, property }),
         0 => print(allocator, "CREATE CONSTRAINT unique_{s}_{s} IF NOT EXISTS FOR (n:{s}) REQUIRE n.{s} IS UNIQUE", .{ label, property, label, property }),
         1 => print(allocator, "CREATE CONSTRAINT unique_{s}_pq IF NOT EXISTS FOR (n:{s}) REQUIRE (n.p, n.q) IS UNIQUE", .{ label, label }),
         2 => print(allocator, "DROP CONSTRAINT unique_{s}_{s} IF EXISTS", .{ label, property }),
