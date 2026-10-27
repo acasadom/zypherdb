@@ -116,17 +116,21 @@ still evaluated at the end. So pushdown never changes a result: it only narrows 
 
 ## Anchor selection
 
-`estimate(node)` ranks a node by how many candidates it would produce:
+`estimate(node)` ranks a node by what starting there costs: the candidates its scan reads, plus
+the rows it leaves for the rest of the pattern.
 
 - already bound: `0`, a free start;
-- has an equality seek: `1`, a point lookup;
+- has an equality seek: `2`, a point lookup (one read, one row);
 - unlabeled and without a range: the maximum, since it means scanning every node;
-- otherwise: the count of its rarest label, a quarter of it with a range (a guess without
-  statistics, enough to prefer a range to a scan of the whole label), **capped by the count of an
-  incident edge type** (a pattern cannot produce more rows than there are edges of that type).
-  Only an edge of one type and fixed length caps it.
+- otherwise: the candidates are the count of its rarest label, a quarter of it with a range (a
+  guess without statistics, enough to prefer a range to a scan of the whole label); the rows are
+  the candidates **capped by the count of an incident edge type** (a pattern cannot produce more
+  rows than there are edges of that type). Only an edge of one type and fixed length caps it.
 
-`chooseAnchor` takes the minimum. The pattern's operators are then: a `bound_node` check for each
+The cap makes a start next to a rare relationship type win between scans of similar size, but it
+never makes a scan cheaper than reading its candidates: with a single `MAY_OPEN` relationship,
+`(g:Group)-[:MAY_OPEN]->(d:Door {name: $door})` still starts from the door's seek, not from a scan
+of every group. `chooseAnchor` takes the minimum; a tie goes to the node written first. The pattern's operators are then: a `bound_node` check for each
 node bound before it, a `node_scan` of the anchor (unless it is bound), an `expand` for each edge
 to the right end of the chain, then to the left end, and a `project_path` if the pattern is named
 (`p = ...`).

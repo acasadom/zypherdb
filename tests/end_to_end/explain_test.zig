@@ -91,6 +91,39 @@ test "EXPLAIN shows the plan from the result down to the anchor, with estimates"
     ));
 }
 
+test "the anchor is the cheapest start, counting what its scan reads" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Group {name: 'g' + i}), (:A), (:B), (:C)", &.{});
+    try expectQuery(&ast, &g, "MATCH (g:Group {name: 'g1'}) CREATE (g)-[:MAY_OPEN]->(:Door {name: 'airlock'})", &.{});
+
+    // Only one MAY_OPEN relationship: starting from the groups would make one
+    // row too, but only after reading all 20 of them. The door's seek reads one.
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (g:Group)-[:MAY_OPEN]->(d:Door {name: 'airlock'}) RETURN g.name", snap(@src(),
+        \\Return g.name  [estimated 1]
+        \\Expand(All) (d:Door {name: 'airlock'})<-[:MAY_OPEN]-(g:Group)  [estimated 1]
+        \\NodeIndexSeek (d:Door {name: 'airlock'})  [estimated 1]
+    ));
+
+    // Between scans of the same size, the start next to the rarer relationship
+    // type still wins: it leaves fewer rows for the rest of the pattern.
+    try expectQuery(&ast, &g, "MATCH (a:A), (b:B) WITH a, b LIMIT 2 CREATE (a)-[:RARE]->(b)", &.{});
+    try expectQuery(&ast, &g, "MATCH (b:B), (c:C) WITH b, c LIMIT 20 CREATE (b)-[:COMMON]->(c)", &.{});
+    try expectPlan(&ast, &g, "EXPLAIN MATCH (c:C)<-[:COMMON]-(b:B)<-[:RARE]-(a:A) RETURN count(*)", snap(@src(),
+        \\Return count(*)  [estimated 1]
+        \\Aggregation count(*)  [estimated 1]
+        \\Expand(All) (b:B)-[:COMMON]->(c:C)  [estimated 2]
+        \\Expand(All) (b:B)<-[:RARE]-(a:A)  [estimated 2]
+        \\NodeByLabelScan (b:B)  [estimated 20]
+    ));
+}
+
 test "EXPLAIN shows DISTINCT, ORDER BY, SKIP and LIMIT as stages of their own" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

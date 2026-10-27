@@ -275,21 +275,25 @@ const Planner = struct {
     }
 
     /// How many candidates node `position` would produce as the anchor.
+    /// What anchoring at `position` costs: the candidates its scan reads, plus
+    /// the rows it leaves for the rest of the pattern.
     fn estimate(self: *const Planner, position: usize) Allocator.Error!usize {
         const draft = self.nodes.items[position];
         if (draft.node.bound) return 0; // already known: a free start
-        if (draft.seeks.items.len > 0) return 1;
-        var best: usize = unknown;
-        for (draft.node.labels) |label| best = @min(best, try self.context.statistics.labelCount(label));
+        if (draft.seeks.items.len > 0) return 2; // a point lookup: one read, one row
+        var candidates: usize = unknown;
+        for (draft.node.labels) |label| candidates = @min(candidates, try self.context.statistics.labelCount(label));
         // A range keeps some of the nodes: a guess, without statistics, that is
         // enough to prefer it to a scan of the whole label.
-        if (draft.ranges.items.len > 0) best = best / 4;
-        if (draft.node.labels.len == 0 and draft.ranges.items.len == 0) return best;
-        // Cap by the rarest incident edge type: the number of results is bounded
-        // by the number of edges of that type, not just the label size.
-        if (position > 0) best = @min(best, try self.edgeTypeCap(position - 1));
-        if (position < self.edges.items.len) best = @min(best, try self.edgeTypeCap(position));
-        return best;
+        if (draft.ranges.items.len > 0) candidates = candidates / 4;
+        if (draft.node.labels.len == 0 and draft.ranges.items.len == 0) return candidates;
+        // The rows are bounded by the rarest incident edge type as well: a start
+        // next to a rare relationship leaves fewer rows to expand. It does not
+        // make the scan read fewer candidates, so it never beats a cheaper scan.
+        var rows = candidates;
+        if (position > 0) rows = @min(rows, try self.edgeTypeCap(position - 1));
+        if (position < self.edges.items.len) rows = @min(rows, try self.edgeTypeCap(position));
+        return candidates +| rows;
     }
 
     fn edgeTypeCap(self: *const Planner, edge_position: usize) Allocator.Error!usize {
