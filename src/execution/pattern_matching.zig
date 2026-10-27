@@ -19,6 +19,7 @@ const StorageError = @import("../storage/key_value_store.zig").StorageError;
 const Value = @import("../value.zig").Value;
 const Relationship = @import("../value.zig").Relationship;
 const NodeRecord = @import("../storage/node_record.zig").NodeRecord;
+const property_indexes = @import("../storage/property_indexes.zig");
 
 const Plan = @import("../planning/Plan.zig");
 const PatternPlan = Plan.PatternPlan;
@@ -77,16 +78,16 @@ pub fn checkBoundNode(self: *Executor, reference: Plan.NodeReference, next: Oper
 }
 
 /// Binds the pattern's anchor node from its candidates (an index lookup on
-/// its first equality predicate, else a range lookup on its first range,
+/// an indexed equality predicate, else a range lookup on an indexed range,
 /// else its first label, else every node), keeping those that carry every
 /// label and satisfy every equality (the WHERE checks the ranges).
 pub fn scanNodes(self: *Executor, reference: Plan.NodeReference, next: OperatorIndex, bindings: *Bindings) ExecutionError!void {
     const pattern = patternOf(self, reference.pattern);
     const node = pattern.nodes[reference.node];
     var from_label_index = false;
-    var iterator = if (node.seeks.len > 0 and self.plan.index_lookups) seek: {
-        const seek = node.seeks[0];
-        break :seek try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
+    var iterator = if (node.seek_index) |use| seek: {
+        const seek = node.seeks[use.position];
+        break :seek try self.graph.nodesByIndex(use.index_id, try expressions.evaluate(self, seek.value, bindings));
     } else if (try rangeCandidates(self, node, bindings)) |in_range| in_range else label: {
         from_label_index = node.labels.len > 0;
         break :label try seedNodes(self, node.labels);
@@ -106,12 +107,13 @@ pub fn scanNodes(self: *Executor, reference: Plan.NodeReference, next: OperatorI
     }
 }
 
-/// The nodes in range of the node's first range seek on a property, with the
-/// bounds of every range seek on that property, or null when the bounds do
-/// not allow a range lookup (strings, booleans, a null): scan instead.
+/// The nodes in range of the node's indexed range seek, with the bounds of
+/// every range seek on its property, or null when there is none or the
+/// bounds do not allow a range lookup (strings, booleans, a null): scan
+/// instead.
 fn rangeCandidates(self: *Executor, node: PatternNode, bindings: *Bindings) ExecutionError!?NodeIdIterator {
-    if (node.ranges.len == 0 or !self.plan.index_lookups) return null;
-    const property = node.ranges[0].property;
+    const use = node.range_index orelse return null;
+    const property = node.ranges[use.position].property;
     var lower: ?Value = null;
     var upper: ?Value = null;
     for (node.ranges) |range| {
@@ -124,15 +126,16 @@ fn rangeCandidates(self: *Executor, node: PatternNode, bindings: *Bindings) Exec
             upper = try expressions.evaluate(self, expression, bindings);
         };
     }
-    return self.graph.nodesInRange(property, lower, upper);
+    return self.graph.nodesInRange(use.index_id, lower, upper);
 }
 
-/// Binds both endpoints of a single-edge pattern from the edge-property index.
+/// Binds both endpoints of a single-edge pattern from the relationship index.
 pub fn scanEdgeIndex(self: *Executor, reference: Plan.EdgeReference, next: OperatorIndex, bindings: *Bindings) ExecutionError!void {
     const pattern = patternOf(self, reference.pattern);
     const edge = pattern.edges[reference.edge];
-    const seek = edge.seeks[0];
-    var iterator = try self.graph.edgesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
+    const use = edge.seek_index.?; // the planner anchors at an indexed edge only
+    const seek = edge.seeks[use.position];
+    var iterator = try self.graph.edgesByIndex(use.index_id, try expressions.evaluate(self, seek.value, bindings));
     defer iterator.deinit();
     while (try iterator.next()) |found| {
         if (!edge.allowsType(found.edge_type)) continue;
@@ -227,14 +230,15 @@ fn tryNeighbour(self: *Executor, pattern: *const PatternPlan, to: usize, edge_in
 /// Above this many index candidates, scanning the neighbours is cheaper.
 const max_indexed_candidates = 8;
 
-/// The nodes the index gives for the first seek of the unbound node `node`,
-/// if it has one and they are few; null to scan the neighbours instead.
-/// (Only for edges that name their types: an edge test needs the type.)
+/// The nodes the index gives for the indexed seek of the unbound node
+/// `node`, if it has one and they are few; null to scan the neighbours
+/// instead. (Only for edges that name their types: an edge test needs the type.)
 fn indexedCandidates(self: *Executor, node: PatternNode, bindings: *Bindings) ExecutionError!?[]const NodeId {
-    if (node.bound or node.seeks.len == 0 or !self.plan.index_lookups) return null;
+    const use = node.seek_index orelse return null;
+    if (node.bound) return null;
     if (bindings.getNode(node.slot) != null) return null;
-    const seek = node.seeks[0];
-    var iterator = try self.graph.nodesByProperty(seek.property, try expressions.evaluate(self, seek.value, bindings));
+    const seek = node.seeks[use.position];
+    var iterator = try self.graph.nodesByIndex(use.index_id, try expressions.evaluate(self, seek.value, bindings));
     defer iterator.deinit();
     var candidates = std.ArrayList(NodeId).empty;
     while (try iterator.next()) |id| {
@@ -451,6 +455,9 @@ pub const MatchingEdges = struct {
 
 pub fn nodeSeeksMatch(self: *Executor, node: PatternNode, id: NodeId, bindings: *Bindings) ExecutionError!bool {
     for (node.seeks) |seek| {
+        // A seek from the WHERE on a document path (`n.a.b = v`) is left to
+        // the WHERE, which fails on a property that is not a map.
+        if (std.mem.indexOfScalar(u8, seek.property, property_indexes.path_separator) != null) continue;
         const expected = try expressions.evaluate(self, seek.value, bindings);
         const actual = (try self.graph.getProperty(id, seek.property, self.allocator)) orelse return false;
         if (!Value.eql(actual, expected)) return false;

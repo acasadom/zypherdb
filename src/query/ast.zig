@@ -207,8 +207,8 @@ pub const NodeKind = enum {
     /// `CREATE FULLTEXT INDEX name FOR (n:L) ON EACH [n.p, ...] [OPTIONS {...}]`:
     /// data.schema_definition; children: the OPTIONS map, if any.
     create_fulltext_index,
-    /// `CREATE [RANGE|TEXT] INDEX [name] FOR (n:L) ON (n.p, ...)`: recorded,
-    /// with no effect (every property is indexed already); data.schema_definition.
+    /// `CREATE [RANGE|TEXT] INDEX [name] FOR (n:L) ON (n.p, ...)` (or a
+    /// document path `n.p.field`): data.schema_definition.
     create_index,
     /// `CREATE CONSTRAINT [name] FOR (n:L) REQUIRE n.p IS UNIQUE`:
     /// data.schema_definition.
@@ -277,6 +277,7 @@ pub const Data = union(enum) {
         /// Of relationships of these types, not nodes with these labels.
         relationships: bool,
         labels_or_types: []const []const u8,
+        /// Names, or document paths: names joined by `path_separator`.
         properties: []const []const u8,
         if_not_exists: bool,
     },
@@ -286,6 +287,10 @@ pub const Data = union(enum) {
     labels: []const []const u8,
     explain: ExplainMode,
 };
+
+/// Joins the names of a document path in a schema definition's property
+/// (`ON (n.a.b)`); no stored name holds it.
+pub const path_separator: u8 = 0;
 
 /// EXPLAIN shows the plan without running it; PROFILE runs the query and
 /// shows the plan with what each operator did.

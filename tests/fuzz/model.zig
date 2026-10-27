@@ -41,7 +41,7 @@ pub const Relationship = struct {
 /// namespace).
 pub const Definition = struct {
     name: []const u8,
-    kind: enum { fulltext, unique },
+    kind: enum { fulltext, range, unique },
     labels_or_types: []const []const u8,
     properties: []const []const u8,
 };

@@ -205,17 +205,21 @@ pub export fn zypherdb_add_node(context: *Context, id: u64, label_ptr: [*]const 
 }
 
 /// Mutator return codes: success, storage failure, a missing node, a write
-/// a uniqueness constraint refused (its message in zypherdb_last_error), and a
-/// label, type or property name that is empty or holds a 0x00 byte.
+/// a uniqueness constraint refused (its message in zypherdb_last_error), a
+/// label, type or property name that is empty, longer than 1024 bytes or
+/// holds a 0x00 byte, and a write past a size limit (a value over 4 GiB
+/// stored, a node's 65536th label).
 pub const RETURN_OK: c_int = 0;
 pub const RETURN_STORAGE_ERROR: c_int = 1;
 pub const RETURN_NODE_NOT_FOUND: c_int = 2;
 pub const RETURN_CONSTRAINT_VIOLATION: c_int = 3;
 pub const RETURN_INVALID_NAME: c_int = 4;
+pub const RETURN_TOO_LARGE: c_int = 5;
 
 /// The return code of a failed write; a constraint violation's message
 /// goes to the context's diagnostic.
 fn writeFailure(context: *Context, err: anyerror) c_int {
+    if (err == error.ValueTooLarge or err == error.TooManyLabels) return RETURN_TOO_LARGE;
     if (err != error.ConstraintViolation) return RETURN_STORAGE_ERROR;
     context.diagnostic.set(.constraint_violation, 0, "{s}", .{context.graph.violationMessage()});
     return RETURN_CONSTRAINT_VIOLATION;

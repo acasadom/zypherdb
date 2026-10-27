@@ -43,8 +43,8 @@ db.query("""
 
 ## A full-text index
 
-Every property is indexed for equality and ranges already, but not word by word: that takes a
-**full-text index**, declared on the labels and properties to index. The protocols are in
+An index made with `CREATE INDEX` ([step 17](17-performance)) finds a whole value, not a word in
+it: that takes a **full-text index**, declared on the labels and properties to index. The protocols are in
 Spanish, so the index uses the Spanish analyzer:
 
 ```python
@@ -211,7 +211,7 @@ print(search("recepción"), search("acompañadas"))
 `SHOW FULLTEXT INDEXES` lists the indexes and `DROP INDEX` removes one:
 
 ```python
-for name, kind, entity, labels, properties, options in db.query("SHOW FULLTEXT INDEXES"):
+for name, kind, entity, labels, properties, owning_constraint, options in db.query("SHOW FULLTEXT INDEXES"):
     print(name, entity, labels, properties, options["indexConfig"]["fulltext.analyzer"])
 ```
 

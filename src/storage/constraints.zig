@@ -2,7 +2,8 @@
 //! constraint's label have the same values of its properties. A node that
 //! lacks one of them is not concerned (as in Neo4j).
 //!
-//! A write is checked before it is made, against the property index: a node
+//! A write is checked before it is made, against the constraint's own
+//! property index (on its label and first property): a node
 //! that would get a label or a property value another node of that label
 //! already has fails with `error.ConstraintViolation`, and nothing is
 //! written. Values are compared as the index compares them, on every
@@ -28,7 +29,8 @@ pub fn checkNode(graph: *Graph, id: NodeId, record: NodeRecord) StorageError!voi
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    for (try fulltext.allOfKind(graph, arena, .unique)) |definition| {
+    for (try fulltext.cachedDefinitions(graph)) |definition| {
+        if (definition.kind != .unique) continue;
         const other = try duplicateOf(graph, arena, definition, id, record) orelse continue;
         graph.setViolation("node {d} cannot have the same {s} as node {d}: constraint '{s}' makes it unique for :{s}", .{ id, propertyList(arena, definition) catch "properties", other, definition.name, definition.labels_or_types[0] });
         return error.ConstraintViolation;
@@ -36,7 +38,8 @@ pub fn checkNode(graph: *Graph, id: NodeId, record: NodeRecord) StorageError!voi
 }
 
 /// Fails with `error.ConstraintViolation` if the graph already breaks
-/// `definition` (a constraint about to be created). O(nodes with its label).
+/// `definition` (a constraint just created, its index built). O(nodes with
+/// its label).
 pub fn checkExisting(graph: *Graph, definition: fulltext.Definition) StorageError!void {
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
@@ -59,13 +62,14 @@ fn duplicateOf(graph: *Graph, arena: std.mem.Allocator, definition: fulltext.Def
     const values = try arena.alloc([]const u8, definition.properties.len);
     for (values, definition.properties) |*value, property| value.* = record.property(property) orelse return null;
 
-    var candidates = try graph.nodesByProperty(definition.properties[0], try value_encoding.decodeValue(values[0], arena));
+    var candidates = try graph.nodesByIndex(definition.index_id, try value_encoding.decodeValue(values[0], arena));
     defer candidates.deinit();
     candidate: while (try candidates.next()) |other| {
         if (other == id) continue;
         const other_record = NodeRecord{ .bytes = try graph.recordCopy(other, arena) };
         if (!other_record.hasLabel(label)) continue;
-        for (definition.properties[1..], values[1..]) |property, value| {
+        // Long values share index keys: compare every property.
+        for (definition.properties, values) |property, value| {
             const other_value = other_record.property(property) orelse continue :candidate;
             if (!try sameToTheIndex(arena, other_value, value)) continue :candidate;
         }

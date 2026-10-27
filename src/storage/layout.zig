@@ -187,11 +187,34 @@ fn numberAsOne(tag: u8) u8 {
     return if (tag == @backingInt(Tag.float)) @backingInt(Tag.int) else tag;
 }
 
+/// The longest label, relationship type, property name or index name, in
+/// bytes. Names go into keys (label, edge, full-text keys), and a storage
+/// engine's keys hold about 2000 bytes with 4 KB pages: this leaves room for
+/// the rest of the key (a full-text key adds a term of up to 255 bytes).
+pub const max_name_length = 1024;
+
+/// The most labels a node can have (a record counts them in a u16).
+pub const max_labels = std.math.maxInt(u16);
+
+/// The longest stored value, in bytes (a record and a list element count
+/// their bytes in a u32).
+pub const max_value_length = std.math.maxInt(u32);
+
 /// True if `name` can be stored as a label, relationship type or property
-/// name: not empty (records hold no empty names) and without 0x00, which ends
-/// names inside index and edge keys (a label "A\x00B" would be found as "A").
+/// name (see `nameProblem`).
 pub fn isStorableName(name: []const u8) bool {
-    return name.len > 0 and std.mem.indexOfScalar(u8, name, 0) == null;
+    return nameProblem(name) == null;
+}
+
+/// Why `name` cannot be stored as a label, relationship type or property
+/// name, or null: empty (records hold no empty names), longer than
+/// `max_name_length`, or holding 0x00, which ends names inside index and edge
+/// keys (a label "A\x00B" would be found as "A").
+pub fn nameProblem(name: []const u8) ?[]const u8 {
+    if (name.len == 0) return "cannot be empty";
+    if (name.len > max_name_length) return std.fmt.comptimePrint("cannot be longer than {d} bytes", .{max_name_length});
+    if (std.mem.indexOfScalar(u8, name, 0) != null) return "cannot contain the character U+0000";
+    return null;
 }
 
 /// Why `bytes` is not a relationship record (`src | dst | edge_type`,
@@ -253,10 +276,13 @@ test "every value the encoder writes passes, and broken lists and maps fail" {
     try testing.expectEqualStrings("map keys out of order", valueProblem("\x0c\x00\x00\x00\x02\x00\x00\x00\x02\x02b\x00\x00\x00\x01\x0d\x00\x00\x00\x02\x02a\x00\x00\x00\x01\x0d").?);
 }
 
-test "a storable name is not empty and has no 0x00" {
+test "a storable name is not empty, not too long and has no 0x00" {
     try testing.expect(isStorableName("Person"));
     try testing.expect(!isStorableName(""));
     try testing.expect(!isStorableName("A\x00B"));
+    const longest: [max_name_length]u8 = @splat('a');
+    try testing.expect(isStorableName(&longest));
+    try testing.expect(!isStorableName(&longest ++ "a"));
 }
 
 test "a relationship record has a type without 0x00" {

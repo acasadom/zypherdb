@@ -6,7 +6,8 @@
 //! The plan was built on the graph's counts of the time (`Plan.statistics`).
 //! Each run reads them again, in its own transaction, and plans again when
 //! one has drifted: grown or shrunk to `drift_factor` times what it was, by
-//! at least `drift_floor`.
+//! at least `drift_floor`; or when the schema changed, if the plan asked for
+//! its property indexes.
 //!
 //! EXPLAIN, PROFILE and schema commands are parsed again on each run (they
 //! have no plan to keep). A statement is not safe to run from two threads at
@@ -155,10 +156,13 @@ fn replan(self: *Statement, graph: *Graph) Allocator.Error!void {
     self.plans_made += 1;
 }
 
-/// True if a count the plan was built on has drifted (see `drift_factor`).
+/// True if a count the plan was built on has drifted (see `drift_factor`),
+/// or the schema (its indexes) changed.
 pub fn stale(plan: Plan, graph: *Graph) bool {
     for (plan.statistics) |count| {
-        if (drifted(count.value, statistics.read(graph, count.kind, count.name))) return true;
+        const now = statistics.read(graph, count.kind, count.name);
+        if (count.kind == .schema and now != count.value) return true;
+        if (drifted(count.value, now)) return true;
     }
     return false;
 }

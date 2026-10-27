@@ -8,6 +8,7 @@ from zypherdb import ZypherDBError, Database, Node, ParseError
 @pytest.fixture
 def db(tmp_path):
     with Database(str(tmp_path)) as database:
+        database.query("CREATE INDEX FOR (p:Person) ON (p.id)")
         database.query("UNWIND range(1, 10) AS i CREATE (:Person {id: i})")
         database.query("MATCH (a:Person), (b:Person) WHERE b.id = a.id + 1 CREATE (a)-[:KNOWS]->(b)")
         yield database

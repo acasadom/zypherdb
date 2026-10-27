@@ -12,7 +12,7 @@ const Executor = zypherdb.Executor;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
-const loadMoviesGraph = support.loadMoviesGraph;
+const loadMoviesGraph = support.loadIndexedMoviesGraph;
 const expectQuery = support.expectQuery;
 const Snap = @import("../snapshot.zig").Snap;
 const snap = @import("../snapshot.zig").snap;
@@ -100,6 +100,7 @@ test "the anchor is the cheapest start, counting what its scan reads" {
     var g = Graph.init(&store, testing.allocator);
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
+    try expectQuery(&ast, &g, "CREATE INDEX FOR (d:Door) ON (d.name)", &.{});
     try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Group {name: 'g' + i}), (:A), (:B), (:C)", &.{});
     try expectQuery(&ast, &g, "MATCH (g:Group {name: 'g1'}) CREATE (g)-[:MAY_OPEN]->(:Door {name: 'airlock'})", &.{});
 

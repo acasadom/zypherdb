@@ -8,7 +8,7 @@
 //! index's name and a 0x00:
 //!
 //!     w  term 0x00 entity  the term's occurrences in the entity: per property,
-//!                          its ordinal (u8), a count (u16), positions (u32 each)
+//!                          its ordinal (u8), a count (u32), positions (u32 each)
 //!     W  entity            the entity's length in terms, per property (u32 each)
 //!     v  term              how many entities have the term (u64)
 //!     V  (nothing)         entities and terms in the index (u64, u64)
@@ -71,7 +71,8 @@ pub fn nodeChanged(graph: *Graph, id: NodeId, old: NodeRecord, new: NodeRecord, 
     defer scratch.deinit();
     const arena = scratch.allocator();
     const entity = entityOf(id);
-    for (try fulltext.allOfKind(graph, arena, .fulltext)) |definition| {
+    for (try fulltext.cachedDefinitions(graph)) |definition| {
+        if (definition.kind != .fulltext) continue;
         if (definition.entity != .nodes) continue;
         const was_in = hasAnyLabel(old, definition.labels_or_types);
         const is_in = hasAnyLabel(new, definition.labels_or_types);
@@ -93,7 +94,8 @@ pub fn relationshipPropertyChanged(graph: *Graph, id: RelationshipId, edge_type:
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    for (try fulltext.allOfKind(graph, arena, .fulltext)) |definition| {
+    for (try fulltext.cachedDefinitions(graph)) |definition| {
+        if (definition.kind != .fulltext) continue;
         if (definition.entity != .relationships or !contains(definition.labels_or_types, edge_type)) continue;
         for (definition.properties, 0..) |property, ordinal| {
             if (!std.mem.eql(u8, property, name)) continue;
@@ -233,7 +235,7 @@ fn writeSection(graph: *Graph, arena: Allocator, name: []const u8, term: []const
     }
     if (positions.len > 0) {
         try sections.append(arena, ordinal);
-        try appendInt(&sections, arena, u16, @intCast(positions.len));
+        try appendInt(&sections, arena, u32, @intCast(positions.len));
         for (positions) |position| try appendInt(&sections, arena, u32, position);
     }
     if (sections.items.len == 0) {
@@ -278,6 +280,9 @@ fn writeStatistics(graph: *Graph, arena: Allocator, name: []const u8, statistics
     try graph.store.put(try statisticsKey(arena, name), &buffer);
 }
 
+/// A section's ordinal and count, before its positions.
+pub const section_header_length = 5;
+
 /// One property's occurrences of a term in a posting.
 pub const Section = struct { ordinal: u8, positions_bytes: []const u8, bytes: []const u8 };
 
@@ -286,13 +291,13 @@ pub const SectionReader = struct {
     position: usize = 0,
 
     pub fn next(self: *SectionReader) ?Section {
-        if (self.position + 3 > self.bytes.len) return null;
+        if (self.position + section_header_length > self.bytes.len) return null;
         const start = self.position;
         const ordinal = self.bytes[start];
-        const count = std.mem.readInt(u16, self.bytes[start + 1 ..][0..2], .big);
-        const end = start + 3 + @as(usize, count) * 4;
+        const count = std.mem.readInt(u32, self.bytes[start + 1 ..][0..4], .big);
+        const end = start + section_header_length + @as(usize, count) * 4;
         self.position = end;
-        return .{ .ordinal = ordinal, .positions_bytes = self.bytes[start + 3 .. end], .bytes = self.bytes[start..end] };
+        return .{ .ordinal = ordinal, .positions_bytes = self.bytes[start + section_header_length .. end], .bytes = self.bytes[start..end] };
     }
 };
 

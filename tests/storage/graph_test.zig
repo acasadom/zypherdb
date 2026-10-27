@@ -10,6 +10,7 @@ const NodeIdIterator = zypherdb.NodeIdIterator;
 
 const support = @import("../support.zig");
 const openStore = support.openStore;
+const createIndex = support.createIndex;
 
 fn expectNext(iterator: *NodeIdIterator, expected: NodeId) !void {
     const got = try iterator.next();
@@ -219,6 +220,8 @@ test "property index: lookups, updates and deletes" {
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
+    // Made before the nodes: kept current as they are written.
+    const name_index = try createIndex(&g, .nodes, "Person", "name");
     try g.addNode(1, "Person");
     try g.setProperty(1, "name", .{ .string = "Keanu Reeves" });
     try g.addNode(2, "Person");
@@ -227,7 +230,7 @@ test "property index: lookups, updates and deletes" {
     try g.setProperty(3, "name", .{ .string = "Keanu Reeves" });
 
     // Two nodes share the name "Keanu Reeves".
-    var iterator = try g.nodesByProperty("name", .{ .string = "Keanu Reeves" });
+    var iterator = try g.nodesByIndex(name_index, .{ .string = "Keanu Reeves" });
     defer iterator.deinit();
     try expectNext(&iterator, 1);
     try expectNext(&iterator, 3);
@@ -235,21 +238,25 @@ test "property index: lookups, updates and deletes" {
 
     // Integer index lookup.
     try g.setProperty(1, "born", .{ .int = 1964 });
-    var it2 = try g.nodesByProperty("born", .{ .int = 1964 });
+    try g.addNode(4, "Movie");
+    try g.setProperty(4, "born", .{ .int = 1964 });
+    // Made after: built from what the graph holds, for its label only.
+    const born_index = try createIndex(&g, .nodes, "Person", "born");
+    var it2 = try g.nodesByIndex(born_index, .{ .int = 1964 });
     defer it2.deinit();
     try expectNext(&it2, 1);
     try testing.expect((try it2.next()) == null);
 
     // Updating a value moves the index entry.
     try g.setProperty(3, "name", .{ .string = "Laurence Fishburne" });
-    var it3 = try g.nodesByProperty("name", .{ .string = "Keanu Reeves" });
+    var it3 = try g.nodesByIndex(name_index, .{ .string = "Keanu Reeves" });
     defer it3.deinit();
     try expectNext(&it3, 1);
     try testing.expect((try it3.next()) == null);
 
     // Deleting a node removes its index entries.
     try g.deleteNode(1);
-    var it4 = try g.nodesByProperty("name", .{ .string = "Keanu Reeves" });
+    var it4 = try g.nodesByIndex(name_index, .{ .string = "Keanu Reeves" });
     defer it4.deinit();
     try testing.expect((try it4.next()) == null);
 }
@@ -293,11 +300,15 @@ test "edge-property index: seek, update and delete" {
     try g.addNode(3, "");
     const first = try g.addEdge(1, 2, "KNOWS");
     try g.setEdgeProperty(first, "weight", .{ .int = 5 });
+    const weight_index = try createIndex(&g, .relationships, "KNOWS", "weight");
     const second = try g.addEdge(1, 3, "KNOWS");
     try g.setEdgeProperty(second, "weight", .{ .int = 9 });
+    // Another type is not in the index.
+    const other = try g.addEdge(2, 3, "LIKES");
+    try g.setEdgeProperty(other, "weight", .{ .int = 5 });
 
     // Index lookup returns the matching relationship (id, src, dst, edge_type).
-    var iterator = try g.edgesByProperty("weight", .{ .int = 5 });
+    var iterator = try g.edgesByIndex(weight_index, .{ .int = 5 });
     defer iterator.deinit();
     const e = (try iterator.next()).?;
     try testing.expectEqual(first, e.id);
@@ -308,10 +319,10 @@ test "edge-property index: seek, update and delete" {
 
     // Updating a value moves the index entry.
     try g.setEdgeProperty(first, "weight", .{ .int = 9 });
-    var it2 = try g.edgesByProperty("weight", .{ .int = 5 });
+    var it2 = try g.edgesByIndex(weight_index, .{ .int = 5 });
     defer it2.deinit();
     try testing.expect((try it2.next()) == null);
-    var it3 = try g.edgesByProperty("weight", .{ .int = 9 });
+    var it3 = try g.edgesByIndex(weight_index, .{ .int = 9 });
     defer it3.deinit();
     _ = (try it3.next()).?;
     _ = (try it3.next()).?;
@@ -319,14 +330,14 @@ test "edge-property index: seek, update and delete" {
 
     // Removing a property removes its index entry.
     try g.removeEdgeProperty(first, "weight");
-    var it4 = try g.edgesByProperty("weight", .{ .int = 9 });
+    var it4 = try g.edgesByIndex(weight_index, .{ .int = 9 });
     defer it4.deinit();
     _ = (try it4.next()).?;
     try testing.expect((try it4.next()) == null);
 
     // Detach-delete removes remaining edge index entries.
     try g.deleteNodeDetach(1);
-    var it5 = try g.edgesByProperty("weight", .{ .int = 9 });
+    var it5 = try g.edgesByIndex(weight_index, .{ .int = 9 });
     defer it5.deinit();
     try testing.expect((try it5.next()) == null);
 }
@@ -364,8 +375,8 @@ test "edge-type cardinality tracks add and delete" {
     try testing.expectEqual(@as(usize, 1), try g.edgeTypeCount("LIKES"));
 }
 
-fn rangeIds(g: *Graph, name: []const u8, lower: ?zypherdb.Value, upper: ?zypherdb.Value) ![]NodeId {
-    var iterator = (try g.nodesInRange(name, lower, upper)).?;
+fn rangeIds(g: *Graph, index_id: u32, lower: ?zypherdb.Value, upper: ?zypherdb.Value) ![]NodeId {
+    var iterator = (try g.nodesInRange(index_id, lower, upper)).?;
     defer iterator.deinit();
     var ids = std.ArrayList(NodeId).empty;
     while (try iterator.next()) |id| try ids.append(testing.allocator, id);
@@ -373,8 +384,8 @@ fn rangeIds(g: *Graph, name: []const u8, lower: ?zypherdb.Value, upper: ?zypherd
     return ids.toOwnedSlice(testing.allocator);
 }
 
-fn expectRange(g: *Graph, name: []const u8, lower: ?zypherdb.Value, upper: ?zypherdb.Value, expected: []const NodeId) !void {
-    const ids = try rangeIds(g, name, lower, upper);
+fn expectRange(g: *Graph, index_id: u32, lower: ?zypherdb.Value, upper: ?zypherdb.Value, expected: []const NodeId) !void {
+    const ids = try rangeIds(g, index_id, lower, upper);
     defer testing.allocator.free(ids);
     try testing.expectEqualSlices(NodeId, expected, ids);
 }
@@ -388,6 +399,8 @@ test "range lookups over the property index: numbers and dates in order" {
     defer store.deinit();
     var g = Graph.init(&store, testing.allocator);
 
+    const x = try createIndex(&g, .nodes, "N", "x");
+    const on = try createIndex(&g, .nodes, "D", "on");
     // Integers of both signs and floats, integral or not, under one property.
     const values = [_]zypherdb.Value{ .{ .int = -5 }, .{ .int = -1 }, .{ .int = 0 }, .{ .float = 0.5 }, .{ .int = 3 }, .{ .float = 3.0 }, .{ .float = -2.5 }, .{ .int = 100 }, .{ .float = std.math.nan(f64) }, .{ .string = "7" } };
     for (values, 1..) |value, id| {
@@ -395,25 +408,25 @@ test "range lookups over the property index: numbers and dates in order" {
         try g.setProperty(id, "x", value);
     }
     // x >= -2 and x <= 3: -1, 0, 0.5, 3, 3.0.
-    try expectRange(&g, "x", .{ .int = -2 }, .{ .int = 3 }, &.{ 2, 3, 4, 5, 6 });
+    try expectRange(&g, x, .{ .int = -2 }, .{ .int = 3 }, &.{ 2, 3, 4, 5, 6 });
     // Fractional bounds round outwards: a superset, checked again by the caller.
-    try expectRange(&g, "x", .{ .float = -2.5 }, .{ .float = 0.25 }, &.{ 2, 3, 7 });
+    try expectRange(&g, x, .{ .float = -2.5 }, .{ .float = 0.25 }, &.{ 2, 3, 7 });
     // One side open; NaN and the string are never in a numeric range.
-    try expectRange(&g, "x", .{ .int = 4 }, null, &.{8});
-    try expectRange(&g, "x", null, .{ .int = -2 }, &.{ 1, 7 });
-    try expectRange(&g, "x", .{ .float = std.math.nan(f64) }, null, &.{});
+    try expectRange(&g, x, .{ .int = 4 }, null, &.{8});
+    try expectRange(&g, x, null, .{ .int = -2 }, &.{ 1, 7 });
+    try expectRange(&g, x, .{ .float = std.math.nan(f64) }, null, &.{});
     // A string bound has no range: the caller scans instead.
-    try testing.expect((try g.nodesInRange("x", .{ .string = "a" }, null)) == null);
+    try testing.expect((try g.nodesInRange(x, .{ .string = "a" }, null)) == null);
 
     // Dates, before and after 1970.
     for ([_]i64{ -400, -1, 0, 20000 }, 20..) |days, id| {
         try g.addNode(id, "D");
         try g.setProperty(id, "on", .{ .date = .{ .days = days } });
     }
-    try expectRange(&g, "on", .{ .date = .{ .days = -1 } }, .{ .date = .{ .days = 0 } }, &.{ 21, 22 });
-    try expectRange(&g, "on", null, .{ .date = .{ .days = -2 } }, &.{20});
+    try expectRange(&g, on, .{ .date = .{ .days = -1 } }, .{ .date = .{ .days = 0 } }, &.{ 21, 22 });
+    try expectRange(&g, on, null, .{ .date = .{ .days = -2 } }, &.{20});
     // A range finds what equality finds: the index stays canonical.
-    var equal = try g.nodesByProperty("x", .{ .float = 3.0 });
+    var equal = try g.nodesByIndex(x, .{ .float = 3.0 });
     defer equal.deinit();
     try testing.expectEqual(@as(?NodeId, 5), try equal.next());
     try testing.expectEqual(@as(?NodeId, 6), try equal.next());

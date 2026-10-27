@@ -30,7 +30,8 @@ typedef struct zypherdb_statement zypherdb_statement;
 #define ZYPHERDB_STORAGE_ERROR 1
 #define ZYPHERDB_NODE_NOT_FOUND 2
 #define ZYPHERDB_CONSTRAINT_VIOLATION 3 /* zypherdb_last_error says which constraint */
-#define ZYPHERDB_INVALID_NAME 4         /* an empty name, or one with a 0x00 byte */
+#define ZYPHERDB_INVALID_NAME 4         /* an empty name, one over 1024 bytes, or one with a 0x00 byte */
+#define ZYPHERDB_TOO_LARGE 5            /* a value over 4 GiB stored, or a node's 65536th label */
 
 /* Error codes reported by zypherdb_error_code. */
 #define ZYPHERDB_ERROR_NONE 0

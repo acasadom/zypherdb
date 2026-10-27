@@ -23,10 +23,11 @@ Two rules make that work:
 - All integers are **big-endian and fixed-width** (ids are `u64`, 8 bytes). So byte order equals
   numeric order, and no id is ever a prefix of another.
 - A `0x00` byte separates variable-length parts (strings). A quoted openCypher name could contain
-  `0x00`, so ZypherDB refuses labels, relationship types and property names that contain it or are
-  empty (writes.zig `requireStorableName`; `ZYPHERDB_INVALID_NAME` in C, `ValueError` in Python), and
-  the storage boundary asserts it (`layout.assertName`). A name with `0x00` in a key would end
-  early: `A\0B` would read as `A`.
+  `0x00`, so ZypherDB refuses labels, relationship types and property names that contain it, are
+  empty or are longer than 1024 bytes (writes.zig `requireStorableName`; `ZYPHERDB_INVALID_NAME` in
+  C, `ValueError` in Python), and the storage boundary asserts it (`layout.assertName`). A name with
+  `0x00` in a key would end early: `A\0B` would read as `A`. (For the length, see
+  [Limits](#limits).)
 
 ## The key layout
 
@@ -39,17 +40,20 @@ Two rules make that work:
 | `rel` in `#relationships` | the relationship's record: `src \| dst \| type` | `relationship`, `hasRelationship` |
 | `f \| rel \| prop` | a relationship property | `getEdgeProperty`, `edgePropertiesOf` |
 | `l \| label \| 0x00 \| id` | label index | `nodesWithLabel` |
-| `p \| prop \| 0x00 \| value \| id` | property index | `nodesByProperty` (an equality seek) |
-| `g \| prop \| 0x00 \| value \| rel` | edge-property index | `edgesByProperty` (an equality seek) |
+| `i \| name` | a schema definition: an index or a constraint | `fulltext.find`, `fulltext.cachedDefinitions` |
+| `p \| index \| value \| id` | property index number `index` (`u32`): a node's or a relationship's id | `nodesByIndex`, `nodesInRange`, `edgesByIndex` |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
 | `c \| label` | label cardinality counter (when absent, the label index is counted) | `labelCount` (anchor selection) |
 | `!` | the next node id to allocate | `allocateNodeId` |
 | `!relationships` | the next relationship id to allocate | `addEdge` |
+| `!index_id` | the last property index number handed out | `fulltext.create` |
+| `!schema` | how many times the definitions changed | plans and cached definitions know when to read them again |
+| `!format` | the storage format's version | `checkFormat` |
 
 Every "index" is just more keys, maintained by the same `put`/`del` primitives. There is no
 separate index structure — an index *is* a key range.
 
-How to read the table: the first byte of a main-table key is a letter (`e`, `f`, `l`, `p`, `g`,
+How to read the table: the first byte of a main-table key is a letter (`e`, `f`, `i`, `l`, `p`,
 `t`, `c`) that says which kind of key it is, so every kind occupies its own range of the key
 space; the rest of the key is the fields of that kind, one after another. Most index keys have an
 empty value: the key itself is the fact.
@@ -57,9 +61,11 @@ empty value: the key itself is the fact.
 ## A worked example
 
 Take the smallest graph that uses every kind of key: two people and a relationship with a
-property.
+property, each property indexed.
 
 ```text
+CREATE INDEX FOR (p:Person) ON (p.name)
+CREATE INDEX FOR ()-[k:KNOWS]-() ON (k.since)
 CREATE (a:Person {name: 'Ana'})-[:KNOWS {since: 2020}]->(b:Person {name: 'Bob'})
 ```
 
@@ -86,19 +92,28 @@ them (bytes in hex, `"…"` for bytes that are text):
 
 main table, in the order the engine keeps it
   "!"                → 00 00 00 00 00 00 00 02    next node id: 2
-  "!format"          → 00 00 00 02                format version 2
+  "!format"          → 00 00 00 03                format version 3
+  "!index_id"        → 00 00 00 02                2 property indexes numbered so far
   "!relationships"   → 00 00 00 00 00 00 00 01    next relationship id: 1
+  "!schema"          → 00 00 00 00 00 00 00 02    the definitions changed twice
   "c" "Person"       → 00 00 00 00 00 00 00 02    2 nodes are Person
   "e" 00×8 "o" 00 "KNOWS" 00 00×7 01 00×8         Ana -KNOWS-> Bob, relationship 0, seen from Ana
                      → 01 00 01 00 06 "Person"    version 1, then Bob's labels
   "e" 00×7 01 "i" 00 "KNOWS" 00 00×8 00×8         the same relationship, seen from Bob
                      → 01 00 01 00 06 "Person"    Ana's labels
   "f" 00×8 "since"   → 01 00 00 00 00 00 00 07 e4 relationship 0's since: tag 01 (integer), 2020
-  "g" "since" 00 01 80 00 00 00 00 00 07 e4 00×8  index: since = 2020 → relationship 0
+  "i" "index_KNOWS_since"                         a definition: kind 01 (range), entity 01
+                     → 01 01 00 00                  (relationships), no analyzer,
+                       00 01 00 05 "KNOWS"          1 type, 1 property,
+                       00 01 00 05 "since"          index number 2
+                       00 00 00 02
+  "i" "index_Person_name"
+                     → 01 00 00 00 00 01 00 06 "Person" 00 01 00 04 "name" 00 00 00 01
   "l" "Person" 00 00×8                            index: Person → node 0
   "l" "Person" 00 00×7 01                         index: Person → node 1
-  "p" "name" 00 02 "Ana" 00 00×8                  index: name = 'Ana' → node 0
-  "p" "name" 00 02 "Bob" 00 00×7 01               index: name = 'Bob' → node 1
+  "p" 00 00 00 01 02 "Ana" 00 00×8                index 1: name = 'Ana' → node 0
+  "p" 00 00 00 01 02 "Bob" 00 00×7 01             index 1: name = 'Bob' → node 1
+  "p" 00 00 00 02 01 80 00 00 00 00 00 07 e4 00×8 index 2: since = 2020 → relationship 0
   "t" "KNOWS"        → 00 00 00 00 00 00 00 01    1 relationship is KNOWS
 ```
 
@@ -109,15 +124,17 @@ orders them as numbers.)
 A few things to see in it:
 
 - **The record is the truth, the rest is derived.** Ana's labels and properties are in her record;
-  `l`, `p` and `c` say the same things again, arranged for a different question. The
+  `l`, `p` and `c` say the same things again, arranged for a different question, and `p` only for
+  the properties an `i` definition indexes. The
   [integrity checker](#checking-integrity) rebuilds them from the records and compares.
 - **The relationship is stored three times**: its record (ends and type), and one `e` key from each
   end. The `e` keys differ in the node they start with and in the direction byte (`o` out, `i` in).
-- **Index keys end with the id.** In `p`, the value comes before the id, and a string value ends
-  with a `00`, so every node with `name = 'Ana'` is under the prefix `p name 00 02 Ana 00`, and
-  `'An'` cannot match it.
+- **Index keys end with the id.** In `p`, the index number and the value come before the id, and
+  a string value ends with a `00`, so every node with `name = 'Ana'` is under the prefix
+  `p 00 00 00 01 02 Ana 00`, and `'An'` cannot match it. Each index has its keys apart, so a
+  lookup in the `Person` index never meets another label's nodes.
 - **Numbers in index keys are rewritten to sort.** In `f` the integer 2020 is stored as it is
-  (`00 … 07 e4`); in the `g` index key its sign bit is flipped (`80 … 07 e4`), so that negative
+  (`00 … 07 e4`); in the index key its sign bit is flipped (`80 … 07 e4`), so that negative
   numbers sort before positive ones byte by byte.
 
 And what each kind of question reads:
@@ -125,11 +142,11 @@ And what each kind of question reads:
 | Query | Plan (EXPLAIN) | What the engine does |
 | --- | --- | --- |
 | `MATCH (p:Person) RETURN count(p)` | `NodeByLabelScan` | Scans the prefix `l Person 00`: two keys, the last 8 bytes of each are an id. (The planner reads `c Person` to estimate this: 2.) |
-| `MATCH (p {name: 'Bob'}) RETURN p` | `NodeIndexSeek` | Seeks the prefix `p name 00 02 Bob 00`: one key, id 1. Reads `#nodes` key 1: Bob's labels and properties, in one search. |
-| `MATCH (a {name: 'Ana'})-[k:KNOWS]->(b:Person) RETURN b.name, k.since` | `NodeIndexSeek`, `Expand(All)` | Seeks `p name … Ana` → node 0. Scans the prefix `e 00×8 o 00 KNOWS 00`: one key, whose fields give the neighbour (1) and the relationship (0), and whose value says the neighbour is a `Person`, so `b`'s label is checked without reading its record. `b.name` reads `#nodes` key 1; `k.since` reads `f 00×8 since` → 2020. |
-| `MATCH (b {name: 'Bob'})<-[:KNOWS]-(a) RETURN a` | `NodeIndexSeek`, `Expand(All)` | The same from the other end: the prefix `e 00×7 01 i 00 KNOWS 00` gives node 0. |
-| `MATCH ()-[k:KNOWS {since: 2020}]->() RETURN k` | `RelationshipIndexSeek` | Seeks the prefix `g since 00 01 80 … 07 e4`: relationship 0. Reads `#relationships` key 0 for its ends and type. |
-| `CREATE (:Person {name: 'Eva'})` | `Create` | Reads and increments `!` (id 2), writes the record under 2, then `l Person 00 …02`, `p name 00 02 Eva 00 …02`, and `c Person` = 3, all in one write transaction. |
+| `MATCH (p:Person {name: 'Bob'}) RETURN p` | `NodeIndexSeek` | Seeks the prefix `p 00 00 00 01 02 Bob 00`: one key, id 1. Reads `#nodes` key 1: Bob's labels and properties, in one search. (Without the label, no index covers the pattern: `AllNodesScan`.) |
+| `MATCH (a:Person {name: 'Ana'})-[k:KNOWS]->(b:Person) RETURN b.name, k.since` | `NodeIndexSeek`, `Expand(All)` | Seeks `p 00 00 00 01 … Ana` → node 0. Scans the prefix `e 00×8 o 00 KNOWS 00`: one key, whose fields give the neighbour (1) and the relationship (0), and whose value says the neighbour is a `Person`, so `b`'s label is checked without reading its record. `b.name` reads `#nodes` key 1; `k.since` reads `f 00×8 since` → 2020. |
+| `MATCH (b:Person {name: 'Bob'})<-[:KNOWS]-(a) RETURN a` | `NodeIndexSeek`, `Expand(All)` | The same from the other end: the prefix `e 00×7 01 i 00 KNOWS 00` gives node 0. |
+| `MATCH ()-[k:KNOWS {since: 2020}]->() RETURN k` | `RelationshipIndexSeek` | Seeks the prefix `p 00 00 00 02 01 80 … 07 e4`: relationship 0. Reads `#relationships` key 0 for its ends and type. |
+| `CREATE (:Person {name: 'Eva'})` | `Create` | Reads and increments `!` (id 2), writes the record under 2, then `l Person 00 …02`, `p 00 00 00 01 02 Eva 00 …02`, and `c Person` = 3, all in one write transaction. |
 
 ## Index-free adjacency (the core idea)
 
@@ -189,13 +206,36 @@ outwards, so it returns a superset of the matches, and the WHERE is still checke
 
 ## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version` (2). When the C ABI or the
+The key `!format` holds the format's version, `Graph.format_version` (3). When the C ABI or the
 Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
 written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
 
 Until the first release there are no migrations: ZypherDB has no users yet, so a change to how keys
 or values are written raises the version and earlier databases are not read. Migrations come with
 the first release.
+
+## Limits
+
+The formats count lengths with fixed-width integers, and keys must fit the storage engine's key
+size (about 2000 bytes with 4 KB pages, as on Linux and Windows). Writes past a limit are refused
+with an error; none is reached silently.
+
+| What | Limit | Why | Error |
+| --- | --- | --- | --- |
+| A label, relationship type, property name or index/constraint name | 1024 bytes | names go into keys (label, edge and full-text keys) | `InvalidExpression`; `ZYPHERDB_INVALID_NAME` in C, `ValueError` in Python |
+| A document path in `CREATE INDEX ... ON (n.a.b)` | 1024 bytes in all | stored as one name | `InvalidExpression` |
+| Labels on one node | 65535 | counted in a u16 in the record | `TooManyLabels`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
+| One stored value | 4 GiB (2^32 - 1 bytes) | lengths in records and lists are u32 | `ValueTooLarge`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
+| Properties of a full-text index | 256 | postings number them with a u8 | `InvalidExpression` |
+| Labels or types, properties of an index or constraint | 65535 | counted in a u16 in the definition | `InvalidExpression` |
+
+Values have no limit of their own in indexes: an index entry keeps at most a value's first 512
+bytes, and every match is checked against the whole value. The full-text index skips words whose
+term is longer than 255 bytes.
+
+These are ceilings, not targets. A node record is read and rewritten whole on every change to the
+node, and each relationship keeps a copy of its nodes' labels: keep records to a few KB, and store
+large content (documents, images) outside the database, with a property that names it.
 
 ## The indexes, one by one
 
@@ -223,12 +263,27 @@ the first release.
     is read.
 - **Label index (`l`).** Answers "which nodes carry this label" (a prefix scan), maintained with
   the record.
-- **Property index (`p`).** Maps `prop == value` to node ids, maintained by `setProperty`/`removeProperty`
-  and `deleteNode`. This is what turns `MATCH (p:Person {name: 'Keanu'})` from a scan into a point
-  lookup.
-- **Edge-property index (`g`).** The same idea for relationships, keyed `prop == value` then the
-  relationship's id, whose record gives its ends and type. It lets `MATCH (a)-[r:TYPE {weight: 5}]->(b)` anchor on the edge itself when the endpoints
-  carry no selectivity.
+- **Property indexes (`p`).** Only the properties a `CREATE INDEX` names are indexed, each index
+  on one label (or relationship type) and one property or document path (`property_indexes.zig`).
+  A key is the index's number (`u32`, handed out at creation; the definition `i | name` keeps it),
+  the value in its index form, then the node's or relationship's id. This is what turns
+  `MATCH (p:Person {name: 'Keanu'})` from a scan into a point lookup.
+  - **Maintenance.** `property_indexes.nodeChanged` gets the record before and after every change
+    (`setProperty`, `removeProperty`, `addLabel`, `removeLabel`, `deleteNode`) and updates the
+    indexes it concerns; `relationshipPropertyChanged` does the same for relationships.
+    `CREATE INDEX` fills a new index from the label (or type) in the same transaction (`populate`);
+    `DROP INDEX` removes its keys (`clear`).
+  - **Document paths.** An index on `n.a.b` has an entry only when `n.a` is a map with a field `b`
+    that is not null (`valueAt`).
+  - **Long values.** A value whose index form is longer than 512 bytes is written as its first 512
+    bytes and a `ff` byte. Such keys only name candidates: every lookup checks the whole value in
+    the record, as it does anyway.
+  - **Relationships.** A relationship index's keys end with the relationship's id, whose record
+    gives its ends and type. It lets `MATCH (a)-[r:TYPE {weight: 5}]->(b)` anchor on the edge
+    itself when the endpoints carry no selectivity.
+  - **Constraints.** A uniqueness constraint owns an index on its first property: its checks read
+    the candidates there and compare every property whole, and the planner uses it for lookups on
+    that property.
 - **Edge-type counter (`t`).** A per-type cardinality, bumped by `addEdge` and decremented on
   delete, used by the planner to cap a node's cost estimate by the rarest incident edge type.
 
@@ -255,7 +310,7 @@ The postings live in four key spaces of their own, each after a marker byte, the
 
 | Key | Value |
 | --- | --- |
-| `w \| name \| term \| 0x00 \| entity` | the term's occurrences in the entity, per property: its ordinal (u8), a count (u16), the positions (u32 each) |
+| `w \| name \| term \| 0x00 \| entity` | the term's occurrences in the entity, per property: its ordinal (u8), a count (u32), the positions (u32 each) |
 | `W \| name \| entity` | the entity's length in terms, per property (u32 each) |
 | `v \| name \| term` | how many entities have the term (u64): BM25's document frequency, and the vocabulary that prefix and fuzzy queries expand over |
 | `V \| name` | the index's entities and terms (u64 each): BM25's N and average length |
@@ -307,7 +362,8 @@ aborted one leaves it as it was.
 
 ## Checking integrity
 
-Everything but the records is derived: the label, property and edge-property indexes, both edge
+Everything but the records is derived: the label index, the property indexes (from their
+definitions: an index's keys are rebuilt from the nodes or relationships it covers), both edge
 keys of each relationship and the labels they keep, the counters, the full-text postings. The
 integrity checker, `zypherdb.integrity.check(graph, allocator)` (`src/storage/integrity.zig`),
 rebuilds each of them from the primary data — the node and relationship records, the relationship

@@ -10,15 +10,33 @@ Every query starts somewhere: a node pattern that the engine can find without lo
 rest of the graph — the **anchor** — and follows relationships from there. Choosing a good anchor
 is most of what makes a query fast. In order of preference:
 
-1. **An equality on a property**, written inline (`{number: $badge}`) or in `WHERE`
-   (`b.number = $badge`) with a constant or a parameter. Every property is indexed for equality,
-   so this finds the matching nodes directly, whatever the size of the graph.
+1. **An equality on an indexed property**, written inline (`{number: $badge}`) or in `WHERE`
+   (`b.number = $badge`) with a constant or a parameter. The index finds the matching nodes
+   directly, whatever the size of the graph.
 2. **A label** (`(r:Room)`): the nodes with that label, one after another. Cost grows with the
    number of such nodes.
 3. **Nothing** (`(n)`): every node of the database.
 
 From the anchor, each relationship in the pattern is a step to the neighbours, which is cheap: a
 node's relationships of a type are stored together.
+
+## Indexes
+
+An index is made once, for one label and one property, and every write keeps it current:
+
+```python
+db.query("CREATE INDEX badge_number FOR (b:Badge) ON (b.number)")
+db.query("CREATE INDEX door_id FOR (d:Door) ON (d.id)")
+db.query("CREATE INDEX employee_id FOR (p:Person) ON (p.employee_id)")
+```
+
+The index finds the nodes of its label: `(b:Badge {number: $badge})` uses it, `(b {number:
+$badge})` without the label does not. Each index makes the writes to its property a little slower
+and the database a little larger, so index the properties that queries look nodes up by, not
+every property. `SHOW INDEXES` lists them and `DROP INDEX door_id` removes one; a uniqueness
+constraint has an index of its own (listed too, named as the constraint, dropped with it). Relationships have indexes too, for one type: `CREATE INDEX
+FOR ()-[g:MAY_ENTER]-() ON (g.days)`. So do fields inside a document ([step 13](13-documents)):
+`CREATE INDEX FOR (p:Person) ON (p.emergency.relation)`.
 
 The decision query of [step 14](14-time) anchors on the badge (an equality) and finds the door
 by its id (another equality). When the expansion reaches the door's end of the pattern, the engine
@@ -79,7 +97,7 @@ the building is full.
 
 ## What scans
 
-An equality uses the property's index, and so does a range of numbers or dates (`<`, `<=`, `>`,
+An equality on an indexed property uses the index, and so does a range of numbers or dates (`<`, `<=`, `>`,
 `>=`) against a constant or a parameter: the engine reads the part of the index in range. A date
 written as `date('2025-03-01')` is a function call, not a constant, so pass dates as parameters
 in the queries that must be fast. Other conditions — `STARTS WITH`,
@@ -89,15 +107,16 @@ on whatever the anchor produced. So:
 ```python
 fast = "MATCH (p:Person {employee_id: $id}) RETURN p.name"            # index seek
 slow = "MATCH (p:Person) WHERE p.name STARTS WITH $prefix RETURN p"   # every Person
+also_slow = "MATCH (p:Person {name: $name}) RETURN p"                 # no index on name
 ```
 
-Both are right; the second costs time in proportion to the number of `Person` nodes — fine for the
+All are right; the slow ones cost time in proportion to the number of `Person` nodes — fine for the
 lab's dozens, noticeable for millions. When such a query must be fast on a large set, give it a
 better anchor: start from something selective and filter what it reaches.
 
 ## Rules of thumb
 
-- **Anchor on an equality** with a parameter. Put the most selective one first in mind: the engine
+- **Anchor on an indexed equality** with a parameter. Put the most selective one first in mind: the engine
   chooses the anchor, but it can only choose among what the pattern gives it.
 - **Ask for existence with `EXISTS`, not by counting.** `EXISTS { … }` and pattern predicates
   answer yes or no; `count(*) > 0` over a `MATCH` makes every row first.

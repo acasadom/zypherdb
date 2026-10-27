@@ -283,7 +283,7 @@ Indexes are just more key ranges (see [storage](storage)):
 1. `src/storage/key_encoding.zig` — an `append…Key`/`append…Prefix` pair for the new layout.
 2. `src/storage/graph.zig` — maintain it in the right mutation (`setProperty`, `addEdge`, …) and
    cleanup (`deleteNodeOnly`, `deleteEdgesInDirection`), and expose a lookup that returns an
-   iterator (`nodesByProperty`/`edgesByProperty` are the models). State its cost.
+   iterator (`nodesByIndex`/`edgesByIndex` are the models). State its cost.
 3. If it should drive planning, surface it in `patterns.zig` (`estimate`, `shouldEdgeAnchor`) and
    in the pattern operator that reads it (`pattern_matching.zig`).
 4. `src/storage/integrity.zig` — rebuild its keys from the primary data, so the checker compares

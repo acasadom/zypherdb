@@ -9,6 +9,8 @@ const MapEntry = @import("../value.zig").MapEntry;
 const fulltext = @import("../storage/fulltext.zig");
 const fulltext_postings = @import("../storage/fulltext_postings.zig");
 const constraints = @import("../storage/constraints.zig");
+const property_indexes = @import("../storage/property_indexes.zig");
+const layout = @import("../storage/layout.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -17,6 +19,11 @@ const Bindings = @import("bindings.zig").Bindings;
 const ExpressionProgram = @import("../planning/expression_program.zig").Program;
 const expressions = @import("expressions.zig");
 const requireStorableName = @import("writes.zig").requireStorableName;
+
+comptime {
+    // The parser joins a document path's names as the indexes split them.
+    std.debug.assert(@import("../query/ast.zig").path_separator == property_indexes.path_separator);
+}
 
 /// The analyzers a full-text index can use.
 pub const analyzers = [_][]const u8{ "standard", "english", "spanish" };
@@ -69,6 +76,7 @@ fn drop(executor: *Executor, root: Index, comptime what: []const u8) ExecutionEr
         return error.InvalidExpression;
     }
     if (found.kind == .fulltext) try fulltext_postings.clear(graph, command.name);
+    if (found.hasPropertyIndex()) try property_indexes.clear(graph, found.index_id);
     _ = try fulltext.drop(graph, command.name);
 }
 
@@ -77,11 +85,31 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
     // Names go into keys, where 0x00 ends them ("f" would find "f\x00g").
     // (A generated name holds the labels and properties: check them first.)
     for (command.labels_or_types) |name| try requireStorableName(executor, if (command.relationships) "relationship type" else "label", name);
-    for (command.properties) |name| try requireStorableName(executor, "property name", name);
+    for (command.properties) |property| {
+        // A range index's property may be a document path (its names joined
+        // by path_separator: the parser refuses it inside a name).
+        if (kind != .range) try requireStorableName(executor, "property name", property);
+        var names = std.mem.splitScalar(u8, property, property_indexes.path_separator);
+        if (kind == .range) while (names.next()) |name| try requireStorableName(executor, "property name", name);
+        // A path is stored as one name.
+        if (property.len > layout.max_name_length) {
+            executor.fail(.invalid_expression, "a document path cannot be longer than {d} bytes", .{layout.max_name_length});
+            return error.InvalidExpression;
+        }
+    }
     try requireStorableName(executor, "name for an index or constraint", command.name);
+    const max_properties: usize = if (kind == .fulltext) fulltext.max_fulltext_properties else fulltext.max_names;
+    if (command.labels_or_types.len > fulltext.max_names or command.properties.len > max_properties) {
+        executor.fail(.invalid_expression, "an index or constraint can name at most {d} labels or types and {d} properties", .{ fulltext.max_names, max_properties });
+        return error.InvalidExpression;
+    }
     if (try fulltext.find(executor.graph, command.name, executor.allocator)) |existing| {
         if (command.if_not_exists) return;
         executor.fail(.invalid_expression, "{s} named '{s}' already exists", .{ if (existing.kind == .unique) "a constraint" else "an index", command.name });
+        return error.InvalidExpression;
+    }
+    if (kind == .range and command.properties.len > 1) {
+        executor.fail(.invalid_expression, "an index on several properties is not supported: create one index per property", .{});
         return error.InvalidExpression;
     }
     const children = executor.ast.nodeChildren(root);
@@ -94,17 +122,16 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         .labels_or_types = command.labels_or_types,
         .properties = command.properties,
     };
-    switch (kind) {
-        // A constraint the graph already breaks is refused.
-        .unique => constraints.checkExisting(executor.graph, definition) catch |err| {
-            if (err == error.ConstraintViolation) executor.fail(.constraint_violation, "{s}", .{executor.graph.violationMessage()});
-            return err;
-        },
-        .fulltext, .range => {},
-    }
-    try fulltext.create(executor.graph, definition);
+    const stored = try fulltext.create(executor.graph, definition);
     // Index what the graph holds already.
-    if (kind == .fulltext) try fulltext_postings.populate(executor.graph, definition);
+    if (kind == .fulltext) try fulltext_postings.populate(executor.graph, stored);
+    if (stored.hasPropertyIndex()) try property_indexes.populate(executor.graph, stored);
+    // A constraint the graph already breaks is refused (checked on its index;
+    // the transaction is aborted).
+    if (kind == .unique) constraints.checkExisting(executor.graph, stored) catch |err| {
+        if (err == error.ConstraintViolation) executor.fail(.constraint_violation, "{s}", .{executor.graph.violationMessage()});
+        return err;
+    };
 }
 
 /// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.
@@ -137,23 +164,27 @@ fn unknownOption(executor: *Executor, key: []const u8) ExecutionError {
     return error.InvalidExpression;
 }
 
-/// One row per index (full-text, or range: declared, and doing nothing):
-/// name, type, entityType, labelsOrTypes, properties, options.
+/// One row per index (full-text or range, a uniqueness constraint's
+/// included, as in Neo4j 5): name, type, entityType, labelsOrTypes,
+/// properties (a document path as `a.b`), owningConstraint (the
+/// constraint's name, else null), options.
 fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig").Data, "show_indexes")) ExecutionError![]const Row {
     const allocator = executor.allocator;
     var rows = std.ArrayList(Row).empty;
     for (try fulltext.all(executor.graph, allocator)) |definition| {
         switch (definition.kind) {
-            .unique => continue,
             .fulltext => if (which == .range) continue,
-            .range => if (which == .fulltext) continue,
+            .range, .unique => if (which == .fulltext) continue,
         }
+        // A constraint's index keys its first property (constraints.zig).
+        const properties = if (definition.kind == .unique) definition.properties[0..1] else definition.properties;
         var row = Row.empty;
         try row.append(allocator, .{ .string = definition.name });
         try row.append(allocator, .{ .string = if (definition.kind == .fulltext) "FULLTEXT" else "RANGE" });
         try row.append(allocator, .{ .string = if (definition.entity == .nodes) "NODE" else "RELATIONSHIP" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
-        try row.append(allocator, try stringList(allocator, definition.properties));
+        try row.append(allocator, try propertyList(allocator, properties));
+        try row.append(allocator, if (definition.kind == .unique) .{ .string = definition.name } else .null);
         const config: []const MapEntry = if (definition.kind == .fulltext)
             try allocator.dupe(MapEntry, &.{.{ .key = "fulltext.analyzer", .value = .{ .string = definition.analyzer } }})
         else
@@ -164,7 +195,8 @@ fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig"
     return rows.items;
 }
 
-/// One row per constraint: name, type, entityType, labelsOrTypes, properties.
+/// One row per constraint: name, type, entityType, labelsOrTypes,
+/// properties, ownedIndex (its index, listed by SHOW INDEXES: same name).
 fn showConstraints(executor: *Executor) ExecutionError![]const Row {
     const allocator = executor.allocator;
     var rows = std.ArrayList(Row).empty;
@@ -174,7 +206,8 @@ fn showConstraints(executor: *Executor) ExecutionError![]const Row {
         try row.append(allocator, .{ .string = "UNIQUENESS" });
         try row.append(allocator, .{ .string = "NODE" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
-        try row.append(allocator, try stringList(allocator, definition.properties));
+        try row.append(allocator, try propertyList(allocator, definition.properties));
+        try row.append(allocator, .{ .string = definition.name });
         try rows.append(allocator, row);
     }
     return rows.items;
@@ -183,5 +216,16 @@ fn showConstraints(executor: *Executor) ExecutionError![]const Row {
 fn stringList(allocator: std.mem.Allocator, strings: []const []const u8) std.mem.Allocator.Error!Value {
     const items = try allocator.alloc(Value, strings.len);
     for (items, strings) |*item, string| item.* = .{ .string = string };
+    return .{ .list = items };
+}
+
+/// The properties of a definition, a document path written `a.b`.
+fn propertyList(allocator: std.mem.Allocator, properties: []const []const u8) std.mem.Allocator.Error!Value {
+    const items = try allocator.alloc(Value, properties.len);
+    for (items, properties) |*item, property| {
+        const text = try allocator.dupe(u8, property);
+        std.mem.replaceScalar(u8, text, property_indexes.path_separator, '.');
+        item.* = .{ .string = text };
+    }
     return .{ .list = items };
 }

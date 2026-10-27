@@ -80,7 +80,7 @@ pub fn codeOf(err: anyerror) ErrorCode {
         error.TypeMismatch, error.UnsupportedPropertyType => .type_mismatch,
         error.ParameterMissing => .parameter_missing,
         error.IntegerOverflow, error.DivisionByZero => .arithmetic,
-        error.InvalidExpression => .invalid_expression,
+        error.InvalidExpression, error.TooManyLabels, error.ValueTooLarge => .invalid_expression,
         error.NodeStillConnected => .node_still_connected,
         error.ConstraintViolation => .constraint_violation,
         error.ExternalResourceFailed => .external_resource,

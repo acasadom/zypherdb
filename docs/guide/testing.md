@@ -78,7 +78,7 @@ Rigger and Su's work on SQLancer (OOPSLA 2020).
 **What it is.** `zypherdb.integrity.check` (`src/storage/integrity.zig`, with
 `integrity_fulltext.zig` and `layout.zig`) reads the whole database, separates the **primary**
 data (node and relationship records, relationship properties, schema definitions, id counters) from
-the **derived** data (the label, property and edge-property indexes, both edge keys of every
+the **derived** data (the label index, the property indexes the definitions declare, both edge keys of every
 relationship with the neighbour labels they keep, the counters, the full-text postings), rebuilds
 every derived key from the primary data, and compares. It also checks that every uniqueness
 constraint holds, that the id counters are above every id in use, that every record and value is

@@ -57,6 +57,12 @@ pub const Swarm = struct {
     variants: u8,
     /// Queries between changes to the graph.
     writes_every: u32,
+    /// Which property indexes exist: a bit per label and property, then per
+    /// relationship type and property.
+    indexes: u16,
+    /// The indexes are made before the graph (kept current by its writes),
+    /// else after (built from it).
+    indexes_first: bool,
     mix: generator.Mix,
 
     pub fn choose(random: std.Random) Swarm {
@@ -69,14 +75,17 @@ pub const Swarm = struct {
             .property_chance = random.intRangeAtMost(u8, 2, 8),
             .variants = random.intRangeAtMost(u8, 1, 3),
             .writes_every = random.intRangeAtMost(u32, 5, 50),
+            .indexes = random.int(u16),
+            .indexes_first = random.boolean(),
             .mix = .choose(random),
         };
     }
 
     pub fn format(self: Swarm, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.print("{d} nodes, {d} relationships, {s} values, {d} of the few, properties {d}/8, {d} variant(s), writes every {d}; mix: {any}", .{
-            self.nodes,           self.relationships, if (self.all_values) "all" else "narrow", self.value_pool,
-            self.property_chance, self.variants,      self.writes_every,                        self.mix,
+        try writer.print("{d} nodes, {d} relationships, {s} values, {d} of the few, properties {d}/8, {d} variant(s), writes every {d}, indexes {x} ({s}); mix: {any}", .{
+            self.nodes,                                   self.relationships, if (self.all_values) "all" else "narrow", self.value_pool,
+            self.property_chance,                         self.variants,      self.writes_every,                        self.indexes,
+            if (self.indexes_first) "first" else "after", self.mix,
         });
     }
 };
@@ -200,9 +209,28 @@ const Fuzzer = struct {
         }
         try self.graph.beginWrite();
         errdefer self.graph.abortWrite();
+        if (self.swarm.indexes_first) try self.createIndexes();
         for (0..self.swarm.nodes) |_| try self.addNode();
         for (0..self.swarm.relationships) |_| try self.addRelationship();
+        if (!self.swarm.indexes_first) try self.createIndexes();
         try self.graph.commitWrite();
+    }
+
+    /// The property indexes the swarm picked (`Swarm.indexes`), as CREATE
+    /// INDEX makes them.
+    fn createIndexes(self: *Fuzzer) !void {
+        const schema = zypherdb.schema_definitions;
+        var bit: u4 = 0;
+        for ([_]schema.Entity{ .nodes, .relationships }) |entity| {
+            const targets: []const []const u8 = if (entity == .nodes) &generator.labels else &generator.types;
+            for (targets) |target| for (generator.properties) |property| {
+                defer bit += 1;
+                if (self.swarm.indexes & (@as(u16, 1) << bit) == 0) continue;
+                const name = try std.fmt.allocPrint(self.scratch.allocator(), "{s}_{s}", .{ target, property });
+                const stored = try schema.create(&self.graph, .{ .name = name, .kind = .range, .entity = entity, .analyzer = "", .labels_or_types = &.{target}, .properties = &.{property} });
+                try zypherdb.property_indexes.populate(&self.graph, stored);
+            };
+        }
     }
 
     fn addNode(self: *Fuzzer) !void {

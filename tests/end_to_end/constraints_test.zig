@@ -37,17 +37,18 @@ test "CREATE INDEX is recorded and listed, and changes no result" {
 
     try expectQuery(&ast, &g, "CREATE (:Card {number: 1}), (:Card {number: 2})", &.{});
     try expectQuery(&ast, &g, "CREATE INDEX card_numbers FOR (c:Card) ON (c.number)", &.{});
-    try expectQuery(&ast, &g, "CREATE RANGE INDEX IF NOT EXISTS FOR ()-[r:HELD_BY]-() ON (r.since, r.until)", &.{});
+    try expectQuery(&ast, &g, "CREATE RANGE INDEX IF NOT EXISTS FOR ()-[r:HELD_BY]-() ON (r.since)", &.{});
+    try expectQueryError(&ast, &g, "CREATE INDEX FOR ()-[r:HELD_BY]-() ON (r.since, r.until)", error.InvalidExpression);
     try expectQuery(&ast, &g, "CREATE INDEX card_numbers IF NOT EXISTS FOR (c:Card) ON (c.other)", &.{});
     try expectOrdered(&ast, &g, "SHOW INDEXES", &.{
-        &.{ string("card_numbers"), string("RANGE"), string("NODE"), .{ .list = &.{string("Card")} }, .{ .list = &.{string("number")} }, no_options },
-        &.{ string("index_HELD_BY_since_until"), string("RANGE"), string("RELATIONSHIP"), .{ .list = &.{string("HELD_BY")} }, .{ .list = &.{ string("since"), string("until") } }, no_options },
+        &.{ string("card_numbers"), string("RANGE"), string("NODE"), .{ .list = &.{string("Card")} }, .{ .list = &.{string("number")} }, .null, no_options },
+        &.{ string("index_HELD_BY_since"), string("RANGE"), string("RELATIONSHIP"), .{ .list = &.{string("HELD_BY")} }, .{ .list = &.{string("since")} }, .null, no_options },
     });
     try expectQuery(&ast, &g, "SHOW FULLTEXT INDEXES", &.{});
     try expectQuery(&ast, &g, "MATCH (c:Card {number: 2}) RETURN c.number", &.{&.{int(2)}});
     try expectQueryError(&ast, &g, "CREATE INDEX card_numbers FOR (c:Card) ON (c.number)", error.InvalidExpression);
     try expectQuery(&ast, &g, "DROP INDEX card_numbers", &.{});
-    try expectQuery(&ast, &g, "DROP INDEX index_HELD_BY_since_until", &.{});
+    try expectQuery(&ast, &g, "DROP INDEX index_HELD_BY_since", &.{});
     try expectQuery(&ast, &g, "SHOW INDEXES", &.{});
 }
 
@@ -64,10 +65,15 @@ test "a uniqueness constraint refuses duplicate values" {
     try expectQuery(&ast, &g, "CREATE (:Card {number: 1}), (:Card {number: 2}), (:Badge {number: 1})", &.{});
     try expectQuery(&ast, &g, "CREATE CONSTRAINT card_number FOR (c:Card) REQUIRE c.number IS UNIQUE", &.{});
     try expectOrdered(&ast, &g, "SHOW CONSTRAINTS", &.{
-        &.{ string("card_number"), string("UNIQUENESS"), string("NODE"), .{ .list = &.{string("Card")} }, .{ .list = &.{string("number")} } },
+        &.{ string("card_number"), string("UNIQUENESS"), string("NODE"), .{ .list = &.{string("Card")} }, .{ .list = &.{string("number")} }, string("card_number") },
     });
-    // A constraint is not an index.
-    try expectQuery(&ast, &g, "SHOW INDEXES", &.{});
+    // It owns an index, which SHOW INDEXES lists (as Neo4j 5) and only
+    // DROP CONSTRAINT drops.
+    try expectQuery(&ast, &g, "SHOW INDEXES", &.{
+        &.{ string("card_number"), string("RANGE"), string("NODE"), .{ .list = &.{string("Card")} }, .{ .list = &.{string("number")} }, string("card_number"), no_options },
+    });
+    try expectQuery(&ast, &g, "SHOW FULLTEXT INDEXES", &.{});
+    try expectQueryError(&ast, &g, "DROP INDEX card_number", error.InvalidExpression);
 
     // A duplicate by CREATE, SET or a new label fails, and nothing of the
     // query is written.
@@ -113,8 +119,13 @@ test "a constraint on several properties, Neo4j 4's syntax, and what is refused"
     try expectQuery(&ast, &g, "CREATE CONSTRAINT person_id ON (p:Person) ASSERT p.id IS UNIQUE", &.{});
     try expectQuery(&ast, &g, "MATCH (n) RETURN count(n)", &.{&.{int(3)}});
     try expectOrdered(&ast, &g, "SHOW CONSTRAINTS", &.{
-        &.{ string("constraint_Door_building_number"), string("UNIQUENESS"), string("NODE"), .{ .list = &.{string("Door")} }, .{ .list = &.{ string("building"), string("number") } } },
-        &.{ string("person_id"), string("UNIQUENESS"), string("NODE"), .{ .list = &.{string("Person")} }, .{ .list = &.{string("id")} } },
+        &.{ string("constraint_Door_building_number"), string("UNIQUENESS"), string("NODE"), .{ .list = &.{string("Door")} }, .{ .list = &.{ string("building"), string("number") } }, string("constraint_Door_building_number") },
+        &.{ string("person_id"), string("UNIQUENESS"), string("NODE"), .{ .list = &.{string("Person")} }, .{ .list = &.{string("id")} }, string("person_id") },
+    });
+    // A composite constraint's index keys its first property.
+    try expectOrdered(&ast, &g, "SHOW RANGE INDEXES", &.{
+        &.{ string("constraint_Door_building_number"), string("RANGE"), string("NODE"), .{ .list = &.{string("Door")} }, .{ .list = &.{string("building")} }, string("constraint_Door_building_number"), no_options },
+        &.{ string("person_id"), string("RANGE"), string("NODE"), .{ .list = &.{string("Person")} }, .{ .list = &.{string("id")} }, string("person_id"), no_options },
     });
     // The graph API is held to it as well.
     try g.addNode(100, "Person");

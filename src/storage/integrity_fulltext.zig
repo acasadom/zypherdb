@@ -111,13 +111,13 @@ const Index = struct {
     }
 };
 
-/// A section of a posting: the property's ordinal (u8), a count (u16), the
+/// A section of a posting: the property's ordinal (u8), a count (u32), the
 /// positions (u32 each).
 fn appendSection(sections: *std.ArrayList(u8), arena: Allocator, ordinal: u8, positions: []const u32) Allocator.Error!void {
     try sections.append(arena, ordinal);
     var buffer: [4]u8 = undefined;
-    std.mem.writeInt(u16, buffer[0..2], @intCast(positions.len), .big);
-    try sections.appendSlice(arena, buffer[0..2]);
+    std.mem.writeInt(u32, &buffer, @intCast(positions.len), .big);
+    try sections.appendSlice(arena, &buffer);
     for (positions) |position| {
         std.mem.writeInt(u32, &buffer, position, .big);
         try sections.appendSlice(arena, &buffer);
@@ -131,9 +131,9 @@ pub fn canonicalPosting(arena: Allocator, posting: []const u8) Allocator.Error!?
     var sections = std.ArrayList(Section).empty;
     var position: usize = 0;
     while (position < posting.len) {
-        if (posting.len - position < 3) return null;
-        const count = std.mem.readInt(u16, posting[position + 1 ..][0..2], .big);
-        const end = position + 3 + @as(usize, count) * 4;
+        if (posting.len - position < fulltext_postings.section_header_length) return null;
+        const count = std.mem.readInt(u32, posting[position + 1 ..][0..4], .big);
+        const end = position + fulltext_postings.section_header_length + @as(usize, count) * 4;
         if (count == 0 or end > posting.len) return null;
         try sections.append(arena, .{ .ordinal = posting[position], .bytes = posting[position..end] });
         position = end;
@@ -166,8 +166,8 @@ test "a posting's sections are compared in property order" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // Property 1 (one position, 7), then property 0 (one position, 2).
-    const stored = "\x01\x00\x01\x00\x00\x00\x07" ++ "\x00\x00\x01\x00\x00\x00\x02";
+    const stored = "\x01\x00\x00\x00\x01\x00\x00\x00\x07" ++ "\x00\x00\x00\x00\x01\x00\x00\x00\x02";
     const canonical = (try canonicalPosting(arena.allocator(), stored)).?;
-    try std.testing.expectEqualStrings("\x00\x00\x01\x00\x00\x00\x02" ++ "\x01\x00\x01\x00\x00\x00\x07", canonical);
-    try std.testing.expectEqual(@as(?[]const u8, null), try canonicalPosting(arena.allocator(), "\x00\x00\x02\x00\x00\x00\x02"));
+    try std.testing.expectEqualStrings("\x00\x00\x00\x00\x01\x00\x00\x00\x02" ++ "\x01\x00\x00\x00\x01\x00\x00\x00\x07", canonical);
+    try std.testing.expectEqual(@as(?[]const u8, null), try canonicalPosting(arena.allocator(), "\x00\x00\x00\x00\x02\x00\x00\x00\x02"));
 }

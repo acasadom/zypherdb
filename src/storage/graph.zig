@@ -27,6 +27,7 @@ const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const fulltext_postings = @import("fulltext_postings.zig");
 const fulltext = @import("fulltext.zig");
+const property_indexes = @import("property_indexes.zig");
 const constraints = @import("constraints.zig");
 const node_record = @import("node_record.zig");
 const layout = @import("layout.zig");
@@ -41,7 +42,9 @@ pub const Value = @import("../value.zig").Value;
 
 /// Errors of graph writes: storage failures, or a value that cannot be stored
 /// as a property (see `value_encoding.isStorable`).
-pub const GraphError = StorageError || error{UnsupportedPropertyType};
+/// `UnsupportedPropertyType`: a value no property can hold; `ValueTooLarge`:
+/// one whose stored form is longer than `layout.max_value_length`.
+pub const GraphError = StorageError || error{ UnsupportedPropertyType, ValueTooLarge };
 
 // ---------------------------------------------------------------------------
 // Graph (index-free adjacency over KeyValueStore)
@@ -74,7 +77,7 @@ pub const Graph = struct {
     /// format is refused: ZypherDB has no users yet, so formats change without
     /// migrations until the first release. 2: schema definitions have a kind
     /// (full-text, range, unique).
-    pub const format_version: u32 = 2;
+    pub const format_version: u32 = 3;
 
     /// Stamps a new database with this code's format, and refuses one
     /// written in another (`error.IncompatibleFormat`). Call it after
@@ -141,17 +144,20 @@ pub const Graph = struct {
     }
 
     /// Adds a label to a node (its record and the label index). Idempotent.
+    /// Fails with `TooManyLabels` past `layout.max_labels`.
     pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         layout.assertName(label); // callers refuse others
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
         if (record.hasLabel(label)) return;
+        if (record.labelCount() == layout.max_labels) return error.TooManyLabels;
         const old = try self.keptRecord(record, scratch.allocator());
         const updated = try node_record.withLabel(scratch.allocator(), record, label, true);
         try constraints.checkNode(self, id, .{ .bytes = updated });
         try self.writeRecord(id, updated);
         try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
+        try property_indexes.nodeChanged(self, id, old, .{ .bytes = updated }, null);
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -171,6 +177,7 @@ pub const Graph = struct {
         const updated = try node_record.withLabel(scratch.allocator(), record, label, false);
         try self.writeRecord(id, updated);
         try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
+        try property_indexes.nodeChanged(self, id, old, .{ .bytes = updated }, null);
 
         var key = std.ArrayList(u8).empty;
         defer key.deinit(self.allocator);
@@ -304,10 +311,7 @@ pub const Graph = struct {
             try self.store.del(key.items);
             try self.bumpLabelCount(label, false);
         }
-        var properties = record.properties();
-        while (properties.next()) |property| {
-            try self.deleteIndexEntry(id, property.name, try value_encoding.decodeValue(property.encoded_value, scratch.allocator()));
-        }
+        try property_indexes.nodeChanged(self, id, record, NodeRecord.empty, null);
         try fulltext_postings.nodeChanged(self, id, record, NodeRecord.empty, null);
         try self.store.deleteNode(id);
     }
@@ -353,7 +357,7 @@ pub const Graph = struct {
         }
         for (properties.items) |property| {
             try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, property.name, property.value, null);
-            try self.deleteEdgeIndexEntry(property.name, property.value, id);
+            try property_indexes.relationshipPropertyChanged(self, id, stored.edge_type, property.name, property.value, null);
             key.clearRetainingCapacity();
             try key_encoding.appendEdgePropertyKey(&key, arena, id, property.name);
             try self.store.del(key.items);
@@ -400,7 +404,8 @@ pub const Graph = struct {
 
     /// Stores a typed property `name` on node `id`. Idempotent. Maintains the
     /// property index. Setting `null` removes the property (as in Cypher); a
-    /// list fails with `UnsupportedPropertyType`. O(log N).
+    /// list fails with `UnsupportedPropertyType`, a value too long
+    /// `ValueTooLarge`. O(log N).
     pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeProperty(id, name);
         if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
@@ -410,13 +415,12 @@ pub const Graph = struct {
         const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
         var encoded = std.ArrayList(u8).empty;
         try value_encoding.encodeValue(&encoded, scratch.allocator(), value);
+        if (encoded.items.len > layout.max_value_length) return error.ValueTooLarge;
         const updated = try node_record.withProperty(scratch.allocator(), record, name, encoded.items);
         try constraints.checkNode(self, id, .{ .bytes = updated });
-        // Remove the previous index entry, if any (read before the record changes).
-        if (record.property(name)) |old| try self.deleteIndexEntry(id, name, try value_encoding.decodeValue(old, scratch.allocator()));
         const old_record = try self.keptRecord(record, scratch.allocator());
         try self.writeRecord(id, updated);
-        try self.putIndexEntry(id, name, value);
+        try property_indexes.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
         try fulltext_postings.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
     }
 
@@ -426,69 +430,67 @@ pub const Graph = struct {
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const record = try self.readRecord(id, scratch.allocator()) orelse return;
-        const old = record.property(name) orelse return;
-        const old_value = try value_encoding.decodeValue(old, scratch.allocator());
+        if (record.property(name) == null) return;
         const updated = try node_record.withProperty(scratch.allocator(), record, name, null);
         const old_record = try self.keptRecord(record, scratch.allocator());
         try self.writeRecord(id, updated);
-        try self.deleteIndexEntry(id, name, old_value);
+        try property_indexes.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
         try fulltext_postings.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
     }
 
-    /// Iterates all nodes whose property `name` equals `value` (via the
-    /// property index), in ascending node-id order. O(log N + matches).
-    pub fn nodesByProperty(self: *Graph, name: []const u8, value: Value) StorageError!NodeIdIterator {
+    /// Iterates the nodes the node index `index_id` holds under `value`, in
+    /// ascending node-id order: a superset of those whose property equals it
+    /// (long values share keys), so callers recheck. O(log N + matches).
+    pub fn nodesByIndex(self: *Graph, index_id: u32, value: Value) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try key_encoding.appendIndexPrefix(&prefix, self.allocator, name, value);
+        try property_indexes.appendValuePrefix(&prefix, self.allocator, index_id, value);
         const iterator = try self.store.scanPrefix(prefix.items);
         return .{ .inner = iterator };
     }
 
-    /// The nodes whose property `name` may lie between `lower` and `upper`
-    /// (either may be null: unbounded), from the property index: a superset
+    /// The nodes whose indexed property may lie between `lower` and `upper`
+    /// (either may be null: unbounded), from node index `index_id`: a superset
     /// of the nodes where the comparison holds, so callers still check it.
     /// Numbers (integers and floats, which compare with each other) and dates
     /// have ranges; for other values this is null (scan instead).
     /// O(log N + the nodes in range).
-    pub fn nodesInRange(self: *Graph, name: []const u8, lower: ?Value, upper: ?Value) StorageError!?NodeIdIterator {
+    pub fn nodesInRange(self: *Graph, index_id: u32, lower: ?Value, upper: ?Value) StorageError!?NodeIdIterator {
         const bound = lower orelse upper orelse return null;
         switch (bound) {
             .int, .float => {
                 for ([_]?Value{ lower, upper }) |b| if (b) |v| switch (v) {
                     .int => {},
-                    .float => |x| if (std.math.isNan(x)) return try self.emptyRange(name),
+                    .float => |x| if (std.math.isNan(x)) return try self.emptyRange(index_id),
                     else => return null,
                 };
                 // Integral floats are indexed as integers: integers and the
                 // other floats are two key ranges.
                 const low_int: i64 = if (lower) |v| floorInteger(v) else std.math.minInt(i64);
                 const high_int: i64 = if (upper) |v| ceilInteger(v) else std.math.maxInt(i64);
-                var iterator = try self.indexRange(name, .int, value_encoding.orderedInteger(low_int), value_encoding.orderedInteger(high_int));
+                var iterator = try self.indexRange(index_id, .int, value_encoding.orderedInteger(low_int), value_encoding.orderedInteger(high_int));
                 errdefer iterator.deinit();
                 const low_float = value_encoding.orderedFloat(if (lower) |v| asFloat(v) else -std.math.inf(f64));
                 const high_float = value_encoding.orderedFloat(if (upper) |v| asFloat(v) else std.math.inf(f64));
-                iterator.second = (try self.indexRange(name, .float, low_float, high_float)).inner;
+                iterator.second = (try self.indexRange(index_id, .float, low_float, high_float)).inner;
                 return iterator;
             },
             .date => {
                 for ([_]?Value{ lower, upper }) |b| if (b) |v| if (v != .date) return null;
                 const low: i64 = if (lower) |v| v.date.days else std.math.minInt(i64);
                 const high: i64 = if (upper) |v| v.date.days else std.math.maxInt(i64);
-                return try self.indexRange(name, .date, value_encoding.orderedInteger(low), value_encoding.orderedInteger(high));
+                return try self.indexRange(index_id, .date, value_encoding.orderedInteger(low), value_encoding.orderedInteger(high));
             },
             else => return null,
         }
     }
 
-    /// The index keys of property `name` holding a `tag` value whose ordered
+    /// The keys of index `index_id` holding a `tag` value whose ordered
     /// 8-byte encoding is between `low` and `high`, inclusive.
-    fn indexRange(self: *Graph, name: []const u8, tag: value_encoding.Tag, low: u64, high: u64) StorageError!NodeIdIterator {
+    fn indexRange(self: *Graph, index_id: u32, tag: value_encoding.Tag, low: u64, high: u64) StorageError!NodeIdIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try prefix.append(self.allocator, key_encoding.index_marker);
-        try prefix.appendSlice(self.allocator, name);
-        try prefix.append(self.allocator, key_encoding.separator);
+        try property_indexes.appendPrefix(&prefix, self.allocator, index_id);
         try prefix.append(self.allocator, @backingInt(tag));
         var start = std.ArrayList(u8).empty;
         defer start.deinit(self.allocator);
@@ -503,8 +505,8 @@ pub const Graph = struct {
     }
 
     /// An iterator over nothing (a range no value is in, as with a NaN bound).
-    fn emptyRange(self: *Graph, name: []const u8) StorageError!NodeIdIterator {
-        return self.indexRange(name, .int, 1, 0);
+    fn emptyRange(self: *Graph, index_id: u32) StorageError!NodeIdIterator {
+        return self.indexRange(index_id, .int, 1, 0);
     }
 
     fn appendBig(list: *std.ArrayList(u8), allocator: Allocator, n: u64) Allocator.Error!void {
@@ -542,20 +544,6 @@ pub const Graph = struct {
         if (x <= -9.223372036854775808e18) return std.math.minInt(i64);
         if (x >= 9.223372036854775807e18) return std.math.maxInt(i64);
         return @intFromFloat(x);
-    }
-
-    fn putIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendIndexKey(&key, self.allocator, name, value, id);
-        try self.store.put(key.items, "");
-    }
-
-    fn deleteIndexEntry(self: *Graph, id: NodeId, name: []const u8, value: Value) StorageError!void {
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendIndexKey(&key, self.allocator, name, value, id);
-        try self.store.del(key.items);
     }
 
     /// Reads a typed property `name` of node `id`, or `null` if absent. A
@@ -706,7 +694,8 @@ pub const Graph = struct {
 
     /// Stores a typed property on relationship `id`. Idempotent. Maintains
     /// the edge-property index. Setting `null` removes the property; a value
-    /// that cannot be stored fails with `UnsupportedPropertyType`. A missing
+    /// that cannot be stored fails with `UnsupportedPropertyType` (or
+    /// `ValueTooLarge`). A missing
     /// relationship is left alone. O(log N).
     pub fn setEdgeProperty(self: *Graph, id: RelationshipId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeEdgeProperty(id, name);
@@ -717,15 +706,15 @@ pub const Graph = struct {
         const arena = scratch.allocator();
         const stored = try self.relationship(id, arena) orelse return;
         const old = try self.getEdgeProperty(id, name, arena);
-        if (old) |previous| try self.deleteEdgeIndexEntry(name, previous, id);
 
         var key = std.ArrayList(u8).empty;
         try key_encoding.appendEdgePropertyKey(&key, arena, id, name);
         var encoded = std.ArrayList(u8).empty;
         try value_encoding.encodeValue(&encoded, arena, value);
+        if (encoded.items.len > layout.max_value_length) return error.ValueTooLarge;
         try self.store.put(key.items, encoded.items);
 
-        try self.putEdgeIndexEntry(name, value, id);
+        try property_indexes.relationshipPropertyChanged(self, id, stored.edge_type, name, old, value);
         try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, name, old, value);
     }
 
@@ -736,33 +725,20 @@ pub const Graph = struct {
         const arena = scratch.allocator();
         const old = try self.getEdgeProperty(id, name, arena) orelse return;
         const stored = try self.relationship(id, arena) orelse return;
-        try self.deleteEdgeIndexEntry(name, old, id);
         var key = std.ArrayList(u8).empty;
         try key_encoding.appendEdgePropertyKey(&key, arena, id, name);
         try self.store.del(key.items);
+        try property_indexes.relationshipPropertyChanged(self, id, stored.edge_type, name, old, null);
         try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, name, old, null);
     }
 
-    fn putEdgeIndexEntry(self: *Graph, property: []const u8, value: Value, id: RelationshipId) StorageError!void {
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendEdgeIndexKey(&key, self.allocator, property, value, id);
-        try self.store.put(key.items, "");
-    }
-
-    fn deleteEdgeIndexEntry(self: *Graph, property: []const u8, value: Value, id: RelationshipId) StorageError!void {
-        var key = std.ArrayList(u8).empty;
-        defer key.deinit(self.allocator);
-        try key_encoding.appendEdgeIndexKey(&key, self.allocator, property, value, id);
-        try self.store.del(key.items);
-    }
-
-    /// Iterates the relationships whose property `name` equals `value` (via
-    /// the edge-property index), in id order. O(log N · (1 + matches)).
-    pub fn edgesByProperty(self: *Graph, name: []const u8, value: Value) StorageError!EdgeIterator {
+    /// Iterates the relationships the relationship index `index_id` holds
+    /// under `value`, in id order: a superset of those whose property equals
+    /// it (long values share keys), so callers recheck. O(log N · (1 + matches)).
+    pub fn edgesByIndex(self: *Graph, index_id: u32, value: Value) StorageError!EdgeIterator {
         var prefix = std.ArrayList(u8).empty;
         defer prefix.deinit(self.allocator);
-        try key_encoding.appendEdgeIndexPrefix(&prefix, self.allocator, name, value);
+        try property_indexes.appendValuePrefix(&prefix, self.allocator, index_id, value);
         return .{ .graph = self, .inner = try self.store.scanPrefix(prefix.items), .record = .init(self.allocator) };
     }
 

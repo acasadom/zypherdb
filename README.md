@@ -30,6 +30,7 @@ from zypherdb import Database
 
 db = Database("lab.db")  # a directory, created if missing
 
+db.query("CREATE INDEX FOR (d:Door) ON (d.name)")  # doors are looked up by name
 db.query("""
     CREATE (ana:Person {name: 'Ana'}), (bo:Person {name: 'Bo'}),
            (staff:Group {name: 'Lab staff'}), (bsl3:Group {name: 'BSL-3'}),
@@ -98,8 +99,8 @@ here to a complete access-control system in twenty short steps.
   graph functions.
 - **Values**: integers, floats, strings, booleans, lists, maps, and the six temporal types with
   time zones. Properties can also hold maps, so a node can carry a document.
-- **Indexes**: every property is indexed for equality and ranges with no setup; full-text indexes
-  in English and Spanish; uniqueness constraints.
+- **Indexes**: property indexes for equality and ranges, on node labels and relationship types,
+  and on fields inside documents; full-text indexes in English and Spanish; uniqueness constraints.
 - **Storage**: transactions, crash safety, three durability levels, one writer and any number of
   readers across processes (readers never wait), and an integrity checker.
 - **Queries**: plans of operators with index seeks, `EXPLAIN` and `PROFILE`, prepared statements

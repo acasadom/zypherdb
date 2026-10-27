@@ -33,12 +33,10 @@ happens, when it matters, and the fix being considered. Measured numbers are in
 ## Planning
 
 - **Ranges are for numbers and dates only.** Comparisons on strings, times and date-times,
-  `STARTS WITH` and `IN` still scan every node of the label. Fix: ordered encodings for those
+  `STARTS WITH` and `IN` still scan every node of the label, even on an indexed property (for a
+  string range, `EXPLAIN` shows `NodeIndexRangeSeek`, but the run falls back to the label scan). Fix: ordered encodings for those
   types (strings already sort by bytes), and seeks for `STARTS WITH` (a prefix range) and `IN`
   (one seek per element).
-- **The property index is shared by every label.** A range lookup returns nodes of any label,
-  and each one's record is read to check its label, in the order of the values, not of the ids.
-  This is the largest part of a range query's time. Fix: index keys per label and property.
 - **A range's selectivity is a guess** (a quarter of the label). Fix: statistics per property.
 - **Each label change reads and writes the label's counter** (`c | label`, kept for the
   planner). Creating many labeled nodes in one transaction pays one counter update per node,
@@ -55,15 +53,11 @@ happens, when it matters, and the fix being considered. Measured numbers are in
 - **Edge properties are one key each** (node properties are one record per node). A query that
   reads several properties of many relationships pays one B-tree search for each. Fix: an edge
   record, as for nodes.
-- **Every node property is indexed**, which doubles the writes and the disk used. Fix: indexes
-  declared per label and property (`CREATE INDEX`), the rest stored only in records.
 - **A commit with `full` durability waits for the disk** (about 8 ms on macOS, which uses
   `F_FULLFSYNC`). Many small writes should be batched (`write()`, `UNWIND`) or use `relaxed` or
   `deferred` durability.
 - **Node record rewrites**: setting one property rewrites the node's whole record. Fine for normal
   records; slow for nodes with very large documents (map properties) updated often.
-- **Map properties (documents) are indexed whole.** A filter on a field inside one
-  (`n.doc.city = 'x'`) reads every candidate's record. Fix: indexes on document paths.
 - **Cold reads go to disk.** The storage engine maps the file into memory; the first read of each page in a
   process whose file is not in the operating system's cache is a disk read (about 200 µs per
   point query on a laptop SSD, until the pages a query needs are cached). Normal for a disk

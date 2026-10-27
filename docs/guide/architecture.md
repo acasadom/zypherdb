@@ -114,8 +114,9 @@ flowchart TB
 | `src/storage/node_record.zig` | The node record: a node's labels and properties in one stored value, read with one B-tree search. |
 | `src/storage/layout.zig` | What a well-formed record, value, edge key and name are, as functions that say why some bytes are not; the checker reports with them, and the storage boundary asserts them in pairs (Debug and ReleaseSafe). |
 | `src/storage/integrity.zig`, `integrity_fulltext.zig` | The integrity checker: rebuilds every derived key from the records and compares (see [storage](storage.md#checking-integrity)). |
-| `src/storage/constraints.zig` | Uniqueness constraints, checked against the property index before a write is made. |
-| `src/storage/fulltext.zig` | The schema definitions (`i \| name`: full-text indexes, declared range indexes, uniqueness constraints) and the schema version that says when they changed. |
+| `src/storage/constraints.zig` | Uniqueness constraints, checked against the constraint's own index before a write is made. |
+| `src/storage/fulltext.zig` | The schema definitions (`i \| name`: full-text indexes, range indexes, uniqueness constraints), the numbers of their property indexes, and the schema version that says when they changed. |
+| `src/storage/property_indexes.zig` | Property indexes (`p \| index \| value \| id`): their keys, long values as prefixes, document paths, and keeping them current on every change. |
 | `src/storage/fulltext_postings.zig` | Full-text postings, entity lengths, term counts and index totals, and how graph mutations keep them current. |
 | `src/storage/fulltext_search.zig` | A full-text query against the postings: boolean clauses, phrases, prefix and fuzzy expansions, BM25. |
 | `src/text/` | Text for full-text search: Unicode tables generated from the Unicode Character Database (`unicode_tables.zig`, by `tools/unicode_tables.py`), the analyzers (`analyzer.zig`), stop words, the Snowball stemmers (`snowball.zig`, `stem_english.zig`, `stem_spanish.zig`) and the query syntax (`query.zig`); also the case mappings of `toUpper`/`toLower` (`unicode.zig`), regular expressions for `=~` (`regex.zig`, a Pike VM: no pattern can make a query hang) and CSV for LOAD CSV (`csv.zig`). |
@@ -186,7 +187,7 @@ sequenceDiagram
   T->>E: (not cached) check, plan: choose anchors, pull seeks out of WHERE, chain operators
   T->>E: run: bind parameters, open the transaction, replan if the counts drifted
   loop scan / expand
-    E->>G: nodesWithLabel / neighbours / nodesByProperty
+    E->>G: nodesWithLabel / neighbours / nodesByIndex
     G->>S: scanPrefix(...)
     S-->>G: iterator (engine cursor)
     G-->>E: node ids

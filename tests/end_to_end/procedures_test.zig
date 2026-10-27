@@ -84,8 +84,8 @@ test "schema commands create, list and drop full-text indexes" {
     const spanish = Value{ .map = &.{.{ .key = "indexConfig", .value = .{ .map = &.{.{ .key = "fulltext.analyzer", .value = string("spanish") }} } }} };
     const standard = Value{ .map = &.{.{ .key = "indexConfig", .value = .{ .map = &.{.{ .key = "fulltext.analyzer", .value = string("standard") }} } }} };
     try expectOrdered(&ast, &g, "SHOW FULLTEXT INDEXES", &.{
-        &.{ string("documents"), string("FULLTEXT"), string("NODE"), .{ .list = &.{ string("Document"), string("Note") } }, .{ .list = &.{ string("title"), string("body") } }, spanish },
-        &.{ string("remarks"), string("FULLTEXT"), string("RELATIONSHIP"), .{ .list = &.{string("REVIEWED")} }, .{ .list = &.{string("comment")} }, standard },
+        &.{ string("documents"), string("FULLTEXT"), string("NODE"), .{ .list = &.{ string("Document"), string("Note") } }, .{ .list = &.{ string("title"), string("body") } }, .null, spanish },
+        &.{ string("remarks"), string("FULLTEXT"), string("RELATIONSHIP"), .{ .list = &.{string("REVIEWED")} }, .{ .list = &.{string("comment")} }, .null, standard },
     });
 
     try expectQueryError(&ast, &g, "CREATE FULLTEXT INDEX documents FOR (n:X) ON EACH [n.y]", error.InvalidExpression);
@@ -100,7 +100,7 @@ test "schema commands create, list and drop full-text indexes" {
     try expectQuery(&ast, &g, "DROP INDEX remarks IF EXISTS", &.{});
     try expectQueryError(&ast, &g, "DROP INDEX remarks", error.InvalidExpression);
     try expectQuery(&ast, &g, "SHOW INDEXES", &.{
-        &.{ string("documents"), string("FULLTEXT"), string("NODE"), .{ .list = &.{ string("Document"), string("Note") } }, .{ .list = &.{ string("title"), string("body") } }, spanish },
+        &.{ string("documents"), string("FULLTEXT"), string("NODE"), .{ .list = &.{ string("Document"), string("Note") } }, .{ .list = &.{ string("title"), string("body") } }, .null, spanish },
     });
 }
 

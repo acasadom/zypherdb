@@ -22,6 +22,9 @@ pub const NodeIdIterator = graph.NodeIdIterator;
 
 /// Checks that every derived structure agrees with the primary records.
 pub const integrity = @import("storage/integrity.zig");
+/// Schema definitions (indexes, constraints) and the property indexes.
+pub const schema_definitions = @import("storage/fulltext.zig");
+pub const property_indexes = @import("storage/property_indexes.zig");
 
 /// The layout of stored bytes, checked; and which names can be stored.
 pub const layout = @import("storage/layout.zig");

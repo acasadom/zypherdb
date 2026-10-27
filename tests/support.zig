@@ -49,6 +49,25 @@ pub fn openStore(tmp: *testing.TmpDir, buffer: []u8) !KeyValueStore {
 }
 
 /// Loads the "people and movies" fixture graph (see docs/tutorial).
+/// Creates the index on `property` of `label_or_type` as CREATE INDEX does
+/// (indexing what the graph holds) and returns its id.
+pub fn createIndex(g: *Graph, entity: zypherdb.schema_definitions.Entity, label_or_type: []const u8, property: []const u8) !u32 {
+    var name_buffer: [64]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buffer, "{s}_{s}", .{ label_or_type, property });
+    const stored = try zypherdb.schema_definitions.create(g, .{ .name = name, .kind = .range, .entity = entity, .analyzer = "", .labels_or_types = &.{label_or_type}, .properties = &.{property} });
+    try zypherdb.property_indexes.populate(g, stored);
+    return stored.index_id;
+}
+
+/// The movies graph with indexes on Person.name, Person.born, Movie.title
+/// and Movie.released.
+pub fn loadIndexedMoviesGraph(g: *Graph) !void {
+    try loadMoviesGraph(g);
+    for ([_][2][]const u8{ .{ "Person", "name" }, .{ "Person", "born" }, .{ "Movie", "title" }, .{ "Movie", "released" } }) |index| {
+        _ = try createIndex(g, .nodes, index[0], index[1]);
+    }
+}
+
 pub fn loadMoviesGraph(g: *Graph) !void {
     const P = struct { id: NodeId, name: []const u8, born: i64 };
     const M = struct { id: NodeId, title: []const u8, released: i64 };

@@ -30,7 +30,7 @@ pub const texts = [_][]const u8{
     "brown",
 };
 
-const map_keys = [_][]const u8{ "a", "b", "c" };
+pub const map_keys = [_][]const u8{ "a", "b", "c" };
 
 /// A value for a property: storable, null (setting it removes the property),
 /// or one that cannot be stored (a list of mixed types).
@@ -86,6 +86,11 @@ fn randomTexts(random: std.Random, arena: Allocator) Allocator.Error![]const Val
     const items = try arena.alloc(Value, 1 + random.uintLessThan(usize, 3));
     for (items) |*item| item.* = .{ .string = pick([]const u8, random, &texts) };
     return items;
+}
+
+/// A document two maps deep at most.
+pub fn randomDocument(random: std.Random, arena: Allocator) Allocator.Error![]const MapEntry {
+    return randomMap(random, arena, 2);
 }
 
 /// A document: keys in order (as maps are stored), values of any kind,

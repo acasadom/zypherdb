@@ -22,7 +22,7 @@ pub const Mix = struct {
     second_clause: u8,
     /// Out of 8: an aggregating RETURN.
     aggregates: u8,
-    /// Out of 8: a variable-length relationship.
+    /// Out of 8: a variable-length relationship (at most one per query).
     variable_length: u8,
     /// Out of 8: a value is a parameter rather than a literal.
     parameters: u8,
@@ -81,6 +81,9 @@ const Generator = struct {
     /// Variables bound so far, by kind.
     nodes: std.ArrayList([]const u8) = .empty,
     relationships: std.ArrayList([]const u8) = .empty,
+    /// A query has at most one variable-length relationship: several, each
+    /// up to 3 hops on a dense graph, multiply into billions of paths.
+    variable_length_used: bool = false,
 
     fn query(self: *Generator) Allocator.Error!Query {
         const head = try self.match("MATCH");
@@ -155,7 +158,8 @@ const Generator = struct {
 
     fn relationship(self: *Generator) Allocator.Error![]const u8 {
         var inside = std.ArrayList(u8).empty;
-        const variable_length = self.chance(self.mix.variable_length);
+        const variable_length = self.chance(self.mix.variable_length) and !self.variable_length_used;
+        if (variable_length) self.variable_length_used = true;
         // A variable-length relationship stays unnamed: its variable is a list.
         if (!variable_length) {
             const name = try std.fmt.allocPrint(self.allocator, "r{d}", .{self.relationships.items.len});

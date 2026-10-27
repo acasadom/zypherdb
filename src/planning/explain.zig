@@ -23,6 +23,7 @@ const Operator = Plan.Operator;
 const OperatorIndex = Plan.OperatorIndex;
 const Statistics = @import("statistics.zig").Statistics;
 const unknown = @import("statistics.zig").unknown;
+const property_indexes = @import("../storage/property_indexes.zig");
 const containsAggregate = @import("builder.zig").containsAggregate;
 
 pub const Line = struct {
@@ -156,8 +157,8 @@ const Explainer = struct {
             .bound_node => "BoundNode",
             .node_scan => |reference| scan: {
                 const node = self.plan.patterns[reference.pattern].nodes[reference.node];
-                if (node.seeks.len > 0 and self.plan.index_lookups) break :scan "NodeIndexSeek";
-                if (node.ranges.len > 0 and self.plan.index_lookups) break :scan "NodeIndexRangeSeek";
+                if (node.seek_index != null) break :scan "NodeIndexSeek";
+                if (node.range_index != null) break :scan "NodeIndexRangeSeek";
                 if (node.labels.len > 0) break :scan "NodeByLabelScan";
                 break :scan "AllNodesScan";
             },
@@ -308,7 +309,7 @@ const Explainer = struct {
 
     /// How many candidates the anchor scan of `node` gives.
     fn anchorRows(self: *Explainer, node: Plan.PatternNode) Allocator.Error!?f64 {
-        if (node.seeks.len > 0) return 1;
+        if (node.seek_index != null) return 1;
         var smallest: ?f64 = null;
         for (node.labels) |label| {
             const count = try self.statistics.labelCount(label);
@@ -316,7 +317,7 @@ const Explainer = struct {
             const rows: f64 = @floatFromInt(count);
             smallest = if (smallest) |known| @min(known, rows) else rows;
         }
-        if (node.ranges.len > 0) if (smallest) |rows| return rows / 4;
+        if (node.range_index != null) if (smallest) |rows| return rows / 4;
         return smallest;
     }
 
@@ -413,10 +414,10 @@ fn literalCount(ast: *const Ast, clause_part: Index) ?f64 {
 }
 
 /// `(a:L {k: v})`, with the property ranges the scan reads, if it reads
-/// them (it seeks an equality first).
+/// them (from an index, and it seeks no equality first).
 fn scanDetails(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
     try nodeText(text, node);
-    if (node.seeks.len > 0) return;
+    if (node.seek_index != null or node.range_index == null) return;
     for (node.ranges, 0..) |range, range_position| {
         try text.append(if (range_position == 0) " WHERE " else " AND ");
         if (range.lower) |lower| {
@@ -425,7 +426,7 @@ fn scanDetails(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
         }
         try text.name(node.variable_name);
         try text.append(".");
-        try text.name(range.property);
+        try propertyName(text, range.property);
         if (range.upper) |upper| {
             try text.append(" <= ");
             try text.write(upper);
@@ -448,13 +449,23 @@ fn stepDetails(text: *Printer, pattern: Plan.PatternPlan, from: usize, to: usize
     if (edge.variable_length) try text.hops(edge.min_hops, edge.max_hops);
     for (edge.seeks, 0..) |seek, position| {
         try text.append(if (position == 0) " {" else ", ");
-        try text.name(seek.property);
+        try propertyName(text, seek.property);
         try text.append(": ");
         try text.write(seek.value);
     }
     if (edge.seeks.len > 0) try text.append("}");
     try text.append(if (points_right) "]->" else "]-");
     try nodeText(text, pattern.nodes[to]);
+}
+
+/// A seek's property: a name, or a document path as `a.b`.
+fn propertyName(text: *Printer, property: []const u8) Allocator.Error!void {
+    var names = std.mem.splitScalar(u8, property, property_indexes.path_separator);
+    var first = true;
+    while (names.next()) |name| : (first = false) {
+        if (!first) try text.append(".");
+        try text.name(name);
+    }
 }
 
 /// `(a:L {k: v})` for a planned node.
@@ -467,7 +478,7 @@ fn nodeText(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
     }
     for (node.seeks, 0..) |seek, position| {
         try text.append(if (position == 0) " {" else ", ");
-        try text.name(seek.property);
+        try propertyName(text, seek.property);
         try text.append(": ");
         try text.write(seek.value);
     }

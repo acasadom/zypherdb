@@ -51,6 +51,7 @@ pub const Operation = enum {
     abort,
     check_inside_transaction,
     create_fulltext_index,
+    create_index,
     create_constraint,
     drop_definition,
     reopen,
@@ -242,6 +243,7 @@ const Fuzzer = struct {
             .abort => if (self.graph.inWriteTransaction()) try self.abort(),
             .check_inside_transaction => try self.verify(),
             .create_fulltext_index => try self.createFulltextIndex(),
+            .create_index => try self.createIndex(),
             .create_constraint => try self.createConstraint(),
             .drop_definition => try self.dropDefinition(),
             .reopen => try self.reopen(),
@@ -374,7 +376,12 @@ const Fuzzer = struct {
 
     fn setProperty(self: *Fuzzer) !void {
         const id = self.pickNode() orelse return;
-        return self.setPropertyTo(id, self.pick(self.swarm.properties), try self.randomValue());
+        // Documents often, for the indexes on their fields.
+        const value: Value = if (self.random().uintLessThan(u8, 4) == 0)
+            .{ .map = try values.randomDocument(self.random(), self.values.allocator()) }
+        else
+            try self.randomValue();
+        return self.setPropertyTo(id, self.pick(self.swarm.properties), value);
     }
 
     /// Gives a node the value another node has (or the number equal to it,
@@ -497,6 +504,37 @@ const Fuzzer = struct {
         const expected: ?anyerror = if (exists and !if_not_exists) error.InvalidExpression else null;
         if (try self.runStatement(statement, expected) and !exists) {
             try self.model.definitions.append(self.allocator, .{ .name = name, .kind = .fulltext, .labels_or_types = targets, .properties = properties });
+        }
+    }
+
+    /// A property index on one label or relationship type and one property,
+    /// or a field of a document in it, one or two maps deep (the integrity
+    /// checker checks its entries).
+    fn createIndex(self: *Fuzzer) !void {
+        try self.leaveTransaction();
+        const scratch = self.scratch.allocator();
+        const name = self.pickNewName();
+        const on_relationships = self.random().boolean();
+        const target = try scratch.dupe([]const u8, &.{self.pick(if (on_relationships) self.swarm.types else self.swarm.labels)});
+        var names = std.ArrayList([]const u8).empty;
+        try names.append(scratch, self.pick(self.swarm.properties));
+        for (0..self.random().uintLessThan(usize, 3)) |_| try names.append(scratch, self.pick(&values.map_keys));
+        const property = try scratch.dupe([]const u8, &.{try std.mem.join(scratch, &.{zypherdb.property_indexes.path_separator}, names.items)});
+        const if_not_exists = self.random().uintLessThan(u8, 4) == 0;
+        const statement = try std.fmt.allocPrint(scratch, "CREATE INDEX {s}{s} FOR {s}{s}{s} ON (e.{s})", .{
+            name,
+            if (if_not_exists) " IF NOT EXISTS" else "",
+            if (on_relationships) "()-[e:" else "(e:",
+            target[0],
+            if (on_relationships) "]-()" else ")",
+            try std.mem.join(scratch, ".", names.items),
+        });
+        const exists = self.model.findDefinition(name) != null;
+        const expected: ?anyerror = if (exists and !if_not_exists) error.InvalidExpression else null;
+        if (try self.runStatement(statement, expected) and !exists) {
+            const kept = self.values.allocator();
+            const kept_property = try kept.dupe([]const u8, &.{try kept.dupe(u8, property[0])});
+            try self.model.definitions.append(self.allocator, .{ .name = name, .kind = .range, .labels_or_types = try kept.dupe([]const u8, target), .properties = kept_property });
         }
     }
 

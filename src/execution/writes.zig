@@ -8,6 +8,9 @@ const MapEntry = @import("../value.zig").MapEntry;
 const Relationship = @import("../value.zig").Relationship;
 const GraphError = @import("../storage/graph.zig").GraphError;
 const layout = @import("../storage/layout.zig");
+const fulltext = @import("../storage/fulltext.zig");
+const property_indexes = @import("../storage/property_indexes.zig");
+const Plan = @import("../planning/Plan.zig");
 
 const Executor = @import("Executor.zig");
 const pattern_matching = @import("pattern_matching.zig");
@@ -78,11 +81,10 @@ pub fn findMatchingNode(self: *Executor, node_pattern_index: Index, bindings: *B
     const node_pattern = self.ast.data(node_pattern_index).node_pattern;
     const properties = self.ast.nodeChildren(node_pattern_index);
 
-    if (properties.len > 0) {
-        // Index lookup on the first property.
-        const property_name = self.ast.data(properties[0]).text;
-        const value = try expressions.evaluate(self, self.ast.nodeChildren(properties[0])[0], bindings);
-        var iterator = try self.graph.nodesByProperty(property_name, value);
+    if (try indexedProperty(self, node_pattern.labels, properties)) |found| {
+        // Index lookup on that property.
+        const value = try expressions.evaluate(self, self.ast.nodeChildren(properties[found.position])[0], bindings);
+        var iterator = try self.graph.nodesByIndex(found.index_id, value);
         defer iterator.deinit();
         while (try iterator.next()) |id| {
             if (!(try pattern_matching.hasAllLabels(self, id, node_pattern.labels))) continue;
@@ -97,6 +99,19 @@ pub fn findMatchingNode(self: *Executor, node_pattern_index: Index, bindings: *B
         if (!(try pattern_matching.hasAllLabels(self, id, node_pattern.labels))) continue;
         if (try nodePropertiesMatch(self, node_pattern_index, id, bindings)) return id;
     }
+    return null;
+}
+
+/// A property of the pattern that an index on one of its labels covers, if
+/// there is one.
+fn indexedProperty(self: *Executor, labels: []const []const u8, properties: []const Index) ExecutionError!?Plan.IndexUse {
+    if (labels.len == 0 or properties.len == 0) return null;
+    if (try fulltext.schemaVersion(self.graph) == 0) return null; // no index was ever made
+    const definitions = try fulltext.all(self.graph, self.allocator);
+    for (labels) |label| for (properties, 0..) |property_node, position| {
+        const definition = property_indexes.find(definitions, .nodes, label, self.ast.data(property_node).text) orelse continue;
+        return .{ .index_id = definition.index_id, .position = @intCast(position) };
+    };
     return null;
 }
 
@@ -289,15 +304,19 @@ fn deleteNode(self: *Executor, id: NodeId, detach: bool, name: []const u8) Execu
 
 fn addLabel(self: *Executor, id: NodeId, label: []const u8) ExecutionError!void {
     try requireStorableName(self, "label", label);
-    try self.graph.addLabel(id, label);
+    self.graph.addLabel(id, label) catch |err| {
+        if (err == error.TooManyLabels) self.fail(.invalid_expression, "a node cannot have more than {d} labels", .{layout.max_labels});
+        return err;
+    };
 }
 
 /// Refuses a label, relationship type or property name that storage cannot
-/// keep: empty, or holding U+0000, the separator inside index keys. (Names in
-/// a query are never empty; names from a map parameter can be.)
+/// keep: empty, too long for keys, or holding U+0000, the separator inside
+/// index keys. (Names in a query are never empty; names from a map parameter
+/// can be.)
 pub fn requireStorableName(self: *Executor, kind: []const u8, name: []const u8) ExecutionError!void {
-    if (layout.isStorableName(name)) return;
-    self.fail(.invalid_expression, "a {s} cannot be empty or contain the character U+0000", .{kind});
+    const problem = layout.nameProblem(name) orelse return;
+    self.fail(.invalid_expression, "a {s} {s}", .{ kind, problem });
     return error.InvalidExpression;
 }
 
@@ -317,6 +336,9 @@ fn setEdgeProperty(self: *Executor, id: u64, name: []const u8, value: Value) Exe
 fn reportPropertyError(self: *Executor, name: []const u8, err: GraphError) ExecutionError {
     if (err == error.UnsupportedPropertyType) {
         self.fail(.type_mismatch, "property '{s}': this value cannot be stored (a list must hold values of one kind and no nulls; nodes, relationships and paths are never stored)", .{name});
+    }
+    if (err == error.ValueTooLarge) {
+        self.fail(.invalid_expression, "property '{s}': this value is too large to store (at most {d} bytes)", .{ name, layout.max_value_length });
     }
     return err;
 }

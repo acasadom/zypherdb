@@ -99,6 +99,7 @@ tree of operators. Each operator is a dict:
   `OPTIONAL MATCH`'s, a subquery's, a pattern's inside an expression).
 
 ```python
+db.query("CREATE INDEX FOR (r:Room) ON (r.number)")
 db.query("UNWIND range(1, 3) AS i CREATE (:Room {number: i})")
 plan = db.explain("MATCH (r:Room {number: $number}) RETURN r", number=2)
 print(plan["operator"], plan["children"][0]["operator"], plan["children"][0]["details"])

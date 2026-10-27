@@ -57,6 +57,7 @@ pub const ExecutionError = StorageError || error{
     DivisionByZero,
     ParameterMissing,
     UnsupportedPropertyType,
+    ValueTooLarge,
     UnknownVariable,
     InvalidExpression,
     TypeMismatch,

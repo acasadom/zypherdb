@@ -156,6 +156,15 @@ def test_int_range_is_enforced(db):
         db.add_node(2**64, "P")
 
 
+def test_names_longer_than_keys_hold_are_refused(db):
+    db.add_node(1, "P")
+    db.set_property(1, "a" * 1024, 1)
+    with pytest.raises(ValueError, match="longer than 1024 bytes"):
+        db.add_node(2, "L" * 1025)
+    with pytest.raises(ValueError, match="longer than 1024 bytes"):
+        db.set_property(1, "a" * 1025, 1)
+
+
 def test_property_types(db):
     db.add_node(1, "P")
     db.set_property(1, "flag", True)
@@ -274,7 +283,7 @@ def test_names_that_cannot_be_stored_are_refused(db):
     with pytest.raises(ValueError):
         db.set_property(1, "", 1)
     db.set_property(1, "", None)  # removing a missing property does nothing
-    with pytest.raises(InvalidExpressionError, match="U\\+0000"):
+    with pytest.raises(InvalidExpressionError, match="cannot be empty"):
         db.query("MATCH (n) SET n += $map", map={"": 1})
     with pytest.raises(InvalidExpressionError, match="U\\+0000"):
         db.query("CREATE (:`A\x00B`)")

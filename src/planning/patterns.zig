@@ -7,6 +7,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("../query/ast.zig").Ast;
 const Index = @import("../query/ast.zig").Index;
 const Direction = @import("../storage/graph.zig").Direction;
+const property_indexes = @import("../storage/property_indexes.zig");
 const Statistics = @import("statistics.zig").Statistics;
 const unknown = @import("statistics.zig").unknown;
 
@@ -68,6 +69,7 @@ pub fn plan(context: Context, pattern: Index, where: ?Index, before: *const Scop
     var planner = Planner{ .context = context };
     try planner.collectElements(pattern, before, after);
     if (where) |expression| if (context.options.where_seeks) try planner.collectWhereSeeks(expression);
+    if (context.options.index_lookups) try planner.findIndexes();
     const path_variable = context.ast.data(pattern).text;
     if (where) |expression| planner.markPathReads(expression, path_variable);
 
@@ -193,16 +195,45 @@ const Planner = struct {
         }
     }
 
-    /// Uses the edge-property index as the anchor when the pattern is a
-    /// single edge with an equality seek and both endpoints are unbound and
+    /// The property index each node's and edge's seeks (or else ranges)
+    /// can look up, if any: a node's on one of its labels, an edge's on its
+    /// one type.
+    fn findIndexes(self: *Planner) Allocator.Error!void {
+        const statistics = self.context.statistics;
+        for (self.nodes.items) |*draft| {
+            if (draft.node.bound) continue;
+            for (draft.node.labels) |label| {
+                if (draft.node.seek_index == null) for (draft.seeks.items, 0..) |seek, position| {
+                    const index_id = try statistics.propertyIndex(.nodes, label, seek.property) orelse continue;
+                    draft.node.seek_index = .{ .index_id = index_id, .position = @intCast(position) };
+                    break;
+                };
+                if (draft.node.range_index == null) for (draft.ranges.items, 0..) |range, position| {
+                    const index_id = try statistics.propertyIndex(.nodes, label, range.property) orelse continue;
+                    draft.node.range_index = .{ .index_id = index_id, .position = @intCast(position) };
+                    break;
+                };
+            }
+        }
+        for (self.edges.items) |*draft| {
+            const edge_type = draft.edge.singleType() orelse continue;
+            for (draft.seeks.items, 0..) |seek, position| {
+                const index_id = try statistics.propertyIndex(.relationships, edge_type, seek.property) orelse continue;
+                draft.edge.seek_index = .{ .index_id = index_id, .position = @intCast(position) };
+                break;
+            }
+        }
+    }
+
+    /// Uses the relationship index as the anchor when the pattern is a
+    /// single edge with an indexed seek and both endpoints are unbound and
     /// unselective.
     fn shouldEdgeAnchor(self: *const Planner) bool {
-        if (!self.context.options.index_lookups) return false;
         if (self.nodes.items.len != 2 or self.edges.items.len != 1) return false;
         const edge = self.edges.items[0];
-        if (edge.seeks.items.len == 0 or edge.edge.variable_length) return false;
+        if (edge.edge.seek_index == null or edge.edge.variable_length) return false;
         for (self.nodes.items) |draft| {
-            if (draft.node.bound or draft.node.labels.len > 0 or draft.seeks.items.len > 0) return false;
+            if (draft.node.bound or draft.node.labels.len > 0) return false;
         }
         return true;
     }
@@ -243,14 +274,14 @@ const Planner = struct {
     }
 
     fn addSeek(self: *Planner, access_expression: Index, value_expression: Index) Allocator.Error!void {
-        const target = self.seekTarget(access_expression, value_expression) orelse return;
+        const target = try self.seekTarget(access_expression, value_expression) orelse return;
         try self.nodes.items[target.node].seeks.append(self.context.allocator, .{ .property = target.property, .value = value_expression });
     }
 
     /// `node.property <op> value` (or reversed) as a range on the node: `value`
     /// is a lower bound for `>`/`>=`, an upper one for `<`/`<=`.
     fn addRange(self: *Planner, access_expression: Index, value_expression: Index, value_is_lower: bool) Allocator.Error!void {
-        const target = self.seekTarget(access_expression, value_expression) orelse return;
+        const target = try self.seekTarget(access_expression, value_expression) orelse return;
         try self.nodes.items[target.node].ranges.append(self.context.allocator, .{
             .property = target.property,
             .lower = if (value_is_lower) value_expression else null,
@@ -259,19 +290,32 @@ const Planner = struct {
     }
 
     /// The pattern node and property of `access_expression` (`variable.property`
-    /// of a node in this pattern), if `value_expression` is constant for the
-    /// whole query, so usable as an index lookup.
-    fn seekTarget(self: *const Planner, access_expression: Index, value_expression: Index) ?struct { node: usize, property: []const u8 } {
+    /// of a node in this pattern, or a document path `variable.property.field`,
+    /// its names joined by `property_indexes.path_separator`), if
+    /// `value_expression` is constant for the whole query, so usable as an
+    /// index lookup.
+    fn seekTarget(self: *const Planner, access_expression: Index, value_expression: Index) Allocator.Error!?struct { node: usize, property: []const u8 } {
         const ast = self.context.ast;
         if (ast.kind(access_expression) != .property_access) return null;
-        const object = ast.nodeChildren(access_expression)[0];
-        if (ast.kind(object) != .variable) return null;
         switch (ast.kind(value_expression)) {
             .integer_literal, .float_literal, .string_literal, .boolean_literal, .parameter => {},
             else => return null,
         }
+        var object = ast.nodeChildren(access_expression)[0];
+        var depth: usize = 1;
+        while (ast.kind(object) == .property_access) : (depth += 1) object = ast.nodeChildren(object)[0];
+        if (ast.kind(object) != .variable) return null;
         const node_index = self.nodeIndex(ast.data(object).text) orelse return null;
-        return .{ .node = node_index, .property = ast.data(access_expression).text };
+        if (depth == 1) return .{ .node = node_index, .property = ast.data(access_expression).text };
+        // A path: its names from the innermost access out.
+        const names = try self.context.allocator.alloc([]const u8, depth);
+        var access = access_expression;
+        for (0..depth) |position| {
+            names[depth - 1 - position] = ast.data(access).text;
+            access = ast.nodeChildren(access)[0];
+        }
+        const path = try std.mem.join(self.context.allocator, &.{property_indexes.path_separator}, names);
+        return .{ .node = node_index, .property = path };
     }
 
     /// How many candidates node `position` would produce as the anchor.
@@ -280,13 +324,13 @@ const Planner = struct {
     fn estimate(self: *const Planner, position: usize) Allocator.Error!usize {
         const draft = self.nodes.items[position];
         if (draft.node.bound) return 0; // already known: a free start
-        if (draft.seeks.items.len > 0) return 2; // a point lookup: one read, one row
+        if (draft.node.seek_index != null) return 2; // a point lookup: one read, one row
         var candidates: usize = unknown;
         for (draft.node.labels) |label| candidates = @min(candidates, try self.context.statistics.labelCount(label));
         // A range keeps some of the nodes: a guess, without statistics, that is
         // enough to prefer it to a scan of the whole label.
-        if (draft.ranges.items.len > 0) candidates = candidates / 4;
-        if (draft.node.labels.len == 0 and draft.ranges.items.len == 0) return candidates;
+        if (draft.node.range_index != null) candidates = candidates / 4;
+        if (draft.node.labels.len == 0) return candidates;
         // The rows are bounded by the rarest incident edge type as well: a start
         // next to a rare relationship leaves fewer rows to expand. It does not
         // make the scan read fewer candidates, so it never beats a cheaper scan.

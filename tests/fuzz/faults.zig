@@ -188,6 +188,10 @@ const Fuzzer = struct {
     }
 
     fn runSteps(self: *Fuzzer) !void {
+        for (try workload.initialIndexes(self.texts.allocator())) |step| {
+            try self.runStep(step, false);
+            _ = self.scratch.reset(.retain_capacity);
+        }
         while (self.step_number < self.options.steps) : (self.step_number += 1) {
             const random = self.prng.random();
             const step = try workload.generate(random, self.swarm.mix, self.texts.allocator());
