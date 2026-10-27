@@ -156,7 +156,22 @@ fn parseArguments(args: []const []const u8) !Config {
 
 const Loaded = struct { nodes: u64 = 0, relationships: u64 = 0, properties: u64 = 0 };
 
+/// The properties the queries look nodes up by; made before the data, so
+/// the load keeps them current as an application's writes would.
+const indexes = [_][]const u8{
+    "CREATE INDEX FOR (c:Card) ON (c.number)",
+    "CREATE INDEX FOR (p:Person) ON (p.id)",
+    "CREATE INDEX FOR (d:Door) ON (d.id)",
+};
+
 fn load(graph: *Graph, counts: Counts) !Loaded {
+    for (indexes) |text| {
+        var arena = std.heap.ArenaAllocator.init(std.heap.smp_allocator);
+        defer arena.deinit();
+        var ast = zypherdb.Ast.init(arena.allocator());
+        var executor = zypherdb.Executor.init(&ast, graph, arena.allocator());
+        _ = try executor.run(try zypherdb.parser.parse(&ast, text, null));
+    }
     var loaded = Loaded{};
     var prng = std.Random.DefaultPrng.init(7);
     const random = prng.random();
