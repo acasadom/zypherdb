@@ -20,6 +20,10 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    env:
+      # A stalled Zig cache download gives up after 2 minutes, not the default
+      # 10, and the job goes on with an empty cache (the cache takes seconds).
+      SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
     steps:
       - uses: actions/checkout@v4
 
