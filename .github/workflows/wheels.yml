@@ -1,0 +1,144 @@
+name: Wheels
+
+# Builds the Python wheels (one abi3 wheel per platform) and the sdist, then installs each wheel
+# in a clean Python and runs the Python tests against it. publish.yml reuses this workflow, so
+# what is published is exactly what was tested.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wheels-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  wheel:
+    name: wheel (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, arch: x64 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, arch: arm64 }
+          - { name: macos-arm64, os: macos-latest, arch: arm64 }
+          # GitHub's last Intel macOS image (an x64 Python under Rosetta on arm64 runners lacks
+          # the Homebrew libraries it links).
+          - { name: macos-x86_64, os: macos-15-intel, arch: x64 }
+          - { name: windows-x86_64, os: windows-latest, arch: x64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+
+      # Built against the oldest supported Python's headers (the limited API of 3.10).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          architecture: ${{ matrix.arch }}
+
+      - name: Build the wheel
+        run: |
+          python -m pip install build twine
+          python -m build --wheel --outdir dist
+          python -m twine check --strict dist/*
+
+      - name: Check the manylinux tag
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install auditwheel
+          auditwheel show dist/*.whl
+          auditwheel show dist/*.whl | grep -q 'manylinux_2_17'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No setup-zig: building a wheel from the sdist must fetch Zig from the ziglang package,
+      # as `pip install` from source does on a machine without Zig.
+      - name: Build the sdist, and a wheel from it
+        run: |
+          python -m pip install build twine
+          python -m build --outdir build-check
+          python -m twine check --strict build-check/*
+          mkdir dist
+          mv build-check/*.tar.gz dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  test:
+    name: test (${{ matrix.name }}, Python ${{ matrix.python }})
+    needs: wheel
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [linux-x86_64, linux-aarch64, macos-arm64, macos-x86_64, windows-x86_64]
+        python: ["3.10", "3.14"]
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, arch: x64 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, arch: arm64 }
+          - { name: macos-arm64, os: macos-latest, arch: arm64 }
+          - { name: macos-x86_64, os: macos-15-intel, arch: x64 }
+          - { name: windows-x86_64, os: windows-latest, arch: x64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.arch }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist
+
+      - name: Install the wheel
+        run: python -m pip install --only-binary=zypherdb --find-links dist zypherdb pytest
+
+      # The tests run from a copy outside the source tree: in it, python/tests/conftest.py would
+      # put the source package first on sys.path.
+      - name: Python tests against the installed wheel
+        run: |
+          workdir="$RUNNER_TEMP/wheel-test"
+          mkdir -p "$workdir/python"
+          cp -R python/tests "$workdir/python/"
+          cp -R docs examples README.md "$workdir/"
+          cd "$workdir"
+          python -c "import zypherdb; assert 'site-packages' in zypherdb.__file__, zypherdb.__file__"
+          python -m pytest python/tests -q
