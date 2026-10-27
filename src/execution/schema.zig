@@ -10,6 +10,7 @@ const fulltext = @import("../storage/fulltext.zig");
 const fulltext_postings = @import("../storage/fulltext_postings.zig");
 const constraints = @import("../storage/constraints.zig");
 const property_indexes = @import("../storage/property_indexes.zig");
+const layout = @import("../storage/layout.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -90,8 +91,18 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         if (kind != .range) try requireStorableName(executor, "property name", property);
         var names = std.mem.splitScalar(u8, property, property_indexes.path_separator);
         if (kind == .range) while (names.next()) |name| try requireStorableName(executor, "property name", name);
+        // A path is stored as one name.
+        if (property.len > layout.max_name_length) {
+            executor.fail(.invalid_expression, "a document path cannot be longer than {d} bytes", .{layout.max_name_length});
+            return error.InvalidExpression;
+        }
     }
     try requireStorableName(executor, "name for an index or constraint", command.name);
+    const max_properties: usize = if (kind == .fulltext) fulltext.max_fulltext_properties else fulltext.max_names;
+    if (command.labels_or_types.len > fulltext.max_names or command.properties.len > max_properties) {
+        executor.fail(.invalid_expression, "an index or constraint can name at most {d} labels or types and {d} properties", .{ fulltext.max_names, max_properties });
+        return error.InvalidExpression;
+    }
     if (try fulltext.find(executor.graph, command.name, executor.allocator)) |existing| {
         if (command.if_not_exists) return;
         executor.fail(.invalid_expression, "{s} named '{s}' already exists", .{ if (existing.kind == .unique) "a constraint" else "an index", command.name });

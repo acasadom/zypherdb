@@ -27,6 +27,10 @@ pub const NodeRecord = struct {
         return .{ .bytes = self.bytes, .remaining = if (self.bytes.len == 0) 0 else readInt(u16, self.bytes), .position = 2 };
     }
 
+    pub fn labelCount(self: NodeRecord) usize {
+        return self.labels().remaining;
+    }
+
     pub fn properties(self: NodeRecord) PropertyIterator {
         var position = self.labelsEnd();
         const count = if (self.bytes.len == 0) 0 else readInt(u32, self.bytes[position..]);

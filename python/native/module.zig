@@ -785,8 +785,11 @@ fn storageFailure() ?*py.PyObject {
 }
 
 /// The exception for a failed write: a constraint it would break
-/// (ConstraintViolationError), or a storage failure.
+/// (ConstraintViolationError), a size limit (ValueError), or a storage
+/// failure.
 fn writeFailure(database: *Database, err: anyerror) ?*py.PyObject {
+    if (err == error.ValueTooLarge) return raise(py.PyExc_ValueError, "this value is too large to store (at most {d} bytes)", .{zypherdb.layout.max_value_length});
+    if (err == error.TooManyLabels) return raise(py.PyExc_ValueError, "a node cannot have more than {d} labels", .{zypherdb.layout.max_labels});
     if (err != error.ConstraintViolation) return storageFailure();
     database.diagnostic.set(.constraint_violation, 0, "{s}", .{database.graph.violationMessage()});
     return raiseQueryError(database);
@@ -851,8 +854,8 @@ fn addNode(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 
 /// Raises ValueError for a label, type or property name storage cannot keep.
 fn requireStorableName(kind: []const u8, name: []const u8) bool {
-    if (zypherdb.layout.isStorableName(name)) return true;
-    _ = raise(py.PyExc_ValueError, "a {s} cannot be empty or contain the character U+0000", .{kind});
+    const problem = zypherdb.layout.nameProblem(name) orelse return true;
+    _ = raise(py.PyExc_ValueError, "a {s} {s}", .{ kind, problem });
     return false;
 }
 

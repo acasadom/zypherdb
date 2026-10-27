@@ -27,6 +27,12 @@ pub const schema_version_key: []const u8 = "!schema";
 /// The last property index id handed out (u32; ids start at 1).
 pub const index_id_key: []const u8 = "!index_id";
 
+/// The most labels, types or properties a definition can name (counted in
+/// a u16), and the most properties of a full-text index (postings number
+/// them with a u8).
+pub const max_names = std.math.maxInt(u16);
+pub const max_fulltext_properties = 256;
+
 pub const Entity = enum(u8) { nodes = 0, relationships = 1 };
 
 pub const Kind = enum(u8) { fulltext = 0, range = 1, unique = 2 };

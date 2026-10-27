@@ -217,6 +217,10 @@ test "C ABI: names that are empty or hold a 0x00 byte are refused" {
     try testing.expectEqual(RETURN_INVALID_NAME, zypherdb_add_edge(context, 1, 2, "".ptr, 0));
     try testing.expectEqual(RETURN_INVALID_NAME, zypherdb_set_property_int64(context, 1, "".ptr, 0, 1));
     try testing.expectEqual(RETURN_INVALID_NAME, zypherdb_set_property_string(context, 1, "p\x00q".ptr, 3, "a".ptr, 1));
+    // Names go into keys, which hold about 2000 bytes.
+    const too_long: [1025]u8 = @splat('a');
+    try testing.expectEqual(RETURN_INVALID_NAME, zypherdb_add_node(context, 3, &too_long, too_long.len));
+    try testing.expectEqual(RETURN_OK, zypherdb_set_property_int64(context, 1, &too_long, 1024, 1));
 
     // In queries: names in the text, and keys of a map parameter.
     const queries = [_][]const u8{
@@ -230,14 +234,14 @@ test "C ABI: names that are empty or hold a 0x00 byte are refused" {
         "CREATE FULLTEXT INDEX f FOR (n:A) ON EACH [n.`x\x00y`]",
     };
     const messages = [_][]const u8{
-        "a label cannot be empty or contain the character U+0000",
-        "a relationship type cannot be empty or contain the character U+0000",
-        "a label cannot be empty or contain the character U+0000",
-        "a property name cannot be empty or contain the character U+0000",
-        "a name for an index or constraint cannot be empty or contain the character U+0000",
-        "a label cannot be empty or contain the character U+0000",
-        "a relationship type cannot be empty or contain the character U+0000",
-        "a property name cannot be empty or contain the character U+0000",
+        "a label cannot contain the character U+0000",
+        "a relationship type cannot contain the character U+0000",
+        "a label cannot contain the character U+0000",
+        "a property name cannot contain the character U+0000",
+        "a name for an index or constraint cannot contain the character U+0000",
+        "a label cannot contain the character U+0000",
+        "a relationship type cannot contain the character U+0000",
+        "a property name cannot contain the character U+0000",
     };
     for (queries, messages) |query, message| {
         try testing.expect(zypherdb_query(context, query.ptr, query.len) == null);
@@ -247,10 +251,10 @@ test "C ABI: names that are empty or hold a 0x00 byte are refused" {
     const set_query = "MATCH (n) SET n += $map";
     const create_query = "CREATE ()-[r:R]->() SET r += $map";
     for ([_][]const u8{ set_query, create_query }) |query| {
-        for ([_][]const u8{ "{\"map\": {\"\": 1}}", "{\"map\": {\"a\\u0000\": 1}}" }) |parameters| {
+        for ([_][]const u8{ "{\"map\": {\"\": 1}}", "{\"map\": {\"a\\u0000\": 1}}" }, [_][]const u8{ "a property name cannot be empty", messages[3] }) |parameters, message| {
             try testing.expect(c_api.zypherdb_query_with_parameters(context, query.ptr, query.len, parameters.ptr, parameters.len) == null);
             var length: usize = 0;
-            try testing.expectEqualStrings(messages[3], zypherdb_last_error(context, &length)[0..length]);
+            try testing.expectEqualStrings(message, zypherdb_last_error(context, &length)[0..length]);
         }
     }
     // Removing such a property is a no-op, as for any missing property.

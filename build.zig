@@ -35,10 +35,12 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(shared);
 
     const test_step = b.step("test", "Run the tests");
+    const test_filters: []const []const u8 = if (b.option([]const u8, "test-filter", "Run only the tests whose name contains this text")) |filter| b.dupeStrings(&.{filter}) else &.{};
 
     // Unit tests: the `test` blocks next to the code in src/ (private helpers).
     const unit_tests = b.addTest(.{
         .root_module = zypherdb,
+        .filters = test_filters,
     });
     test_step.dependOn(&b.addRunArtifact(unit_tests).step);
 
@@ -50,6 +52,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{.{ .name = "zypherdb", .module = zypherdb }},
         }),
+        .filters = test_filters,
     });
     test_step.dependOn(&b.addRunArtifact(suite).step);
 
@@ -61,6 +64,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{.{ .name = "zypherdb", .module = zypherdb_with_faults }},
         }),
+        .filters = test_filters,
     });
     test_step.dependOn(&b.addRunArtifact(fault_tests).step);
 

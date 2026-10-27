@@ -23,10 +23,11 @@ Two rules make that work:
 - All integers are **big-endian and fixed-width** (ids are `u64`, 8 bytes). So byte order equals
   numeric order, and no id is ever a prefix of another.
 - A `0x00` byte separates variable-length parts (strings). A quoted openCypher name could contain
-  `0x00`, so ZypherDB refuses labels, relationship types and property names that contain it or are
-  empty (writes.zig `requireStorableName`; `ZYPHERDB_INVALID_NAME` in C, `ValueError` in Python), and
-  the storage boundary asserts it (`layout.assertName`). A name with `0x00` in a key would end
-  early: `A\0B` would read as `A`.
+  `0x00`, so ZypherDB refuses labels, relationship types and property names that contain it, are
+  empty or are longer than 1024 bytes (writes.zig `requireStorableName`; `ZYPHERDB_INVALID_NAME` in
+  C, `ValueError` in Python), and the storage boundary asserts it (`layout.assertName`). A name with
+  `0x00` in a key would end early: `A\0B` would read as `A`. (For the length, see
+  [Limits](#limits).)
 
 ## The key layout
 
@@ -189,13 +190,36 @@ outwards, so it returns a superset of the matches, and the WHERE is still checke
 
 ## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version` (2). When the C ABI or the
+The key `!format` holds the format's version, `Graph.format_version` (3). When the C ABI or the
 Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
 written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
 
 Until the first release there are no migrations: ZypherDB has no users yet, so a change to how keys
 or values are written raises the version and earlier databases are not read. Migrations come with
 the first release.
+
+## Limits
+
+The formats count lengths with fixed-width integers, and keys must fit the storage engine's key
+size (about 2000 bytes with 4 KB pages, as on Linux and Windows). Writes past a limit are refused
+with an error; none is reached silently.
+
+| What | Limit | Why | Error |
+| --- | --- | --- | --- |
+| A label, relationship type, property name or index/constraint name | 1024 bytes | names go into keys (label, edge and full-text keys) | `InvalidExpression`; `ZYPHERDB_INVALID_NAME` in C, `ValueError` in Python |
+| A document path in `CREATE INDEX ... ON (n.a.b)` | 1024 bytes in all | stored as one name | `InvalidExpression` |
+| Labels on one node | 65535 | counted in a u16 in the record | `TooManyLabels`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
+| One stored value | 4 GiB (2^32 - 1 bytes) | lengths in records and lists are u32 | `ValueTooLarge`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
+| Properties of a full-text index | 256 | postings number them with a u8 | `InvalidExpression` |
+| Labels or types, properties of an index or constraint | 65535 | counted in a u16 in the definition | `InvalidExpression` |
+
+Values have no limit of their own in indexes: an index entry keeps at most a value's first 512
+bytes, and every match is checked against the whole value. The full-text index skips words whose
+term is longer than 255 bytes.
+
+These are ceilings, not targets. A node record is read and rewritten whole on every change to the
+node, and each relationship keeps a copy of its nodes' labels: keep records to a few KB, and store
+large content (documents, images) outside the database, with a property that names it.
 
 ## The indexes, one by one
 
@@ -255,7 +279,7 @@ The postings live in four key spaces of their own, each after a marker byte, the
 
 | Key | Value |
 | --- | --- |
-| `w \| name \| term \| 0x00 \| entity` | the term's occurrences in the entity, per property: its ordinal (u8), a count (u16), the positions (u32 each) |
+| `w \| name \| term \| 0x00 \| entity` | the term's occurrences in the entity, per property: its ordinal (u8), a count (u32), the positions (u32 each) |
 | `W \| name \| entity` | the entity's length in terms, per property (u32 each) |
 | `v \| name \| term` | how many entities have the term (u64): BM25's document frequency, and the vocabulary that prefix and fuzzy queries expand over |
 | `V \| name` | the index's entities and terms (u64 each): BM25's N and average length |

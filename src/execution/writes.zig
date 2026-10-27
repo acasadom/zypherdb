@@ -304,15 +304,19 @@ fn deleteNode(self: *Executor, id: NodeId, detach: bool, name: []const u8) Execu
 
 fn addLabel(self: *Executor, id: NodeId, label: []const u8) ExecutionError!void {
     try requireStorableName(self, "label", label);
-    try self.graph.addLabel(id, label);
+    self.graph.addLabel(id, label) catch |err| {
+        if (err == error.TooManyLabels) self.fail(.invalid_expression, "a node cannot have more than {d} labels", .{layout.max_labels});
+        return err;
+    };
 }
 
 /// Refuses a label, relationship type or property name that storage cannot
-/// keep: empty, or holding U+0000, the separator inside index keys. (Names in
-/// a query are never empty; names from a map parameter can be.)
+/// keep: empty, too long for keys, or holding U+0000, the separator inside
+/// index keys. (Names in a query are never empty; names from a map parameter
+/// can be.)
 pub fn requireStorableName(self: *Executor, kind: []const u8, name: []const u8) ExecutionError!void {
-    if (layout.isStorableName(name)) return;
-    self.fail(.invalid_expression, "a {s} cannot be empty or contain the character U+0000", .{kind});
+    const problem = layout.nameProblem(name) orelse return;
+    self.fail(.invalid_expression, "a {s} {s}", .{ kind, problem });
     return error.InvalidExpression;
 }
 
@@ -332,6 +336,9 @@ fn setEdgeProperty(self: *Executor, id: u64, name: []const u8, value: Value) Exe
 fn reportPropertyError(self: *Executor, name: []const u8, err: GraphError) ExecutionError {
     if (err == error.UnsupportedPropertyType) {
         self.fail(.type_mismatch, "property '{s}': this value cannot be stored (a list must hold values of one kind and no nulls; nodes, relationships and paths are never stored)", .{name});
+    }
+    if (err == error.ValueTooLarge) {
+        self.fail(.invalid_expression, "property '{s}': this value is too large to store (at most {d} bytes)", .{ name, layout.max_value_length });
     }
     return err;
 }

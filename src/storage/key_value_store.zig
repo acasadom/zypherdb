@@ -27,6 +27,9 @@ pub const StorageError = engine.Error || error{
     /// A write would break a uniqueness constraint (constraints.zig); the
     /// graph's `violationMessage` says which.
     ConstraintViolation,
+    /// A node would have more labels than a record counts
+    /// (`layout.max_labels`).
+    TooManyLabels,
 };
 
 /// The node records read in a read transaction, kept as the views the engine

@@ -42,7 +42,9 @@ pub const Value = @import("../value.zig").Value;
 
 /// Errors of graph writes: storage failures, or a value that cannot be stored
 /// as a property (see `value_encoding.isStorable`).
-pub const GraphError = StorageError || error{UnsupportedPropertyType};
+/// `UnsupportedPropertyType`: a value no property can hold; `ValueTooLarge`:
+/// one whose stored form is longer than `layout.max_value_length`.
+pub const GraphError = StorageError || error{ UnsupportedPropertyType, ValueTooLarge };
 
 // ---------------------------------------------------------------------------
 // Graph (index-free adjacency over KeyValueStore)
@@ -75,7 +77,7 @@ pub const Graph = struct {
     /// format is refused: ZypherDB has no users yet, so formats change without
     /// migrations until the first release. 2: schema definitions have a kind
     /// (full-text, range, unique).
-    pub const format_version: u32 = 2;
+    pub const format_version: u32 = 3;
 
     /// Stamps a new database with this code's format, and refuses one
     /// written in another (`error.IncompatibleFormat`). Call it after
@@ -142,12 +144,14 @@ pub const Graph = struct {
     }
 
     /// Adds a label to a node (its record and the label index). Idempotent.
+    /// Fails with `TooManyLabels` past `layout.max_labels`.
     pub fn addLabel(self: *Graph, id: NodeId, label: []const u8) StorageError!void {
         layout.assertName(label); // callers refuse others
         var scratch = std.heap.ArenaAllocator.init(self.allocator);
         defer scratch.deinit();
         const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
         if (record.hasLabel(label)) return;
+        if (record.labelCount() == layout.max_labels) return error.TooManyLabels;
         const old = try self.keptRecord(record, scratch.allocator());
         const updated = try node_record.withLabel(scratch.allocator(), record, label, true);
         try constraints.checkNode(self, id, .{ .bytes = updated });
@@ -400,7 +404,8 @@ pub const Graph = struct {
 
     /// Stores a typed property `name` on node `id`. Idempotent. Maintains the
     /// property index. Setting `null` removes the property (as in Cypher); a
-    /// list fails with `UnsupportedPropertyType`. O(log N).
+    /// list fails with `UnsupportedPropertyType`, a value too long
+    /// `ValueTooLarge`. O(log N).
     pub fn setProperty(self: *Graph, id: NodeId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeProperty(id, name);
         if (!value_encoding.isStorable(value)) return error.UnsupportedPropertyType;
@@ -410,6 +415,7 @@ pub const Graph = struct {
         const record = try self.readRecord(id, scratch.allocator()) orelse NodeRecord.empty;
         var encoded = std.ArrayList(u8).empty;
         try value_encoding.encodeValue(&encoded, scratch.allocator(), value);
+        if (encoded.items.len > layout.max_value_length) return error.ValueTooLarge;
         const updated = try node_record.withProperty(scratch.allocator(), record, name, encoded.items);
         try constraints.checkNode(self, id, .{ .bytes = updated });
         const old_record = try self.keptRecord(record, scratch.allocator());
@@ -688,7 +694,8 @@ pub const Graph = struct {
 
     /// Stores a typed property on relationship `id`. Idempotent. Maintains
     /// the edge-property index. Setting `null` removes the property; a value
-    /// that cannot be stored fails with `UnsupportedPropertyType`. A missing
+    /// that cannot be stored fails with `UnsupportedPropertyType` (or
+    /// `ValueTooLarge`). A missing
     /// relationship is left alone. O(log N).
     pub fn setEdgeProperty(self: *Graph, id: RelationshipId, name: []const u8, value: Value) GraphError!void {
         if (value == .null) return self.removeEdgeProperty(id, name);
@@ -704,6 +711,7 @@ pub const Graph = struct {
         try key_encoding.appendEdgePropertyKey(&key, arena, id, name);
         var encoded = std.ArrayList(u8).empty;
         try value_encoding.encodeValue(&encoded, arena, value);
+        if (encoded.items.len > layout.max_value_length) return error.ValueTooLarge;
         try self.store.put(key.items, encoded.items);
 
         try property_indexes.relationshipPropertyChanged(self, id, stored.edge_type, name, old, value);

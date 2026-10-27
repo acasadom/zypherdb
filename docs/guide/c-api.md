@@ -279,8 +279,10 @@ These functions write without parsing a query, for loading data in bulk:
 
 Each function returns `ZYPHERDB_OK`, `ZYPHERDB_STORAGE_ERROR`, `ZYPHERDB_CONSTRAINT_VIOLATION` when a
 uniqueness constraint refuses the write (`zypherdb_last_error` says which), `ZYPHERDB_INVALID_NAME`
-when a label, relationship type or property name is empty or contains a 0x00 byte (an empty label
-in `zypherdb_add_node` means none), or `ZYPHERDB_NODE_NOT_FOUND` when a node it names does not exist.
+when a label, relationship type or property name is empty, longer than 1024 bytes or contains a 0x00
+byte (an empty label in `zypherdb_add_node` means none), `ZYPHERDB_TOO_LARGE` when a value is over
+4 GiB stored or a node would have more than 65535 labels, or `ZYPHERDB_NODE_NOT_FOUND` when a node it
+names does not exist.
 
 On its own, each call is a transaction that waits for the disk. Between `zypherdb_begin_write` and
 `zypherdb_commit_write`, all the calls form one transaction instead, committed at the end with a
