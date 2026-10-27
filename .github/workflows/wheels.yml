@@ -35,6 +35,10 @@ jobs:
           - { name: windows-x86_64, os: windows-latest, arch: x64 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      # A stalled Zig cache download gives up after 2 minutes, not the default
+      # 10, and the job goes on with an empty cache (the cache takes seconds).
+      SEGMENT_DOWNLOAD_TIMEOUT_MINS: 2
     defaults:
       run:
         shell: bash
