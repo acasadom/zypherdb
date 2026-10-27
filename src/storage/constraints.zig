@@ -29,7 +29,7 @@ pub fn checkNode(graph: *Graph, id: NodeId, record: NodeRecord) StorageError!voi
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    for (try fulltext.writeDefinitions(graph, arena)) |definition| {
+    for (try fulltext.cachedDefinitions(graph)) |definition| {
         if (definition.kind != .unique) continue;
         const other = try duplicateOf(graph, arena, definition, id, record) orelse continue;
         graph.setViolation("node {d} cannot have the same {s} as node {d}: constraint '{s}' makes it unique for :{s}", .{ id, propertyList(arena, definition) catch "properties", other, definition.name, definition.labels_or_types[0] });

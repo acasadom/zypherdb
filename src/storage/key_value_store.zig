@@ -13,6 +13,7 @@
 const std = @import("std");
 
 const engine = @import("engine.zig");
+const Definition = @import("fulltext.zig").Definition;
 const layout = @import("layout.zig");
 
 const Table = engine.Table;
@@ -102,6 +103,16 @@ pub const KeyValueStore = struct {
     /// layer above for the transaction's life; cleared when a transaction
     /// starts or ends.
     write_transaction_memo: WriteTransactionMemo = .{},
+    /// The schema definitions decoded at one schema version (see
+    /// `fulltext.cachedDefinitions`), kept while the version stays; owned
+    /// here so they live as long as the database.
+    schema_definitions: ?SchemaDefinitions = null,
+
+    pub const SchemaDefinitions = struct {
+        version: u64,
+        arena: std.heap.ArenaAllocator,
+        definitions: []const Definition,
+    };
 
     pub const Durability = engine.Durability;
     pub const Options = engine.Options;
@@ -126,6 +137,7 @@ pub const KeyValueStore = struct {
     }
 
     pub fn deinit(self: *KeyValueStore) void {
+        self.forgetSchemaDefinitions();
         self.environment.close();
         self.allocator.destroy(self.records);
     }
@@ -152,6 +164,14 @@ pub const KeyValueStore = struct {
             self.active_write_transaction = null;
         }
         self.write_transaction_memo = .{};
+        // They may hold a schema change that never happened.
+        self.forgetSchemaDefinitions();
+    }
+
+    /// Frees the cached schema definitions, if any.
+    pub fn forgetSchemaDefinitions(self: *KeyValueStore) void {
+        if (self.schema_definitions) |*cached| cached.arena.deinit();
+        self.schema_definitions = null;
     }
 
     /// Begins an explicit read transaction (an MVCC snapshot). Until

@@ -29,8 +29,6 @@ pub const Statistics = struct {
     allocator: Allocator,
     /// Every count read so far, in the order first read.
     used: std.ArrayList(Count) = .empty,
-    /// The schema definitions, once read.
-    definitions: ?[]const fulltext.Definition = null,
 
     /// How many nodes carry `label`.
     pub fn labelCount(self: *Statistics, label: []const u8) Allocator.Error!usize {
@@ -45,15 +43,12 @@ pub const Statistics = struct {
     /// The id of the index on `property` of `label_or_type` (nodes or
     /// relationships, as `entity` says), if there is one.
     pub fn propertyIndex(self: *Statistics, entity: fulltext.Entity, label_or_type: []const u8, property: []const u8) Allocator.Error!?u32 {
-        const definitions = self.definitions orelse definitions: {
-            // The version first: the plan replans when it changes.
-            const version = try self.count(.schema, "");
-            const read_definitions = if (version == 0 or version == unknown) &.{} else fulltext.all(self.graph, self.allocator) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => &.{},
-            };
-            self.definitions = read_definitions;
-            break :definitions read_definitions;
+        // The version first: the plan replans when it changes.
+        const version = try self.count(.schema, "");
+        if (version == 0 or version == unknown) return null;
+        const definitions = fulltext.cachedDefinitions(self.graph) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return null,
         };
         const definition = property_indexes.find(definitions, entity, label_or_type, property) orelse return null;
         return definition.index_id;

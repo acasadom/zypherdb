@@ -99,17 +99,21 @@ pub fn all(graph: *Graph, allocator: Allocator) StorageError![]const Definition 
 }
 
 /// Every definition, as `all` gives them, for code that runs on every write
-/// (index maintenance, uniqueness checks). Inside a write transaction they
-/// are decoded once and kept until it ends or changes the schema; the slice
-/// is valid until then, so callers must not hold it across a schema change.
-/// Outside one they are decoded with `allocator`.
-pub fn writeDefinitions(graph: *Graph, allocator: Allocator) StorageError![]const Definition {
-    if (graph.store.active_write_transaction == null) return all(graph, allocator);
-    if (graph.write_definitions) |cached| return cached.definitions;
-    var arena = std.heap.ArenaAllocator.init(graph.allocator);
+/// or plan (index maintenance, uniqueness checks, index lookups). They are
+/// decoded once per schema version and kept by the store: the committed
+/// version only grows, and a schema change or an abort drops them. The slice
+/// is valid until the next call that sees another version, so callers must
+/// not hold it across a schema change or a transaction.
+pub fn cachedDefinitions(graph: *Graph) StorageError![]const Definition {
+    const version = try schemaVersion(graph);
+    if (graph.store.schema_definitions) |cached| {
+        if (cached.version == version) return cached.definitions;
+        graph.store.forgetSchemaDefinitions();
+    }
+    var arena = std.heap.ArenaAllocator.init(graph.store.allocator);
     errdefer arena.deinit();
     const definitions = try all(graph, arena.allocator());
-    graph.write_definitions = .{ .arena = arena, .definitions = definitions };
+    graph.store.schema_definitions = .{ .version = version, .arena = arena, .definitions = definitions };
     return definitions;
 }
 
@@ -183,7 +187,7 @@ fn bumpSchemaVersion(graph: *Graph) StorageError!void {
     std.mem.writeInt(u64, &buffer, version, .big);
     try graph.store.put(schema_version_key, &buffer);
     if (graph.store.active_write_transaction != null) graph.store.write_transaction_memo.schema_version = version;
-    graph.forgetWriteDefinitions();
+    graph.store.forgetSchemaDefinitions();
 }
 
 fn appendDefinitionKey(key: *std.ArrayList(u8), allocator: Allocator, name: []const u8) Allocator.Error!void {
