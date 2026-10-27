@@ -71,7 +71,8 @@ pub fn nodeChanged(graph: *Graph, id: NodeId, old: NodeRecord, new: NodeRecord, 
     defer scratch.deinit();
     const arena = scratch.allocator();
     const entity = entityOf(id);
-    for (try fulltext.allOfKind(graph, arena, .fulltext)) |definition| {
+    for (try fulltext.writeDefinitions(graph, arena)) |definition| {
+        if (definition.kind != .fulltext) continue;
         if (definition.entity != .nodes) continue;
         const was_in = hasAnyLabel(old, definition.labels_or_types);
         const is_in = hasAnyLabel(new, definition.labels_or_types);
@@ -93,7 +94,8 @@ pub fn relationshipPropertyChanged(graph: *Graph, id: RelationshipId, edge_type:
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    for (try fulltext.allOfKind(graph, arena, .fulltext)) |definition| {
+    for (try fulltext.writeDefinitions(graph, arena)) |definition| {
+        if (definition.kind != .fulltext) continue;
         if (definition.entity != .relationships or !contains(definition.labels_or_types, edge_type)) continue;
         for (definition.properties, 0..) |property, ordinal| {
             if (!std.mem.eql(u8, property, name)) continue;

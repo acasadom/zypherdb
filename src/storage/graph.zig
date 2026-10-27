@@ -56,6 +56,14 @@ pub const Graph = struct {
     /// What the last `error.ConstraintViolation` broke.
     violation: [256]u8 = undefined,
     violation_length: usize = 0,
+    /// The schema definitions decoded once for the active write transaction
+    /// (see `fulltext.writeDefinitions`); freed when it ends.
+    write_definitions: ?WriteDefinitions = null,
+
+    pub const WriteDefinitions = struct {
+        arena: std.heap.ArenaAllocator,
+        definitions: []const fulltext.Definition,
+    };
 
     pub fn init(store: *KeyValueStore, allocator: Allocator) Graph {
         return .{ .store = store, .allocator = allocator };
@@ -94,12 +102,14 @@ pub const Graph = struct {
     /// Begins an atomic write transaction; see `commitWrite`/`abortWrite`. All
     /// mutations until then are batched into one transaction.
     pub fn beginWrite(self: *Graph) StorageError!void {
+        self.forgetWriteDefinitions();
         return self.store.beginWrite();
     }
 
     /// Commits the write transaction, with the relationship ids it allocated
     /// (every commit of a write transaction goes through here).
     pub fn commitWrite(self: *Graph) StorageError!void {
+        self.forgetWriteDefinitions();
         if (self.store.write_transaction_memo.next_relationship_id) |next| {
             try self.setCounter(key_encoding.relationship_counter_key, next);
         }
@@ -107,7 +117,14 @@ pub const Graph = struct {
     }
 
     pub fn abortWrite(self: *Graph) void {
+        self.forgetWriteDefinitions();
         self.store.abortWrite();
+    }
+
+    /// Frees the definitions cached for the write transaction, if any.
+    pub fn forgetWriteDefinitions(self: *Graph) void {
+        if (self.write_definitions) |*cached| cached.arena.deinit();
+        self.write_definitions = null;
     }
 
     /// True if an explicit write transaction is currently active.

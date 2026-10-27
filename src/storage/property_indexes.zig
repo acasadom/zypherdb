@@ -99,7 +99,7 @@ pub fn nodeChanged(graph: *Graph, id: NodeId, old: NodeRecord, new: NodeRecord, 
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    for (try fulltext.all(graph, arena)) |definition| {
+    for (try fulltext.writeDefinitions(graph, arena)) |definition| {
         if (!definition.hasPropertyIndex() or definition.entity != .nodes) continue;
         const property = definition.properties[0];
         if (changed) |name| if (!std.mem.eql(u8, name, property)) continue;
@@ -119,7 +119,7 @@ pub fn relationshipPropertyChanged(graph: *Graph, id: RelationshipId, edge_type:
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     const arena = scratch.allocator();
-    for (try fulltext.all(graph, arena)) |definition| {
+    for (try fulltext.writeDefinitions(graph, arena)) |definition| {
         if (!covers(definition, .relationships, edge_type, name)) continue;
         try replaceEntry(graph, arena, definition.index_id, id, old, new);
     }

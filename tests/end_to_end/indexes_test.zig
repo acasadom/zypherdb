@@ -173,3 +173,46 @@ test "a prepared statement plans again when an index is made or dropped" {
         try testing.expectEqual(command != null and plans == 2, statement.plan.?.patterns[0].nodes[0].seek_index != null);
     }
 }
+
+/// Makes a range index on `label`.`property` inside the caller's write
+/// transaction, as CREATE INDEX does.
+fn createRangeIndex(g: *Graph, name: []const u8, label: []const u8, property: []const u8) !void {
+    const stored = try zypherdb.schema_definitions.create(g, .{ .name = name, .kind = .range, .entity = .nodes, .analyzer = "", .labels_or_types = &.{label}, .properties = &.{property} });
+    try zypherdb.property_indexes.populate(g, stored);
+}
+
+fn addIndexedNode(g: *Graph, label: []const u8, number: i64) !void {
+    const id = try g.allocateNodeId();
+    try g.addNode(id, label);
+    try g.setProperty(id, "number", int(number));
+}
+
+test "writes see the indexes made in their transaction, and none of an aborted one" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try expectQuery(&ast, &g, "CREATE INDEX cards FOR (c:Card) ON (c.number)", &.{});
+
+    // The first write reads the definitions (only cards); the badge written
+    // after the new index must still be indexed.
+    try g.beginWrite();
+    try addIndexedNode(&g, "Card", 1);
+    try createRangeIndex(&g, "badges", "Badge", "number");
+    try addIndexedNode(&g, "Badge", 1);
+    try g.commitWrite();
+    try testing.expectEqual(@as(usize, 2), try indexEntries(&g));
+
+    // An index made and used in an aborted transaction is gone for the next.
+    try g.beginWrite();
+    try createRangeIndex(&g, "doors", "Door", "number");
+    try addIndexedNode(&g, "Door", 1);
+    g.abortWrite();
+    try expectQuery(&ast, &g, "CREATE (:Door {number: 2}), (:Card {number: 3})", &.{});
+    try testing.expectEqual(@as(usize, 3), try indexEntries(&g));
+    try expectSound(&g);
+}

@@ -98,6 +98,21 @@ pub fn all(graph: *Graph, allocator: Allocator) StorageError![]const Definition 
     return definitions.items;
 }
 
+/// Every definition, as `all` gives them, for code that runs on every write
+/// (index maintenance, uniqueness checks). Inside a write transaction they
+/// are decoded once and kept until it ends or changes the schema; the slice
+/// is valid until then, so callers must not hold it across a schema change.
+/// Outside one they are decoded with `allocator`.
+pub fn writeDefinitions(graph: *Graph, allocator: Allocator) StorageError![]const Definition {
+    if (graph.store.active_write_transaction == null) return all(graph, allocator);
+    if (graph.write_definitions) |cached| return cached.definitions;
+    var arena = std.heap.ArenaAllocator.init(graph.allocator);
+    errdefer arena.deinit();
+    const definitions = try all(graph, arena.allocator());
+    graph.write_definitions = .{ .arena = arena, .definitions = definitions };
+    return definitions;
+}
+
 /// The definitions of one kind, in name order.
 pub fn allOfKind(graph: *Graph, allocator: Allocator, kind: Kind) StorageError![]const Definition {
     var definitions = std.ArrayList(Definition).empty;
@@ -168,6 +183,7 @@ fn bumpSchemaVersion(graph: *Graph) StorageError!void {
     std.mem.writeInt(u64, &buffer, version, .big);
     try graph.store.put(schema_version_key, &buffer);
     if (graph.store.active_write_transaction != null) graph.store.write_transaction_memo.schema_version = version;
+    graph.forgetWriteDefinitions();
 }
 
 fn appendDefinitionKey(key: *std.ArrayList(u8), allocator: Allocator, name: []const u8) Allocator.Error!void {
