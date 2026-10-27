@@ -8,8 +8,9 @@ clause.
 
 A checked query becomes a **plan** before it runs (`src/planning/`), and the executor runs the plan
 (`src/execution/`). The plan is built once per statement: nothing about it depends on the rows or
-the parameter values, only on the query and on the graph's label and edge-type counts (a prepared
-statement plans again when those drift; see [below](#prepared-statements-and-the-statement-cache)).
+the parameter values, only on the query, on the graph's label and edge-type counts and on its
+indexes (a prepared statement plans again when the counts drift or an index is made or dropped;
+see [below](#prepared-statements-and-the-statement-cache)).
 
 A plan (`Plan.zig`) is a flat array of **operators**, a tagged union, grouped in **chains**, the
 same shape as the AST: indices, not pointers, and no `Operator` objects. A chain is a run of
@@ -55,7 +56,7 @@ projection is:
 1. **Anchor selection** picks the cheapest node to start a pattern from.
 2. **Predicate pushdown** turns equality and range predicates into index seeks before the scan
    runs.
-3. **Edge anchoring** starts a pattern from the edge-property index when only its relationship is
+3. **Edge anchoring** starts a pattern from a relationship index when only its relationship is
    selective.
 4. **Top**: an `ORDER BY` with a `LIMIT` keeps only the first `SKIP + LIMIT` rows in order (a
    partial sort) instead of sorting them all.
@@ -85,6 +86,8 @@ const PatternNode = struct {
     labels: []const []const u8,
     seeks: []const Seek,
     ranges: []const RangeSeek,
+    seek_index: ?IndexUse,   // the index that answers one of the seeks
+    range_index: ?IndexUse,  // the index that answers one of the ranges
     bound: bool,  // bound before the pattern
 };
 
@@ -96,7 +99,10 @@ const PatternEdge = struct {
     variable_name: []const u8,
     slot: Slot,
     seeks: []const Seek,
+    seek_index: ?IndexUse,
 };
+
+const IndexUse = struct { index_id: u32, position: u32 };  // the index, and which seek or range
 ```
 
 The seeks come from two places:
@@ -111,6 +117,13 @@ either order, bounds the property from one side (`PatternNode.ranges`). When a n
 equality seek, the scan of an anchor with a range reads the property index's key range for it
 (`Graph.nodesInRange`): numbers and dates, the other types fall back to a scan.
 
+A seek or range reads an index only when one covers it: `findIndexes` looks, for each of the
+node's labels, for an index on that label and the seek's property (or document path,
+`n.doc.field`), and records it as `seek_index` or `range_index` (`Statistics.propertyIndex`, which
+reads the definitions once per plan). A relationship's seek needs an index on its single type. A
+seek no index covers still narrows nothing: the candidates come from the label (or every node)
+and the seek is checked on each, as in Neo4j.
+
 A pushed-down seek or range is still checked against each candidate, and the whole `WHERE` is
 still evaluated at the end. So pushdown never changes a result: it only narrows the candidates.
 
@@ -120,9 +133,10 @@ still evaluated at the end. So pushdown never changes a result: it only narrows 
 the rows it leaves for the rest of the pattern.
 
 - already bound: `0`, a free start;
-- has an equality seek: `2`, a point lookup (one read, one row);
+- has an equality seek an index answers: `2`, a point lookup (one read, one row);
 - unlabeled and without a range: the maximum, since it means scanning every node;
-- otherwise: the candidates are the count of its rarest label, a quarter of it with a range (a
+- otherwise: the candidates are the count of its rarest label, a quarter of it with a range an
+  index answers (a
   guess without statistics, enough to prefer a range to a scan of the whole label); the rows are
   the candidates **capped by the count of an incident edge type** (a pattern cannot produce more
   rows than there are edges of that type). Only an edge of one type and fixed length caps it.
@@ -136,8 +150,8 @@ to the right end of the chain, then to the left end, and a `project_path` if the
 (`p = ...`).
 
 `shouldEdgeAnchor` handles a special case. When the pattern is a single fixed-length edge with a
-property seek, and its two endpoints are unbound, unlabeled and have no seeks, the plan is one
-`edge_index_scan` that starts from the edge-property index.
+seek a relationship index answers, and its two endpoints are unbound and unlabeled, the plan is
+one `edge_index_scan` that starts from that index.
 
 ## How operators map to graph operations
 
@@ -145,13 +159,13 @@ Each pattern operator is one graph operation (`pattern_matching.zig`):
 
 | Operator | Graph operation (`graph.zig`) | Storage (see [storage](storage)) |
 | --- | --- | --- |
-| `node_scan` with a seek | `nodesByProperty(property, value)` | property-index prefix scan |
-| `node_scan` with a range | `nodesInRange(property, lower, upper)` | property-index key range |
+| `node_scan` with a seek | `nodesByIndex(index_id, value)` | property-index prefix scan |
+| `node_scan` with a range | `nodesInRange(index_id, lower, upper)` | property-index key range |
 | `node_scan` with a label | `nodesWithLabel(label)`, then the other labels are checked | label-index prefix scan |
 | `node_scan`, unlabeled | `allNodes()` | a walk of the `#nodes` records |
 | `expand` | `edgesOf` / `edgesOfType(from, direction)` | edge prefix scan |
-| `expand` to a node with a selective seek | `nodesByProperty`, then `hasEdge` for each candidate | index seek and point lookups |
-| `edge_index_scan` | `edgesByProperty(property, value)` | edge-property-index prefix scan |
+| `expand` to a node with a selective seek | `nodesByIndex`, then `hasEdge` for each candidate | index seek and point lookups |
+| `edge_index_scan` | `edgesByIndex(index_id, value)` | relationship-index prefix scan |
 
 The `expand` row with a seek covers patterns like `(a)-[:WORKS_IN]->(:Department {code: $code})`.
 If the index gives at most `max_indexed_candidates` (8) nodes for the seek, checking an edge to each
@@ -259,8 +273,10 @@ runs. EXPLAIN, PROFILE and schema commands keep no plan: they are parsed again o
 
 Each run opens the transaction, then reads again the counts the plan was built on
 (`Plan.statistics`): when one has changed to `drift_factor` (2) times what it was, or half, and by
-at least `drift_floor` (100), the statement plans again before it runs. Reading the counts costs a
-key lookup each, too little to see next to a 3 µs point query.
+at least `drift_floor` (100), the statement plans again before it runs. A plan that looked for
+an index also records the schema version (`!schema`, bumped by every `CREATE` or `DROP` of an
+index or constraint): any change to it plans again. Reading the counts costs a key lookup each,
+too little to see next to a 3 µs point query.
 
 The C context and the Python database keep the statements their `query` calls prepare in a
 `StatementCache` (`Cache.zig`), by text, the 64 used most recently. The checks depend on the

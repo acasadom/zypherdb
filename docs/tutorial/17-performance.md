@@ -35,7 +35,8 @@ $badge})` without the label does not. Each index makes the writes to its propert
 and the database a little larger, so index the properties that queries look nodes up by, not
 every property. `SHOW INDEXES` lists them and `DROP INDEX door_id` removes one; a uniqueness
 constraint has an index of its own (listed too, named as the constraint, dropped with it). Relationships have indexes too, for one type: `CREATE INDEX
-FOR ()-[g:MAY_ENTER]-() ON (g.days)`.
+FOR ()-[g:MAY_ENTER]-() ON (g.days)`. So do fields inside a document ([step 13](13-documents)):
+`CREATE INDEX FOR (p:Person) ON (p.emergency.relation)`.
 
 The decision query of [step 14](14-time) anchors on the badge (an equality) and finds the door
 by its id (another equality). When the expansion reaches the door's end of the pattern, the engine

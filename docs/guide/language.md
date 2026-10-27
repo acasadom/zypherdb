@@ -156,8 +156,9 @@ Functions are not resolved here: the parser stores the name as written, and
 Schema commands are statements of their own. `parse` checks for one first (`schema_parser.zig`:
 `CREATE FULLTEXT INDEX`, `CREATE [RANGE|TEXT] INDEX`, `CREATE CONSTRAINT ... IS UNIQUE`,
 `DROP INDEX`, `DROP CONSTRAINT`, `SHOW [FULLTEXT|RANGE] INDEXES`, `SHOW CONSTRAINTS`) and parses
-no query after it. A range or text index is recorded and listed but changes nothing, since every
-property is already indexed for equality and ranges.
+no query after it. A text index is parsed as a range index. A property written as a document path
+(`ON (n.a.b)`, range indexes only) is kept as its names joined by `ast.path_separator` (0x00, which
+the parser refuses inside a name).
 The labels or types and properties of an index are kept in the node's data; the `OPTIONS` map is
 its one child, evaluated by the executor.
 

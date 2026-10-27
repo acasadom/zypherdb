@@ -128,9 +128,9 @@ print(db.query("MATCH (p:Person {name: 'Dalia Haddad'}) RETURN size(p.emergency.
 Use a document for data that belongs to one node and is read with it: contact details, settings,
 measurements, an equipment list. Use nodes and relationships when the parts have identity of
 their own and connect to other things: if instruments were booked by people, serviced by
-contractors or moved between rooms, they should be `(:Instrument)` nodes. A whole document can be
-matched by equality (`{emergency: $contact}`) through the index, but filtering on a field inside one
-(`WHERE p.emergency.relation = 'spouse'`) reads each candidate — fine for a few thousand nodes, worth
-a node of its own for millions.
+contractors or moved between rooms, they should be `(:Instrument)` nodes. A field that queries look
+nodes up by can have an index of its own, like a property ([step 17](17-performance)):
+`CREATE INDEX FOR (p:Person) ON (p.emergency.relation)` makes
+`WHERE p.emergency.relation = 'spouse'` an index lookup instead of a read of every `Person`.
 
 Next, the dimension a security system cannot do without: [time](14-time).

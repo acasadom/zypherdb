@@ -9,8 +9,9 @@ leaves out a few features; both are listed below. This page is the complete refe
 - **Keywords** are case-insensitive: `MATCH` and `match` are the same keyword. **Identifiers** are
   case-sensitive; that covers variables, labels, relationship types and property names. Write an
   identifier that has spaces or symbols between backticks: `` (`my node`:`Floor 3`) ``. A label,
-  relationship type, property name or index name cannot be empty or contain the character U+0000
-  (writes and schema commands refuse it; this also covers keys of a map in `SET n += $map`).
+  relationship type, property name or index name cannot be empty, be longer than 1024 bytes or
+  contain the character U+0000 (writes and schema commands refuse it; this also covers keys of a
+  map in `SET n += $map`).
 - **Strings** use single or double quotes (`'Ana'`, `"Ana"`), with backslash escapes: `\'`, `\"`,
   `\\`, `\n`, `\t`, `\r`, `\b`, `\f`, and `\uXXXX` or `\UXXXXXXXX` for a code point. A `\u` or `\U`
   without its hexadecimal digits, or not a code point, is a syntax error; any other backslash stays
@@ -94,7 +95,8 @@ path = allShortestPaths((a)-[*..10]->(b))          every shortest path between t
   without a type matches any type.
 - A node with several labels must have all of them.
 - `{prop: value}` is an equality test on the property. When the value is a constant or a
-  parameter, ZypherDB answers it with an index seek.
+  parameter and an index covers the node's label and the property (see
+  [schema commands](#schema-commands)), ZypherDB answers it with an index seek.
 - A variable-length relationship binds its variable to the list of the path's relationships, in
   pattern order. `*0..` includes the start node itself.
 - Within one `MATCH`, each relationship is used at most once, so a path never goes back over the
@@ -242,7 +244,9 @@ maps. A document may nest maps and lists of any values, `null`s included, but it
 nodes, relationships or paths.
 
 - Read its fields with the usual operators: `n.doc.address.city`.
-- A whole document is indexed for equality. A condition on a field inside a document is checked by
+- An index on a document property indexes the whole document, for equality. A field inside a
+  document can have an index of its own (`CREATE INDEX FOR (p:Person) ON (p.emergency.relation)`,
+  see [schema commands](#schema-commands)); without one, a condition on the field is checked by
   reading each candidate.
 
 `tests/tck/deviations.txt` lists the TCK scenarios where this extension gives a different answer
@@ -333,10 +337,9 @@ takes arguments then takes each one from the query parameter of the same name.
 
 ## Schema commands
 
-Every property is indexed for equality and ranges without being asked. The kind of index a
-command adds that changes anything is a full-text index; `CREATE INDEX` is accepted, so that
-Neo4j's scripts run, and changes nothing. Constraints keep values unique. Each schema command is
-a statement of its own:
+As in Neo4j, a property is indexed only when an index is created for it: `CREATE INDEX` for
+equality and range lookups, `CREATE FULLTEXT INDEX` for words. Constraints keep values unique.
+Each schema command is a statement of its own:
 
 ```text
 CREATE FULLTEXT INDEX name [IF NOT EXISTS]
@@ -348,7 +351,8 @@ CREATE FULLTEXT INDEX name [IF NOT EXISTS]
   [OPTIONS {...}]
 
 CREATE [RANGE | TEXT] INDEX [name] [IF NOT EXISTS]
-  FOR (n:Label) ON (n.property, …)          -- or FOR ()-[r:TYPE]-() ON (r.property)
+  FOR (n:Label) ON (n.property)             -- or FOR ()-[r:TYPE]-() ON (r.property)
+                                            -- or a document field: ON (n.property.field)
 
 CREATE CONSTRAINT [name] [IF NOT EXISTS]
   FOR (n:Label) REQUIRE n.property IS UNIQUE  -- or REQUIRE (n.a, n.b) IS UNIQUE
@@ -371,9 +375,21 @@ SHOW CONSTRAINTS
   on, every change keeps the index current, in the transaction that makes it.
   `fulltext.eventually_consistent` is accepted in `indexConfig` and has no effect, since ZypherDB's
   indexes are always current.
-- A `RANGE` or `TEXT` index (or one with no kind) is recorded and listed, and every query runs as
-  before: the property index already answers equality and range lookups. Its `OPTIONS` are
-  ignored.
+- A `RANGE` index (a `TEXT` index, or one with no kind, is the same) is on one label and one
+  property, or one relationship type and one property. Queries use it to find nodes by an
+  equality on the property (`{id: $id}`, `WHERE n.id = $id`), or by a range of numbers or dates
+  (`WHERE n.age > 60`), when the pattern's node has the label; a node without a label is found
+  by reading every node, as in Neo4j. A relationship's index serves equalities on a relationship
+  with that single type. An index on several properties is refused: create one per property. Its
+  `OPTIONS` are ignored.
+- **Document fields** (a ZypherDB extension): `ON (n.emergency.relation)` indexes the field
+  `relation` of the map in `n.emergency`, at any depth. A node whose property is not a map, or
+  has no such field, is not in the index. `WHERE n.emergency.relation = $r` and ranges on the
+  field use it.
+- A uniqueness constraint's own index also serves lookups on the constraint's first property.
+- Long values are indexed by their first 512 bytes and checked whole, so any value can be
+  indexed. For the size limits on names and values, see
+  [storage: limits](storage.md#limits).
 - **Uniqueness constraints** are on one node label, and one property or several together. A
   write that would give a node of that label the same values as another (by `CREATE`, `SET`,
   `MERGE`, a new label, or the Python and C write functions) fails with a constraint violation
@@ -458,8 +474,8 @@ did. Both take a query or a `UNION`, not a schema command. The result is one row
 The first row is the result; each operator gets its rows from the one below it, down to where
 they start. A chain an operator runs follows it, one level deeper; a pattern or subquery inside an
 expression follows the operator that evaluates it, under a row naming it (`Exists`, `Count`,
-`PatternPredicate`, `PatternComprehension`). On a graph where a person is in five groups on
-average (and `g` has no label to count by):
+`PatternPredicate`, `PatternComprehension`). On a graph with an index on `:Person(id)`, where a
+person is in five groups on average (and `g` has no label to count by):
 
 ```text
 MATCH (p:Person {id: $id})-[:MEMBER_OF]->(g)<-[:MEMBER_OF]-(q) RETURN count(DISTINCT q)
@@ -474,10 +490,10 @@ depth  operator        details                                    estimated_rows
 
 | Operator | What it does |
 | --- | --- |
-| `NodeIndexSeek` | finds a pattern's first node by an equality on a property (`{id: $id}`, `WHERE n.id = $id`) |
-| `NodeIndexRangeSeek` | finds it by a range of a number or date property (`WHERE n.age > 60`) |
+| `NodeIndexSeek` | finds a pattern's first node by an equality on an indexed property (`{id: $id}`, `WHERE n.id = $id`) |
+| `NodeIndexRangeSeek` | finds it by a range of an indexed number or date property (`WHERE n.age > 60`) |
 | `NodeByLabelScan`, `AllNodesScan` | reads every node with the label, or every node |
-| `RelationshipIndexSeek` | finds a single relationship's ends by an equality on its property |
+| `RelationshipIndexSeek` | finds a single relationship's ends by an equality on its indexed property |
 | `BoundNode` | a node bound before the pattern: checks its labels and properties |
 | `Expand(All)`, `Expand(Into)` | follows a relationship to each neighbour, or to a node bound already |
 | `VarLengthExpand(All)`, `VarLengthExpand(Into)` | follows a variable-length relationship (`*1..3`) |
