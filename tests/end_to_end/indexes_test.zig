@@ -122,6 +122,11 @@ test "long values keep a prefix in the index and are checked whole" {
     try expectQuery(&ast, &g, try std.fmt.allocPrint(allocator, "MATCH (n:Note {{text: '{s}'}}) RETURN n.id", .{wanted}), &.{&.{int(2)}});
     try expectQuery(&ast, &g, try std.fmt.allocPrint(allocator, "MATCH (n:Note) WHERE n.text = '{s}' RETURN n.id", .{wanted}), &.{&.{int(2)}});
     try expectQuery(&ast, &g, try std.fmt.allocPrint(allocator, "MATCH (n:Note {{text: '{s}c'}}) RETURN n.id", .{shared}), &.{});
+    // Ranges find the long values by their kept bytes, and compare them whole.
+    try expectQuery(&ast, &g, try std.fmt.allocPrint(allocator, "MATCH (n:Note) WHERE n.text > '{s}a' RETURN n.id", .{shared}), &.{&.{int(2)}});
+    try expectQuery(&ast, &g, try std.fmt.allocPrint(allocator, "MATCH (n:Note) WHERE '{s}' < n.text <= '{s}a' RETURN n.id", .{ shared, shared }), &.{&.{int(1)}});
+    try expectQuery(&ast, &g, "MATCH (n:Note) WHERE n.text >= 'x' RETURN n.id ORDER BY n.id", &.{ &.{int(1)}, &.{int(2)} });
+    try expectQuery(&ast, &g, "MATCH (n:Note) WHERE n.text < 'x' RETURN n.id", &.{});
     try expectSound(&g);
 }
 
@@ -263,9 +268,9 @@ test "an index on a document field follows the document" {
     try expectQuery(&ast, &g, "SHOW INDEXES", &.{&.{ string("index_Person_emergency_relation"), string("RANGE"), string("NODE"), .{ .list = &.{string("Person")} }, .{ .list = &.{string("emergency.relation")} }, .null, no_config }});
     try testing.expect(try seeksByIndex(&g, query));
     try expectQueryWithParameters(&ast, &g, query, &.{.{ "relation", string("mother") }}, &.{&.{string("Ana")}});
-    // (A string range scans the label, and would read Leo's `'none'.relation`.)
-    try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Leo'}) DELETE p", &.{});
+    // A string range reads the index too (not Leo's `'none'.relation`).
     try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.emergency.relation >= 'f' RETURN p.name", &.{ &.{string("Ana")}, &.{string("Luis")} });
+    try expectQuery(&ast, &g, "MATCH (p:Person {name: 'Leo'}) DELETE p", &.{});
     try testing.expect(try seeksByIndex(&g, "MATCH (p:Person) WHERE p.emergency.relation >= 'f' RETURN p.name"));
 
     // Replacing the document, or the record, moves the entry.
