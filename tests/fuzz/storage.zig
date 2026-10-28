@@ -30,6 +30,10 @@ pub const Options = struct {
     steps: u32 = 1000,
     /// Prints every operation as it runs.
     verbose: bool = false,
+    /// A directory for a replica: with one, a seed of even number starts the
+    /// change log, and at each check the replica applies the new change sets
+    /// and must equal the model too.
+    replica: ?[]const u8 = null,
 };
 
 pub const Operation = enum {
@@ -173,6 +177,10 @@ const Fuzzer = struct {
     operation: Operation = .create_node,
     history: History = .{},
     statistics: Statistics = .{},
+    /// Follows the database through its change log (`Options.replica`).
+    replica: ?KeyValueStore = null,
+    /// The next change set the replica applies.
+    replica_next_lsn: u64 = 1,
 
     /// Fuzzing needs no durability: commits only reach the page cache.
     const store_options = KeyValueStore.Options{ .durability = .deferred };
@@ -193,13 +201,18 @@ const Fuzzer = struct {
         };
         self.swarm = Swarm.choose(self.random());
         self.graph = Graph.init(&self.store, allocator);
-        if (options.verbose) try out.print("seed {d}, swarm: {f}\n", .{ options.seed, self.swarm });
+        if (options.replica) |replica_path| if (options.seed % 2 == 0) {
+            try self.store.startChangeLog();
+            self.replica = try KeyValueStore.openWithOptions(allocator, replica_path, store_options);
+        };
+        if (options.verbose) try out.print("seed {d}, swarm: {f}{s}\n", .{ options.seed, self.swarm, if (self.replica != null) ", with a replica" else "" });
     }
 
     fn deinit(self: *Fuzzer) void {
         if (self.graph.inWriteTransaction()) self.graph.abortWrite();
         if (self.snapshot) |*snapshot| snapshot.deinit();
         self.model.deinit();
+        if (self.replica) |*replica| replica.deinit();
         self.store.deinit();
         self.values.deinit();
         self.scratch.deinit();
@@ -603,6 +616,30 @@ const Fuzzer = struct {
         const pools = storage_compare.Pools{ .labels = self.swarm.labels, .types = self.swarm.types };
         if (try storage_compare.difference(self.scratch.allocator(), &self.graph, &self.model, pools)) |difference| {
             return self.fail("the database differs from the model: {s}", .{difference});
+        }
+        if (!self.graph.inWriteTransaction()) try self.verifyReplica();
+    }
+
+    /// The replica applies the change sets committed since the last check,
+    /// then must pass the same checks as the database.
+    fn verifyReplica(self: *Fuzzer) !void {
+        const replica = &(self.replica orelse return);
+        const state = (try self.store.changeLogState()) orelse return self.fail("the change log is not started", .{});
+        while (self.replica_next_lsn < state.next_lsn) : (self.replica_next_lsn += 1) {
+            const bytes = (try self.store.changeSet(self.replica_next_lsn)) orelse return self.fail("change set {d} is missing", .{self.replica_next_lsn});
+            defer self.allocator.free(bytes);
+            const transaction = try replica.environment.beginWrite();
+            errdefer transaction.abort();
+            try zypherdb.change_log.apply(transaction, bytes);
+            try transaction.commit();
+        }
+        var replica_graph = Graph.init(replica, self.allocator);
+        var report = try zypherdb.integrity.check(&replica_graph, self.allocator);
+        defer report.deinit();
+        if (!report.ok()) return self.fail("the replica: {f}", .{report});
+        const pools = storage_compare.Pools{ .labels = self.swarm.labels, .types = self.swarm.types };
+        if (try storage_compare.difference(self.scratch.allocator(), &replica_graph, &self.model, pools)) |difference| {
+            return self.fail("the replica differs from the model: {s}", .{difference});
         }
     }
 

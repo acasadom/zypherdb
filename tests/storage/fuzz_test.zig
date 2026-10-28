@@ -11,14 +11,18 @@ const storage_fuzzer = @import("../fuzz/storage.zig");
 /// value or a narrow few (which break uniqueness constraints often).
 const seeds = [_]u64{ 1, 10, 12, 13, 14, 18, 2, 17 };
 
-test "the storage fuzzer: the database equals its model, and passes the integrity check" {
+test "the storage fuzzer: the database (and a replica, on even seeds) equals its model, and passes the integrity check" {
     for (seeds) |seed| {
         var tmp = testing.tmpDir(.{});
         defer tmp.cleanup();
         var buffer: [256]u8 = undefined;
         var output = std.Io.Writer.Allocating.init(testing.allocator);
         defer output.deinit();
-        _ = storage_fuzzer.run(testing.allocator, support.testPath(&tmp, &buffer), .{ .seed = seed, .steps = 300 }, &output.writer) catch |err| {
+        const path = support.testPath(&tmp, &buffer);
+        try tmp.dir.createDirPath(testing.io, "replica");
+        var replica_buffer: [256]u8 = undefined;
+        const replica = try std.fmt.bufPrint(&replica_buffer, "{s}/replica", .{path});
+        _ = storage_fuzzer.run(testing.allocator, path, .{ .seed = seed, .steps = 300, .replica = replica }, &output.writer) catch |err| {
             std.debug.print("{s}", .{output.written()});
             return err;
         };

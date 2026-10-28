@@ -48,17 +48,20 @@ pub const Error = error{
 };
 
 /// The tables of a database. `main` holds every key the graph scans by
-/// prefix (indexes, adjacency, metadata); the others hold records by id.
+/// prefix (indexes, adjacency, metadata); `nodes` and `relationships` hold
+/// records by id; `changes` holds the change log replicas follow
+/// (change_log.zig), which no graph read sees.
 pub const Table = enum {
     main,
     nodes,
     relationships,
+    changes,
 
     pub const count = @typeInfo(Table).@"enum".field_names.len;
 
     /// True for the tables keyed by a u64 id.
     pub fn hasIntegerKeys(table: Table) bool {
-        return table != .main;
+        return table == .nodes or table == .relationships;
     }
 };
 
@@ -101,4 +104,5 @@ test "the integer tables are the record tables" {
     try std.testing.expect(!Table.main.hasIntegerKeys());
     try std.testing.expect(Table.nodes.hasIntegerKeys());
     try std.testing.expect(Table.relationships.hasIntegerKeys());
+    try std.testing.expect(!Table.changes.hasIntegerKeys());
 }

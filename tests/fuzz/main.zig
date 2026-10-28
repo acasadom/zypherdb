@@ -93,7 +93,12 @@ const Totals = struct {
 
 fn runSeed(io: std.Io, allocator: std.mem.Allocator, path: []const u8, seed: u64, arguments: Arguments, out: *std.Io.Writer, totals: *Totals) !void {
     switch (arguments.fuzzer) {
-        .storage => totals.storage.add(try storage.run(allocator, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out)),
+        .storage => {
+            const replica = try std.fmt.allocPrint(allocator, "{s}/replica", .{path});
+            defer allocator.free(replica);
+            try std.Io.Dir.cwd().createDirPath(io, replica);
+            totals.storage.add(try storage.run(allocator, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose, .replica = replica }, out));
+        },
         .query => {
             var statistics = try query.run(allocator, path, .{ .seed = seed, .queries = arguments.steps, .verbose = arguments.verbose }, out);
             defer statistics.deinit(allocator);
