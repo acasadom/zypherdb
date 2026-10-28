@@ -25,6 +25,10 @@ const ParseError = @import("parser.zig").ParseError;
 const expression_parser = @import("expression_parser.zig");
 const path_separator = @import("ast.zig").path_separator;
 
+/// The longest name the storage keeps (`layout.max_name_length`, asserted
+/// in schema.zig): a longer generated name is shortened to fit.
+pub const max_name_length = 1024;
+
 /// True if the statement starting here is a schema command.
 pub fn atSchemaCommand(self: *const Parser) bool {
     if (self.atKeyword("CREATE")) {
@@ -142,6 +146,8 @@ fn parseNameAndIfNotExists(self: *Parser, name_required: bool, what: []const u8)
 }
 
 /// A name for an unnamed index or constraint: `prefix_Label_property_...`.
+/// One longer than `max_name_length` keeps its start, then `_` and a hash of
+/// the whole name, so that it still differs from other generated names.
 fn generatedName(self: *Parser, prefix: []const u8, entity: Entity, properties: []const []const u8) ParseError![]const u8 {
     var name = std.ArrayList(u8).empty;
     defer name.deinit(self.ast.allocator);
@@ -153,6 +159,15 @@ fn generatedName(self: *Parser, prefix: []const u8, entity: Entity, properties: 
     for (properties) |property| {
         try name.append(self.ast.allocator, '_');
         for (property) |byte| try name.append(self.ast.allocator, if (byte == path_separator) '_' else byte);
+    }
+    if (name.items.len > max_name_length) {
+        const hash = std.hash.Wyhash.hash(0, name.items);
+        const suffix_length = 1 + 16;
+        // Cut at the start of a character, not inside one.
+        var keep: usize = max_name_length - suffix_length;
+        while (keep > 0 and name.items[keep] & 0xc0 == 0x80) keep -= 1;
+        name.shrinkRetainingCapacity(keep);
+        try name.print(self.ast.allocator, "_{x:0>16}", .{hash});
     }
     return self.ast.intern(name.items);
 }

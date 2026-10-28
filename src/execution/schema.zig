@@ -23,6 +23,8 @@ const requireStorableName = @import("writes.zig").requireStorableName;
 comptime {
     // The parser joins a document path's names as the indexes split them.
     std.debug.assert(@import("../query/ast.zig").path_separator == property_indexes.path_separator);
+    // A generated name is shortened to what a name may hold.
+    std.debug.assert(@import("../query/schema_parser.zig").max_name_length == layout.max_name_length);
 }
 
 /// The analyzers a full-text index can use.

@@ -79,6 +79,40 @@ test "names longer than keys can hold are refused, the longest allowed are store
     try expectSound(&g);
 }
 
+test "a generated index name too long to store is shortened, a whole character at a time" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // The longest label in two-byte characters: "index_" + label is too long.
+    const label = try allocator.alloc(u8, zypherdb.layout.max_name_length);
+    for (0..label.len / 2) |i| @memcpy(label[i * 2 ..][0..2], "é");
+    for ([_][]const u8{ "p", "q" }) |property| {
+        try expectQuery(&ast, &g, try std.fmt.allocPrint(allocator, "CREATE INDEX FOR (n:{s}) ON (n.{s})", .{ label, property }), &.{});
+    }
+    var names = std.ArrayList([]const u8).empty;
+    try g.beginRead();
+    for (try zypherdb.schema_definitions.all(&g, allocator)) |definition| try names.append(allocator, definition.name);
+    g.commitRead();
+    try testing.expectEqual(@as(usize, 2), names.items.len);
+    try testing.expect(!std.mem.eql(u8, names.items[0], names.items[1]));
+    for (names.items) |name| {
+        try testing.expect(name.len <= zypherdb.layout.max_name_length);
+        try testing.expect(std.unicode.utf8ValidateSlice(name));
+        try testing.expect(std.mem.startsWith(u8, name, "index_é"));
+    }
+    try expectQuery(&ast, &g, try std.fmt.allocPrint(allocator, "DROP INDEX {s}", .{names.items[0]}), &.{});
+    try expectSound(&g);
+}
+
 test "a full-text index numbers at most 256 properties" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
