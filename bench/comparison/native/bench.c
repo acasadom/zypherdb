@@ -173,8 +173,8 @@ static void load(const Graph *g) {
         lattice_edge_set_property(txn, edge, "until", &until);
     }
     check(lattice_commit(txn), "commit");
-    const char *indexes[][2] = {{"Card", "number"}, {"Person", "id"}, {"Door", "id"}, {"Group", "id"}, {"Zone", "id"}};
-    for (int i = 0; i < 5; i++) check(lattice_node_property_index_create(db, indexes[i][0], indexes[i][1]), "index");
+    const char *indexes[][2] = {{"Card", "number"}, {"Person", "id"}, {"Person", "age"}, {"Door", "id"}, {"Group", "id"}, {"Zone", "id"}};
+    for (int i = 0; i < 6; i++) check(lattice_node_property_index_create(db, indexes[i][0], indexes[i][1]), "index");
 }
 
 typedef lattice_query *Prepared;
@@ -287,6 +287,15 @@ static void load(const Graph *g) {
     for (size_t i = 0; i < g->membership_count; i++) zypherdb_add_edge(db, person[g->memberships[i].a], group[g->memberships[i].b], S("MEMBER_OF"));
     for (uint32_t i = 10; i < g->groups; i++) zypherdb_add_edge(db, group[i], group[i / 10], S("MEMBER_OF"));
     zypherdb_commit_write(db);
+    /* Indexes are explicit: the same ones LatticeDB gets. */
+    const char *indexes[] = {"CREATE INDEX FOR (n:Card) ON (n.number)", "CREATE INDEX FOR (n:Person) ON (n.id)", "CREATE INDEX FOR (n:Person) ON (n.age)",
+                             "CREATE INDEX FOR (n:Door) ON (n.id)", "CREATE INDEX FOR (n:Group) ON (n.id)",
+                             "CREATE INDEX FOR (n:Zone) ON (n.id)"};
+    for (int i = 0; i < 6; i++) {
+        zypherdb_result *ir = zypherdb_query(db, S(indexes[i]));
+        if (!ir) { size_t n; fprintf(stderr, "index: %s\n", zypherdb_last_error(db, &n)); exit(1); }
+        zypherdb_result_free(ir);
+    }
     /* Edge properties have no C mutator: one UNWIND query with the grants as a parameter. */
     size_t size = 32 + g->grant_count * 24; char *json = malloc(size); size_t at = 0;
     at += snprintf(json + at, size - at, "{\"grants\": [");

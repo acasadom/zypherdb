@@ -1,13 +1,13 @@
-{"engine": "deferred", "query": "load", "seconds": 0.145}
-{"query": "card lookup", "median_us": 5.0, "p95_us": 9.0, "runs": 100, "answers": "1:baa7054c99250b37 1:ba830a4c98e7e7b6 1:baae594c99317ef3"}
-{"query": "person's groups (1 hop)", "median_us": 6.0, "p95_us": 11.0, "runs": 100, "answers": "2:557fac2e2d348bf4 1:d9dac6428f3a6c35 2:edae60ba34425c5f"}
-{"query": "colleagues (2 hops, distinct)", "median_us": 67.0, "p95_us": 104.0, "runs": 100, "answers": "1:af61f84c85feb620 1:af62eb4c86005309 1:af62f34c860060a1"}
-{"query": "may this card open this door?", "median_us": 18.0, "p95_us": 28.0, "runs": 100, "answers": "1:af63bd4c8601b7df 1:af63bd4c8601b7df 1:af63bc4c8601b62c"}
-{"query": "doors of a person's zones", "median_us": 74.0, "p95_us": 116.0, "runs": 100, "answers": "1:af63134c86009701 1:af63134c86009701 1:af637f4c86014e85"}
-{"query": "people over 60 (scan + filter)", "median_us": 1569.0, "p95_us": 1575.0, "runs": 5, "answers": "1:af66f54c86073007 1:af66f54c86073007 1:af66f54c86073007"}
-{"query": "oldest 10 (ORDER BY + LIMIT)", "median_us": 3570.0, "p95_us": 3582.0, "runs": 5, "answers": "10:9f29bb4580eec16e 10:9f29bb4580eec16e 10:9f29bb4580eec16e"}
-{"query": "group sizes (aggregate)", "median_us": 6341.0, "p95_us": 6414.0, "runs": 5, "answers": "10:451b74615f330aaf 10:451b74615f330aaf 10:451b74615f330aaf"}
-{"query": "department counts", "median_us": 2519.0, "p95_us": 2725.0, "runs": 5, "answers": "8:4db90f53b14d6627 8:4db90f53b14d6627 8:4db90f53b14d6627"}
-{"query": "return all people (3 columns)", "median_us": 4021.0, "p95_us": 4022.0, "runs": 5, "answers": "10000:9486e97f52b35f11 10000:9486e97f52b35f11 10000:9486e97f52b35f11"}
-{"query": "create one node (commit)", "median_us": 23.0, "p95_us": 31.0, "runs": 100, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
-{"query": "create 1000 nodes (UNWIND)", "median_us": 2641.0, "p95_us": 2649.0, "runs": 5, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
+{"engine": "deferred", "query": "load", "seconds": 0.169}
+{"query": "card lookup", "median_us": 2.0, "p95_us": 4.0, "runs": 100, "answers": "1:baa7054c99250b37 1:ba830a4c98e7e7b6 1:baae594c99317ef3"}
+{"query": "person's groups (1 hop)", "median_us": 5.0, "p95_us": 6.0, "runs": 100, "answers": "2:557fac2e2d348bf4 1:d9dac6428f3a6c35 2:edae60ba34425c5f"}
+{"query": "colleagues (2 hops, distinct)", "median_us": 48.0, "p95_us": 76.0, "runs": 100, "answers": "1:af61f84c85feb620 1:af62eb4c86005309 1:af62f34c860060a1"}
+{"query": "may this card open this door?", "median_us": 14.0, "p95_us": 20.0, "runs": 100, "answers": "1:af63bd4c8601b7df 1:af63bd4c8601b7df 1:af63bc4c8601b62c"}
+{"query": "doors of a person's zones", "median_us": 55.0, "p95_us": 84.0, "runs": 100, "answers": "1:af63134c86009701 1:af63134c86009701 1:af637f4c86014e85"}
+{"query": "people over 60 (scan + filter)", "median_us": 421.0, "p95_us": 422.0, "runs": 5, "answers": "1:af66f54c86073007 1:af66f54c86073007 1:af66f54c86073007"}
+{"query": "oldest 10 (ORDER BY + LIMIT)", "median_us": 1700.0, "p95_us": 1741.0, "runs": 5, "answers": "10:9f29bb4580eec16e 10:9f29bb4580eec16e 10:9f29bb4580eec16e"}
+{"query": "group sizes (aggregate)", "median_us": 2631.0, "p95_us": 2649.0, "runs": 5, "answers": "10:451b74615f330aaf 10:451b74615f330aaf 10:451b74615f330aaf"}
+{"query": "department counts", "median_us": 1314.0, "p95_us": 1321.0, "runs": 5, "answers": "8:4db90f53b14d6627 8:4db90f53b14d6627 8:4db90f53b14d6627"}
+{"query": "return all people (3 columns)", "median_us": 2455.0, "p95_us": 2460.0, "runs": 5, "answers": "10000:9486e97f52b35f11 10000:9486e97f52b35f11 10000:9486e97f52b35f11"}
+{"query": "create one node (commit)", "median_us": 24.0, "p95_us": 32.0, "runs": 100, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
+{"query": "create 1000 nodes (UNWIND)", "median_us": 3605.0, "p95_us": 3619.0, "runs": 5, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}

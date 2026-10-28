@@ -74,6 +74,9 @@ QUERIES = [
     ("create 1000 nodes (UNWIND)", "UNWIND range(1, 1000) AS i CREATE (:Event {n: i})", (), True),
 ]
 
+# The properties the queries look up or filter on, for engines with explicit indexes.
+INDEXES = (("Card", "number"), ("Person", "id"), ("Person", "age"), ("Door", "id"), ("Team", "id"), ("Zone", "id"))
+
 GRANT = {"days": [1, 2, 3, 4, 5], "opens": 9, "closes": 18}
 
 
@@ -108,6 +111,9 @@ class ZypherDB:
                 db.add_edge(ids["Team", child], ids["Team", parent], "MEMBER_OF")
             for door, zone in g["door_zones"]:
                 db.add_edge(ids["Door", door], ids["Zone", zone], "LOCATED_IN")
+        # Indexes are explicit: the same ones as the other engines with explicit indexes.
+        for label, key in INDEXES:
+            db.query(f"CREATE INDEX FOR (n:{label}) ON (n.{key})")
         db.query("UNWIND $grants AS grant MATCH (g:Team {id: grant[0]}), (z:Zone {id: grant[1]}) "
                  "CREATE (g)-[:MAY_ENTER {days: [1, 2, 3, 4, 5], opens: 9, closes: 18}]->(z)",
                  grants=[list(x) for x in g["grants"]])
@@ -210,7 +216,7 @@ class Lattice:
             for team, zone in g["grants"]:
                 txn.create_edge(ids["Team", team], ids["Zone", zone], "MAY_ENTER", properties=GRANT)
             txn.commit()
-        for label, key in (("Card", "number"), ("Person", "id"), ("Door", "id"), ("Team", "id"), ("Zone", "id")):
+        for label, key in INDEXES:
             self.db.create_node_property_index(label, key)
 
     def prepare(self, text):
@@ -258,13 +264,12 @@ class Sparrow:
                 writer.writerows(rows)
         subprocess.run([self.LOADER, self.path, self.csv_dir], check=True, stderr=subprocess.DEVNULL)
         self.db = sparrowdb.GraphDb(self.path)
-        # Relationship properties can only be set at CREATE, and MATCH ... CREATE with
-        # parameters silently creates nothing: literal ids. Lists cannot be stored, so no days.
+        # Relationship properties are set at CREATE, with literal ids; no list property, so no days.
         for team, zone in g["grants"]:
             self.db.execute(f"MATCH (t:Team {{id: {team}}}), (z:Zone {{id: {zone}}}) "
                             "CREATE (t)-[:MAY_ENTER {opens: 9, closes: 18}]->(z)")
         self.load_seconds = None
-        for label, key in (("Card", "number"), ("Person", "id"), ("Door", "id"), ("Team", "id"), ("Zone", "id")):
+        for label, key in INDEXES:
             self.db.execute(f"CREATE INDEX ON :{label}({key})")
 
     def prepare(self, text):
@@ -280,7 +285,49 @@ class Sparrow:
         pass
 
 
-ENGINES = {"zypherdb": ZypherDB, "kuzu": Kuzu, "latticedb": Lattice, "sparrowdb": Sparrow}
+class GraphQLite:
+    # Cypher translated to SQL over SQLite tables (one table per property type).
+    def __init__(self, path, args):
+        import graphqlite
+
+        self.g = graphqlite.graph(os.path.join(path, "bench.db"))
+        if args.durability == "full":
+            # The same flush as ZypherDB's full durability on macOS (F_FULLFSYNC).
+            self.g.connection.sqlite_connection.execute("PRAGMA fullfsync = ON")
+
+    def load(self, g):
+        # Its fastest path: the bulk inserts, which bypass Cypher.
+        nodes = []
+        for i, name, age, department in g["persons"]:
+            nodes.append((f"Person:{i}", {"id": i, "name": name, "age": age, "department": department}, "Person"))
+            nodes.append((f"Card:{i}", {"number": 1_000_000 + i}, "Card"))
+        for kind, count in (("Team", g["teams"]), ("Zone", g["zones"]), ("Door", g["doors"])):
+            for i in range(count):
+                nodes.append((f"{kind}:{i}", {"id": i, "name": f"team-{i}"} if kind == "Team" else {"id": i}, kind))
+        ids = self.g.insert_nodes_bulk(nodes)
+        # The bulk insert also stores each external id as a text property named "id",
+        # beside our integer one (RETURN p.id then gives the text): remove those.
+        connection = self.g.connection.sqlite_connection
+        connection.execute("DELETE FROM node_props_text WHERE key_id = (SELECT id FROM property_keys WHERE key = 'id')")
+        connection.commit()
+        edges = [(f"Card:{i}", f"Person:{i}", {}, "HELD_BY") for i in range(g["people"])]
+        edges += [(f"Person:{p}", f"Team:{t}", {}, "MEMBER_OF") for p, t in g["memberships"]]
+        edges += [(f"Team:{c}", f"Team:{p}", {}, "MEMBER_OF") for c, p in g["hierarchy"]]
+        edges += [(f"Door:{d}", f"Zone:{z}", {}, "LOCATED_IN") for d, z in g["door_zones"]]
+        edges += [(f"Team:{t}", f"Zone:{z}", GRANT, "MAY_ENTER") for t, z in g["grants"]]
+        self.g.insert_edges_bulk(edges, ids)
+
+    def prepare(self, text):
+        return text
+
+    def run(self, prepared, parameters):
+        return self.g.query(prepared, parameters or None)
+
+    def close(self):
+        self.g.close()
+
+
+ENGINES = {"zypherdb": ZypherDB, "kuzu": Kuzu, "latticedb": Lattice, "sparrowdb": Sparrow, "graphqlite": GraphQLite}
 
 
 def main():
