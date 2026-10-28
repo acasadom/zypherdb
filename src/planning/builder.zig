@@ -30,6 +30,7 @@ const Scope = @import("scope.zig").Scope;
 const Slot = @import("../execution/bindings.zig").Slot;
 const no_slot = @import("../execution/bindings.zig").no_slot;
 const patterns = @import("patterns.zig");
+const index_counts = @import("index_counts.zig");
 
 pub const Context = patterns.Context;
 pub const Options = patterns.Options;
@@ -116,9 +117,17 @@ const Builder = struct {
         var operators = std.ArrayList(Operator).empty;
         const writes = ast.queryWrites(query);
         const clauses = ast.nodeChildren(query);
+        const first_pattern = self.patterns.items.len;
         for (clauses, 0..) |clause, position| {
             if (writes and position > 0) try operators.append(self.context.allocator, .eager);
             try self.planClause(clause, &scope, &operators, kind, position + 1 == clauses.len);
+        }
+        // Counting from an index goes first; the rest of the chain is what
+        // it runs when it cannot count.
+        if (kind == .main and self.context.options.index_counts and self.patterns.items.len == first_pattern + 1 and
+            index_counts.countsFromIndex(ast, clauses, self.patterns.items[first_pattern]))
+        {
+            try operators.insert(self.context.allocator, 0, .{ .node_index_range_count = .{ .pattern = @intCast(first_pattern), .node = 0 } });
         }
         return self.finish(&operators, kind);
     }

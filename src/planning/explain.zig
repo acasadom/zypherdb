@@ -122,7 +122,7 @@ const Explainer = struct {
         const ast = self.ast;
         var roots = std.ArrayList(Index).empty;
         switch (operator) {
-            .bound_node, .node_scan => |reference| try self.nodeValues(&roots, self.plan.patterns[reference.pattern].nodes[reference.node]),
+            .bound_node, .node_scan, .node_index_range_count => |reference| try self.nodeValues(&roots, self.plan.patterns[reference.pattern].nodes[reference.node]),
             .edge_index_scan => |reference| {
                 const pattern = self.plan.patterns[reference.pattern];
                 for (pattern.edges[reference.edge].seeks) |seek| try roots.append(self.allocator, seek.value);
@@ -162,6 +162,7 @@ const Explainer = struct {
                 if (node.labels.len > 0) break :scan "NodeByLabelScan";
                 break :scan "AllNodesScan";
             },
+            .node_index_range_count => "NodeIndexRangeCount",
             .edge_index_scan => "RelationshipIndexSeek",
             .expand => |expand| expand_name: {
                 const pattern = self.plan.patterns[expand.pattern];
@@ -218,7 +219,8 @@ const Explainer = struct {
         var text = Printer{ .ast = ast, .allocator = self.allocator };
         switch (operator) {
             .bound_node => |reference| try nodeText(&text, self.plan.patterns[reference.pattern].nodes[reference.node]),
-            .node_scan => |reference| try scanDetails(&text, self.plan.patterns[reference.pattern].nodes[reference.node]),
+            .node_scan => |reference| try scanDetails(&text, self.plan.patterns[reference.pattern].nodes[reference.node], false),
+            .node_index_range_count => |reference| try scanDetails(&text, self.plan.patterns[reference.pattern].nodes[reference.node], true),
             .edge_index_scan => |reference| try stepDetails(&text, self.plan.patterns[reference.pattern], reference.edge, reference.edge + 1),
             .expand => |expand| try stepDetails(&text, self.plan.patterns[expand.pattern], expand.from, expand.to),
             .project_path => |pattern| try text.name(self.plan.patterns[pattern].path_variable),
@@ -415,20 +417,22 @@ fn literalCount(ast: *const Ast, clause_part: Index) ?f64 {
 
 /// `(a:L {k: v})`, with the property ranges the scan reads, if it reads
 /// them (from an index, and it seeks no equality first).
-fn scanDetails(text: *Printer, node: Plan.PatternNode) Allocator.Error!void {
+/// A scan's node, and the ranges an index lookup reads: inclusive (a
+/// superset the WHERE then filters), or, when `exact`, as written.
+fn scanDetails(text: *Printer, node: Plan.PatternNode, exact: bool) Allocator.Error!void {
     try nodeText(text, node);
     if (node.seek_index != null or node.range_index == null) return;
     for (node.ranges, 0..) |range, range_position| {
         try text.append(if (range_position == 0) " WHERE " else " AND ");
         if (range.lower) |lower| {
             try text.write(lower);
-            try text.append(" <= ");
+            try text.append(if (exact and range.lower_strict) " < " else " <= ");
         }
         try text.name(node.variable_name);
         try text.append(".");
         try propertyName(text, range.property);
         if (range.upper) |upper| {
-            try text.append(" <= ");
+            try text.append(if (exact and range.upper_strict) " < " else " <= ");
             try text.write(upper);
         }
     }

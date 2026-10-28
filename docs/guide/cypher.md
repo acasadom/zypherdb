@@ -492,6 +492,7 @@ depth  operator        details                                    estimated_rows
 | --- | --- |
 | `NodeIndexSeek` | finds a pattern's first node by an equality on an indexed property (`{id: $id}`, `WHERE n.id = $id`) |
 | `NodeIndexRangeSeek` | finds it by a range of an indexed number or date property (`WHERE n.age > 60`) |
+| `NodeIndexRangeCount` | counts the nodes in a range of an indexed property from the index alone (`MATCH (n:Person) WHERE n.age > 60 RETURN count(n)`); the operators above it run only when the index cannot tell |
 | `NodeByLabelScan`, `AllNodesScan` | reads every node with the label, or every node |
 | `RelationshipIndexSeek` | finds a single relationship's ends by an equality on its indexed property |
 | `BoundNode` | a node bound before the pattern: checks its labels and properties |

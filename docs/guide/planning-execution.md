@@ -128,6 +128,29 @@ and the seek is checked on each, as in Neo4j.
 A pushed-down seek or range is still checked against each candidate, and the whole `WHERE` is
 still evaluated at the end. So pushdown never changes a result: it only narrows the candidates.
 
+### Counting from an index
+
+A query that only counts the nodes of one label in a range of an indexed property,
+`MATCH (n:Label) WHERE <ranges on n.p> RETURN count(n)`, needs no node read: the index's keys in
+the range are the answer. The planner (`index_counts.zig`) puts a `node_index_range_count` before
+the scan when:
+
+- the query is that MATCH and that RETURN, nothing else;
+- the pattern is one node, unbound, with one label and no `{...}` properties;
+- every part of the `WHERE` (an AND of comparisons) is a range on the one property an index on that
+  label covers (a property name, not a document path), at most one from each side;
+- the RETURN is one `count(*)` or `count(n)`, not `DISTINCT`, without `ORDER BY`, `SKIP` or
+  `LIMIT`.
+
+At run time the operator reads the index's key range (`Graph.nodesInRange`), reads each value back
+from its key (`property_indexes.keyValue`) and compares it with the bounds as the `WHERE` would
+(`<` or `<=`, an integer with a float exactly). It adds the count to the RETURN's one group and
+passes no row on. When the keys cannot tell, it hands its row to the operators after it instead,
+which match and count as without it: a bound that is null or of a kind the keys do not hold whole
+(booleans, times, date-times, lists), bounds of two kinds, or a key cut short (a string longer than
+`property_indexes.max_value_bytes`). The plan option `index_counts` turns it off, so the query
+fuzzer compares both.
+
 ## Anchor selection
 
 `estimate(node)` ranks a node by what starting there costs: the candidates its scan reads, plus
@@ -162,6 +185,7 @@ Each pattern operator is one graph operation (`pattern_matching.zig`):
 | --- | --- | --- |
 | `node_scan` with a seek | `nodesByIndex(index_id, value)` | property-index prefix scan |
 | `node_scan` with a range | `nodesInRange(index_id, lower, upper)` | property-index key range |
+| `node_index_range_count` | `nodesInRange(index_id, lower, upper)`, values read from the keys | property-index key range |
 | `node_scan` with a label | `nodesWithLabel(label)`, then the other labels are checked | label-index prefix scan |
 | `node_scan`, unlabeled | `allNodes()` | a walk of the `#nodes` records |
 | `expand` | `edgesOf` / `edgesOfType(from, direction)` | edge prefix scan |

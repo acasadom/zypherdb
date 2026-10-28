@@ -74,6 +74,12 @@ pub const Operator = union(enum) {
     bound_node: NodeReference,
     /// Binds the pattern's anchor node to each of its candidates.
     node_scan: NodeReference,
+    /// `MATCH (n:Label) WHERE <ranges on n.p> RETURN count(n)`, with an index
+    /// on `:Label(p)`: counts the index entries in range into the RETURN's
+    /// one group, reading no node. When the keys cannot tell (a value cut
+    /// short, bounds of other kinds), hands its row on instead to the
+    /// operators after it, which match and count as without it.
+    node_index_range_count: NodeReference,
     /// Binds both ends of a single-edge pattern from the edge-property index.
     edge_index_scan: EdgeReference,
     /// Follows the edge between pattern nodes `from` (matched) and `to`.
@@ -200,6 +206,9 @@ pub const RangeSeek = struct {
     property: []const u8,
     lower: ?Index,
     upper: ?Index,
+    /// The comparison is `>` (or `<`): the bound itself is out of range.
+    lower_strict: bool = false,
+    upper_strict: bool = false,
 };
 
 /// The property index a pattern node's or edge's candidates come from.

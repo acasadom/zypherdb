@@ -984,15 +984,23 @@ pub const NodeIdIterator = struct {
 
     /// Returns the next node id, or `null` at the end.
     pub fn next(self: *NodeIdIterator) StorageError!?NodeId {
-        while (true) {
-            while (try self.inner.next()) |entry| {
-                if (self.key_length) |len| {
-                    if (entry.key.len != len) continue;
-                }
-                if (self.native_keys) return std.mem.readInt(NodeId, entry.key[0..8], .native);
-                const end = entry.key.len - self.trailing_length;
-                return key_encoding.readNodeId(entry.key[end - key_encoding.node_id_length .. end]);
+        while (try self.nextKey()) |key| {
+            if (self.key_length) |len| {
+                if (key.len != len) continue;
             }
+            if (self.native_keys) return std.mem.readInt(NodeId, key[0..8], .native);
+            const end = key.len - self.trailing_length;
+            return key_encoding.readNodeId(key[end - key_encoding.node_id_length .. end]);
+        }
+        return null;
+    }
+
+    /// Returns the next key scanned, whole (valid until the next call), or
+    /// `null` at the end. An index key holds the value before the node id
+    /// (`property_indexes.keyValue`).
+    pub fn nextKey(self: *NodeIdIterator) StorageError!?[]const u8 {
+        while (true) {
+            if (try self.inner.next()) |entry| return entry.key;
             const second = self.second orelse return null;
             self.inner.deinit();
             self.inner = second;

@@ -37,6 +37,10 @@ happens, when it matters, and the fix being considered. Measured numbers are in
   range of booleans, durations, lists or of two kinds of value also scans, though `EXPLAIN`
   shows `NodeIndexRangeSeek`: the plan does not know a parameter's type.)
 - **A range's selectivity is a guess** (a quarter of the label). Fix: statistics per property.
+- **A count from an index reads every key in its range** (`NodeIndexRangeCount`): no node is
+  read, but the time still grows with the matches (`WHERE p.age > 60` over 100,000 people: about
+  0.3 ms, against 4 ms reading each node).
+  Fix: counts kept in the index's B-tree pages, which LMDB does not offer.
 - **Each label change reads and writes the label's counter** (`c | label`, kept for the
   planner). Creating many labeled nodes in one transaction pays one counter update per node,
   about 2 µs. Fix: keep the transaction's counter changes in memory and write them at commit.

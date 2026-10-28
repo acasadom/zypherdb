@@ -39,6 +39,9 @@ pub const Options = struct {
     /// Look nodes and relationships up in the property indexes; off: scan
     /// labels or every node, and check the seeks on each.
     index_lookups: bool = true,
+    /// Count the matches of a range on an index from its keys alone
+    /// (`Plan.Operator.node_index_range_count`); off: match and count them.
+    index_counts: bool = true,
     /// Which node a pattern starts from.
     anchor: Anchor = .cheapest,
     /// ORDER BY with LIMIT keeps only the first rows (`Top`); off: sort all
@@ -257,13 +260,15 @@ const Planner = struct {
                 try self.addSeek(children[1], children[0]);
             },
             // `n.x > v` and `v < n.x` bound n.x from below; `<` from above.
-            .greater_than, .greater_or_equal => {
-                try self.addRange(children[0], children[1], true);
-                try self.addRange(children[1], children[0], false);
+            .greater_than, .greater_or_equal => |operator| {
+                const strict = operator == .greater_than;
+                try self.addRange(children[0], children[1], true, strict);
+                try self.addRange(children[1], children[0], false, strict);
             },
-            .less_than, .less_or_equal => {
-                try self.addRange(children[0], children[1], false);
-                try self.addRange(children[1], children[0], true);
+            .less_than, .less_or_equal => |operator| {
+                const strict = operator == .less_than;
+                try self.addRange(children[0], children[1], false, strict);
+                try self.addRange(children[1], children[0], true, strict);
             },
             .and_ => {
                 try self.collectWhereSeeks(children[0]);
@@ -279,13 +284,16 @@ const Planner = struct {
     }
 
     /// `node.property <op> value` (or reversed) as a range on the node: `value`
-    /// is a lower bound for `>`/`>=`, an upper one for `<`/`<=`.
-    fn addRange(self: *Planner, access_expression: Index, value_expression: Index, value_is_lower: bool) Allocator.Error!void {
+    /// is a lower bound for `>`/`>=`, an upper one for `<`/`<=`; `strict` for
+    /// `>` and `<`.
+    fn addRange(self: *Planner, access_expression: Index, value_expression: Index, value_is_lower: bool, strict: bool) Allocator.Error!void {
         const target = try self.seekTarget(access_expression, value_expression) orelse return;
         try self.nodes.items[target.node].ranges.append(self.context.allocator, .{
             .property = target.property,
             .lower = if (value_is_lower) value_expression else null,
             .upper = if (value_is_lower) null else value_expression,
+            .lower_strict = value_is_lower and strict,
+            .upper_strict = !value_is_lower and strict,
         });
     }
 

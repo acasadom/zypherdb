@@ -94,6 +94,15 @@ pub fn appendValuePrefix(key: *std.ArrayList(u8), allocator: Allocator, index_id
     try appendValue(key, allocator, value);
 }
 
+/// The value of index key `key` (`value_encoding.decodeIndexValue`): null
+/// when the key does not hold it whole (cut short) or for kinds it cannot
+/// give back. A string is a view into `key`.
+pub fn keyValue(key: []const u8) ?Value {
+    const prefix_length = 1 + @sizeOf(u32);
+    if (key.len < prefix_length + key_encoding.node_id_length) return null;
+    return value_encoding.decodeIndexValue(key[prefix_length .. key.len - key_encoding.node_id_length]);
+}
+
 /// Appends the key of the entry of entity `id` with `value` in index `index_id`.
 pub fn appendKey(key: *std.ArrayList(u8), allocator: Allocator, index_id: u32, value: Value, id: u64) Allocator.Error!void {
     try appendValuePrefix(key, allocator, index_id, value);

@@ -211,6 +211,22 @@ test "PROFILE runs the query and counts each operator's rows" {
         \\Expand(All) (m:Movie)<-[:ACTED_IN]-(p:Person)  [estimated 2, rows 4]
         \\NodeIndexRangeSeek (m:Movie) WHERE m.released <= 2000  [estimated 1, rows 2]
     ));
+    // A range count from the index: the operators after it run only when the
+    // keys cannot tell (here, bounds of two kinds).
+    try expectPlan(&ast, &g, "PROFILE MATCH (m:Movie) WHERE m.released >= 1999 AND m.released < 2003 RETURN count(m) AS movies", snap(@src(),
+        \\Return count(m) AS movies  [estimated 1, rows 1]
+        \\Aggregation count(m) AS movies  [estimated 1, rows 1]
+        \\Filter m.released >= 1999 AND m.released < 2003  [estimated 1, rows 0]
+        \\NodeIndexRangeSeek (m:Movie) WHERE 1999 <= m.released AND m.released <= 2003  [estimated 1, rows 0]
+        \\NodeIndexRangeCount (m:Movie) WHERE 1999 <= m.released AND m.released < 2003  [estimated 1, rows 0]
+    ));
+    try expectPlan(&ast, &g, "PROFILE MATCH (m:Movie) WHERE m.title >= 'The' AND m.title < 2000 RETURN count(*)", snap(@src(),
+        \\Return count(*)  [estimated 1, rows 1]
+        \\Aggregation count(*)  [estimated 1, rows 1]
+        \\Filter m.title >= 'The' AND m.title < 2000  [estimated 1, rows 0]
+        \\NodeIndexRangeSeek (m:Movie) WHERE 'The' <= m.title AND m.title <= 2000  [estimated 1, rows 4]
+        \\NodeIndexRangeCount (m:Movie) WHERE 'The' <= m.title AND m.title < 2000  [estimated 1, rows 1]
+    ));
     try expectPlan(&ast, &g, "PROFILE MATCH (p:Person) OPTIONAL MATCH (p)-[:DIRECTED]->(m) RETURN count(m) AS directed", snap(@src(),
         \\Return count(m) AS directed  [estimated 1, rows 1]
         \\Aggregation count(m) AS directed  [estimated 1, rows 1]
@@ -306,6 +322,7 @@ test "planner options change the plan, not the rows" {
         .{ .query = "MATCH (p:Person {name: 'Keanu Reeves'})-[:ACTED_IN]->(m:Movie) RETURN m.title", .options = .{ .anchor = .{ .position = 1 } }, .missing = "NodeIndexSeek" },
         .{ .query = "MATCH (m:Movie) WHERE m.released > 2000 RETURN m.title", .options = .{ .where_seeks = false }, .missing = "NodeIndexRangeSeek" },
         .{ .query = "MATCH (p:Person) RETURN p.name ORDER BY p.name SKIP 1 LIMIT 2", .options = .{ .top = false }, .missing = "Top" },
+        .{ .query = "MATCH (m:Movie) WHERE m.released > 2000 RETURN count(m)", .options = .{ .index_counts = false }, .missing = "NodeIndexRangeCount" },
     };
     for (cases) |case| {
         const optimized = try operatorNames(&ast, &g, case.query, .{}, allocator);

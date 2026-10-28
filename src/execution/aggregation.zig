@@ -179,6 +179,13 @@ pub fn ensureGroupWithoutKeys(self: *Executor, grouping: *ValueGrouping, aggrega
     }
 }
 
+/// Adds `count` rows to a RETURN that is one `count(...)` without grouping
+/// keys, counted elsewhere (from an index: index_counts.zig).
+pub fn addCount(self: *Executor, count: u64) ExecutionError!void {
+    try ensureGroupWithoutKeys(self, &self.groups, self.return_aggregation);
+    for (self.groups.states.items[0]) |*state| state.count += count;
+}
+
 /// The value of an aggregating expression for one group: each aggregate
 /// call is replaced by its result and each grouping-key expression by the
 /// group's key value; any other variable (an alias) is read from `scope`.
