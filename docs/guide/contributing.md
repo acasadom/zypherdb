@@ -31,6 +31,11 @@ Wheels and the sdist come from an in-tree build backend, `tools/build_backend/zy
 (manylinux2014), macOS wheels 10.13 (x86_64) and 11.0 (arm64). `pip install -e .` only puts
 `python/` on the path; the package then loads the module `make python` built.
 
+The version comes from git tags, not from `pyproject.toml`: on a tag `v0.2.0` the build is
+`0.2.0`; three commits later, `0.2.1.dev3`. A release is a GitHub release with a new tag
+`vX.Y.Z`: publishing it runs `.github/workflows/publish.yml`, which builds and tests every wheel
+and the sdist and uploads them to PyPI.
+
 `zig build test` runs two executables:
 
 - **The suite, `tests/`.** It imports the `zypherdb` module like any client and uses **only the

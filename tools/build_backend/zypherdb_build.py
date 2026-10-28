@@ -11,6 +11,10 @@ Config settings (`pip wheel --config-settings key=value`, `python -m build -C...
     zig-target    cross-compile for this Zig target ...
     platform-tag  ... and tag the wheel with this platform (both or neither)
 
+The version comes from git, as hatch-vcs gives it: on a tag `vX.Y.Z` it is `X.Y.Z`; N
+commits later, `X.Y.(Z+1).devN`; with no tag, `0.0.devN`. An sdist keeps the version it was
+built with in PKG-INFO.
+
 An editable install only puts python/ on sys.path; build the native module with
 `make python` (the package then loads it from zig-out/python).
 """
@@ -168,7 +172,38 @@ def _zig_build_python(optimize, zig_target, windows, prefix):
 
 def _project():
     with open(SOURCE_ROOT / "pyproject.toml", "rb") as pyproject:
-        return tomllib.load(pyproject)["project"]
+        project = tomllib.load(pyproject)["project"]
+    if "version" in project.get("dynamic", []):
+        project["version"] = _version()
+    return project
+
+
+def _version():
+    """The version of an unpacked sdist (its PKG-INFO), or else the one git describes."""
+    pkg_info = SOURCE_ROOT / "PKG-INFO"
+    if pkg_info.exists():
+        return re.search(r"^Version: (.+)$", pkg_info.read_text(encoding="utf-8"), re.MULTILINE).group(1)
+    described = _git("describe", "--tags", "--long", "--match", "v[0-9]*")
+    if described is None:
+        return f"0.0.dev{_git('rev-list', '--count', 'HEAD') or 0}"
+    tag, distance, _ = described.rsplit("-", 2)
+    version = tag[1:]
+    if distance == "0":
+        return version
+    release = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version)
+    if release is None:
+        return f"{version}.post0.dev{distance}"
+    major, minor, patch = release.groups()
+    return f"{major}.{minor}.{int(patch) + 1}.dev{distance}"
+
+
+def _git(*arguments):
+    """git's output in the source tree, or None when git or the repository is missing."""
+    try:
+        result = subprocess.run(["git", *arguments], cwd=SOURCE_ROOT, capture_output=True, text=True)
+    except OSError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
 
 
 def _normalized_name(name):
