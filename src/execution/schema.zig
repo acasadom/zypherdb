@@ -164,6 +164,11 @@ fn unknownOption(executor: *Executor, key: []const u8) ExecutionError {
     return error.InvalidExpression;
 }
 
+/// The columns of SHOW INDEXES (`showIndexes`) and SHOW CONSTRAINTS
+/// (`showConstraints`), named as Neo4j 5 names them.
+pub const index_columns = [_][]const u8{ "name", "type", "entityType", "labelsOrTypes", "properties", "owningConstraint", "options" };
+pub const constraint_columns = [_][]const u8{ "name", "type", "entityType", "labelsOrTypes", "properties", "ownedIndex" };
+
 /// One row per index (full-text or range, a uniqueness constraint's
 /// included, as in Neo4j 5): name, type, entityType, labelsOrTypes,
 /// properties (a document path as `a.b`), owningConstraint (the

@@ -94,6 +94,13 @@ def test_prepared_query_runs_with_new_parameters(db):
     assert "MATCH" in repr(lookup)
 
 
+def test_show_commands_name_their_columns(db):
+    assert db.prepare("SHOW INDEXES").columns == (
+        "name", "type", "entityType", "labelsOrTypes", "properties", "owningConstraint", "options")
+    assert db.prepare("SHOW CONSTRAINTS").columns == (
+        "name", "type", "entityType", "labelsOrTypes", "properties", "ownedIndex")
+
+
 def test_prepared_query_sees_later_writes(db):
     count = db.prepare("MATCH (e:Event) RETURN count(e)")
     create = db.prepare("CREATE (:Event {n: $n})")
