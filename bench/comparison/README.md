@@ -35,7 +35,7 @@ are chosen so that no engine trips on a reserved word: `Team`, `opens`/`closes` 
 | may this card open this door? | `*1..3`, relationship properties, a filter |
 | same, with `EXISTS` | an existential subquery |
 | doors of a person's zones | `*1..3`, then two more hops |
-| people over 60 | a scan of every person, with a filter |
+| people over 60 | a range on an indexed property, counted |
 | oldest 10 | `ORDER BY … LIMIT` |
 | team sizes, department counts | aggregation |
 | return all people | result transfer |
@@ -68,25 +68,25 @@ These rows are for 100,000 people (2,000 for SparrowDB, whose load takes 43 s ev
 
 | Query | ZypherDB | Kuzu | GraphQLite | SparrowDB (2k) |
 | --- | ---: | ---: | ---: | ---: |
-| load | 2.9 s | **0.7 s** | 4.2 s | 43 s |
+| load | 2.7 s | **0.7 s** | 4.2 s | 43 s |
 | card lookup | **5 µs** | 188 µs | 161 µs | 150 µs |
 | person's teams | **8 µs** | 559 µs | 175 µs | 51 ms |
-| colleagues | **57 µs** | 1.3 ms | 592 µs | 55 ms |
+| colleagues | **61 µs** | 1.3 ms | 592 µs | 55 ms |
 | may this card open this door? | **23 µs** | 261 ms | 1.7 s | not supported |
-| same, with `EXISTS` | **33 µs** | 9.7 ms | 4.2 s | not supported |
-| doors of a person's zones | **87 µs** | 2.5 ms | 1.4 ms | 56 ms |
-| people over 60 | 5.9 ms | **0.3 ms** | 10 ms | 7.8 ms |
-| oldest 10 | 18 ms | **3.8 ms** | 280 ms | 73 ms |
-| team sizes | 27 ms | **21 ms** | 317 ms | 178 ms |
+| same, with `EXISTS` | **34 µs** | 9.7 ms | 4.2 s | not supported |
+| doors of a person's zones | **88 µs** | 2.5 ms | 1.4 ms | 56 ms |
+| people over 60 | 0.32 ms | **0.31 ms** | 10 ms | 7.8 ms |
+| oldest 10 | 19 ms | **3.8 ms** | 280 ms | 73 ms |
+| team sizes | 28 ms | **21 ms** | 317 ms | 178 ms |
 | department counts | 14 ms | **4.1 ms** | 89 ms | 64 ms |
-| return all people | **26 ms** | 71 ms | 423 ms | 168 ms |
-| create one node | 8 ms | **4 ms** | 13 ms | 9 ms |
+| return all people | **25 ms** | 71 ms | 423 ms | 168 ms |
+| create one node | 9 ms | **4 ms** | 13 ms | 9 ms |
 
 GraphQLite ran each query 20 times at this size instead of 200, because the access check takes
 seconds.
 
 For SparrowDB the ZypherDB numbers at the same size are in `results/python-zypherdb-2k.jsonl`, for
-example 7 µs for a person's teams.
+example 5.5 µs for a person's teams.
 
 LatticeDB was measured at 10,000 people: its load is quadratic, and 100,000 people did not finish
 loading within 15 minutes. The table below is natively from C, which removes its ctypes overhead
@@ -94,13 +94,13 @@ loading within 15 minutes. The table below is natively from C, which removes its
 
 | Query | ZypherDB | LatticeDB |
 | --- | ---: | ---: |
-| load | 0.28 s | 25 s |
+| load | 0.25 s | 25 s |
 | card lookup | 4 µs | 108 µs |
-| colleagues | 64 µs | 221 µs |
-| may this card open this door? | 17 µs | 4.0 ms |
-| people over 60 | 0.5 ms | 406 ms |
-| oldest 10 | 1.8 ms | 8.6 s |
-| create one node | 7.9 ms (24 µs with `deferred` durability) | 107 µs |
+| colleagues | 66 µs | 221 µs |
+| may this card open this door? | 19 µs | 4.0 ms |
+| people over 60 | 39 µs | 406 ms |
+| oldest 10 | 2.1 ms | 8.6 s |
+| create one node | 7.1 ms (24 µs with `deferred` durability) | 107 µs |
 
 ### Commits are compared at equal durability
 
@@ -113,14 +113,16 @@ the same flush as ZypherDB's `full`.
 ## What this says
 
 - On transactional work (lookups, traversals, access decisions, results to Python), ZypherDB is
-  faster than all three: 3–240× faster than LatticeDB, 20–11000× than Kuzu, 35–7000× than
+  faster than all three: 3–210× faster than LatticeDB, 20–11000× than Kuzu, 45–9000× than
   SparrowDB.
-- On analytics over the whole graph (scans, sorts, aggregates), Kuzu is 1.3–19× faster than ZypherDB.
+- On analytics over the whole graph (sorts, aggregates), Kuzu is 1.3–4.9× faster than ZypherDB.
+  Counting a range of an indexed property is as fast in both (0.3 ms), as ZypherDB counts it from
+  the index.
   The reason is its columnar storage, not parallelism: with one thread it is as fast. Kuzu also
   loads in bulk 4× faster. These are ZypherDB's known gaps (see `docs/guide/performance.md`).
 - On features, LatticeDB and SparrowDB have full-text search, and LatticeDB has vector search.
   ZypherDB has had full-text search (BM25) since; it has no vector search yet.
-- GraphQLite: ZypherDB is 10–125,000× faster on transactional work and 6–16× on sorts, aggregates
+- GraphQLite: ZypherDB is 10–125,000× faster on transactional work and 6–17× on sorts, aggregates
   and returning rows. GraphQLite has graph algorithms (PageRank, Louvain, Dijkstra) and plain SQL
   access to the same SQLite file; ZypherDB has neither.
 

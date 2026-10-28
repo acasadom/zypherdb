@@ -1,13 +1,13 @@
-{"engine": "full", "query": "load", "seconds": 0.282}
+{"engine": "full", "query": "load", "seconds": 0.250}
 {"query": "card lookup", "median_us": 4.0, "p95_us": 5.0, "runs": 100, "answers": "1:baa7054c99250b37 1:ba830a4c98e7e7b6 1:baae594c99317ef3"}
-{"query": "person's groups (1 hop)", "median_us": 6.0, "p95_us": 8.0, "runs": 100, "answers": "2:557fac2e2d348bf4 1:d9dac6428f3a6c35 2:edae60ba34425c5f"}
-{"query": "colleagues (2 hops, distinct)", "median_us": 64.0, "p95_us": 99.0, "runs": 100, "answers": "1:af61f84c85feb620 1:af62eb4c86005309 1:af62f34c860060a1"}
-{"query": "may this card open this door?", "median_us": 17.0, "p95_us": 24.0, "runs": 100, "answers": "1:af63bd4c8601b7df 1:af63bd4c8601b7df 1:af63bc4c8601b62c"}
+{"query": "person's groups (1 hop)", "median_us": 7.0, "p95_us": 8.0, "runs": 100, "answers": "2:557fac2e2d348bf4 1:d9dac6428f3a6c35 2:edae60ba34425c5f"}
+{"query": "colleagues (2 hops, distinct)", "median_us": 66.0, "p95_us": 101.0, "runs": 100, "answers": "1:af61f84c85feb620 1:af62eb4c86005309 1:af62f34c860060a1"}
+{"query": "may this card open this door?", "median_us": 19.0, "p95_us": 27.0, "runs": 100, "answers": "1:af63bd4c8601b7df 1:af63bd4c8601b7df 1:af63bc4c8601b62c"}
 {"query": "doors of a person's zones", "median_us": 67.0, "p95_us": 102.0, "runs": 100, "answers": "1:af63134c86009701 1:af63134c86009701 1:af637f4c86014e85"}
-{"query": "people over 60 (scan + filter)", "median_us": 490.0, "p95_us": 491.0, "runs": 5, "answers": "1:af66f54c86073007 1:af66f54c86073007 1:af66f54c86073007"}
-{"query": "oldest 10 (ORDER BY + LIMIT)", "median_us": 1834.0, "p95_us": 1836.0, "runs": 5, "answers": "10:9f29bb4580eec16e 10:9f29bb4580eec16e 10:9f29bb4580eec16e"}
-{"query": "group sizes (aggregate)", "median_us": 2741.0, "p95_us": 2742.0, "runs": 5, "answers": "10:451b74615f330aaf 10:451b74615f330aaf 10:451b74615f330aaf"}
-{"query": "department counts", "median_us": 1382.0, "p95_us": 1388.0, "runs": 5, "answers": "8:4db90f53b14d6627 8:4db90f53b14d6627 8:4db90f53b14d6627"}
-{"query": "return all people (3 columns)", "median_us": 2434.0, "p95_us": 2436.0, "runs": 5, "answers": "10000:9486e97f52b35f11 10000:9486e97f52b35f11 10000:9486e97f52b35f11"}
-{"query": "create one node (commit)", "median_us": 7882.0, "p95_us": 9123.0, "runs": 100, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
-{"query": "create 1000 nodes (UNWIND)", "median_us": 16812.0, "p95_us": 18072.0, "runs": 5, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
+{"query": "people over 60 (scan + filter)", "median_us": 39.0, "p95_us": 40.0, "runs": 5, "answers": "1:af66f54c86073007 1:af66f54c86073007 1:af66f54c86073007"}
+{"query": "oldest 10 (ORDER BY + LIMIT)", "median_us": 2135.0, "p95_us": 2174.0, "runs": 5, "answers": "10:9f29bb4580eec16e 10:9f29bb4580eec16e 10:9f29bb4580eec16e"}
+{"query": "group sizes (aggregate)", "median_us": 2736.0, "p95_us": 2796.0, "runs": 5, "answers": "10:451b74615f330aaf 10:451b74615f330aaf 10:451b74615f330aaf"}
+{"query": "department counts", "median_us": 1369.0, "p95_us": 1372.0, "runs": 5, "answers": "8:4db90f53b14d6627 8:4db90f53b14d6627 8:4db90f53b14d6627"}
+{"query": "return all people (3 columns)", "median_us": 2449.0, "p95_us": 2575.0, "runs": 5, "answers": "10000:9486e97f52b35f11 10000:9486e97f52b35f11 10000:9486e97f52b35f11"}
+{"query": "create one node (commit)", "median_us": 7119.0, "p95_us": 8123.0, "runs": 100, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
+{"query": "create 1000 nodes (UNWIND)", "median_us": 16035.0, "p95_us": 16922.0, "runs": 5, "answers": "0:0000000000000000 0:0000000000000000 0:0000000000000000"}
