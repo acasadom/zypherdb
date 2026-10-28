@@ -362,6 +362,7 @@ const Fuzzer = struct {
         return .{
             .where_seeks = choice.boolean(),
             .index_lookups = choice.boolean(),
+            .index_counts = choice.boolean(),
             .anchor = if (choice.boolean()) .cheapest else .{ .position = choice.uintAtMost(u32, 3) },
             .top = choice.boolean(),
         };

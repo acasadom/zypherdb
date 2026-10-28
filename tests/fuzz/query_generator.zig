@@ -30,6 +30,9 @@ pub const Mix = struct {
     where: u8,
     /// The most nodes in a pattern.
     pattern_nodes: u8,
+    /// Out of 8: a range count, `MATCH (n:L) WHERE <ranges> RETURN count(n)`,
+    /// which an index may answer from its keys alone.
+    range_counts: u8,
 
     pub fn choose(random: std.Random) Mix {
         return .{
@@ -39,6 +42,7 @@ pub const Mix = struct {
             .parameters = random.uintAtMost(u8, 6),
             .where = random.intRangeAtMost(u8, 2, 8),
             .pattern_nodes = random.intRangeAtMost(u8, 1, 4),
+            .range_counts = random.uintAtMost(u8, 2),
         };
     }
 };
@@ -86,6 +90,7 @@ const Generator = struct {
     variable_length_used: bool = false,
 
     fn query(self: *Generator) Allocator.Error!Query {
+        if (self.chance(self.mix.range_counts)) return self.rangeCount();
         const head = try self.match("MATCH");
         const first_nodes = self.nodes.items.len;
         const first_relationships = self.relationships.items.len;
@@ -108,6 +113,32 @@ const Generator = struct {
             .partition = partition,
             .ordered = ret.ordered,
             .partitionable = ret.partitionable,
+        };
+    }
+
+    /// `MATCH (n0:L) WHERE n0.p > v [AND n0.p < w] RETURN count(n0)`: one or
+    /// two range comparisons, written either way round, on one property.
+    fn rangeCount(self: *Generator) Allocator.Error!Query {
+        try self.nodes.append(self.allocator, "n0");
+        const property = self.pick(&properties);
+        var where = std.ArrayList(u8).empty;
+        var lower = self.random.boolean();
+        for (0..self.random.intRangeAtMost(u8, 1, 2)) |position| {
+            if (position > 0) {
+                try where.appendSlice(self.allocator, " AND ");
+                lower = !lower; // the other side
+            }
+            const strict = self.random.boolean();
+            const operator: []const u8 = if (lower) (if (strict) ">" else ">=") else (if (strict) "<" else "<=");
+            try where.print(self.allocator, "n0.{s} {s} {s}", .{ property, operator, try self.value() });
+        }
+        return .{
+            .head = try std.fmt.allocPrint(self.allocator, "MATCH (n0:{s})", .{self.pick(&labels)}),
+            .where = where.items,
+            .tail = if (self.random.boolean()) "RETURN count(n0) AS c0" else "RETURN count(*) AS c0",
+            .partition = try self.predicate(1),
+            .ordered = false,
+            .partitionable = false,
         };
     }
 

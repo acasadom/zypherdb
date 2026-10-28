@@ -142,6 +142,30 @@ pub fn encodeIndexValue(list: *std.ArrayList(u8), allocator: Allocator, value: V
     try encode(list, allocator, value, .index);
 }
 
+/// The value whose index encoding is `bytes`, for the kinds whose encoding
+/// holds the whole value: numbers, strings (not cut short: a whole one ends
+/// with its separator), dates and local times. Null for any other bytes. A
+/// string is a view into `bytes`.
+pub fn decodeIndexValue(bytes: []const u8) ?Value {
+    if (bytes.len == 0) return null;
+    const payload = bytes[1..];
+    const tag = std.enums.fromInt(Tag, bytes[0]) orelse return null;
+    if (tag == .string) {
+        if (payload.len == 0 or payload[payload.len - 1] != separator) return null;
+        return .{ .string = payload[0 .. payload.len - 1] };
+    }
+    if (payload.len != 8) return null;
+    const ordered = readInt(u64, payload);
+    const integer: i64 = @bitCast(ordered ^ (1 << 63));
+    return switch (tag) {
+        .int => .{ .int = integer },
+        .float => .{ .float = @bitCast(if (ordered >> 63 == 1) ordered & ~@as(u64, 1 << 63) else ~ordered) },
+        .date => .{ .date = .{ .days = integer } },
+        .local_time => .{ .local_time = .{ .nanoseconds = integer } },
+        else => null,
+    };
+}
+
 /// A list element or map entry: stored with its length before it (so it can
 /// be skipped while decoding), indexed as is.
 fn encodeElement(list: *std.ArrayList(u8), allocator: Allocator, value: Value, form: Form) Allocator.Error!void {

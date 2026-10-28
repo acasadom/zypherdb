@@ -31,6 +31,7 @@ const clauses = @import("clauses.zig");
 const expressions = @import("expressions.zig");
 const load_csv = @import("load_csv.zig");
 const pattern_matching = @import("pattern_matching.zig");
+const index_counts = @import("index_counts.zig");
 const procedures = @import("procedures.zig");
 const projection = @import("projection.zig");
 const writes = @import("writes.zig");
@@ -208,6 +209,7 @@ inline fn run(executor: *Executor, index: Plan.OperatorIndex, row: *Bindings) Ex
     switch (executor.plan.operators[index]) {
         .bound_node => |reference| try pattern_matching.checkBoundNode(executor, reference, next, row),
         .node_scan => |reference| try pattern_matching.scanNodes(executor, reference, next, row),
+        .node_index_range_count => |reference| try index_counts.countNodes(executor, reference, next, row),
         .edge_index_scan => |reference| try pattern_matching.scanEdgeIndex(executor, reference, next, row),
         .expand => |expand| try pattern_matching.expand(executor, expand, next, row),
         .project_path => |pattern| try pattern_matching.projectPath(executor, pattern, next, row),
