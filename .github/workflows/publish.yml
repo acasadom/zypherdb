@@ -17,13 +17,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: The release tag names the version in pyproject.toml
+      # The build takes its version from this tag (git describe), so the tag must be one.
+      - name: The release tag is a version (vX.Y.Z)
         env:
           TAG: ${{ github.event.release.tag_name }}
         run: |
-          version=$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::release tag $TAG does not match the version in pyproject.toml (v$version)"
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
+            echo "::error::release tag $TAG is not a version vX.Y.Z (or vX.Y.ZrcN)"
+            exit 1
+          fi
+
+      - name: CHANGELOG.md has a section for the version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! grep -q "^## ${TAG#v} " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section '## ${TAG#v} — <date>'"
             exit 1
           fi
 
@@ -50,5 +59,17 @@ jobs:
         with:
           name: sdist
           path: dist
+
+      - name: Every file carries the release's version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          ls dist
+          for file in dist/*; do
+            case "$(basename "$file")" in
+              "zypherdb-${TAG#v}.tar.gz" | "zypherdb-${TAG#v}-"*.whl) ;;
+              *) echo "::error::$file is not version ${TAG#v}"; exit 1 ;;
+            esac
+          done
 
       - uses: pypa/gh-action-pypi-publish@release/v1
