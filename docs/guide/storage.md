@@ -92,7 +92,7 @@ them (bytes in hex, `"…"` for bytes that are text):
 
 main table, in the order the engine keeps it
   "!"                → 00 00 00 00 00 00 00 02    next node id: 2
-  "!format"          → 00 00 00 04                format version 4
+  "!format"          → 00 00 00 01                format version 1
   "!index_id"        → 00 00 00 02                2 property indexes numbered so far
   "!relationships"   → 00 00 00 00 00 00 00 01    next relationship id: 1
   "!schema"          → 00 00 00 00 00 00 00 02    the definitions changed twice
@@ -211,7 +211,7 @@ upper bound's.
 
 ## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version` (4). When the C ABI or the
+The key `!format` holds the format's version, `Graph.format_version` (1). When the C ABI or the
 Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
 written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
 
