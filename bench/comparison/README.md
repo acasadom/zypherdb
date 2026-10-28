@@ -1,15 +1,16 @@
 # ZypherDB compared with other embedded graph databases
 
-In October 2026, before publishing, ZypherDB was measured against three other embedded graph
-databases that speak Cypher. The goal was to check two things: that ZypherDB's performance holds up
-against real alternatives, and that its answers are correct.
+In October 2026, before publishing, ZypherDB was measured against four other embedded graph
+databases that speak Cypher, to check that ZypherDB's performance holds up against real
+alternatives.
 
 | Engine | Language | Version | Binding used |
 | --- | --- | --- | --- |
-| ZypherDB | Zig | `main`, October 2026 | native module (Zig, Python limited API) |
+| ZypherDB | Zig | 0.1.0 (October 2026) | native module (Zig, Python limited API) |
 | [LatticeDB](https://github.com/jeffhajewski/latticedb) | Zig | 0.15.0 (commit 3f797d5) | ctypes; also its C API |
 | [Kuzu](https://pypi.org/project/kuzu/) | C++ | 0.11.3 (archived October 2025) | pybind11 |
 | [SparrowDB](https://github.com/ryaker/SparrowDB) | Rust | 0.1.27 (commit 479fb18) | PyO3, built from source |
+| [GraphQLite](https://github.com/colliery-io/graphqlite) | C (SQLite extension) | 0.12.0 | its Python package over `sqlite3` |
 
 All measurements were taken on one Apple-silicon laptop (macOS), with the page cache warm. Times
 are medians.
@@ -34,7 +35,7 @@ are chosen so that no engine trips on a reserved word: `Team`, `opens`/`closes` 
 | may this card open this door? | `*1..3`, relationship properties, a filter |
 | same, with `EXISTS` | an existential subquery |
 | doors of a person's zones | `*1..3`, then two more hops |
-| people over 60 | a scan of every person, with a filter |
+| people over 60 | a range on an indexed property, counted |
 | oldest 10 | `ORDER BY … LIMIT` |
 | team sizes, department counts | aggregation |
 | return all people | result transfer |
@@ -48,9 +49,14 @@ Each engine is given its best case:
   - Kuzu: `COPY` from CSV files, with writing the files counted in the load time;
   - SparrowDB: its Rust `BulkLoader`;
   - LatticeDB: its storage API in one transaction;
-- it has the indexes it needs;
+  - GraphQLite: its bulk inserts (`insert_nodes_bulk`, `insert_edges_bulk`), which bypass Cypher;
+    they also store each node's external id as a text property `id`, so the benchmark removes
+    those rows and keeps the graph's integer `id`;
+- it has the indexes it needs: the engines with explicit indexes get one on each property the
+  queries look up or filter on, `Person.age` included; GraphQLite indexes every property by
+  itself; Kuzu indexes only primary keys;
 - it reuses prepared statements where it has them;
-- SparrowDB gets its parameters inlined as literals, because it ignores its index for `$parameters`.
+- SparrowDB gets its parameters inlined as literals, because its index is used only with literal values.
 
 ZypherDB is built with `-Doptimize=ReleaseFast`.
 
@@ -58,26 +64,29 @@ ZypherDB is built with `-Doptimize=ReleaseFast`.
 
 ### Speed, from Python
 
-These rows are for 100,000 people (2,000 for SparrowDB, whose load takes 41 s even at that size).
+These rows are for 100,000 people (2,000 for SparrowDB, whose load takes 43 s even at that size).
 
-| Query | ZypherDB | Kuzu | SparrowDB (2k) |
-| --- | ---: | ---: | ---: |
-| load | 2.5 s | **0.7 s** | 41 s |
-| card lookup | **8 µs** | 181 µs | 94 µs |
-| person's teams | **11 µs** | 516 µs | 52 ms |
-| colleagues | **79 µs** | 2.8 ms | 57 ms |
-| may this card open this door? | **33 µs** | 263 ms | not supported |
-| same, with `EXISTS` | **36 µs** | 10 ms | not supported |
-| doors of a person's zones | **119 µs** | 2.7 ms | 62 ms |
-| people over 60 | 17 ms | **0.3 ms** | 8 ms |
-| oldest 10 | 44 ms | **3.6 ms** | 75 ms (wrong order) |
-| team sizes | 118 ms | **21 ms** | 197 ms |
-| department counts | 26 ms | **3.4 ms** | 69 ms |
-| return all people | **52 ms** | 78 ms | 179 ms |
-| create one node | 8 ms | **4 ms** | 10 ms |
+| Query | ZypherDB | Kuzu | GraphQLite | SparrowDB (2k) |
+| --- | ---: | ---: | ---: | ---: |
+| load | 2.7 s | **0.7 s** | 4.2 s | 43 s |
+| card lookup | **5 µs** | 188 µs | 161 µs | 150 µs |
+| person's teams | **8 µs** | 559 µs | 175 µs | 51 ms |
+| colleagues | **61 µs** | 1.3 ms | 592 µs | 55 ms |
+| may this card open this door? | **23 µs** | 261 ms | 1.7 s | not supported |
+| same, with `EXISTS` | **34 µs** | 9.7 ms | 4.2 s | not supported |
+| doors of a person's zones | **88 µs** | 2.5 ms | 1.4 ms | 56 ms |
+| people over 60 | 0.32 ms | **0.31 ms** | 10 ms | 7.8 ms |
+| oldest 10 | 19 ms | **3.8 ms** | 280 ms | 73 ms |
+| team sizes | 28 ms | **21 ms** | 317 ms | 178 ms |
+| department counts | 14 ms | **4.1 ms** | 89 ms | 64 ms |
+| return all people | **25 ms** | 71 ms | 423 ms | 168 ms |
+| create one node | 9 ms | **4 ms** | 13 ms | 9 ms |
 
-For SparrowDB the ZypherDB numbers at the same size are in `results/python-zypherdb-2k.jsonl`, and
-they are lower still: for example 6 µs for a person's teams.
+GraphQLite ran each query 20 times at this size instead of 200, because the access check takes
+seconds.
+
+For SparrowDB the ZypherDB numbers at the same size are in `results/python-zypherdb-2k.jsonl`, for
+example 5.5 µs for a person's teams.
 
 LatticeDB was measured at 10,000 people: its load is quadratic, and 100,000 people did not finish
 loading within 15 minutes. The table below is natively from C, which removes its ctypes overhead
@@ -85,66 +94,37 @@ loading within 15 minutes. The table below is natively from C, which removes its
 
 | Query | ZypherDB | LatticeDB |
 | --- | ---: | ---: |
-| load | 0.20 s | 27 s |
-| card lookup | 6 µs | 118 µs |
-| colleagues | 79 µs | 215 µs |
-| may this card open this door? | 22 µs | 4.1 ms |
-| people over 60 | 1.6 ms | 426 ms |
-| oldest 10 | 3.4 ms | 9.5 s |
-| create one node | 8.1 ms (23 µs with `deferred` durability) | 100 µs |
+| load | 0.25 s | 25 s |
+| card lookup | 4 µs | 108 µs |
+| colleagues | 66 µs | 221 µs |
+| may this card open this door? | 19 µs | 4.0 ms |
+| people over 60 | 39 µs | 406 ms |
+| oldest 10 | 2.1 ms | 8.6 s |
+| create one node | 7.1 ms (24 µs with `deferred` durability) | 107 µs |
 
 ### Commits are compared at equal durability
 
 On macOS, ZypherDB's `full` durability flushes the drive's cache with `F_FULLFSYNC`, twice per
 commit (data and metadata), so a commit survives a power cut. LatticeDB syncs with a plain
 `fsync`, which does not flush that cache. ZypherDB's `relaxed` mode needs one flush, about 4 ms, the
-same as Kuzu. Its `deferred` mode needs none: 23 µs.
-
-### Correctness
-
-openCypher matches each relationship at most once in a pattern. So in
-`(p)-[:MEMBER_OF]->(g)<-[:MEMBER_OF]-(q)`, `q` is never `p`. ZypherDB follows that rule. The other
-three count the person among their own colleagues:
-
-- Kuzu does it by design (walk semantics);
-- LatticeDB and SparrowDB do not document it.
-
-Answers were cross-checked engine against engine, and against a computation in plain Python.
-Other wrong results:
-
-- **SparrowDB:**
-  - `ORDER BY` on a property that is not returned gives the wrong order;
-  - a 3-hop pattern gives 0 where the equivalent `EXISTS` gives true;
-  - `MATCH … CREATE` with parameters silently creates nothing;
-  - it cannot read relationship properties (its issue #248).
-- **LatticeDB:** `RETURN n` returns an id, not the node.
-
-### Coverage of the openCypher TCK
-
-The TCK was run in results-only mode: rows and errors are checked, side effects are not, because
-LatticeDB has no storage-level export to count them with. The result is 3000/3202 positive
-scenarios for ZypherDB (93.7%) and 210/3202 for LatticeDB (6.6%). Most of LatticeDB's failures are
-queries it rejects:
-
-- `OPTIONAL MATCH`;
-- `RETURN` without `MATCH`;
-- map literals and temporal values;
-- `UNION`, paths and `count(*)`;
-- `IN` as a relationship type.
-
-The full reports are in `results/tck-*.md`. Kuzu needs a schema declared before any data, so the
-TCK cannot run on it unchanged. SparrowDB was not run.
+same as Kuzu. Its `deferred` mode needs none: 24 µs. GraphQLite runs with `PRAGMA fullfsync = ON`,
+the same flush as ZypherDB's `full`.
 
 ## What this says
 
 - On transactional work (lookups, traversals, access decisions, results to Python), ZypherDB is
-  faster than all three: 3–200× faster than LatticeDB, 15–8000× than Kuzu, 20–8000× than
+  faster than all three: 3–210× faster than LatticeDB, 20–11000× than Kuzu, 45–9000× than
   SparrowDB.
-- On analytics over the whole graph (scans, sorts, aggregates), Kuzu is 5–50× faster than ZypherDB.
+- On analytics over the whole graph (sorts, aggregates), Kuzu is 1.3–4.9× faster than ZypherDB.
+  Counting a range of an indexed property is as fast in both (0.3 ms), as ZypherDB counts it from
+  the index.
   The reason is its columnar storage, not parallelism: with one thread it is as fast. Kuzu also
-  loads in bulk 3.5× faster. These are ZypherDB's known gaps (see `docs/guide/performance.md`).
+  loads in bulk 4× faster. These are ZypherDB's known gaps (see `docs/guide/performance.md`).
 - On features, LatticeDB and SparrowDB have full-text search, and LatticeDB has vector search.
-  ZypherDB has neither.
+  ZypherDB has had full-text search (BM25) since; it has no vector search yet.
+- GraphQLite: ZypherDB is 10–125,000× faster on transactional work and 6–17× on sorts, aggregates
+  and returning rows. GraphQLite has graph algorithms (PageRank, Louvain, Dijkstra) and plain SQL
+  access to the same SQLite file; ZypherDB has neither.
 
 ## Reproducing
 
@@ -154,11 +134,11 @@ virtual environment. Kuzu has wheels up to Python 3.13.
 
 ```bash
 # docs-test: skip
-pip install kuzu==0.11.3 latticedb==0.15.0
+pip install kuzu==0.11.3 latticedb==0.15.0 graphqlite==0.12.0
 python bench/comparison/bench_python.py --engine zypherdb --people 100000 --dir /tmp/b-zypherdb --runs 200
 python bench/comparison/bench_python.py --engine kuzu --people 100000 --dir /tmp/b-kuzu --runs 200 [--threads 1]
+python bench/comparison/bench_python.py --engine graphqlite --people 100000 --dir /tmp/b-graphqlite --runs 20
 python bench/comparison/table.py bench/comparison/results/python-zypherdb-100k.jsonl bench/comparison/results/python-kuzu-100k.jsonl
-python bench/comparison/tck_compare.py --engine latticedb --report /tmp/tck-latticedb.md
 ```
 
 SparrowDB is not on PyPI; the package named `sparrowdb` there is an unrelated project. It needs
@@ -182,5 +162,3 @@ cc -O2 -DLATTICE -I<latticedb>/include bench/comparison/native/bench.c -L<dir of
 ./bench-lattice /tmp/n-lattice 10000 100
 ```
 
-`results/python-latticedb-10k.jsonl` comes from an earlier version of the Python script, with
-`Group` for `Team` and different parameter draws. Its times are comparable; its answers are not.
