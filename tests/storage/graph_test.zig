@@ -390,6 +390,39 @@ fn expectRange(g: *Graph, index_id: u32, lower: ?zypherdb.Value, upper: ?zypherd
     try testing.expectEqualSlices(NodeId, expected, ids);
 }
 
+test "range lookups over the property index: strings in order, long ones by their kept bytes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    const s = try createIndex(&g, .nodes, "N", "s");
+    const long_b: [600]u8 = @splat('b');
+    const long_c: [600]u8 = @splat('c');
+    const values = [_]zypherdb.Value{ .{ .string = "" }, .{ .string = "a" }, .{ .string = "ab" }, .{ .string = "b" }, .{ .string = &long_b }, .{ .string = "bc" }, .{ .string = &long_c }, .{ .string = "é" }, .{ .int = 5 }, .{ .string = "a\x00z" } };
+    for (values, 1..) |value, id| {
+        try g.addNode(id, "N");
+        try g.setProperty(id, "s", value);
+    }
+    // s >= 'ab' and s <= 'bc': ab, b, the long b's, bc (never the integer).
+    try expectRange(&g, s, .{ .string = "ab" }, .{ .string = "bc" }, &.{ 3, 4, 5, 6 });
+    // One side open: every string from 'c' on (U+00E9 sorts after ASCII), or up to 'a'
+    try expectRange(&g, s, .{ .string = "c" }, null, &.{ 7, 8 });
+    // (and "a\x00z": its form starts as 'a''s does, a superset the caller rechecks)
+    try expectRange(&g, s, null, .{ .string = "a" }, &.{ 1, 2, 10 });
+    // A long bound finds the long values with its kept bytes.
+    try expectRange(&g, s, .{ .string = &long_b }, .{ .string = &long_b }, &.{5});
+    try expectRange(&g, s, .{ .string = &long_c }, null, &.{ 7, 8 });
+    // A 0x00 inside a string loosens the bounds (a superset: "a" with "a\x00z");
+    // as an upper bound it scans instead.
+    try expectRange(&g, s, .{ .string = "a" }, .{ .string = "a" }, &.{ 2, 10 });
+    try expectRange(&g, s, .{ .string = "a\x00" }, .{ .string = "a\x01" }, &.{ 2, 10 });
+    try testing.expect((try g.nodesInRange(s, null, .{ .string = "a\x00z" })) == null);
+}
+
 test "range lookups over the property index: numbers and dates in order" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -415,8 +448,8 @@ test "range lookups over the property index: numbers and dates in order" {
     try expectRange(&g, x, .{ .int = 4 }, null, &.{8});
     try expectRange(&g, x, null, .{ .int = -2 }, &.{ 1, 7 });
     try expectRange(&g, x, .{ .float = std.math.nan(f64) }, null, &.{});
-    // A string bound has no range: the caller scans instead.
-    try testing.expect((try g.nodesInRange(x, .{ .string = "a" }, null)) == null);
+    // Bounds of two kinds have no range: the caller scans instead.
+    try testing.expect((try g.nodesInRange(x, .{ .string = "a" }, .{ .int = 1 })) == null);
 
     // Dates, before and after 1970.
     for ([_]i64{ -400, -1, 0, 20000 }, 20..) |days, id| {

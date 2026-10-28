@@ -452,8 +452,8 @@ pub const Graph = struct {
     /// The nodes whose indexed property may lie between `lower` and `upper`
     /// (either may be null: unbounded), from node index `index_id`: a superset
     /// of the nodes where the comparison holds, so callers still check it.
-    /// Numbers (integers and floats, which compare with each other) and dates
-    /// have ranges; for other values this is null (scan instead).
+    /// Numbers (integers and floats, which compare with each other), strings
+    /// and dates have ranges; for other values this is null (scan instead).
     /// O(log N + the nodes in range).
     pub fn nodesInRange(self: *Graph, index_id: u32, lower: ?Value, upper: ?Value) StorageError!?NodeIdIterator {
         const bound = lower orelse upper orelse return null;
@@ -481,8 +481,38 @@ pub const Graph = struct {
                 const high: i64 = if (upper) |v| v.date.days else std.math.maxInt(i64);
                 return try self.indexRange(index_id, .date, value_encoding.orderedInteger(low), value_encoding.orderedInteger(high));
             },
+            .string => {
+                for ([_]?Value{ lower, upper }) |b| if (b) |v| if (v != .string) return null;
+                return try self.stringRange(index_id, lower, upper);
+            },
             else => return null,
         }
+    }
+
+    /// The keys of index `index_id` holding a string between `lower` and
+    /// `upper` (strings or null). A string's index form (its bytes, then a
+    /// 0x00, cut at `property_indexes.max_value_bytes`) never sorts after a
+    /// greater string's, so the forms of the bounds bound the keys: long
+    /// values are found by their kept bytes, a superset callers recheck.
+    fn stringRange(self: *Graph, index_id: u32, lower: ?Value, upper: ?Value) StorageError!?NodeIdIterator {
+        // A form that is a proper prefix of the upper bound's would sort before
+        // it only up to the entity id that follows: that takes a 0x00 inside a
+        // string, which scans instead.
+        if (upper) |v| if (std.mem.indexOfScalar(u8, v.string, 0) != null) return null;
+        var prefix = std.ArrayList(u8).empty;
+        defer prefix.deinit(self.allocator);
+        try property_indexes.appendPrefix(&prefix, self.allocator, index_id);
+        try prefix.append(self.allocator, @backingInt(value_encoding.Tag.string));
+        var start = std.ArrayList(u8).empty;
+        defer start.deinit(self.allocator);
+        if (lower) |v| try property_indexes.appendValuePrefix(&start, self.allocator, index_id, v) else try start.appendSlice(self.allocator, prefix.items);
+        var end = std.ArrayList(u8).empty;
+        defer end.deinit(self.allocator);
+        if (upper) |v| {
+            try property_indexes.appendValuePrefix(&end, self.allocator, index_id, v);
+            try end.appendNTimes(self.allocator, 0xff, key_encoding.node_id_length); // every node id
+        }
+        return .{ .inner = try self.store.scanRange(prefix.items, start.items, if (upper != null) end.items else null) };
     }
 
     /// The keys of index `index_id` holding a `tag` value whose ordered
