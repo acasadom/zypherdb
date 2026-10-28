@@ -15,6 +15,7 @@ const std = @import("std");
 const engine = @import("engine.zig");
 const Definition = @import("fulltext.zig").Definition;
 const layout = @import("layout.zig");
+const change_log = @import("change_log.zig");
 
 const Table = engine.Table;
 
@@ -110,6 +111,14 @@ pub const KeyValueStore = struct {
     /// `fulltext.cachedDefinitions`), kept while the version stays; owned
     /// here so they live as long as the database.
     schema_definitions: ?SchemaDefinitions = null,
+    /// Whether the change log is started on this database (change_log.zig),
+    /// once known; only this process writes to it.
+    change_log_started: ?bool = null,
+    /// The writes of the active write transaction, while the change log is
+    /// started.
+    change_recorder: ?change_log.Recorder = null,
+    /// The most bytes of change sets the log keeps.
+    change_log_limit: u64 = 512 << 20,
 
     pub const SchemaDefinitions = struct {
         version: u64,
@@ -141,6 +150,7 @@ pub const KeyValueStore = struct {
 
     pub fn deinit(self: *KeyValueStore) void {
         self.forgetSchemaDefinitions();
+        self.stopRecording();
         self.environment.close();
         self.allocator.destroy(self.records);
     }
@@ -150,12 +160,26 @@ pub const KeyValueStore = struct {
     /// its uncommitted writes). Not reentrant (there is a single writer anyway).
     pub fn beginWrite(self: *KeyValueStore) StorageError!void {
         if (self.inTransaction()) return error.WriteFailed;
-        self.active_write_transaction = try self.environment.beginWrite();
+        const transaction = try self.environment.beginWrite();
+        errdefer transaction.abort();
+        if (self.change_log_started orelse true) {
+            const state = try change_log.readState(transaction);
+            self.change_log_started = state != null;
+            if (state) |started| self.change_recorder = .{ .state = started };
+        }
+        self.active_write_transaction = transaction;
         self.write_transaction_memo = .{};
     }
 
+    /// With the change log started, the transaction's writes become its
+    /// next change set, in the same commit.
     pub fn commitWrite(self: *KeyValueStore) StorageError!void {
         const transaction = self.active_write_transaction orelse return error.WriteFailed;
+        defer self.stopRecording();
+        if (self.change_recorder) |*recorder| recorder.finish(transaction, self.change_log_limit) catch |err| {
+            self.abortWrite();
+            return err;
+        };
         self.active_write_transaction = null;
         self.write_transaction_memo = .{};
         try transaction.commit();
@@ -166,9 +190,52 @@ pub const KeyValueStore = struct {
             transaction.abort();
             self.active_write_transaction = null;
         }
+        self.stopRecording();
         self.write_transaction_memo = .{};
         // They may hold a schema change that never happened.
         self.forgetSchemaDefinitions();
+    }
+
+    fn stopRecording(self: *KeyValueStore) void {
+        if (self.change_recorder) |*recorder| recorder.deinit(self.allocator);
+        self.change_recorder = null;
+    }
+
+    /// Records a write the active write transaction has just made, if the
+    /// change log is started.
+    fn recordChange(self: *KeyValueStore, transaction: engine.Transaction, change: change_log.Change) StorageError!void {
+        if (self.change_recorder) |*recorder| try recorder.record(self.allocator, transaction, change);
+    }
+
+    // --- The change log (change_log.zig) ------------------------------------
+
+    /// Starts the change log on this database, if it is not started: from
+    /// the next write transaction on, each one's changes are logged. A replica
+    /// of the database as it is now starts from a copy of it.
+    pub fn startChangeLog(self: *KeyValueStore) StorageError!void {
+        if (self.inTransaction()) return error.WriteFailed;
+        const transaction = try self.environment.beginWrite();
+        errdefer transaction.abort();
+        _ = try change_log.start(transaction);
+        try transaction.commit();
+        self.change_log_started = true;
+    }
+
+    /// The change log's state, or null if it was never started.
+    pub fn changeLogState(self: *KeyValueStore) StorageError!?change_log.State {
+        if (self.activeTransaction()) |transaction| return change_log.readState(transaction);
+        const transaction = try self.environment.beginRead();
+        defer self.environment.endRead(transaction);
+        return change_log.readState(transaction);
+    }
+
+    /// The change set of transaction `lsn` (owned by the caller: free with
+    /// `self.allocator.free`), or null if the log does not hold it.
+    pub fn changeSet(self: *KeyValueStore, lsn: u64) StorageError!?[]u8 {
+        if (self.activeTransaction()) |transaction| return change_log.changeSet(transaction, self.allocator, lsn);
+        const transaction = try self.environment.beginRead();
+        defer self.environment.endRead(transaction);
+        return change_log.changeSet(transaction, self.allocator, lsn);
     }
 
     /// Frees the cached schema definitions, if any.
@@ -230,6 +297,15 @@ pub const KeyValueStore = struct {
         try self.commitWrite();
     }
 
+    /// Like `autocommit`, also while a read transaction is active (which
+    /// keeps its snapshot).
+    fn commitAlone(self: *KeyValueStore, comptime operation: anytype, arguments: anytype) StorageError!void {
+        const reading = self.active_read_transaction;
+        self.active_read_transaction = null;
+        defer self.active_read_transaction = reading;
+        try self.autocommit(operation, arguments);
+    }
+
     /// The write transaction, or null if a new one must be made for one change.
     fn writer(self: *const KeyValueStore) ?engine.Transaction {
         return self.active_write_transaction;
@@ -240,25 +316,17 @@ pub const KeyValueStore = struct {
     /// Outside a write transaction it commits at once, even while a read
     /// transaction is active (which keeps its snapshot).
     pub fn put(self: *KeyValueStore, key: []const u8, value: []const u8) StorageError!void {
-        if (self.writer()) |transaction| return transaction.put(.main, key, value);
-        const transaction = try self.environment.beginWrite();
-        transaction.put(.main, key, value) catch |err| {
-            transaction.abort();
-            return err;
-        };
-        try transaction.commit();
+        const transaction = self.writer() orelse return self.commitAlone(put, .{ self, key, value });
+        try transaction.put(.main, key, value);
+        try self.recordChange(transaction, .{ .operation = .put, .table = .main, .key = key, .value = value });
     }
 
     /// Idempotent: deleting a missing key is a success. Commits at once
     /// outside a write transaction, like `put`.
     pub fn del(self: *KeyValueStore, key: []const u8) StorageError!void {
-        if (self.writer()) |transaction| return transaction.delete(.main, key);
-        const transaction = self.environment.beginWrite() catch return error.DeleteFailed;
-        transaction.delete(.main, key) catch |err| {
-            transaction.abort();
-            return err;
-        };
-        transaction.commit() catch return error.DeleteFailed;
+        const transaction = self.writer() orelse return self.commitAlone(del, .{ self, key });
+        try transaction.delete(.main, key);
+        try self.recordChange(transaction, .{ .operation = .delete, .table = .main, .key = key });
     }
 
     /// An absent key is a normal result: `null`, not an error.
@@ -359,18 +427,22 @@ pub const KeyValueStore = struct {
         layout.assertRecord(record);
         const transaction = self.writer() orelse return self.autocommit(putNode, .{ self, id, record });
         try transaction.put(.nodes, std.mem.asBytes(&id), record);
+        try self.recordChange(transaction, .{ .operation = .put, .table = .nodes, .key = std.mem.asBytes(&id), .value = record });
     }
 
     /// Writes `record` as node `id`'s record without checking its layout, in
     /// the active write transaction: for tests that damage a database on
     /// purpose (`putNode` refuses malformed records in checked builds).
     pub fn putDamagedNode(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
-        try self.writer().?.put(.nodes, std.mem.asBytes(&id), record);
+        const transaction = self.writer().?;
+        try transaction.put(.nodes, std.mem.asBytes(&id), record);
+        try self.recordChange(transaction, .{ .operation = .put, .table = .nodes, .key = std.mem.asBytes(&id), .value = record });
     }
 
     pub fn deleteNode(self: *KeyValueStore, id: u64) StorageError!void {
         const transaction = self.writer() orelse return self.autocommit(deleteNode, .{ self, id });
         try transaction.delete(.nodes, std.mem.asBytes(&id));
+        try self.recordChange(transaction, .{ .operation = .delete, .table = .nodes, .key = std.mem.asBytes(&id) });
     }
 
     /// Iterates every node id, in ascending order (the keys yielded are the
@@ -394,11 +466,13 @@ pub const KeyValueStore = struct {
         layout.assertRelationshipRecord(record);
         const transaction = self.writer() orelse return self.autocommit(putRelationship, .{ self, id, record });
         try transaction.put(.relationships, std.mem.asBytes(&id), record);
+        try self.recordChange(transaction, .{ .operation = .put, .table = .relationships, .key = std.mem.asBytes(&id), .value = record });
     }
 
     pub fn deleteRelationship(self: *KeyValueStore, id: u64) StorageError!void {
         const transaction = self.writer() orelse return self.autocommit(deleteRelationship, .{ self, id });
         try transaction.delete(.relationships, std.mem.asBytes(&id));
+        try self.recordChange(transaction, .{ .operation = .delete, .table = .relationships, .key = std.mem.asBytes(&id) });
     }
 
     /// Iterates every relationship id, in ascending order (the keys yielded

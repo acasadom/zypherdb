@@ -114,6 +114,11 @@ operations must fail: a constraint broken, a node deleted while still connected,
 be stored. After every commit and every abort, the fuzzer compares the whole database with the model
 (`storage_compare.zig`) and runs the integrity checker.
 
+**A replica.** On seeds of even number, the database starts its change log (see
+[storage](storage)), and a second database follows it: at each check outside a transaction it
+applies the change sets committed since the last one, then must pass the same two checks. The
+replica is compared with the model, not with the database, so it has to be right on its own.
+
 The model is about 180 lines. It can be that small because it ignores everything the engine exists
 for: keys, encodings, indexes, speed. It only knows what the graph contains. That is what makes it a
 good oracle: it is too simple to share the engine's bugs.
