@@ -391,6 +391,21 @@ any other, so they follow with no special case.
   sets go at commit, whether or not a replica has read them, but never the newest one: a replica
   that missed one starts again from a copy of the database.
 
+A replica applies its master's change sets with `KeyValueStore.applyChangeSet(lsn, bytes)`, each in
+a write transaction of its own that also stores its LSN (key `replica` in `#changes`). A crash
+therefore loses an applied change set whole or keeps it whole, and the replica resumes after the
+last LSN it stored (`appliedLsn`):
+
+- a change set it has already applied (sent again after a reconnection) is skipped;
+- one that does not follow the last applied fails with `ChangeSetOutOfOrder`, and so does one that
+  is not a change set (`MalformedChangeSet`); either leaves the replica as it was;
+- the first change set applied makes the database a replica, which refuses every other write
+  (`ReadOnlyReplica`), and a database whose log is started (a master) applies none.
+
+Nothing cached goes stale on a replica: the record cache lives one read transaction, the schema
+definitions are kept by schema version, and a prepared statement's plan is checked against counts.
+The version and the counts are keys, so they change with the change sets.
+
 ## Checking integrity
 
 Everything but the records is derived: the label index, the property indexes (from their

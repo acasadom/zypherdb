@@ -628,10 +628,14 @@ const Fuzzer = struct {
         while (self.replica_next_lsn < state.next_lsn) : (self.replica_next_lsn += 1) {
             const bytes = (try self.store.changeSet(self.replica_next_lsn)) orelse return self.fail("change set {d} is missing", .{self.replica_next_lsn});
             defer self.allocator.free(bytes);
-            const transaction = try replica.environment.beginWrite();
-            errdefer transaction.abort();
-            try zypherdb.change_log.apply(transaction, bytes);
-            try transaction.commit();
+            if (try replica.applyChangeSet(self.replica_next_lsn, bytes) != .applied) return self.fail("change set {d} was not applied", .{self.replica_next_lsn});
+        }
+        // The last one sent again (a reconnection) is skipped.
+        if (self.replica_next_lsn > 1) {
+            const last = self.replica_next_lsn - 1;
+            const bytes = (try self.store.changeSet(last)) orelse return self.fail("change set {d} is missing", .{last});
+            defer self.allocator.free(bytes);
+            if (try replica.applyChangeSet(last, bytes) != .already_applied) return self.fail("change set {d} was applied twice", .{last});
         }
         var replica_graph = Graph.init(replica, self.allocator);
         var report = try zypherdb.integrity.check(&replica_graph, self.allocator);

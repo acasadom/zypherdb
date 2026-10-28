@@ -16,13 +16,19 @@
 //!
 //!     lsn (u64) | chunk (u32)    a part of the change set of transaction lsn
 //!     12 zero bytes              the log's state (`State`)
+//!     "replica"                  on a replica, the last LSN applied (u64)
 //!
-//! both big-endian, so the parts sort by LSN, then in order. A change set is
+//! big-endian, so the parts sort by LSN, then in order. A change set is
 //! the transaction's writes in order, cut into chunks of at most
 //! `chunk_bytes` (a write may straddle two):
 //!
 //!     put:    0x01 | table (u8) | key length (u32) | key | value length (u32) | value
 //!     delete: 0x02 | table (u8) | key length (u32) | key
+//!
+//! A replica applies the master's change sets in LSN order
+//! (`KeyValueStore.applyChangeSet`), each in a write transaction that also
+//! stores its LSN, so after a crash it resumes where it stopped, applying
+//! none twice and skipping none. A replica writes nothing else.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -76,6 +82,7 @@ pub const State = struct {
 };
 
 const state_key: [12]u8 = @splat(0);
+const replica_key = "replica";
 
 fn chunkKey(lsn: u64, chunk: u32) [12]u8 {
     var key: [12]u8 = undefined;
@@ -209,6 +216,31 @@ pub const Iterator = struct {
         return self.bytes[self.position - length .. self.position];
     }
 };
+
+/// On a replica, the LSN of the last change set applied; null on a database
+/// that is not one.
+pub fn appliedLsn(transaction: Transaction) engine.Error!?u64 {
+    const bytes = try transaction.get(.changes, replica_key) orelse return null;
+    if (bytes.len != @sizeOf(u64)) return error.ReadFailed;
+    return std.mem.readInt(u64, bytes[0..8], .big);
+}
+
+pub const Applied = enum { applied, already_applied };
+
+/// Makes the database of write transaction `transaction` a replica that has
+/// applied change set `lsn`, `bytes`, unless it has already (a master sends
+/// a change set again when a replica reconnects). Fails with
+/// `ChangeSetOutOfOrder` if a change set before it is missing.
+pub fn applyNext(transaction: Transaction, lsn: u64, bytes: []const u8) (engine.Error || error{ MalformedChangeSet, ChangeSetOutOfOrder })!Applied {
+    const applied = try appliedLsn(transaction) orelse 0;
+    if (lsn <= applied) return .already_applied;
+    if (lsn != applied + 1) return error.ChangeSetOutOfOrder;
+    try apply(transaction, bytes);
+    var encoded: [8]u8 = undefined;
+    std.mem.writeInt(u64, &encoded, lsn, .big);
+    try transaction.put(.changes, replica_key, &encoded);
+    return .applied;
+}
 
 /// Makes the writes of change set `bytes` in write transaction `transaction`.
 pub fn apply(transaction: Transaction, bytes: []const u8) (engine.Error || error{MalformedChangeSet})!void {
