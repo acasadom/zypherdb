@@ -33,7 +33,8 @@ Wheels and the sdist come from an in-tree build backend, `tools/build_backend/zy
 
 The version comes from git tags, not from `pyproject.toml`: on a tag `v0.2.0` the build is
 `0.2.0`; three commits later, `0.2.1.dev3`. A release is a GitHub release with a new tag
-`vX.Y.Z`: publishing it runs `.github/workflows/publish.yml`, which builds and tests every wheel
+`vX.Y.Z`, its notes the version's section of `CHANGELOG.md` (`## X.Y.Z — date`, moved from
+`## Unreleased` before tagging): publishing it runs `.github/workflows/publish.yml`, which builds and tests every wheel
 and the sdist and uploads them to PyPI.
 
 `zig build test` runs two executables:

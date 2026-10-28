@@ -15,6 +15,8 @@ jobs:
   check-version:
     runs-on: ubuntu-24.04
     steps:
+      - uses: actions/checkout@v4
+
       # The build takes its version from this tag (git describe), so the tag must be one.
       - name: The release tag is a version (vX.Y.Z)
         env:
@@ -22,6 +24,15 @@ jobs:
         run: |
           if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$ ]]; then
             echo "::error::release tag $TAG is not a version vX.Y.Z (or vX.Y.ZrcN)"
+            exit 1
+          fi
+
+      - name: CHANGELOG.md has a section for the version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if ! grep -q "^## ${TAG#v} " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section '## ${TAG#v} — <date>'"
             exit 1
           fi
 
