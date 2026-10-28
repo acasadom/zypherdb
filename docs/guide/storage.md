@@ -92,7 +92,7 @@ them (bytes in hex, `"…"` for bytes that are text):
 
 main table, in the order the engine keeps it
   "!"                → 00 00 00 00 00 00 00 02    next node id: 2
-  "!format"          → 00 00 00 03                format version 3
+  "!format"          → 00 00 00 04                format version 4
   "!index_id"        → 00 00 00 02                2 property indexes numbered so far
   "!relationships"   → 00 00 00 00 00 00 00 01    next relationship id: 1
   "!schema"          → 00 00 00 00 00 00 00 02    the definitions changed twice
@@ -194,19 +194,24 @@ any elements, and nulls. A null on its own is never stored: setting a property t
 Index keys use the same encoding except that variable-length parts (strings, zone names) end in
 `0x00`, so a lookup prefix for `"X"` can't also match `"XY"`, and list elements carry no length.
 Numbers are indexed canonically: a float that equals an integer (`2.0`) is indexed as that
-integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should. Integers,
-floats and dates are written so that their bytes sort in their order:
+integer, so `{x: 2}` and `{x: 2.0}` find the same nodes, as `=` says they should. Numbers,
+dates, times and date-times are written so that their bytes sort in their order:
 
-- integers and dates (a day count) with the sign bit flipped;
-- floats with negatives inverted and positives with the sign bit set.
+- integers, dates (a day count) and the counts in times and date-times with the sign bit
+  flipped (i64);
+- floats with negatives inverted and positives with the sign bit set;
+- a time as its instant (nanoseconds since midnight UTC), then its offset; a date-time as its
+  instant (seconds, nanoseconds), then its offset and zone. That is the order comparisons use.
 
 A range of values is then a range of keys. `Graph.nodesInRange` reads a range of numbers as two
 key ranges, integers and floats, from which NaN is excluded. It rounds fractional bounds
 outwards, so it returns a superset of the matches, and the WHERE is still checked on each.
+Strings, times and date-times are one key range each, from the lower bound's index form to the
+upper bound's.
 
 ## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version` (3). When the C ABI or the
+The key `!format` holds the format's version, `Graph.format_version` (4). When the C ABI or the
 Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
 written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
 

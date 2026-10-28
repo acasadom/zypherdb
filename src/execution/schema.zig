@@ -23,6 +23,8 @@ const requireStorableName = @import("writes.zig").requireStorableName;
 comptime {
     // The parser joins a document path's names as the indexes split them.
     std.debug.assert(@import("../query/ast.zig").path_separator == property_indexes.path_separator);
+    // A generated name is shortened to what a name may hold.
+    std.debug.assert(@import("../query/schema_parser.zig").max_name_length == layout.max_name_length);
 }
 
 /// The analyzers a full-text index can use.
@@ -163,6 +165,11 @@ fn unknownOption(executor: *Executor, key: []const u8) ExecutionError {
     executor.fail(.invalid_expression, "unknown index option '{s}' (expected indexConfig: {{`fulltext.analyzer`: ...}})", .{key});
     return error.InvalidExpression;
 }
+
+/// The columns of SHOW INDEXES (`showIndexes`) and SHOW CONSTRAINTS
+/// (`showConstraints`), named as Neo4j 5 names them.
+pub const index_columns = [_][]const u8{ "name", "type", "entityType", "labelsOrTypes", "properties", "owningConstraint", "options" };
+pub const constraint_columns = [_][]const u8{ "name", "type", "entityType", "labelsOrTypes", "properties", "ownedIndex" };
 
 /// One row per index (full-text or range, a uniqueness constraint's
 /// included, as in Neo4j 5): name, type, entityType, labelsOrTypes,

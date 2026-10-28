@@ -172,3 +172,23 @@ test "the statement cache keeps the most recently used" {
     cache.clear();
     try testing.expect(cache.get(texts[0]) == null);
 }
+
+test "SHOW INDEXES and SHOW CONSTRAINTS name their columns as Neo4j does" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    for ([_]struct { []const u8, []const []const u8 }{
+        .{ "SHOW INDEXES", &.{ "name", "type", "entityType", "labelsOrTypes", "properties", "owningConstraint", "options" } },
+        .{ "SHOW FULLTEXT INDEXES", &.{ "name", "type", "entityType", "labelsOrTypes", "properties", "owningConstraint", "options" } },
+        .{ "SHOW CONSTRAINTS", &.{ "name", "type", "entityType", "labelsOrTypes", "properties", "ownedIndex" } },
+    }) |case| {
+        const statement = try Statement.prepare(testing.allocator, case[0], .{ .graph = &g });
+        defer statement.destroy();
+        try testing.expectEqual(case[1].len, statement.columns.len);
+        for (case[1], statement.columns) |expected, column| try testing.expectEqualStrings(expected, column);
+    }
+}

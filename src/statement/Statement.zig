@@ -26,6 +26,7 @@ const Plan = @import("../planning/Plan.zig");
 const builder = @import("../planning/builder.zig");
 const statistics = @import("../planning/statistics.zig");
 const Executor = @import("../execution/Executor.zig");
+const schema = @import("../execution/schema.zig");
 const ExecutionError = Executor.ExecutionError;
 const Row = Executor.Row;
 
@@ -97,7 +98,10 @@ pub fn prepare(allocator: Allocator, text: []const u8, environment: Environment)
     };
     self.parameter_names = try self.ast.parameterNames(arena, self.root);
     self.is_query = isQuery(&self.ast, self.root);
-    if (!self.is_query) return self;
+    if (!self.is_query) {
+        self.columns = try columnNames(&self.ast, arena, self.root, environment.table_procedures);
+        return self;
+    }
 
     var checker = Executor.init(&self.ast, environment.graph, arena);
     checker.diagnostic = environment.diagnostic;
@@ -184,8 +188,13 @@ fn isQuery(ast: *const Ast, root: Index) bool {
 
 /// The result's column names: a RETURN's (its aliases, else the expressions
 /// as Cypher), or those of a CALL that ends the query. A UNION's are its
-/// first part's.
+/// first part's. SHOW INDEXES and SHOW CONSTRAINTS have their own.
 fn columnNames(ast: *const Ast, arena: Allocator, root: Index, table_procedures: []const signatures.TableProcedure) Allocator.Error![]const []const u8 {
+    switch (ast.kind(root)) {
+        .show_indexes => return &schema.index_columns,
+        .show_constraints => return &schema.constraint_columns,
+        else => {},
+    }
     const query = if (ast.kind(root) == .union_query) ast.nodeChildren(root)[0] else root;
     const clauses = ast.nodeChildren(query);
     if (clauses.len == 0) return &.{};

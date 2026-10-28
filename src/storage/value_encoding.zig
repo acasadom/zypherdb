@@ -28,9 +28,11 @@
 //! `0x00` (strings, zone names; so a lookup prefix for "X" cannot also match
 //! "XY"), list elements are not length-prefixed, and numbers are canonical:
 //! an integral float is written as the integer it equals, so `{x: 1}` finds
-//! x = 1.0, as `=` says it should. Integers, floats and dates are written so
-//! that their bytes sort in their order (`orderedInteger`, `orderedFloat`):
-//! a range of values is a range of keys.
+//! x = 1.0, as `=` says it should. Numbers, dates, times and date-times are
+//! written so that their bytes sort in their order (`orderedInteger`,
+//! `orderedFloat`): a range of values is a range of keys. A time is written
+//! as its instant (nanoseconds since midnight UTC) and then its offset, a
+//! date-time as its instant, offset and zone, the order `Value.order` uses.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -177,23 +179,28 @@ fn encode(list: *std.ArrayList(u8), allocator: Allocator, value: Value, form: Fo
         },
         .local_time => |t| {
             try list.append(allocator, @backingInt(Tag.local_time));
-            try appendInt(list, allocator, i64, t.nanoseconds);
+            if (form == .index) try appendInt(list, allocator, u64, orderedInteger(t.nanoseconds)) else try appendInt(list, allocator, i64, t.nanoseconds);
         },
         .time => |t| {
             try list.append(allocator, @backingInt(Tag.time));
-            try appendInt(list, allocator, i64, t.nanoseconds);
-            try appendInt(list, allocator, i32, t.offset);
+            if (form == .index) {
+                try appendInt(list, allocator, u64, orderedInteger(t.utcNanoseconds()));
+                try appendInt(list, allocator, u64, orderedInteger(t.offset));
+            } else {
+                try appendInt(list, allocator, i64, t.nanoseconds);
+                try appendInt(list, allocator, i32, t.offset);
+            }
         },
         .local_date_time => |t| {
             try list.append(allocator, @backingInt(Tag.local_date_time));
-            try appendInt(list, allocator, i64, t.seconds);
+            if (form == .index) try appendInt(list, allocator, u64, orderedInteger(t.seconds)) else try appendInt(list, allocator, i64, t.seconds);
             try appendInt(list, allocator, u32, t.nanoseconds);
         },
         .date_time => |t| {
             try list.append(allocator, @backingInt(Tag.date_time));
-            try appendInt(list, allocator, i64, t.seconds);
+            if (form == .index) try appendInt(list, allocator, u64, orderedInteger(t.seconds)) else try appendInt(list, allocator, i64, t.seconds);
             try appendInt(list, allocator, u32, t.nanoseconds);
-            try appendInt(list, allocator, i32, t.offset);
+            if (form == .index) try appendInt(list, allocator, u64, orderedInteger(t.offset)) else try appendInt(list, allocator, i32, t.offset);
             try list.appendSlice(allocator, t.zone);
             if (form == .index) try list.append(allocator, separator);
         },

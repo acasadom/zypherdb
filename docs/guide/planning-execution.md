@@ -115,7 +115,8 @@ The seeks come from two places:
 The `WHERE` also gives ranges. Each `variable.property <op> value`, with `<`, `<=`, `>` or `>=` in
 either order, bounds the property from one side (`PatternNode.ranges`). When a node has no
 equality seek, the scan of an anchor with a range reads the property index's key range for it
-(`Graph.nodesInRange`): numbers, strings and dates, the other types fall back to a scan.
+(`Graph.nodesInRange`): numbers, strings, dates, times and date-times; the other types fall back
+to a scan.
 
 A seek or range reads an index only when one covers it: `findIndexes` looks, for each of the
 node's labels, for an index on that label and the seek's property (or document path,

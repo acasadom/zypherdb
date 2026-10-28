@@ -97,7 +97,7 @@ the building is full.
 
 ## What scans
 
-An equality on an indexed property uses the index, and so does a range of numbers, strings or dates (`<`, `<=`, `>`,
+An equality on an indexed property uses the index, and so does a range of numbers, strings, dates or times (`<`, `<=`, `>`,
 `>=`) against a constant or a parameter: the engine reads the part of the index in range. A date
 written as `date('2025-03-01')` is a function call, not a constant, so pass dates as parameters
 in the queries that must be fast. Other conditions — `STARTS WITH`,

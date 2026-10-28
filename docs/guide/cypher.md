@@ -377,8 +377,8 @@ SHOW CONSTRAINTS
   indexes are always current.
 - A `RANGE` index (a `TEXT` index, or one with no kind, is the same) is on one label and one
   property, or one relationship type and one property. Queries use it to find nodes by an
-  equality on the property (`{id: $id}`, `WHERE n.id = $id`), or by a range of numbers, strings or
-  dates (`WHERE n.age > 60`), when the pattern's node has the label; a node without a label is found
+  equality on the property (`{id: $id}`, `WHERE n.id = $id`), or by a range of numbers, strings,
+  dates, times or date-times (`WHERE n.age > 60`), when the pattern's node has the label; a node without a label is found
   by reading every node, as in Neo4j. A relationship's index serves equalities on a relationship
   with that single type. An index on several properties is refused: create one per property. Its
   `OPTIONS` are ignored.

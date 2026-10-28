@@ -76,8 +76,9 @@ pub const Graph = struct {
     /// The storage format this code writes and reads. A database in another
     /// format is refused: ZypherDB has no users yet, so formats change without
     /// migrations until the first release. 2: schema definitions have a kind
-    /// (full-text, range, unique).
-    pub const format_version: u32 = 3;
+    /// (full-text, range, unique). 3: explicit indexes, size limits. 4: times
+    /// and date-times sort in index keys.
+    pub const format_version: u32 = 4;
 
     /// Stamps a new database with this code's format, and refuses one
     /// written in another (`error.IncompatibleFormat`). Call it after
@@ -452,8 +453,9 @@ pub const Graph = struct {
     /// The nodes whose indexed property may lie between `lower` and `upper`
     /// (either may be null: unbounded), from node index `index_id`: a superset
     /// of the nodes where the comparison holds, so callers still check it.
-    /// Numbers (integers and floats, which compare with each other), strings
-    /// and dates have ranges; for other values this is null (scan instead).
+    /// Numbers (integers and floats, which compare with each other), strings,
+    /// dates, times and date-times have ranges; for other values this is null
+    /// (scan instead).
     /// O(log N + the nodes in range).
     pub fn nodesInRange(self: *Graph, index_id: u32, lower: ?Value, upper: ?Value) StorageError!?NodeIdIterator {
         const bound = lower orelse upper orelse return null;
@@ -475,11 +477,11 @@ pub const Graph = struct {
                 iterator.second = (try self.indexRange(index_id, .float, low_float, high_float)).inner;
                 return iterator;
             },
-            .date => {
-                for ([_]?Value{ lower, upper }) |b| if (b) |v| if (v != .date) return null;
-                const low: i64 = if (lower) |v| v.date.days else std.math.minInt(i64);
-                const high: i64 = if (upper) |v| v.date.days else std.math.maxInt(i64);
-                return try self.indexRange(index_id, .date, value_encoding.orderedInteger(low), value_encoding.orderedInteger(high));
+            .date, .local_time, .time, .local_date_time, .date_time => {
+                for ([_]?Value{ lower, upper }) |b| if (b) |v| if (std.meta.activeTag(v) != std.meta.activeTag(bound)) return null;
+                const low: i64 = if (lower) |v| temporalKey(v) else std.math.minInt(i64);
+                const high: i64 = if (upper) |v| temporalKey(v) else std.math.maxInt(i64);
+                return try self.indexRange(index_id, temporalTag(bound), value_encoding.orderedInteger(low), value_encoding.orderedInteger(high));
             },
             .string => {
                 for ([_]?Value{ lower, upper }) |b| if (b) |v| if (v != .string) return null;
@@ -532,6 +534,32 @@ pub const Graph = struct {
         try appendBig(&upper, self.allocator, high);
         try upper.appendNTimes(self.allocator, 0xff, key_encoding.node_id_length); // every node id
         return .{ .inner = try self.store.scanRange(prefix.items, start.items, upper.items) };
+    }
+
+    /// The first 8 bytes of a temporal value's index form, as an i64: what
+    /// comparisons order it by (a time and a date-time by their instant, at
+    /// any offset), or for the date-times its seconds (a superset: the
+    /// nanoseconds that follow are rechecked by the caller).
+    fn temporalKey(value: Value) i64 {
+        return switch (value) {
+            .date => |d| d.days,
+            .local_time => |t| t.nanoseconds,
+            .time => |t| t.utcNanoseconds(),
+            .local_date_time => |t| t.seconds,
+            .date_time => |t| t.seconds,
+            else => unreachable,
+        };
+    }
+
+    fn temporalTag(value: Value) value_encoding.Tag {
+        return switch (value) {
+            .date => .date,
+            .local_time => .local_time,
+            .time => .time,
+            .local_date_time => .local_date_time,
+            .date_time => .date_time,
+            else => unreachable,
+        };
     }
 
     /// An iterator over nothing (a range no value is in, as with a NaN bound).
