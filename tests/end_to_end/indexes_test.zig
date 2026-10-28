@@ -316,3 +316,41 @@ test "document paths are for range indexes only" {
         "CREATE INDEX FOR (p:Person) ON (p.`emergency\x00relation`)",
     }) |text| try testing.expectError(error.UnexpectedToken, zypherdb.parser.parse(&ast, text, null));
 }
+
+test "ranges of times and date-times read the index, comparing instants" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g,
+        \\CREATE (:Shift {id: 1, starts: time('10:00+02:00'), at: datetime('2025-03-01T10:00+01:00')}),
+        \\       (:Shift {id: 2, starts: time('09:00Z'), at: datetime('2025-03-01T09:00:00.5Z')}),
+        \\       (:Shift {id: 3, starts: time('07:59:59Z'), at: datetime('2025-03-01T08:59:59Z')}),
+        \\       (:Shift {id: 4, starts: localtime('08:00'), at: localdatetime('2025-03-01T09:00')})
+    , &.{});
+    const hour: i64 = 3600 * std.time.ns_per_s;
+    const eight_utc: Value = .{ .time = .{ .nanoseconds = 8 * hour, .offset = 0 } };
+    // 2025-03-01T09:00Z
+    const nine_utc: Value = .{ .date_time = .{ .seconds = 1740819600, .nanoseconds = 0, .offset = 0, .zone = "" } };
+    const by_time = "MATCH (s:Shift) WHERE s.starts <= $t RETURN s.id ORDER BY s.id";
+    const by_date_time = "MATCH (s:Shift) WHERE s.at <= $t RETURN s.id ORDER BY s.id";
+    // Without indexes, then with: the same rows (10:00+02:00 is 08:00Z; 09:00:00.5Z is after 09:00Z).
+    for (0..2) |round| {
+        if (round == 1) {
+            try expectQuery(&ast, &g, "CREATE INDEX FOR (s:Shift) ON (s.starts)", &.{});
+            try expectQuery(&ast, &g, "CREATE INDEX FOR (s:Shift) ON (s.at)", &.{});
+        }
+        try expectQueryWithParameters(&ast, &g, by_time, &.{.{ "t", eight_utc }}, &.{ &.{int(1)}, &.{int(3)} });
+        try expectQueryWithParameters(&ast, &g, by_date_time, &.{.{ "t", nine_utc }}, &.{ &.{int(1)}, &.{int(3)} });
+        try expectQueryWithParameters(&ast, &g, "MATCH (s:Shift) WHERE s.at > $t RETURN s.id", &.{.{ "t", nine_utc }}, &.{&.{int(2)}});
+    }
+    const statement = try Statement.prepare(testing.allocator, by_date_time, .{ .graph = &g });
+    defer statement.destroy();
+    try testing.expect(statement.plan.?.patterns[0].nodes[0].range_index != null);
+    try expectSound(&g);
+}

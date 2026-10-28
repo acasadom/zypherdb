@@ -32,11 +32,10 @@ happens, when it matters, and the fix being considered. Measured numbers are in
 
 ## Planning
 
-- **Ranges are for numbers, strings and dates only.** Comparisons on times and date-times,
-  `STARTS WITH` and `IN` still scan every node of the label, even on an indexed property (for a
-  range of times, `EXPLAIN` shows `NodeIndexRangeSeek`, but the run falls back to the label scan:
-  the plan does not know a parameter's type). Fix: ordered encodings for those types, and seeks
-  for `STARTS WITH` (a prefix range) and `IN` (one seek per element).
+- **`STARTS WITH` and `IN` scan.** They check every node of the label, even on an indexed
+  property. Fix: seeks for `STARTS WITH` (a prefix range) and `IN` (one seek per element). (A
+  range of booleans, durations, lists or of two kinds of value also scans, though `EXPLAIN`
+  shows `NodeIndexRangeSeek`: the plan does not know a parameter's type.)
 - **A range's selectivity is a guess** (a quarter of the label). Fix: statistics per property.
 - **Each label change reads and writes the label's counter** (`c | label`, kept for the
   planner). Creating many labeled nodes in one transaction pays one counter update per node,

@@ -423,6 +423,63 @@ test "range lookups over the property index: strings in order, long ones by thei
     try testing.expect((try g.nodesInRange(s, null, .{ .string = "a\x00z" })) == null);
 }
 
+test "range lookups over the property index: times and date-times by their instant" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    const hour: i64 = 3600 * std.time.ns_per_s;
+    const t = try createIndex(&g, .nodes, "N", "t");
+    // Times: 10:00+02:00 is 08:00Z, before 09:00Z; 01:00+03:00 is the day before in UTC.
+    const times = [_]zypherdb.Value{
+        .{ .time = .{ .nanoseconds = 10 * hour, .offset = 2 * 3600 } },
+        .{ .time = .{ .nanoseconds = 9 * hour, .offset = 0 } },
+        .{ .time = .{ .nanoseconds = 1 * hour, .offset = 3 * 3600 } },
+        .{ .local_time = .{ .nanoseconds = 9 * hour } },
+        .{ .local_time = .{ .nanoseconds = 0 } },
+    };
+    for (times, 1..) |value, id| {
+        try g.addNode(id, "N");
+        try g.setProperty(id, "t", value);
+    }
+    try expectRange(&g, t, .{ .time = .{ .nanoseconds = 7 * hour, .offset = 0 } }, .{ .time = .{ .nanoseconds = 8 * hour, .offset = 0 } }, &.{1});
+    try expectRange(&g, t, null, .{ .time = .{ .nanoseconds = 0, .offset = 0 } }, &.{3});
+    try expectRange(&g, t, .{ .time = .{ .nanoseconds = 0, .offset = 0 } }, null, &.{ 1, 2 });
+    try expectRange(&g, t, .{ .local_time = .{ .nanoseconds = 1 } }, null, &.{4});
+    // A time and a local time do not compare: no range.
+    try testing.expect((try g.nodesInRange(t, .{ .local_time = .{ .nanoseconds = 0 } }, .{ .time = .{ .nanoseconds = 0, .offset = 0 } })) == null);
+
+    // Date-times before and after 1970, in zones and at offsets; local ones apart.
+    const at = try createIndex(&g, .nodes, "D", "at");
+    const date_times = [_]zypherdb.Value{
+        .{ .date_time = .{ .seconds = -86400, .nanoseconds = 0, .offset = 0, .zone = "" } },
+        .{ .date_time = .{ .seconds = 0, .nanoseconds = 5, .offset = 3600, .zone = "Europe/Madrid" } },
+        .{ .date_time = .{ .seconds = 0, .nanoseconds = 5, .offset = 0, .zone = "" } },
+        .{ .date_time = .{ .seconds = 1_700_000_000, .nanoseconds = 0, .offset = -18000, .zone = "America/New_York" } },
+        .{ .local_date_time = .{ .seconds = -1, .nanoseconds = 0 } },
+        .{ .local_date_time = .{ .seconds = 1, .nanoseconds = 0 } },
+    };
+    for (date_times, 20..) |value, id| {
+        try g.addNode(id, "D");
+        try g.setProperty(id, "at", value);
+    }
+    const epoch: zypherdb.Value = .{ .date_time = .{ .seconds = 0, .nanoseconds = 0, .offset = 0, .zone = "" } };
+    // Date-times range by their seconds: the nanoseconds are the caller's to check.
+    try expectRange(&g, at, null, epoch, &.{ 20, 21, 22 });
+    // The same instant at two offsets: both in range.
+    try expectRange(&g, at, epoch, .{ .date_time = .{ .seconds = 1, .nanoseconds = 0, .offset = 0, .zone = "" } }, &.{ 21, 22 });
+    try expectRange(&g, at, .{ .date_time = .{ .seconds = 1, .nanoseconds = 0, .offset = 0, .zone = "" } }, null, &.{23});
+    try expectRange(&g, at, .{ .local_date_time = .{ .seconds = 0, .nanoseconds = 0 } }, null, &.{25});
+    // A range finds what equality finds.
+    var equal = try g.nodesByIndex(at, date_times[1]);
+    defer equal.deinit();
+    try testing.expectEqual(@as(?NodeId, 21), try equal.next());
+}
+
 test "range lookups over the property index: numbers and dates in order" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
