@@ -117,8 +117,7 @@ be stored. After every commit and every abort, the fuzzer compares the whole dat
 **A replica.** On seeds of even number, the database starts its change log (see
 [storage](storage)), and a second database follows it: at each check outside a transaction it
 applies the change sets committed since the last one (and the last one again, which it must skip),
-then must pass the same two checks. On half of those seeds the replica starts empty; on the other
-half it is a copy of the database made at the first check (`copyDatabase`, `becomeReplica`). The
+then must pass the same two checks. The
 replica is compared with the model, not with the database, so it has to be right on its own.
 
 The model is about 180 lines. It can be that small because it ignores everything the engine exists

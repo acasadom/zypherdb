@@ -228,9 +228,7 @@ pub const KeyValueStore = struct {
         const transaction = try self.environment.beginWrite();
         errdefer transaction.abort();
         try self.refuseOnReplica(transaction);
-        var id: change_log.DatabaseId = undefined;
-        std.Io.Threaded.global_single_threaded.io().random(&id);
-        _ = try change_log.start(transaction, id);
+        _ = try change_log.start(transaction);
         try transaction.commit();
         self.change_log_started = true;
     }
@@ -271,37 +269,6 @@ pub const KeyValueStore = struct {
         try transaction.commit();
         self.replica = true;
         return .applied;
-    }
-
-    /// Writes a compacted copy of the database as it is now, its change log
-    /// included, into `directory`, which must exist and hold no database.
-    /// Writers go on meanwhile. A copy of a master becomes a replica of it
-    /// with `becomeReplica`.
-    pub fn copyDatabase(self: *KeyValueStore, directory: []const u8) StorageError!void {
-        return self.environment.copy(self.allocator, directory);
-    }
-
-    /// Makes this database, a copy of a master (`copyDatabase`), a replica of it
-    /// that has applied every change set the copy holds; returns that LSN.
-    /// Fails with `WriteFailed` unless it is such a copy.
-    pub fn becomeReplica(self: *KeyValueStore) StorageError!u64 {
-        if (self.inTransaction()) return error.WriteFailed;
-        const transaction = try self.environment.beginWrite();
-        errdefer transaction.abort();
-        const applied = try change_log.becomeReplica(transaction);
-        try transaction.commit();
-        self.replica = true;
-        self.change_log_started = false;
-        return applied;
-    }
-
-    /// The id of the master this database is or was copied from, null if
-    /// its change log never started.
-    pub fn databaseId(self: *KeyValueStore) StorageError!?change_log.DatabaseId {
-        if (self.activeTransaction()) |transaction| return change_log.databaseId(transaction);
-        const transaction = try self.environment.beginRead();
-        defer self.environment.endRead(transaction);
-        return change_log.databaseId(transaction);
     }
 
     /// On a replica, the LSN of the last change set applied; null on a

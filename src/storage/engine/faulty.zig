@@ -132,10 +132,6 @@ pub fn Wrap(comptime Inner: type) type {
                 return self.inner.sync();
             }
 
-            pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
-                return self.inner.copy(allocator, directory);
-            }
-
             pub fn beginRead(self: *Environment) Error!Transaction {
                 if (faults.fails(.begin_read, false)) return error.ReadFailed;
                 return .{ .inner = try self.inner.beginRead(), .writes = false };

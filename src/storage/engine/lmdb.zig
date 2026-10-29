@@ -85,12 +85,6 @@ pub const Environment = struct {
         if (c.mdb_env_sync(self.handle, 1) != 0) return error.WriteFailed;
     }
 
-    pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
-        const c_path = allocator.dupeSentinel(u8, directory, 0) catch return error.OutOfMemory;
-        defer allocator.free(c_path);
-        if (c.mdb_env_copy2(self.handle, c_path.ptr, c.MDB_CP_COMPACT) != 0) return error.WriteFailed;
-    }
-
     pub fn beginRead(self: *Environment) Error!Transaction {
         while (self.parked_read_count > 0) {
             self.parked_read_count -= 1;

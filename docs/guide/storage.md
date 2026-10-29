@@ -402,13 +402,6 @@ last LSN it stored (`appliedLsn`):
 - the first change set applied makes the database a replica, which refuses every other write
   (`ReadOnlyReplica`), and a database whose log is started (a master) applies none.
 
-A replica starts as a copy of its master: `KeyValueStore.copyDatabase(directory)` writes a
-compacted copy as of one moment (`mdb_env_copy2` / `mdbx_env_copy`; writers go on meanwhile), and
-`becomeReplica` on the copy drops the copied log and stores, as its applied LSN, the last change set
-that log holds. The copy needs no LSN taken alongside it, so nothing races with the writers. Starting
-the log gives the master a random 16-byte id (`databaseId`, key `database` in `#changes`), which
-its copies keep: a replica follows only the master it was copied from.
-
 Nothing cached goes stale on a replica: the record cache lives one read transaction, the schema
 definitions are kept by schema version, and a prepared statement's plan is checked against counts.
 The version and the counts are keys, so they change with the change sets.
