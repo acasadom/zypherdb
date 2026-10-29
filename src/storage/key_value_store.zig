@@ -31,9 +31,6 @@ pub const StorageError = engine.Error || error{
     /// A node would have more labels than a record counts
     /// (`layout.max_labels`).
     TooManyLabels,
-    /// A write on a replica, which only applies its master's change sets
-    /// (`KeyValueStore.applyChangeSet`).
-    ReadOnlyReplica,
 };
 
 /// The node records read in a read transaction, kept as the views the engine
@@ -122,8 +119,6 @@ pub const KeyValueStore = struct {
     change_recorder: ?change_log.Recorder = null,
     /// The most bytes of change sets the log keeps.
     change_log_limit: u64 = 512 << 20,
-    /// Whether this database is a replica (change_log.zig), once known.
-    replica: ?bool = null,
 
     pub const SchemaDefinitions = struct {
         version: u64,
@@ -167,7 +162,6 @@ pub const KeyValueStore = struct {
         if (self.inTransaction()) return error.WriteFailed;
         const transaction = try self.environment.beginWrite();
         errdefer transaction.abort();
-        try self.refuseOnReplica(transaction);
         if (self.change_log_started orelse true) {
             const state = try change_log.readState(transaction);
             self.change_log_started = state != null;
@@ -207,11 +201,6 @@ pub const KeyValueStore = struct {
         self.change_recorder = null;
     }
 
-    fn refuseOnReplica(self: *KeyValueStore, transaction: engine.Transaction) StorageError!void {
-        if (self.replica orelse true) self.replica = try change_log.appliedLsn(transaction) != null;
-        if (self.replica.?) return error.ReadOnlyReplica;
-    }
-
     /// Records a write the active write transaction has just made, if the
     /// change log is started.
     fn recordChange(self: *KeyValueStore, transaction: engine.Transaction, change: change_log.Change) StorageError!void {
@@ -227,7 +216,6 @@ pub const KeyValueStore = struct {
         if (self.inTransaction()) return error.WriteFailed;
         const transaction = try self.environment.beginWrite();
         errdefer transaction.abort();
-        try self.refuseOnReplica(transaction);
         _ = try change_log.start(transaction);
         try transaction.commit();
         self.change_log_started = true;
@@ -248,36 +236,6 @@ pub const KeyValueStore = struct {
         const transaction = try self.environment.beginRead();
         defer self.environment.endRead(transaction);
         return change_log.changeSet(transaction, self.allocator, lsn);
-    }
-
-    /// Applies change set `lsn` of this replica's master, `bytes`, in a write
-    /// transaction of its own that also records it as applied (so a crash
-    /// loses it whole or keeps it whole). A change set already applied is
-    /// skipped; one whose predecessor is missing fails with
-    /// `ChangeSetOutOfOrder`. The first one applied makes the database a
-    /// replica, which refuses every other write. A database whose change
-    /// log is started (a master) applies none (`WriteFailed`).
-    pub fn applyChangeSet(self: *KeyValueStore, lsn: u64, bytes: []const u8) (StorageError || error{ MalformedChangeSet, ChangeSetOutOfOrder })!change_log.Applied {
-        if (self.inTransaction()) return error.WriteFailed;
-        const transaction = try self.environment.beginWrite();
-        errdefer transaction.abort();
-        if (try change_log.readState(transaction) != null) return error.WriteFailed;
-        if (try change_log.applyNext(transaction, lsn, bytes) == .already_applied) {
-            transaction.abort();
-            return .already_applied;
-        }
-        try transaction.commit();
-        self.replica = true;
-        return .applied;
-    }
-
-    /// On a replica, the LSN of the last change set applied; null on a
-    /// database that is not one.
-    pub fn appliedLsn(self: *KeyValueStore) StorageError!?u64 {
-        if (self.activeTransaction()) |transaction| return change_log.appliedLsn(transaction);
-        const transaction = try self.environment.beginRead();
-        defer self.environment.endRead(transaction);
-        return change_log.appliedLsn(transaction);
     }
 
     /// Frees the cached schema definitions, if any.
