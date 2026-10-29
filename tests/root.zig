@@ -8,6 +8,8 @@ test {
     _ = @import("replication/protocol_test.zig");
     _ = @import("replication/master_test.zig");
     _ = @import("replication/replica_test.zig");
+    _ = @import("replication/clock_test.zig");
+    _ = @import("replication/network_test.zig");
     _ = @import("storage/graph_test.zig");
     _ = @import("storage/integrity_test.zig");
     _ = @import("storage/fuzz_test.zig");

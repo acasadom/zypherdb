@@ -332,3 +332,39 @@ test "a database loads a copy of a master over what it held, while readers keep 
     // A master loads no copy.
     try testing.expectError(error.WriteFailed, source.loadCopy(copy_path));
 }
+
+test "a commit listener is told the LSN of each change set committed" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [256]u8 = undefined;
+    var store = try openAt(&tmp, "master", &path);
+    defer store.deinit();
+    const Heard = struct {
+        lsns: [4]u64 = undefined,
+        count: usize = 0,
+        fn committed(context: *anyopaque, lsn: u64) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.lsns[self.count] = lsn;
+            self.count += 1;
+        }
+    };
+    var heard: Heard = .{};
+    store.commit_listener = .{ .context = &heard, .committed = Heard.committed };
+    // Before the change log starts, a commit has no LSN.
+    try store.beginWrite();
+    try store.put("before", "log");
+    try store.commitWrite();
+    try store.startChangeLog();
+    for ([_][]const u8{ "one", "two" }) |key| {
+        try store.beginWrite();
+        try store.put(key, "value");
+        try store.commitWrite();
+    }
+    // Neither does one that changed nothing, nor one aborted.
+    try store.beginWrite();
+    try store.commitWrite();
+    try store.beginWrite();
+    try store.put("aborted", "value");
+    store.abortWrite();
+    try testing.expectEqualSlices(u64, &.{ 1, 2 }, heard.lsns[0..heard.count]);
+}

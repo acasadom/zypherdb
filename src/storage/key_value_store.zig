@@ -124,6 +124,13 @@ pub const KeyValueStore = struct {
     change_log_limit: u64 = 512 << 20,
     /// Whether this database is a replica (change_log.zig), once known.
     replica: ?bool = null,
+    /// Told the LSN of each change set this store commits.
+    commit_listener: ?CommitListener = null,
+
+    pub const CommitListener = struct {
+        context: *anyopaque,
+        committed: *const fn (context: *anyopaque, lsn: u64) void,
+    };
 
     pub const SchemaDefinitions = struct {
         version: u64,
@@ -189,6 +196,9 @@ pub const KeyValueStore = struct {
         self.active_write_transaction = null;
         self.write_transaction_memo = .{};
         try transaction.commit();
+        const recorder = self.change_recorder orelse return;
+        if (recorder.chunks == 0) return;
+        if (self.commit_listener) |listener| listener.committed(listener.context, recorder.state.next_lsn - 1);
     }
 
     pub fn abortWrite(self: *KeyValueStore) void {
