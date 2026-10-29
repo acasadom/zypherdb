@@ -3,6 +3,10 @@
 //! so, then the change sets as they come) and, when the conversation
 //! ends for any reason, connects again after a while. Reads that wait too
 //! long (the network's read timeout, a few heartbeats) end it too.
+//!
+//! TEMPORARY, to be replaced: every refusal is retried, the permanent ones
+//! (token, versions, another master) too, and the read timeout is not tied
+//! to the master's heartbeat.
 
 const std = @import("std");
 const Io = std.Io;

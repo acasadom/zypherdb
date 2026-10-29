@@ -3,6 +3,12 @@
 //! master.zig with it. That thread sends the change sets each commit makes
 //! (woken by `commitListener`), and a heartbeat when none came for a while.
 //! It does not read while streaming: a replica only acks a copy.
+//!
+//! TEMPORARY, to be replaced: a thread per replica with blocking I/O. A
+//! replica that stops reading blocks its thread in a write (no write
+//! deadline), and the master never learns a replica's lag. The direction:
+//! one event-driven I/O thread, write deadlines, a bounded backlog per
+//! replica, acks read while streaming.
 
 const std = @import("std");
 const Io = std.Io;
