@@ -2,7 +2,8 @@
 //! (replication/master_session.zig, replica_session.zig), run against each
 //! other with no network: bytes go from one to the other in pieces of
 //! random size, on a clock of the test's own. A replica made this way
-//! equals its master; a silent or stuck peer is let go in time.
+//! equals its master, also once reopened; a silent or stuck peer is let go
+//! in time; a message the other side would not send ends a conversation.
 
 const std = @import("std");
 const testing = std.testing;
@@ -193,7 +194,7 @@ fn putKeys(store: *KeyValueStore, first: u8, count: u8, bytes: usize) !void {
     for (first..first + count) |i| try store.put(&.{ 'k', @intCast(i) }, value);
 }
 
-test "a replica made from a copy, then streamed to, equals its master and acks how far it is" {
+test "a replica made from a copy, then streamed to, equals its master and acks how far it is, also once reopened" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var master_path: [256]u8 = undefined;
@@ -206,10 +207,11 @@ test "a replica made from a copy, then streamed to, equals its master and acks h
     try expectQuery(&ast, &g, "UNWIND range(1, 40) AS i CREATE (:Person {id: i})", &.{});
     try expectQuery(&ast, &g, "CREATE INDEX FOR (p:Person) ON (p.id)", &.{});
     var replica_path: [256]u8 = undefined;
-    var target = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "replica", &replica_path));
-    defer target.deinit();
+    const replica_directory = try directoryAt(&tmp, "replica", &replica_path);
+    var target = try KeyValueStore.open(testing.allocator, replica_directory);
 
     for (0..4) |seed| {
+        errdefer target.deinit();
         var conversation: Conversation = undefined;
         try conversation.init(&tmp, &source, &target, seed);
         defer conversation.deinit();
@@ -233,6 +235,18 @@ test "a replica made from a copy, then streamed to, equals its master and acks h
         try testing.expect(conversation.heartbeats >= 15 and conversation.heartbeats <= 21);
         try testing.expect(!conversation.master.expired(conversation.now));
     }
+    target.deinit();
+
+    // Reopened, the replica resumes where it stopped, with no copy.
+    try putKeys(&source, 200, 2, 10);
+    target = try KeyValueStore.open(testing.allocator, replica_directory);
+    defer target.deinit();
+    var conversation: Conversation = undefined;
+    try conversation.init(&tmp, &source, &target, 4);
+    defer conversation.deinit();
+    try conversation.stepUntil(Conversation.caughtUp);
+    try testing.expectEqual(@as(usize, 0), conversation.copies_made);
+    try testing.expectEqual(try contents(&source), try contents(&target));
 }
 
 test "a replica with the wrong token is refused and the master ends the conversation" {
@@ -313,6 +327,38 @@ test "a silent or stuck replica is let go, and a silent master left" {
     }
 }
 
+test "a replica whose next change set the log dropped is let go, to start again from a copy" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var source = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "master", &master_path));
+    defer source.deinit();
+    try source.startChangeLog();
+    try putKeys(&source, 0, 2, 10);
+    var replica_path: [256]u8 = undefined;
+    var target = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "replica", &replica_path));
+    defer target.deinit();
+    var conversation: Conversation = undefined;
+    try conversation.init(&tmp, &source, &target, 3);
+    defer conversation.deinit();
+    try conversation.stepUntil(Conversation.caughtUp);
+
+    // Committed and dropped from the log before any is sent.
+    source.change_log_limit = 300;
+    try putKeys(&source, 10, 10, 100);
+    try testing.expect((try source.changeLogState()).?.oldest_lsn > conversation.master.next_lsn);
+    try testing.expectError(error.ChangeSetDropped, conversation.step());
+}
+
+/// Puts `message`'s frame in `session`'s inbox, as if received at 0.
+fn deliver(session: anytype, message: protocol.Message) !void {
+    var frame: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&frame);
+    try protocol.write(&writer, message);
+    @memcpy(session.inbox.unfilled()[0..writer.end], writer.buffered());
+    session.received(writer.end, 0);
+}
+
 test "a message out of turn ends a conversation" {
     var buffers: [4][]u8 = undefined;
     for (&buffers) |*buffer| buffer.* = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
@@ -327,19 +373,34 @@ test "a message out of turn ends a conversation" {
     // An ack before the hello.
     var master: MasterSession = .init(buffers[0], buffers[1], settings, 0);
     defer master.deinit(testing.allocator);
-    var frame: [64]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&frame);
-    try protocol.write(&writer, .{ .ack = 1 });
-    @memcpy(master.inbox.unfilled()[0..writer.end], writer.buffered());
-    master.received(writer.end, 0);
+    try deliver(&master, .{ .ack = 1 });
     try testing.expectError(error.UnexpectedMessage, master.next(&source));
 
+    const hello = try replica.hello(null, token);
     // A stream from elsewhere than after the replica's last change set.
-    var session: ReplicaSession = .init(buffers[2], buffers[3], try replica.hello(null, token), settings.timeout_ns, 0);
-    defer session.deinit(testing.allocator);
-    writer = .fixed(&frame);
-    try protocol.write(&writer, .{ .stream = 2 });
-    @memcpy(session.inbox.unfilled()[0..writer.end], writer.buffered());
-    session.received(writer.end, 0);
-    try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
+    {
+        var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
+        defer session.deinit(testing.allocator);
+        try deliver(&session, .{ .stream = 2 });
+        try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
+    }
+    // A part of the next change set before the last part of this one.
+    {
+        var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
+        defer session.deinit(testing.allocator);
+        try deliver(&session, .{ .stream = 1 });
+        try deliver(&session, .{ .change_set_part = .{ .lsn = 1, .final = false, .bytes = "half" } });
+        try testing.expect(try session.next(testing.allocator) == null);
+        try deliver(&session, .{ .change_set_part = .{ .lsn = 2, .final = true, .bytes = "" } });
+        try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
+    }
+    // A copy of another size than the master tells at its end.
+    {
+        var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
+        defer session.deinit(testing.allocator);
+        try deliver(&session, .{ .snapshot_part = "copy" });
+        try deliver(&session, .{ .snapshot_end = 5 });
+        try testing.expectEqualStrings("copy", (try session.next(testing.allocator)).?.copy_part);
+        try testing.expectError(error.SnapshotSizeMismatch, session.next(testing.allocator));
+    }
 }

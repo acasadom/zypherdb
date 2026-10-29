@@ -14,13 +14,16 @@ fn encode(buffer: []u8, message: Message) ![]u8 {
     return writer.buffered();
 }
 
+/// The message of the one frame `bytes` holds, whole and nothing after.
+fn decodeWhole(bytes: []const u8) !Message {
+    const decoded = try protocol.decode(bytes) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(bytes.len, decoded.length);
+    return decoded.message;
+}
+
 fn expectRoundTrip(message: Message) !void {
     var buffer: [4096]u8 = undefined;
-    const frame = try encode(&buffer, message);
-    var reader: std.Io.Reader = .fixed(frame);
-    const read = try protocol.read(&reader);
-    try testing.expectEqualDeep(message, read);
-    try testing.expectError(error.EndOfStream, protocol.read(&reader));
+    try testing.expectEqualDeep(message, try decodeWhole(try encode(&buffer, message)));
 }
 
 test "every message reads back as written" {
@@ -57,10 +60,13 @@ test "messages follow one another in a stream" {
     try protocol.write(&writer, .{ .stream = 5 });
     try protocol.write(&writer, .{ .change_set_part = .{ .lsn = 5, .final = true, .bytes = "abc" } });
     try protocol.write(&writer, .{ .heartbeat = 5 });
-    var reader: std.Io.Reader = .fixed(writer.buffered());
-    try testing.expectEqual(@as(u64, 5), (try protocol.read(&reader)).stream);
-    try testing.expectEqualStrings("abc", (try protocol.read(&reader)).change_set_part.bytes);
-    try testing.expectEqual(@as(u64, 5), (try protocol.read(&reader)).heartbeat);
+    var rest = writer.buffered();
+    const first = (try protocol.decode(rest)).?;
+    try testing.expectEqual(@as(u64, 5), first.message.stream);
+    rest = rest[first.length..];
+    const second = (try protocol.decode(rest)).?;
+    try testing.expectEqualStrings("abc", second.message.change_set_part.bytes);
+    try testing.expectEqual(@as(u64, 5), (try decodeWhole(rest[second.length..])).heartbeat);
 }
 
 test "a part of the largest size reads back" {
@@ -70,32 +76,13 @@ test "a part of the largest size reads back" {
     const buffer = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
     defer testing.allocator.free(buffer);
     const frame = try encode(buffer, .{ .change_set_part = .{ .lsn = 1, .final = true, .bytes = part } });
-    var reader: std.Io.Reader = .fixed(frame);
-    try testing.expectEqualSlices(u8, part, (try protocol.read(&reader)).change_set_part.bytes);
+    try testing.expectEqualSlices(u8, part, (try decodeWhole(frame)).change_set_part.bytes);
 }
 
-test "a flipped bit anywhere in a frame is caught" {
-    var buffer: [256]u8 = undefined;
-    const frame = try encode(&buffer, .{ .change_set_part = .{ .lsn = 3, .final = true, .bytes = "\x01\x00\x00\x00\x00\x01k\x00\x00\x00\x01v" } });
-    var damaged: [256]u8 = undefined;
-    for (0..frame.len * 8) |bit| {
-        @memcpy(damaged[0..frame.len], frame);
-        damaged[bit / 8] ^= @as(u8, 1) << @intCast(bit % 8);
-        var reader: std.Io.Reader = .fixed(damaged[0..frame.len]);
-        if (protocol.read(&reader)) |message| {
-            std.debug.print("bit {d} flipped, read {any}\n", .{ bit, message });
-            return error.TestUnexpectedResult;
-        } else |_| {}
-    }
-}
-
-test "a truncated frame is an end of stream" {
+test "a truncated frame is not whole yet" {
     var buffer: [256]u8 = undefined;
     const frame = try encode(&buffer, .{ .ack = 7 });
-    for (0..frame.len) |length| {
-        var reader: std.Io.Reader = .fixed(frame[0..length]);
-        try testing.expectError(error.EndOfStream, protocol.read(&reader));
-    }
+    for (0..frame.len) |length| try testing.expectEqual(@as(?protocol.Decoded, null), try protocol.decode(frame[0..length]));
 }
 
 /// A frame of `kind` around `payload`, its checksum right.
@@ -112,8 +99,7 @@ fn forge(buffer: []u8, kind: u8, payload: []const u8) []u8 {
 
 fn expectMalformed(kind: u8, payload: []const u8) !void {
     var buffer: [256]u8 = undefined;
-    var reader: std.Io.Reader = .fixed(forge(&buffer, kind, payload));
-    try testing.expectError(error.MalformedFrame, protocol.read(&reader));
+    try testing.expectError(error.MalformedFrame, protocol.decode(forge(&buffer, kind, payload)));
 }
 
 test "a frame with a right checksum but a wrong payload is malformed" {
@@ -127,15 +113,6 @@ test "a frame with a right checksum but a wrong payload is malformed" {
     const no_id: [16]u8 = @splat(0);
     const no_lsn: [8]u8 = @splat(0);
     try expectMalformed(@backingInt(protocol.Kind.hello), "ZYPR" ++ "\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x04lmdb" ++ "\x00" ++ no_id ++ no_lsn ++ "\x00\x09abc");
-}
-
-test "a frame longer than any message is refused before it is read" {
-    var header: [9]u8 = undefined;
-    header[0] = @backingInt(protocol.Kind.snapshot_part);
-    std.mem.writeInt(u32, header[1..5], @intCast(protocol.max_payload_bytes + 1), .big);
-    std.mem.writeInt(u32, header[5..9], 0, .big);
-    var reader: std.Io.Reader = .fixed(&header);
-    try testing.expectError(error.MalformedFrame, protocol.read(&reader));
 }
 
 test "tokens match only when equal" {
@@ -236,7 +213,7 @@ test "decode refuses a frame longer than any message as soon as its header is in
 
 test "decode catches a flipped bit anywhere in a frame" {
     var buffer: [256]u8 = undefined;
-    const frame = try encode(&buffer, .{ .change_set_part = .{ .lsn = 3, .final = true, .bytes = "abc" } });
+    const frame = try encode(&buffer, .{ .change_set_part = .{ .lsn = 3, .final = true, .bytes = "\x01\x00\x00\x00\x00\x01k\x00\x00\x00\x01v" } });
     var damaged: [256]u8 = undefined;
     for (0..frame.len * 8) |bit| {
         @memcpy(damaged[0..frame.len], frame);
@@ -294,6 +271,5 @@ test "an outbox refuses a frame that does not fit until enough is sent" {
     outbox.sent(outbox.unsent().len);
     try testing.expect(outbox.fits(large));
     outbox.put(large);
-    var reader: std.Io.Reader = .fixed(outbox.unsent());
-    try testing.expectEqualSlices(u8, part, (try protocol.read(&reader)).snapshot_part);
+    try testing.expectEqualSlices(u8, part, (try decodeWhole(outbox.unsent())).snapshot_part);
 }

@@ -1,6 +1,6 @@
 //! The replication protocol: what a master and its replicas say to each
-//! other over a byte stream (a TCP connection; anything with a
-//! `std.Io.Reader` and a `std.Io.Writer`).
+//! other over a byte stream (a TCP connection, a simulated network), in
+//! frames that may arrive in pieces (`Inbox`) and leave in pieces (`Outbox`).
 //!
 //! A replica opens the conversation with `hello`: who it is (protocol
 //! version, storage format and engine, the id of the master it copies, the
@@ -30,7 +30,6 @@
 //! buffer holds `max_frame_bytes` reads any frame without allocating.
 
 const std = @import("std");
-const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const Crc32 = std.hash.Crc32;
 
@@ -58,7 +57,7 @@ pub const max_payload_bytes: usize = @max(part_bytes + part_header_bytes, hello_
 
 const header_bytes = 9;
 
-/// The buffer a `std.Io.Reader` needs to read any frame.
+/// The largest frame: what an `Inbox` or an `Outbox` holds at least.
 pub const max_frame_bytes: usize = header_bytes + max_payload_bytes;
 
 pub const DatabaseId = [16]u8;
@@ -130,8 +129,6 @@ pub const Message = union(Kind) {
 
 pub const DecodeError = error{ MalformedFrame, ChecksumMismatch };
 
-pub const ReadError = Reader.Error || DecodeError;
-
 /// Writes `message` as one frame (not flushed). Asserts its parts fit
 /// (`part_bytes`, `max_token_bytes`, `max_engine_name_bytes`).
 pub fn write(writer: *Writer, message: Message) Writer.Error!void {
@@ -149,17 +146,6 @@ pub fn frameLength(message: Message) usize {
     var checksum: ChecksumSink = .{};
     encodePayload(&checksum, message) catch unreachable;
     return header_bytes + checksum.length;
-}
-
-/// Reads one frame. The message's slices are views into `reader`'s buffer,
-/// valid until its next read. A reader of a stream needs a buffer of
-/// `max_frame_bytes`.
-pub fn read(reader: *Reader) ReadError!Message {
-    const kind_byte = try reader.takeByte();
-    const length = try reader.takeInt(u32, .big);
-    const expected_crc = try reader.takeInt(u32, .big);
-    if (length > max_payload_bytes) return error.MalformedFrame;
-    return checkedMessage(kind_byte, expected_crc, try reader.take(length));
 }
 
 /// A frame decoded from the front of a run of bytes.
