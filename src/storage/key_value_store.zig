@@ -273,10 +273,13 @@ pub const KeyValueStore = struct {
         return .applied;
     }
 
+    /// The one file of a copy (`copyDatabase`), in its directory.
+    pub const data_file_name = engine.data_file_name;
+
     /// Writes a compacted copy of the database as it is now, its change log
-    /// included, into `directory`, which must exist and hold no database.
-    /// Writers go on meanwhile. A copy of a master becomes a replica of it
-    /// with `becomeReplica`.
+    /// included, into `directory`, which must exist and hold no database,
+    /// as one file (`data_file_name`). Writers go on meanwhile. A copy of a
+    /// master becomes a replica of it with `becomeReplica`.
     pub fn copyDatabase(self: *KeyValueStore, directory: []const u8) StorageError!void {
         return self.environment.copy(self.allocator, directory);
     }

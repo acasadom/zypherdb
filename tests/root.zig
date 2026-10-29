@@ -6,6 +6,7 @@ test {
     _ = @import("storage/key_value_store_test.zig");
     _ = @import("storage/change_log_test.zig");
     _ = @import("replication/protocol_test.zig");
+    _ = @import("replication/master_test.zig");
     _ = @import("storage/graph_test.zig");
     _ = @import("storage/integrity_test.zig");
     _ = @import("storage/fuzz_test.zig");

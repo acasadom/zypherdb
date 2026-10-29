@@ -21,6 +21,7 @@ const chosen = switch (build_options.storage_engine) {
 
 pub const Selected = if (build_options.fault_injection) @import("engine/faulty.zig").Wrap(chosen) else chosen;
 
+pub const data_file_name = Selected.data_file_name;
 pub const Environment = Selected.Environment;
 pub const Transaction = Selected.Transaction;
 pub const Cursor = Selected.Cursor;

@@ -2,7 +2,8 @@
 //! between ZypherDB and the key-value store underneath (LMDB, libmdbx, ...).
 //!
 //! An engine is a namespace (a Zig file) chosen at compile time (see
-//! `engine.zig`), with three types:
+//! `engine.zig`), with `data_file_name` (the one file of a copy, which a
+//! replica is sent: `[]const u8`) and three types:
 //!
 //! - `Environment`: an open database at a path.
 //!     `open(allocator, path, Options) Error!Environment`, `close()`,
@@ -91,7 +92,7 @@ pub const Options = struct { durability: Durability = .full };
 /// of the contract (signatures are checked by their use).
 pub fn check(comptime Engine: type) void {
     const required = .{
-        .{ Engine, &.{ "Environment", "Transaction", "Cursor" } },
+        .{ Engine, &.{ "data_file_name", "Environment", "Transaction", "Cursor" } },
         .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "copy" } },
         .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },

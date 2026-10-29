@@ -18,6 +18,9 @@ const Entry = contract.Entry;
 /// The libmdbx table handle of each table, indexed by `Table`.
 const TableHandles = [Table.count]c.MDBX_dbi;
 
+/// The file of a database's directory that holds it all.
+pub const data_file_name = "mdbx.dat";
+
 /// The file's geometry: it may grow to `size_upper`, in steps of
 /// `growth_step`, and gives back the free space at its end once it passes
 /// `shrink_threshold`. (The upper bound reserves address space, not memory
@@ -102,7 +105,7 @@ pub const Environment = struct {
 
     pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
         // libmdbx copies to a file: the data file of a database in `directory`.
-        const c_path = std.fs.path.joinZ(allocator, &.{ directory, "mdbx.dat" }) catch return error.OutOfMemory;
+        const c_path = std.fs.path.joinZ(allocator, &.{ directory, data_file_name }) catch return error.OutOfMemory;
         defer allocator.free(c_path);
         if (c.mdbx_env_copy(self.handle, c_path.ptr, c.MDBX_CP_COMPACT) != c.MDBX_SUCCESS) return error.WriteFailed;
     }

@@ -10,6 +10,9 @@ const Error = contract.Error;
 const Table = contract.Table;
 const Entry = contract.Entry;
 
+/// The file of a database's directory that holds it all.
+pub const data_file_name = "data.mdb";
+
 /// The LMDB database handle of each table, indexed by `Table`.
 const TableHandles = [Table.count]c.MDB_dbi;
 

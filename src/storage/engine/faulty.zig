@@ -115,6 +115,8 @@ pub var faults: Plan = .{};
 /// `Inner` (an engine, see contract.zig) with failures injected by `faults`.
 pub fn Wrap(comptime Inner: type) type {
     return struct {
+        pub const data_file_name = Inner.data_file_name;
+
         pub const Environment = struct {
             inner: Inner.Environment,
 

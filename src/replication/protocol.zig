@@ -12,7 +12,9 @@
 //!     snapshot_part*  the replica cannot (it is empty, or the master no
 //!     snapshot_end    longer holds the change sets it misses): a copy of
 //!                     the master's database (KeyValueStore.copyDatabase),
-//!                     in parts; change sets after the copy's follow
+//!                     in parts; the replica makes it its database and
+//!                     `ack`s the copy's last LSN, and change sets from
+//!                     the one after follow
 //!
 //! Then the master sends each change set as it commits (`change_set_part`,
 //! a change set cut into parts of at most `part_bytes`, the last one marked
@@ -98,6 +100,9 @@ pub const Refusal = enum(u8) {
     /// The replica has change sets the master never made (it was promoted,
     /// or the master restored from an older copy).
     ahead = 6,
+    /// The database is no master: its change log is not started, or it is
+    /// a replica itself.
+    not_master = 7,
     _,
 };
 
