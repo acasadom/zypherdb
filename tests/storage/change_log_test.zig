@@ -1,5 +1,6 @@
 //! The change log (change_log.zig): applying a database's change sets in
-//! order to an empty database makes the same database.
+//! order to an empty database makes the same database, and a replica
+//! applies each exactly once.
 
 const std = @import("std");
 const testing = std.testing;
@@ -39,16 +40,13 @@ fn contents(store: *KeyValueStore) !Contents {
     return .{ .digest = hasher.final(), .entries = entries };
 }
 
-/// Applies the change sets `first` up to, not including, `end` of `source`
-/// to `target`, each in a transaction of its own.
+/// The replica `target` applies the change sets `first` up to, not
+/// including, `end` of `source`.
 fn replay(source: *KeyValueStore, target: *KeyValueStore, first: u64, end: u64) !void {
     for (first..end) |lsn| {
         const bytes = (try source.changeSet(lsn)) orelse return error.MissingChangeSet;
         defer testing.allocator.free(bytes);
-        const transaction = try target.environment.beginWrite();
-        errdefer transaction.abort();
-        try change_log.apply(transaction, bytes);
-        try transaction.commit();
+        try testing.expectEqual(.applied, try target.applyChangeSet(lsn, bytes));
     }
 }
 
@@ -168,6 +166,79 @@ test "without the change log nothing is logged" {
     try store.put("key", "value");
     try testing.expect(try store.changeLogState() == null);
     try testing.expect(try store.changeSet(1) == null);
+}
+
+test "a replica applies each change set once, in order, and keeps its place across a reopen" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var source_path: [256]u8 = undefined;
+    var source = try openAt(&tmp, "source", &source_path);
+    defer source.deinit();
+    var target_path: [256]u8 = undefined;
+    var target = try openAt(&tmp, "target", &target_path);
+
+    try source.startChangeLog();
+    for (0..5) |i| try source.put(&.{ 'k', @intCast('0' + i) }, "value");
+    try source.del("k2");
+    try testing.expect(try target.appliedLsn() == null);
+    try replay(&source, &target, 1, 4);
+    try testing.expectEqual(@as(?u64, 3), try target.appliedLsn());
+
+    // Sent again (a reconnection): skipped. Past a missing one: refused.
+    const first = (try source.changeSet(1)).?;
+    defer testing.allocator.free(first);
+    try testing.expectEqual(.already_applied, try target.applyChangeSet(1, first));
+    const fifth = (try source.changeSet(5)).?;
+    defer testing.allocator.free(fifth);
+    try testing.expectError(error.ChangeSetOutOfOrder, target.applyChangeSet(5, fifth));
+    try testing.expectEqual(@as(?u64, 3), try target.appliedLsn());
+
+    // A replica writes nothing but its master's change sets.
+    try testing.expectError(error.ReadOnlyReplica, target.put("mine", "value"));
+    try testing.expectError(error.ReadOnlyReplica, target.beginWrite());
+    try testing.expectError(error.ReadOnlyReplica, target.startChangeLog());
+
+    // Reopened (as after a crash), it resumes where it stopped, still a replica.
+    target.deinit();
+    var base_buffer: [128]u8 = undefined;
+    var reopen_buffer: [256]u8 = undefined;
+    target = try KeyValueStore.open(testing.allocator, try std.fmt.bufPrint(&reopen_buffer, "{s}/target", .{testPath(&tmp, &base_buffer)}));
+    defer target.deinit();
+    try testing.expectEqual(@as(?u64, 3), try target.appliedLsn());
+    try testing.expectError(error.ReadOnlyReplica, target.put("mine", "value"));
+    const state = (try source.changeLogState()).?;
+    try replay(&source, &target, 4, state.next_lsn);
+    try testing.expectEqual(try contents(&source), try contents(&target));
+}
+
+test "a change set that fails to apply leaves the replica as it was" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [128]u8 = undefined;
+    var store = try KeyValueStore.open(testing.allocator, testPath(&tmp, &path_buffer));
+    defer store.deinit();
+
+    const first = [_]u8{ 0x01, @backingInt(change_log.Table.main), 0, 0, 0, 1, 'a', 0, 0, 0, 1, '1' };
+    try testing.expectEqual(.applied, try store.applyChangeSet(1, &first));
+    // A whole put, then a cut one.
+    const second = [_]u8{ 0x01, @backingInt(change_log.Table.main), 0, 0, 0, 1, 'b', 0, 0, 0, 1, '2', 0x01 };
+    try testing.expectError(error.MalformedChangeSet, store.applyChangeSet(2, &second));
+    try testing.expectEqual(@as(?u64, 1), try store.appliedLsn());
+    try testing.expect(!try store.exists("b"));
+    const a = (try store.get("a")).?;
+    defer testing.allocator.free(a);
+    try testing.expectEqualStrings("1", a);
+}
+
+test "a master applies no change sets" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [128]u8 = undefined;
+    var store = try KeyValueStore.open(testing.allocator, testPath(&tmp, &path_buffer));
+    defer store.deinit();
+    try store.startChangeLog();
+    try testing.expectError(error.WriteFailed, store.applyChangeSet(1, ""));
+    try testing.expect(try store.appliedLsn() == null);
 }
 
 test "a change set that is not one is refused" {
