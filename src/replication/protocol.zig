@@ -128,7 +128,9 @@ pub const Message = union(Kind) {
     ack: u64,
 };
 
-pub const ReadError = Reader.Error || error{ MalformedFrame, ChecksumMismatch };
+pub const DecodeError = error{ MalformedFrame, ChecksumMismatch };
+
+pub const ReadError = Reader.Error || DecodeError;
 
 /// Writes `message` as one frame (not flushed). Asserts its parts fit
 /// (`part_bytes`, `max_token_bytes`, `max_engine_name_bytes`).
@@ -142,6 +144,13 @@ pub fn write(writer: *Writer, message: Message) Writer.Error!void {
     try encodePayload(writer, message);
 }
 
+/// The bytes `write` writes for `message`.
+pub fn frameLength(message: Message) usize {
+    var checksum: ChecksumSink = .{};
+    encodePayload(&checksum, message) catch unreachable;
+    return header_bytes + checksum.length;
+}
+
 /// Reads one frame. The message's slices are views into `reader`'s buffer,
 /// valid until its next read. A reader of a stream needs a buffer of
 /// `max_frame_bytes`.
@@ -150,7 +159,128 @@ pub fn read(reader: *Reader) ReadError!Message {
     const length = try reader.takeInt(u32, .big);
     const expected_crc = try reader.takeInt(u32, .big);
     if (length > max_payload_bytes) return error.MalformedFrame;
-    const payload = try reader.take(length);
+    return checkedMessage(kind_byte, expected_crc, try reader.take(length));
+}
+
+/// A frame decoded from the front of a run of bytes.
+pub const Decoded = struct {
+    message: Message,
+    /// The frame's bytes: where the next frame starts.
+    length: usize,
+};
+
+/// Decodes the frame at the front of `bytes`, or null if `bytes` holds
+/// only its beginning. The message's slices are views into `bytes`. A
+/// length no frame has is refused as soon as the header is in.
+pub fn decode(bytes: []const u8) DecodeError!?Decoded {
+    if (bytes.len < header_bytes) return null;
+    const length = std.mem.readInt(u32, bytes[1..5], .big);
+    if (length > max_payload_bytes) return error.MalformedFrame;
+    if (bytes.len < header_bytes + length) return null;
+    const expected_crc = std.mem.readInt(u32, bytes[5..9], .big);
+    return .{
+        .message = try checkedMessage(bytes[0], expected_crc, bytes[header_bytes..][0..length]),
+        .length = header_bytes + length,
+    };
+}
+
+/// Frames that arrive in pieces (from a non-blocking socket, a simulated
+/// network): bytes go in at `unfilled` and `filled`, messages come out of
+/// `next`. Its buffer of `max_frame_bytes` holds any frame.
+pub const Inbox = struct {
+    buffer: []u8,
+    /// Bytes before `start` are frames already taken.
+    start: usize = 0,
+    end: usize = 0,
+
+    pub fn init(buffer: []u8) Inbox {
+        std.debug.assert(buffer.len >= max_frame_bytes);
+        return .{ .buffer = buffer };
+    }
+
+    /// Where the next bytes received go; never empty while a frame can
+    /// still be completed (`next` refuses one longer than the buffer
+    /// first). Moves what is unread to the front, so the messages `next`
+    /// returned are no longer valid.
+    pub fn unfilled(self: *Inbox) []u8 {
+        if (self.start != 0) {
+            std.mem.copyForwards(u8, self.buffer, self.buffer[self.start..self.end]);
+            self.end -= self.start;
+            self.start = 0;
+        }
+        return self.buffer[self.end..];
+    }
+
+    /// `count` bytes were received into `unfilled`.
+    pub fn filled(self: *Inbox, count: usize) void {
+        std.debug.assert(self.end + count <= self.buffer.len);
+        self.end += count;
+    }
+
+    /// The next whole message received, or null until more bytes come.
+    /// Its slices are views into the buffer, valid until `unfilled`.
+    pub fn next(self: *Inbox) DecodeError!?Message {
+        const decoded = try decode(self.buffer[self.start..self.end]) orelse return null;
+        self.start += decoded.length;
+        return decoded.message;
+    }
+};
+
+/// Frames waiting to be sent: `put` adds whole frames while they fit, the
+/// sender takes bytes from `unsent` and reports them `sent`. Its buffer of
+/// `max_frame_bytes` holds any frame.
+pub const Outbox = struct {
+    buffer: []u8,
+    /// Bytes before `start` are sent.
+    start: usize = 0,
+    end: usize = 0,
+
+    pub fn init(buffer: []u8) Outbox {
+        std.debug.assert(buffer.len >= max_frame_bytes);
+        return .{ .buffer = buffer };
+    }
+
+    /// Whether `message` fits after the frames waiting. Moves what is
+    /// unsent to the front if that makes it fit.
+    pub fn fits(self: *Outbox, message: Message) bool {
+        const length = frameLength(message);
+        if (self.buffer.len - self.end >= length) return true;
+        if (self.buffer.len - (self.end - self.start) < length) return false;
+        std.mem.copyForwards(u8, self.buffer, self.buffer[self.start..self.end]);
+        self.end -= self.start;
+        self.start = 0;
+        return true;
+    }
+
+    /// Adds `message`'s frame; asserts it `fits`.
+    pub fn put(self: *Outbox, message: Message) void {
+        std.debug.assert(self.fits(message));
+        var writer: Writer = .fixed(self.buffer[self.end..]);
+        write(&writer, message) catch unreachable;
+        self.end += writer.end;
+    }
+
+    pub fn unsent(self: *const Outbox) []const u8 {
+        return self.buffer[self.start..self.end];
+    }
+
+    /// The first `count` bytes of `unsent` are sent.
+    pub fn sent(self: *Outbox, count: usize) void {
+        std.debug.assert(count <= self.end - self.start);
+        self.start += count;
+        if (self.start == self.end) {
+            self.start = 0;
+            self.end = 0;
+        }
+    }
+
+    pub fn isEmpty(self: *const Outbox) bool {
+        return self.start == self.end;
+    }
+};
+
+/// Checks a frame's checksum and decodes its payload.
+fn checkedMessage(kind_byte: u8, expected_crc: u32, payload: []const u8) DecodeError!Message {
     var crc = Crc32.init();
     crc.update(&.{kind_byte});
     crc.update(payload);
