@@ -1,4 +1,4 @@
-//! The replication network (event_network.zig) in memory, for tests and
+//! The replication network (network.zig) in memory, for tests and
 //! simulations: deterministic, on one thread. `wait` never waits: in a
 //! simulation time is the simulation's to move. Each direction of a
 //! connection holds `capacity` bytes; past them a send would block.
@@ -6,13 +6,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const event_network = @import("event_network.zig");
-const Error = event_network.Error;
-const Connection = event_network.Connection;
-const Listener = event_network.Listener;
-const Wakeup = event_network.Wakeup;
-const Watched = event_network.Watched;
-const Network = event_network.Network;
+const network_module = @import("network.zig");
+const Error = network_module.Error;
+const Connection = network_module.Connection;
+const Listener = network_module.Listener;
+const Wakeup = network_module.Wakeup;
+const Watched = network_module.Watched;
+const Network = network_module.Network;
 
 pub const MemoryNetwork = struct {
     allocator: Allocator,
@@ -33,7 +33,7 @@ pub const MemoryNetwork = struct {
 
     fn listen(context: *anyopaque, address: []const u8) Error!Listener {
         const self: *MemoryNetwork = @ptrCast(@alignCast(context));
-        const split = try event_network.splitAddress(address);
+        const split = try network_module.splitAddress(address);
         const port = if (split.port != 0) split.port else self.choosePort();
         if (self.find(split.host, port) != null) return error.NetworkFailed;
         const listener = try self.allocator.create(MemoryListener);
@@ -60,7 +60,7 @@ pub const MemoryNetwork = struct {
     /// refused TCP connect shows.
     fn connect(context: *anyopaque, address: []const u8) Error!Connection {
         const self: *MemoryNetwork = @ptrCast(@alignCast(context));
-        const split = try event_network.splitAddress(address);
+        const split = try network_module.splitAddress(address);
         const link = try Link.create(self);
         const listener = self.find(split.host, split.port) orelse {
             link.end(1).close();
@@ -85,7 +85,7 @@ pub const MemoryNetwork = struct {
         _ = context;
         _ = timeout_ns;
         for (watched) |*one| {
-            const ready: event_network.Readiness = switch (one.source) {
+            const ready: network_module.Readiness = switch (one.source) {
                 .connection => |connection| Link.readiness(connection),
                 .listener => |listener| .{ .readable = MemoryListener.of(listener).waiting.items.len != 0 },
                 .wakeup => |raised| .{ .readable = MemoryWakeup.of(raised).raised },
@@ -122,7 +122,7 @@ const MemoryListener = struct {
         return self.waiting.orderedRemove(0).end(1);
     }
 
-    fn address(context: *anyopaque, buffer: *[event_network.max_address_bytes]u8) []const u8 {
+    fn address(context: *anyopaque, buffer: *[network_module.max_address_bytes]u8) []const u8 {
         const self: *MemoryListener = @ptrCast(@alignCast(context));
         return std.fmt.bufPrint(buffer, "{s}:{d}", .{ self.host, self.port }) catch unreachable;
     }
@@ -219,7 +219,7 @@ const Link = struct {
         return @ptrCast(@alignCast(one.context));
     }
 
-    fn readiness(one: Connection) event_network.Readiness {
+    fn readiness(one: Connection) network_module.Readiness {
         const self = of(one);
         const in = self.incoming();
         const out = self.outgoing();

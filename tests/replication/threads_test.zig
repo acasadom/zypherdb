@@ -12,8 +12,12 @@ const KeyValueStore = zypherdb.KeyValueStore;
 const Server = zypherdb.replication_server.Server;
 const Follower = zypherdb.replication_follower.Follower;
 const SystemClock = zypherdb.replication_clock.SystemClock;
-const Tcp = zypherdb.replication_network.Tcp;
+const Tcp = zypherdb.replication_tcp.Tcp;
+const Connection = zypherdb.replication_network.Connection;
+const Listener = zypherdb.replication_network.Listener;
+const Watched = zypherdb.replication_network.Watched;
 const max_address_bytes = zypherdb.replication_network.max_address_bytes;
+const protocol = zypherdb.replication_protocol;
 
 const support = @import("../support.zig");
 const testPath = support.testPath;
@@ -95,6 +99,48 @@ const Setup = struct {
             try self.master.commitWrite();
         }
         return (try self.master.changeLogState()).?.next_lsn - 1;
+    }
+
+    /// Waits for `watched` to be ready, failing once `deadline` passes.
+    fn waitFor(self: *Setup, watched: *Watched, deadline: u64) !void {
+        const now = self.clock.clock().now();
+        if (now >= deadline) return error.TestTimedOut;
+        try self.tcp.network().wait(watched[0..1], deadline - now);
+    }
+
+    /// The next connection to `listener`.
+    fn accept(self: *Setup, listener: Listener) !Connection {
+        const deadline = self.clock.clock().now() + patience;
+        while (true) {
+            if (try listener.accept()) |connection| return connection;
+            var watched: Watched = .{ .source = .{ .listener = listener }, .wanted = .{ .readable = true } };
+            try self.waitFor(&watched, deadline);
+        }
+    }
+
+    /// The next bytes from `connection` into `buffer`: how many, or null
+    /// once it ended.
+    fn receive(self: *Setup, connection: Connection, buffer: []u8) !?usize {
+        const deadline = self.clock.clock().now() + patience;
+        while (true) {
+            return connection.receive(buffer) catch |err| switch (err) {
+                error.Closed => return null,
+                error.WouldBlock => {
+                    var watched: Watched = .{ .source = .{ .connection = connection }, .wanted = .{ .readable = true } };
+                    try self.waitFor(&watched, deadline);
+                    continue;
+                },
+            };
+        }
+    }
+
+    /// The first message from `connection`, a frame read into `buffer`.
+    fn receiveMessage(self: *Setup, connection: Connection, buffer: []u8) !protocol.Message {
+        var filled: usize = 0;
+        while (true) {
+            if (try protocol.decode(buffer[0..filled])) |decoded| return decoded.message;
+            filled += try self.receive(connection, buffer[filled..]) orelse return error.EndOfStream;
+        }
     }
 
     /// Waits until the replica applied `lsn`, then checks it equals the master.
@@ -209,8 +255,9 @@ test "a silent replica is let go and frees its place" {
     const follower = try setup.startFollower(server, token, &address, &copies[1]);
     defer follower.stop();
     try setup.expectCaughtUp(follower, (try setup.master.changeLogState()).?.next_lsn - 1);
-    // The master shut the silent one down.
-    try testing.expectError(error.EndOfStream, zypherdb.replication_protocol.read(silent.reader()));
+    // The master closed the silent one, having sent it nothing.
+    var buffer: [16]u8 = undefined;
+    try testing.expectEqual(@as(?usize, null), try setup.receive(silent, &buffer));
 }
 
 test "a replica leaves a silent master and connects again" {
@@ -230,12 +277,14 @@ test "a replica leaves a silent master and connects again" {
         .timeout_ns = 100 * millisecond,
     });
     defer follower.stop();
-    const first = try listener.accept();
+    const buffer = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
+    defer testing.allocator.free(buffer);
+    const first = try setup.accept(listener);
     defer first.close();
-    try testing.expectEqual(.hello, std.meta.activeTag(try zypherdb.replication_protocol.read(first.reader())));
+    try testing.expectEqual(.hello, std.meta.activeTag(try setup.receiveMessage(first, buffer)));
     // Left after its timeout: the connection ends and another comes.
-    try testing.expectError(error.EndOfStream, zypherdb.replication_protocol.read(first.reader()));
-    const second = try listener.accept();
+    try testing.expectEqual(@as(?usize, null), try setup.receive(first, buffer));
+    const second = try setup.accept(listener);
     defer second.close();
-    try testing.expectEqual(.hello, std.meta.activeTag(try zypherdb.replication_protocol.read(second.reader())));
+    try testing.expectEqual(.hello, std.meta.activeTag(try setup.receiveMessage(second, buffer)));
 }

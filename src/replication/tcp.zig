@@ -1,4 +1,4 @@
-//! The replication network over TCP (event_network.zig), on sockets that
+//! The replication network over TCP (network.zig), on sockets that
 //! never block (sockets.zig) and `poll`. One `Tcp` serves any number of
 //! loops, each on its own thread.
 
@@ -6,14 +6,14 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
-const event_network = @import("event_network.zig");
+const network_module = @import("network.zig");
 const sockets = @import("sockets.zig");
-const Error = event_network.Error;
-const Connection = event_network.Connection;
-const Listener = event_network.Listener;
-const Wakeup = event_network.Wakeup;
-const Watched = event_network.Watched;
-const Network = event_network.Network;
+const Error = network_module.Error;
+const Connection = network_module.Connection;
+const Listener = network_module.Listener;
+const Wakeup = network_module.Wakeup;
+const Watched = network_module.Watched;
+const Network = network_module.Network;
 
 pub const Tcp = struct {
     /// Only to resolve host names.
@@ -64,7 +64,7 @@ pub const Tcp = struct {
 
     fn wait(context: *anyopaque, watched: []Watched, timeout_ns: ?u64) Error!void {
         _ = context;
-        var entries: [event_network.max_watched]sockets.PollEntry = undefined;
+        var entries: [network_module.max_watched]sockets.PollEntry = undefined;
         for (watched, entries[0..watched.len]) |one, *entry| {
             var events: i16 = 0;
             if (one.wanted.readable) events |= sockets.poll_readable;
@@ -86,7 +86,7 @@ pub const Tcp = struct {
         }
     }
 
-    fn handleOf(source: event_network.Source) sockets.Handle {
+    fn handleOf(source: network_module.Source) sockets.Handle {
         return switch (source) {
             .connection => |one| TcpConnection.of(one).handle,
             .listener => |one| TcpListener.of(one).handle,
@@ -95,7 +95,7 @@ pub const Tcp = struct {
     }
 
     fn resolve(self: *Tcp, address: []const u8) Error!Io.net.IpAddress {
-        const split = try event_network.splitAddress(address);
+        const split = try network_module.splitAddress(address);
         return Io.net.IpAddress.parse(split.host, split.port) catch
             Io.net.IpAddress.resolve(self.io, split.host, split.port) catch error.NetworkFailed;
     }
@@ -124,7 +124,7 @@ const TcpListener = struct {
         return try self.tcp.connection(handle, false);
     }
 
-    fn addressOf(context: *anyopaque, buffer: *[event_network.max_address_bytes]u8) []const u8 {
+    fn addressOf(context: *anyopaque, buffer: *[network_module.max_address_bytes]u8) []const u8 {
         const self: *TcpListener = @ptrCast(@alignCast(context));
         return std.fmt.bufPrint(buffer, "{f}", .{reachable(self.address)}) catch unreachable;
     }

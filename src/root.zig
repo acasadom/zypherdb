@@ -36,10 +36,8 @@ pub const replication_master_session = @import("replication/master_session.zig")
 pub const replication_replica_session = @import("replication/replica_session.zig");
 pub const replication_clock = @import("replication/clock.zig");
 pub const replication_network = @import("replication/network.zig");
-pub const replication_event_network = @import("replication/event_network.zig");
 pub const replication_tcp = @import("replication/tcp.zig");
 pub const replication_memory_network = @import("replication/memory_network.zig");
-pub const replication_watchdog = @import("replication/watchdog.zig");
 pub const replication_server = @import("replication/server.zig");
 pub const replication_follower = @import("replication/follower.zig");
 

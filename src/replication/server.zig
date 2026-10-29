@@ -1,29 +1,26 @@
-//! The master's replication threads: one accepts replicas, and each
-//! replica gets a thread of its own that holds the conversation of
-//! master.zig with it. That thread sends the change sets each commit makes
-//! (woken by `commitListener`), and a heartbeat when none came for a while.
-//! It does not read while streaming: a replica only acks a copy.
-//!
-//! TEMPORARY, to be replaced: two threads per replica (its own and its
-//! watchdog's) with blocking I/O. A replica that stops reading blocks its
-//! thread in a write until the watchdog lets it go (`timeout_ns`), and
-//! the master never learns a replica's lag. The direction: one
-//! event-driven I/O thread, deadlines checked in its loop, a bounded
-//! backlog per replica, acks read while streaming.
+//! The master's replication threads: a loop that accepts replicas and
+//! holds each one's conversation (master_session.zig) over connections
+//! that never block, and a worker that makes the copies replicas ask for
+//! (it may take minutes; the loop goes on meanwhile). A commit wakes the
+//! loop (`commitListener`) to send its change set; a replica that reads
+//! nothing sent, or says nothing awaited, for `timeout_ns` is let go: the
+//! session's deadlines, checked by the loop on the clock.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const protocol = @import("protocol.zig");
-const master = @import("master.zig");
 const Clock = @import("clock.zig").Clock;
-const Signal = @import("clock.zig").Signal;
-const Network = @import("network.zig").Network;
-const Connection = @import("network.zig").Connection;
-const Listener = @import("network.zig").Listener;
-const SpinLock = @import("spin_lock.zig").SpinLock;
-const Watchdog = @import("watchdog.zig").Watchdog;
+const Instant = @import("clock.zig").Instant;
+const network = @import("network.zig");
+const Network = network.Network;
+const Connection = network.Connection;
+const Listener = network.Listener;
+const Wakeup = network.Wakeup;
+const Watched = network.Watched;
+const Readiness = network.Readiness;
+const MasterSession = @import("master_session.zig").MasterSession;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 
 const log = std.log.scoped(.replication);
@@ -40,81 +37,99 @@ pub const Options = struct {
     /// A replica that reads nothing sent, or sends nothing awaited, for
     /// this long is let go (longer than `heartbeat_ns`).
     timeout_ns: u64 = 5 * std.time.ns_per_s,
-    /// What making a copy, or a replica loading it, may take.
+    /// What a replica loading its copy may take.
     copy_timeout_ns: u64 = 10 * std.time.ns_per_min,
+    /// At most `network.max_watched` - 2 (the listener and the wakeup).
     max_replicas: usize = 16,
 };
 
 pub const Server = struct {
     allocator: Allocator,
-    /// For the copies' files.
+    /// For the copies' files and the worker's lock.
     io: Io,
     clock: Clock,
     network: Network,
     options: Options,
-    /// The master's last LSN, raised by each commit.
-    signal: Signal = .{},
-    /// The accept thread's store, which each replica's store shares.
+    /// The loop's store, which the worker's shares.
     store: KeyValueStore,
     listener: Listener,
-    accept_thread: ?std.Thread = null,
-    lock: SpinLock = .{},
-    /// Each replica served or just served, by its thread (under `lock`).
-    replicas: []Replica,
-    copies_made: std.atomic.Value(u64) = .init(0),
+    /// Raised by each commit, each copy made, and `stop`.
+    wakeup: Wakeup,
+    stopping: std.atomic.Value(bool) = .init(false),
+    loop_thread: ?std.Thread = null,
+    copier: Copier,
+    /// Each replica served, the loop's alone.
+    replicas: []?*Replica,
+    /// The copies asked for so far: each one's directory is numbered.
+    copies_asked: u64 = 0,
 
     const Replica = struct {
-        thread: ?std.Thread = null,
-        connection: ?Connection = null,
-        done: std.atomic.Value(bool) = .init(true),
+        connection: Connection,
+        session: MasterSession,
+        /// The session's inbox and outbox.
+        buffers: []u8,
+        /// What the connection was ready for at the last wait.
+        ready: Readiness = .{},
+        /// The copy asked for, or sent, for this replica.
+        copy_number: ?u64 = null,
+        copy_file: ?Io.File = null,
+        copy_reader: Io.File.Reader = undefined,
+        copy_buffer: [64 << 10]u8 = undefined,
     };
 
     /// Listens for replicas of the master `store` and starts accepting
     /// them. Set `commitListener` on the store that writes to the master.
-    pub fn start(allocator: Allocator, io: Io, clock: Clock, network: Network, store: *KeyValueStore, options: Options) !*Server {
-        const state = try store.changeLogState() orelse return error.NotMaster;
+    pub fn start(allocator: Allocator, io: Io, clock: Clock, net: Network, store: *KeyValueStore, options: Options) !*Server {
+        std.debug.assert(options.max_replicas + 2 <= network.max_watched);
+        if (try store.changeLogState() == null) return error.NotMaster;
         const self = try allocator.create(Server);
         errdefer allocator.destroy(self);
-        const replicas = try allocator.alloc(Replica, options.max_replicas);
+        const replicas = try allocator.alloc(?*Replica, options.max_replicas);
         errdefer allocator.free(replicas);
-        @memset(replicas, .{});
+        @memset(replicas, null);
         var shared = try store.share();
         errdefer shared.deinit();
-        const listener = try network.listen(options.address);
+        var copier_store = try store.share();
+        errdefer copier_store.deinit();
+        const listener = try net.listen(options.address);
         errdefer listener.close();
+        const wakeup = try net.wakeup();
+        errdefer wakeup.close();
         self.* = .{
             .allocator = allocator,
             .io = io,
             .clock = clock,
-            .network = network,
+            .network = net,
             .options = options,
-            .signal = .{ .value = state.next_lsn - 1 },
             .store = shared,
             .listener = listener,
+            .wakeup = wakeup,
+            .copier = .{ .allocator = allocator, .io = io, .store = copier_store, .wakeup = wakeup, .copies_directory = options.copies_directory },
             .replicas = replicas,
         };
-        self.accept_thread = try std.Thread.spawn(.{}, acceptReplicas, .{self});
+        try self.copier.start();
+        errdefer self.copier.stop();
+        self.loop_thread = try std.Thread.spawn(.{}, run, .{self});
         return self;
     }
 
     /// Stops every thread, closes every connection and frees the server.
     /// Unset the `commitListener` first: it points to the server.
     pub fn stop(self: *Server) void {
-        self.clock.stop(&self.signal);
-        self.listener.shutdown();
-        if (self.accept_thread) |thread| thread.join();
-        self.lock.lock();
-        for (self.replicas) |replica| if (replica.connection) |connection| connection.shutdown();
-        self.lock.unlock();
-        for (self.replicas) |replica| if (replica.thread) |thread| thread.join();
+        self.stopping.store(true, .release);
+        self.wakeup.raise();
+        if (self.loop_thread) |thread| thread.join();
+        self.copier.stop();
+        self.copier.deinit();
         self.listener.close();
+        self.wakeup.close();
         self.store.deinit();
         self.allocator.free(self.replicas);
         self.allocator.destroy(self);
     }
 
     /// Where the server listens (the port chosen, if asked to choose).
-    pub fn address(self: *Server, buffer: *[@import("network.zig").max_address_bytes]u8) []const u8 {
+    pub fn address(self: *Server, buffer: *[network.max_address_bytes]u8) []const u8 {
         return self.listener.address(buffer);
     }
 
@@ -124,152 +139,288 @@ pub const Server = struct {
     }
 
     fn committed(context: *anyopaque, lsn: u64) void {
+        _ = lsn;
         const self: *Server = @ptrCast(@alignCast(context));
-        self.clock.raise(&self.signal, lsn);
+        self.wakeup.raise();
+    }
+
+    fn run(self: *Server) void {
+        defer for (self.replicas) |*slot| if (slot.*) |replica| self.release(slot, replica);
+        var watched: [network.max_watched]Watched = undefined;
+        // The replica each watched connection is of, from `watched[2]` on.
+        var watched_slots: [network.max_watched]usize = undefined;
+        while (!self.stopping.load(.acquire)) {
+            const now = self.clock.now();
+            var deadline: Instant = std.math.maxInt(Instant);
+            watched[0] = .{ .source = .{ .listener = self.listener }, .wanted = .{ .readable = true } };
+            watched[1] = .{ .source = .{ .wakeup = self.wakeup }, .wanted = .{ .readable = true } };
+            var count: usize = 2;
+            for (self.replicas, 0..) |*slot, index| {
+                const replica = slot.* orelse continue;
+                self.serve(replica, now) catch |err| {
+                    log.info("a replica's conversation ended: {t}", .{err});
+                    self.release(slot, replica);
+                    continue;
+                };
+                if (replica.session.finished()) {
+                    self.release(slot, replica);
+                    continue;
+                }
+                if (replica.session.expired(now)) {
+                    log.info("a replica was let go: silent for too long", .{});
+                    self.release(slot, replica);
+                    continue;
+                }
+                deadline = @min(deadline, replica.session.deadline());
+                watched[count] = .{ .source = .{ .connection = replica.connection }, .wanted = .{
+                    .readable = replica.session.inbox.unfilled().len > 0,
+                    .writable = replica.session.outbox.unsent().len > 0,
+                } };
+                watched_slots[count] = index;
+                count += 1;
+            }
+            const timeout: ?u64 = if (deadline == std.math.maxInt(Instant)) null else deadline -| now;
+            self.network.wait(watched[0..count], timeout) catch |err| {
+                log.warn("waiting on the network failed: {t}", .{err});
+                continue;
+            };
+            for (watched[2..count], watched_slots[2..count]) |one, index| self.replicas[index].?.ready = one.ready;
+            if (watched[1].ready.readable) {
+                self.wakeup.clear();
+                self.takeCopies();
+            }
+            if (watched[0].ready.readable) self.acceptReplicas();
+        }
+    }
+
+    /// Moves `replica`'s conversation on at `now`: what it received, what
+    /// to send.
+    fn serve(self: *Server, replica: *Replica, now: Instant) !void {
+        const session = &replica.session;
+        if (replica.ready.readable) {
+            while (session.inbox.unfilled().len > 0) {
+                const count = replica.connection.receive(session.inbox.unfilled()) catch |err| switch (err) {
+                    error.WouldBlock => break,
+                    error.Closed => return error.ConnectionClosed,
+                };
+                session.received(count, now);
+                while (try session.next(&self.store)) |event| switch (event) {
+                    .make_copy => try self.askCopy(replica),
+                };
+            }
+        }
+        replica.ready = .{};
+        while (true) {
+            try session.pump(&self.store, now);
+            if (session.state != .sending_copy) self.closeCopy(replica);
+            const unsent = session.outbox.unsent();
+            if (unsent.len == 0) return;
+            const count = replica.connection.send(unsent) catch |err| switch (err) {
+                error.WouldBlock => return,
+                error.Closed => return error.ConnectionClosed,
+            };
+            session.sent(count, now);
+        }
     }
 
     fn acceptReplicas(self: *Server) void {
         while (true) {
-            const connection = self.listener.accept() catch |err| switch (err) {
-                error.ListenerShutDown => return,
-                else => {
-                    log.warn("accepting a replica failed: {t}", .{err});
-                    continue;
-                },
-            };
-            const slot = self.freeSlot() orelse {
+            const connection = self.listener.accept() catch |err| {
+                log.warn("accepting a replica failed: {t}", .{err});
+                return;
+            } orelse return;
+            const slot = for (self.replicas) |*slot| {
+                if (slot.* == null) break slot;
+            } else {
                 log.warn("a replica was turned away: {d} are served already", .{self.replicas.len});
                 connection.close();
                 continue;
             };
-            const replica = &self.replicas[slot];
-            var store = self.store.share() catch {
+            slot.* = self.newReplica(connection) catch {
                 connection.close();
                 continue;
             };
-            self.lock.lock();
-            replica.connection = connection;
-            replica.done.store(false, .release);
-            self.lock.unlock();
-            replica.thread = std.Thread.spawn(.{}, serveReplica, .{ self, replica, store }) catch {
-                self.release(replica);
-                store.deinit();
+        }
+    }
+
+    fn newReplica(self: *Server, connection: Connection) !*Replica {
+        const replica = try self.allocator.create(Replica);
+        errdefer self.allocator.destroy(replica);
+        const buffers = try self.allocator.alloc(u8, 2 * protocol.max_frame_bytes);
+        replica.* = .{
+            .connection = connection,
+            .session = .init(buffers[0..protocol.max_frame_bytes], buffers[protocol.max_frame_bytes..], .{
+                .token = self.options.token,
+                .heartbeat_ns = self.options.heartbeat_ns,
+                .timeout_ns = self.options.timeout_ns,
+                .copy_timeout_ns = self.options.copy_timeout_ns,
+            }, self.clock.now()),
+            .buffers = buffers,
+        };
+        return replica;
+    }
+
+    /// Closes `replica`'s connection and frees it and its copy.
+    fn release(self: *Server, slot: *?*Replica, replica: *Replica) void {
+        self.closeCopy(replica);
+        replica.connection.close();
+        replica.session.deinit(self.store.allocator);
+        self.allocator.free(replica.buffers);
+        self.allocator.destroy(replica);
+        slot.* = null;
+    }
+
+    fn askCopy(self: *Server, replica: *Replica) !void {
+        replica.copy_number = self.copies_asked;
+        self.copies_asked += 1;
+        try self.copier.ask(replica.copy_number.?);
+    }
+
+    /// Hands each copy the worker made to the replica that asked for it.
+    fn takeCopies(self: *Server) void {
+        var made = self.copier.take();
+        defer made.deinit(self.allocator);
+        for (made.items) |copy| {
+            const replica = for (self.replicas) |slot| {
+                const replica = slot orelse continue;
+                if (replica.copy_number == copy.number) break replica;
+            } else {
+                // Its replica is gone.
+                self.copier.deleteCopy(copy.number);
+                continue;
+            };
+            if (copy.failed) {
+                log.warn("making a copy for a replica failed", .{});
+                self.release(self.slotOf(replica), replica);
+                continue;
+            }
+            self.openCopy(replica) catch |err| {
+                log.warn("opening a copy for a replica failed: {t}", .{err});
+                self.release(self.slotOf(replica), replica);
                 continue;
             };
         }
     }
 
-    /// A slot whose thread is done, joined.
-    fn freeSlot(self: *Server) ?usize {
-        for (self.replicas, 0..) |*replica, slot| {
-            if (!replica.done.load(.acquire)) continue;
-            if (replica.thread) |thread| thread.join();
-            replica.thread = null;
-            return slot;
-        }
-        return null;
+    fn slotOf(self: *Server, replica: *Replica) *?*Replica {
+        for (self.replicas) |*slot| if (slot.* == replica) return slot;
+        unreachable;
     }
 
-    /// Takes `replica`'s connection from those `stop` shuts down, and
-    /// closes it.
-    fn release(self: *Server, replica: *Replica) void {
-        self.lock.lock();
-        const connection = replica.connection.?;
-        replica.connection = null;
-        self.lock.unlock();
-        connection.close();
-        replica.done.store(true, .release);
-    }
-
-    fn serveReplica(self: *Server, replica: *Replica, store_shared: KeyValueStore) void {
-        var store = store_shared;
-        defer store.deinit();
-        defer self.release(replica);
-        var watchdog: Watchdog = .{ .clock = self.clock, .connection = replica.connection.?, .timeout_ns = self.options.timeout_ns };
-        watchdog.start() catch return;
-        defer watchdog.stop();
-        self.converse(&store, replica.connection.?, &watchdog) catch |err| switch (err) {
-            error.Stopped => {},
-            else => log.info("a replica's conversation ended: {t}", .{err}),
-        };
-    }
-
-    fn converse(self: *Server, store: *KeyValueStore, connection: Connection, watchdog: *Watchdog) !void {
-        const reader = connection.reader();
-        const writer = connection.writer();
-        const hello = switch (try protocol.read(reader)) {
-            .hello => |hello| hello,
-            else => return error.UnexpectedMessage,
-        };
-        watchdog.fed();
-        var answer = try master.answer(store, hello, self.options.token);
-        if (answer == .snapshot) {
-            try self.sendCopy(store, writer, watchdog);
-            // The replica loads the copy before it acks.
-            watchdog.allow(self.options.copy_timeout_ns);
-            const acked = switch (try protocol.read(reader)) {
-                .ack => |lsn| lsn,
-                else => return error.UnexpectedMessage,
-            };
-            answer = try master.resumeFrom(store, acked);
-            // Its log moved past the copy meanwhile: the replica comes
-            // back for another.
-            if (answer != .stream) return error.CopyOutdated;
-        } else {
-            switch (answer) {
-                .refused => |reason| try protocol.write(writer, .{ .refused = reason }),
-                .stream => |first| try protocol.write(writer, .{ .stream = first }),
-                .snapshot => unreachable,
-            }
-            try writer.flush();
-            watchdog.fed();
-        }
-        var next = switch (answer) {
-            .stream => |first| first,
-            else => return,
-        };
-        try self.stream(store, writer, watchdog, &next);
-    }
-
-    fn sendCopy(self: *Server, store: *KeyValueStore, writer: *Io.Writer, watchdog: *Watchdog) !void {
+    fn openCopy(self: *Server, replica: *Replica) !void {
         var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-        const directory = try std.fmt.bufPrint(&path_buffer, "{s}/copy-{d}", .{ self.options.copies_directory, self.copies_made.fetchAdd(1, .monotonic) });
+        const path = try std.fmt.bufPrint(&path_buffer, "{s}/copy-{d}/{s}", .{ self.options.copies_directory, replica.copy_number.?, KeyValueStore.data_file_name });
+        const file = try Io.Dir.cwd().openFile(self.io, path, .{});
+        replica.copy_file = file;
+        replica.copy_reader = file.reader(self.io, &replica.copy_buffer);
+        replica.session.copyMade(&replica.copy_reader.interface);
+    }
+
+    /// Closes and deletes `replica`'s copy once sent, or once the replica
+    /// is gone. A copy still being made is deleted when the worker is done.
+    fn closeCopy(self: *Server, replica: *Replica) void {
+        const file = replica.copy_file orelse return;
+        file.close(self.io);
+        replica.copy_file = null;
+        self.copier.deleteCopy(replica.copy_number.?);
+        replica.copy_number = null;
+    }
+};
+
+/// The worker that makes copies of the master's database, one at a time,
+/// each in directory `copy-N` of `copies_directory`; the loop asks for
+/// them and takes them when the wakeup tells it some are made.
+const Copier = struct {
+    allocator: Allocator,
+    io: Io,
+    store: KeyValueStore,
+    wakeup: Wakeup,
+    copies_directory: []const u8,
+    thread: ?std.Thread = null,
+    mutex: Io.Mutex = .init,
+    condition: Io.Condition = .init,
+    /// Under `mutex`.
+    asked: std.ArrayList(u64) = .empty,
+    made: std.ArrayList(Made) = .empty,
+    stopping: bool = false,
+
+    const Made = struct { number: u64, failed: bool };
+
+    fn start(self: *Copier) !void {
+        self.thread = try std.Thread.spawn(.{}, run, .{self});
+    }
+
+    /// Waits for the copy being made, if one is.
+    fn stop(self: *Copier) void {
+        self.mutex.lockUncancelable(self.io);
+        self.stopping = true;
+        self.condition.broadcast(self.io);
+        self.mutex.unlock(self.io);
+        if (self.thread) |thread| thread.join();
+        self.thread = null;
+    }
+
+    /// Once stopped: deletes the copies made and not taken.
+    fn deinit(self: *Copier) void {
+        for (self.made.items) |made| self.deleteCopy(made.number);
+        self.made.deinit(self.allocator);
+        self.asked.deinit(self.allocator);
+        self.store.deinit();
+    }
+
+    fn ask(self: *Copier, number: u64) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        try self.asked.append(self.allocator, number);
+        self.condition.signal(self.io);
+    }
+
+    /// The copies made since the last take: the caller's to free.
+    fn take(self: *Copier) std.ArrayList(Made) {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        const made = self.made;
+        self.made = .empty;
+        return made;
+    }
+
+    fn run(self: *Copier) void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        while (true) {
+            while (!self.stopping and self.asked.items.len == 0) self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.stopping) return;
+            const number = self.asked.orderedRemove(0);
+            self.mutex.unlock(self.io);
+            const failed = if (self.makeCopy(number)) false else |err| blk: {
+                log.warn("making copy {d} failed: {t}", .{ number, err });
+                break :blk true;
+            };
+            self.mutex.lockUncancelable(self.io);
+            // The loop is gone once stopping: `Server.stop` deletes it.
+            self.made.append(self.allocator, .{ .number = number, .failed = failed }) catch {
+                self.mutex.unlock(self.io);
+                self.deleteCopy(number);
+                self.mutex.lockUncancelable(self.io);
+                continue;
+            };
+            self.wakeup.raise();
+        }
+    }
+
+    fn makeCopy(self: *Copier, number: u64) !void {
+        var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const directory = try std.fmt.bufPrint(&path_buffer, "{s}/copy-{d}", .{ self.copies_directory, number });
         const cwd = Io.Dir.cwd();
         cwd.deleteTree(self.io, directory) catch {};
         try cwd.createDirPath(self.io, directory);
-        defer cwd.deleteTree(self.io, directory) catch {};
-        watchdog.allow(self.options.copy_timeout_ns);
-        try store.copyDatabase(directory);
-        watchdog.fed();
-        var file_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-        const file_path = try std.fmt.bufPrint(&file_path_buffer, "{s}/{s}", .{ directory, KeyValueStore.data_file_name });
-        var file = try cwd.openFile(self.io, file_path, .{});
-        defer file.close(self.io);
-        var buffer: [64 << 10]u8 = undefined;
-        var file_reader = file.reader(self.io, &buffer);
-        var feeding = watchdog.feedingWriter(writer);
-        try master.sendSnapshot(&feeding.interface, &file_reader.interface);
-        try writer.flush();
-        watchdog.fed();
+        errdefer cwd.deleteTree(self.io, directory) catch {};
+        try self.store.copyDatabase(directory);
     }
 
-    /// Sends the change sets from `next.*` as they are committed, and a
-    /// heartbeat each `heartbeat_ns` with none, until stopped.
-    fn stream(self: *Server, store: *KeyValueStore, writer: *Io.Writer, watchdog: *Watchdog, next: *u64) !void {
-        var deadline = self.clock.now();
-        while (true) {
-            if (try master.sendChangeSets(store, writer, next) > 0) {
-                try writer.flush();
-                watchdog.fed();
-                deadline = self.clock.now() + self.options.heartbeat_ns;
-            }
-            if (self.clock.now() >= deadline) {
-                try master.sendHeartbeat(store, writer);
-                try writer.flush();
-                watchdog.fed();
-                deadline = self.clock.now() + self.options.heartbeat_ns;
-            }
-            _ = self.clock.wait(&self.signal, next.* - 1, deadline) orelse return error.Stopped;
-        }
+    fn deleteCopy(self: *Copier, number: u64) void {
+        var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
+        const directory = std.fmt.bufPrint(&path_buffer, "{s}/copy-{d}", .{ self.copies_directory, number }) catch return;
+        Io.Dir.cwd().deleteTree(self.io, directory) catch {};
     }
 };
