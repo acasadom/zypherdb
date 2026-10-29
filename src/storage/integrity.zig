@@ -398,15 +398,14 @@ pub const Checker = struct {
 };
 
 /// A counter, the format, the schema version, or an entry of the engine's
-/// catalog of its tables (LMDB keeps the names of `#nodes`,
-/// `#relationships` and `#changes` in the main table, with their trailing
-/// 0x00).
+/// catalog of its tables (LMDB keeps the names of `#nodes` and
+/// `#relationships` in the main table, with their trailing 0x00).
 fn isMetadataKey(key: []const u8) bool {
     for ([_][]const u8{ key_encoding.counter_key, key_encoding.relationship_counter_key, key_encoding.format_key, fulltext.schema_version_key, fulltext.index_id_key }) |metadata| {
         if (std.mem.eql(u8, key, metadata)) return true;
     }
     const name = if (std.mem.endsWith(u8, key, "\x00")) key[0 .. key.len - 1] else key;
-    return std.mem.eql(u8, name, "#nodes") or std.mem.eql(u8, name, "#relationships") or std.mem.eql(u8, name, "#changes");
+    return std.mem.eql(u8, name, "#nodes") or std.mem.eql(u8, name, "#relationships");
 }
 
 fn isCounter(marker: u8) bool {

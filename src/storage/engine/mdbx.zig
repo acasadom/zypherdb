@@ -82,7 +82,6 @@ pub const Environment = struct {
         if (c.mdbx_dbi_open(transaction, null, c.MDBX_DB_DEFAULTS, &tables[@backingInt(Table.main)]) != c.MDBX_SUCCESS) return error.OpenFailed;
         if (c.mdbx_dbi_open(transaction, "#nodes", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@backingInt(Table.nodes)]) != c.MDBX_SUCCESS) return error.OpenFailed;
         if (c.mdbx_dbi_open(transaction, "#relationships", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@backingInt(Table.relationships)]) != c.MDBX_SUCCESS) return error.OpenFailed;
-        if (c.mdbx_dbi_open(transaction, "#changes", c.MDBX_CREATE, &tables[@backingInt(Table.changes)]) != c.MDBX_SUCCESS) return error.OpenFailed;
         return tables;
     }
 
@@ -98,13 +97,6 @@ pub const Environment = struct {
         const rc = c.mdbx_env_sync_ex(self.handle, true, false);
         // MDBX_RESULT_TRUE (-1): there was nothing to write.
         if (rc != c.MDBX_SUCCESS and rc != -1) return error.WriteFailed;
-    }
-
-    pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
-        // libmdbx copies to a file: the data file of a database in `directory`.
-        const c_path = std.fs.path.joinZ(allocator, &.{ directory, "mdbx.dat" }) catch return error.OutOfMemory;
-        defer allocator.free(c_path);
-        if (c.mdbx_env_copy(self.handle, c_path.ptr, c.MDBX_CP_COMPACT) != c.MDBX_SUCCESS) return error.WriteFailed;
     }
 
     pub fn beginRead(self: *Environment) Error!Transaction {

@@ -8,10 +8,7 @@
 //!     `open(allocator, path, Options) Error!Environment`, `close()`,
 //!     `sync() Error!void`, `beginRead() Error!Transaction`,
 //!     `endRead(Transaction)` (ends a read transaction, perhaps keeping it
-//!     to be begun again cheaply), `beginWrite() Error!Transaction`,
-//!     `copy(allocator, directory) Error!void` (writes a compacted copy of
-//!     the database as of one moment, writers not blocked, into `directory`,
-//!     which must exist and hold no database; `open` opens it).
+//!     to be begun again cheaply), `beginWrite() Error!Transaction`.
 //! - `Transaction`: a snapshot (read) or the single writer (write).
 //!     `commit() Error!void` (a failed commit is aborted), `abort()` (a
 //!     read transaction ends better with `Environment.endRead`),
@@ -51,20 +48,17 @@ pub const Error = error{
 };
 
 /// The tables of a database. `main` holds every key the graph scans by
-/// prefix (indexes, adjacency, metadata); `nodes` and `relationships` hold
-/// records by id; `changes` holds the change log replicas follow
-/// (change_log.zig), which no graph read sees.
+/// prefix (indexes, adjacency, metadata); the others hold records by id.
 pub const Table = enum {
     main,
     nodes,
     relationships,
-    changes,
 
     pub const count = @typeInfo(Table).@"enum".field_names.len;
 
     /// True for the tables keyed by a u64 id.
     pub fn hasIntegerKeys(table: Table) bool {
-        return table == .nodes or table == .relationships;
+        return table != .main;
     }
 };
 
@@ -92,7 +86,7 @@ pub const Options = struct { durability: Durability = .full };
 pub fn check(comptime Engine: type) void {
     const required = .{
         .{ Engine, &.{ "Environment", "Transaction", "Cursor" } },
-        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "copy" } },
+        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite" } },
         .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },
     };
@@ -107,5 +101,4 @@ test "the integer tables are the record tables" {
     try std.testing.expect(!Table.main.hasIntegerKeys());
     try std.testing.expect(Table.nodes.hasIntegerKeys());
     try std.testing.expect(Table.relationships.hasIntegerKeys());
-    try std.testing.expect(!Table.changes.hasIntegerKeys());
 }

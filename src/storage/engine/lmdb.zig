@@ -69,7 +69,6 @@ pub const Environment = struct {
         if (c.mdb_dbi_open(transaction, null, 0, &tables[@backingInt(Table.main)]) != 0) return error.OpenFailed;
         if (c.mdb_dbi_open(transaction, "#nodes", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@backingInt(Table.nodes)]) != 0) return error.OpenFailed;
         if (c.mdb_dbi_open(transaction, "#relationships", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@backingInt(Table.relationships)]) != 0) return error.OpenFailed;
-        if (c.mdb_dbi_open(transaction, "#changes", c.MDB_CREATE, &tables[@backingInt(Table.changes)]) != 0) return error.OpenFailed;
         return tables;
     }
 
@@ -83,12 +82,6 @@ pub const Environment = struct {
     /// each commit).
     pub fn sync(self: *Environment) Error!void {
         if (c.mdb_env_sync(self.handle, 1) != 0) return error.WriteFailed;
-    }
-
-    pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
-        const c_path = allocator.dupeSentinel(u8, directory, 0) catch return error.OutOfMemory;
-        defer allocator.free(c_path);
-        if (c.mdb_env_copy2(self.handle, c_path.ptr, c.MDB_CP_COMPACT) != 0) return error.WriteFailed;
     }
 
     pub fn beginRead(self: *Environment) Error!Transaction {

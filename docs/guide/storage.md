@@ -8,14 +8,12 @@ type, or debug a traversal, start here. The encodings live in `src/storage/key_e
 ## The model: everything is a key
 
 There are **no tables and no schema**. The storage engine (LMDB by default, or libmdbx with
-`-Dstorage-engine=mdbx`; see [the engines](#the-storage-engines)) keeps four B+trees in one file:
+`-Dstorage-engine=mdbx`; see [the engines](#the-storage-engines)) keeps three B+trees in one file:
 
 - the main one holds every fact as a key: edges, indexes, edge properties, counters;
 - `#nodes` holds the node records, keyed by the node id as a native integer (an integer-key table);
 - `#relationships` holds the relationship records (`src | dst | type`), keyed the same way by the
-  relationship's id;
-- `#changes` holds the change log replicas follow, empty unless it is started (see
-  [the change log](#the-change-log)). No graph read sees it.
+  relationship's id.
 
 The engine iterates keys in **lexicographic byte order**, which is the whole trick: the layout is chosen
 so that *the order you get for free is the order you want*.
@@ -366,52 +364,6 @@ aborted one leaves it as it was.
 - An iterator returned by `scanPrefix` borrows its transaction; it must be `deinit`'d **before** the
   transaction ends (the cursor belongs to it). The executor scopes every iterator to the operator
   call that opened it, which is what makes this safe.
-
-## The change log
-
-Replicas follow a database by applying, in order, what each of its write transactions changed
-(`change_log.zig`). The log keeps the key-value writes themselves, not the queries that made them:
-a query may not give the same result twice (`randomUUID()`, `timestamp()`, the order behind a
-`LIMIT`), its writes do. Indexes, full-text postings, the schema and the id counters are keys like
-any other, so they follow with no special case.
-
-- It is off until `KeyValueStore.startChangeLog`, and then stays on for the database. Off, a write
-  costs one branch more (and the first write transaction after opening reads whether it is on).
-- On, `KeyValueStore` records each `put` and delete of a write transaction (on every table but
-  `#changes`). At commit, the writes become the transaction's change set, under the next log
-  sequence number (LSN, from 1), **in the same transaction**: the log and the data never disagree.
-  A transaction that changed nothing, or was aborted, takes no LSN.
-- Keys of `#changes`: `lsn (u64) | chunk (u32)`, big-endian, for each part of a change set, which
-  is cut into chunks of 1 MiB as it is written (a large transaction is never held in memory
-  whole); and twelve zero bytes for the log's state (the next LSN, the oldest kept, the bytes kept).
-- A change set is its writes in order: `0x01 | table | key length | key | value length | value`
-  for a put, `0x02 | table | key length | key` for a delete (lengths as u32, big-endian). Keys of
-  the integer-key tables are native integers, so a replica must have the same byte order.
-- The log keeps up to `change_log_limit` bytes (512 MiB by default). Past it, the oldest change
-  sets go at commit, whether or not a replica has read them, but never the newest one: a replica
-  that missed one starts again from a copy of the database.
-
-A replica applies its master's change sets with `KeyValueStore.applyChangeSet(lsn, bytes)`, each in
-a write transaction of its own that also stores its LSN (key `replica` in `#changes`). A crash
-therefore loses an applied change set whole or keeps it whole, and the replica resumes after the
-last LSN it stored (`appliedLsn`):
-
-- a change set it has already applied (sent again after a reconnection) is skipped;
-- one that does not follow the last applied fails with `ChangeSetOutOfOrder`, and so does one that
-  is not a change set (`MalformedChangeSet`); either leaves the replica as it was;
-- the first change set applied makes the database a replica, which refuses every other write
-  (`ReadOnlyReplica`), and a database whose log is started (a master) applies none.
-
-A replica starts as a copy of its master: `KeyValueStore.copyDatabase(directory)` writes a
-compacted copy as of one moment (`mdb_env_copy2` / `mdbx_env_copy`; writers go on meanwhile), and
-`becomeReplica` on the copy drops the copied log and stores, as its applied LSN, the last change set
-that log holds. The copy needs no LSN taken alongside it, so nothing races with the writers. Starting
-the log gives the master a random 16-byte id (`databaseId`, key `database` in `#changes`), which
-its copies keep: a replica follows only the master it was copied from.
-
-Nothing cached goes stale on a replica: the record cache lives one read transaction, the schema
-definitions are kept by schema version, and a prepared statement's plan is checked against counts.
-The version and the counts are keys, so they change with the change sets.
 
 ## Checking integrity
 
