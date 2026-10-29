@@ -1,7 +1,7 @@
 //! The network replication runs on (replication/network.zig), over TCP on
-//! the loopback: what one end writes the other reads, a read waits at most
-//! the read timeout, and a shut down listener or connection wakes the
-//! thread blocked on it.
+//! the loopback: what one end writes the other reads, a shut down listener
+//! or connection wakes the thread blocked on it, and a watchdog shuts down
+//! a connection that went quiet.
 
 const std = @import("std");
 const testing = std.testing;
@@ -12,6 +12,8 @@ const protocol = zypherdb.replication_protocol;
 const Tcp = network_module.Tcp;
 const Connection = network_module.Connection;
 const Listener = network_module.Listener;
+const Watchdog = zypherdb.replication_watchdog.Watchdog;
+const SystemClock = zypherdb.replication_clock.SystemClock;
 
 const loopback = "127.0.0.1:0";
 
@@ -70,13 +72,6 @@ test "a frame bigger than a read is read whole" {
     try testing.expectEqualSlices(u8, part, (try protocol.read(pair.server.reader())).snapshot_part);
 }
 
-test "a read fails once the read timeout passes" {
-    var tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator, .read_timeout_ns = 20 * std.time.ns_per_ms };
-    const pair = try Pair.open(&tcp);
-    defer pair.close();
-    try testing.expectError(error.ReadFailed, protocol.read(pair.server.reader()));
-}
-
 test "a read ends when the other end closes" {
     var tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator };
     const listener = try tcp.network().listen(loopback);
@@ -124,4 +119,63 @@ test "connecting where no one listens fails" {
     listener.close();
     try testing.expectError(error.NetworkFailed, tcp.network().connect(address));
     try testing.expectError(error.NetworkFailed, tcp.network().connect("no port"));
+}
+
+/// Whether a frame written at one end of `pair` is read at the other.
+fn stillOpen(pair: Pair) bool {
+    protocol.write(pair.client.writer(), .{ .ack = 1 }) catch return false;
+    pair.client.writer().flush() catch return false;
+    const message = protocol.read(pair.server.reader()) catch return false;
+    return message == .ack;
+}
+
+test "a watchdog shuts down a connection quiet for longer than its timeout" {
+    var tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator };
+    const pair = try Pair.open(&tcp);
+    defer pair.close();
+    var system: SystemClock = .{ .io = testing.io };
+    const clock = system.clock();
+    var watchdog: Watchdog = .{ .clock = clock, .connection = pair.server, .timeout_ns = 30 * std.time.ns_per_ms };
+    try watchdog.start();
+    defer watchdog.stop();
+    const start = clock.now();
+    if (protocol.read(pair.server.reader())) |_| return error.TestUnexpectedResult else |_| {}
+    try testing.expect(clock.now() >= start + 30 * std.time.ns_per_ms);
+}
+
+test "a watchdog fed in time, or allowed longer, leaves the connection open" {
+    var tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator };
+    const pair = try Pair.open(&tcp);
+    defer pair.close();
+    var system: SystemClock = .{ .io = testing.io };
+    var watchdog: Watchdog = .{ .clock = system.clock(), .connection = pair.server, .timeout_ns = 50 * std.time.ns_per_ms };
+    try watchdog.start();
+    defer watchdog.stop();
+    for (0..10) |_| {
+        try testing.io.sleep(.fromMilliseconds(10), .awake);
+        watchdog.fed();
+    }
+    try testing.expect(stillOpen(pair));
+    watchdog.allow(400 * std.time.ns_per_ms);
+    try testing.io.sleep(.fromMilliseconds(120), .awake);
+    try testing.expect(stillOpen(pair));
+}
+
+test "a feeding writer feeds the watchdog with each write" {
+    var tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator };
+    const pair = try Pair.open(&tcp);
+    defer pair.close();
+    var system: SystemClock = .{ .io = testing.io };
+    var watchdog: Watchdog = .{ .clock = system.clock(), .connection = pair.server, .timeout_ns = 50 * std.time.ns_per_ms };
+    try watchdog.start();
+    defer watchdog.stop();
+    var sink: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer sink.deinit();
+    var feeding = watchdog.feedingWriter(&sink.writer);
+    for (0..10) |_| {
+        try testing.io.sleep(.fromMilliseconds(10), .awake);
+        try feeding.interface.writeAll("part");
+    }
+    try testing.expectEqualStrings("part" ++ "part" ++ "part" ++ "part" ++ "part" ++ "part" ++ "part" ++ "part" ++ "part" ++ "part", sink.written());
+    try testing.expect(stillOpen(pair));
 }

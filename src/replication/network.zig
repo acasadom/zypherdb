@@ -17,9 +17,9 @@ pub const Error = error{ NetworkFailed, OutOfMemory };
 /// The longest address `Listener.address` writes.
 pub const max_address_bytes = 64;
 
-/// A byte stream to the other end. Its reader fails (`ReadFailed`) when
-/// the other end is gone, nothing came within the network's read timeout,
-/// or the connection was shut down.
+/// A byte stream to the other end. Its reader fails when the other end is
+/// gone or the connection was shut down. A read waits as long as it takes:
+/// timeouts are the caller's (watchdog.zig), on its clock.
 pub const Connection = struct {
     context: *anyopaque,
     vtable: *const VTable,
@@ -112,8 +112,6 @@ pub const Network = struct {
 pub const Tcp = struct {
     io: Io,
     allocator: Allocator,
-    /// A read that waits longer fails; null waits forever.
-    read_timeout_ns: ?u64 = null,
 
     const write_buffer_bytes = 64 << 10;
 
@@ -150,7 +148,7 @@ pub const Tcp = struct {
         opened.* = .{
             .tcp = self,
             .stream = stream,
-            .reader = .{ .vtable = &.{ .stream = TcpConnection.streamRead, .readVec = TcpConnection.readVec }, .buffer = read_buffer, .seek = 0, .end = 0 },
+            .reader = stream.reader(self.io, read_buffer),
             .writer = stream.writer(self.io, write_buffer),
         };
         return opened.connection();
@@ -225,7 +223,7 @@ const TcpListener = struct {
 const TcpConnection = struct {
     tcp: *Tcp,
     stream: Io.net.Stream,
-    reader: Reader,
+    reader: Io.net.Stream.Reader,
     writer: Io.net.Stream.Writer,
     shut_down: std.atomic.Value(bool) = .init(false),
 
@@ -235,7 +233,7 @@ const TcpConnection = struct {
 
     fn readerOf(context: *anyopaque) *Reader {
         const self: *TcpConnection = @ptrCast(@alignCast(context));
-        return &self.reader;
+        return &self.reader.interface;
     }
 
     fn writerOf(context: *anyopaque) *Writer {
@@ -252,32 +250,8 @@ const TcpConnection = struct {
     fn close(context: *anyopaque) void {
         const self: *TcpConnection = @ptrCast(@alignCast(context));
         self.stream.close(self.tcp.io);
-        self.tcp.allocator.free(self.reader.buffer);
+        self.tcp.allocator.free(self.reader.interface.buffer);
         self.tcp.allocator.free(self.writer.interface.buffer);
         self.tcp.allocator.destroy(self);
-    }
-
-    fn streamRead(reader: *Reader, writer: *Writer, limit: Io.Limit) Reader.StreamError!usize {
-        const destination = limit.slice(try writer.writableSliceGreedy(1));
-        var data: [1][]u8 = .{destination};
-        const length = try readVec(reader, &data);
-        writer.advance(length);
-        return length;
-    }
-
-    /// Reads what came, waiting at most the network's read timeout.
-    fn readVec(reader: *Reader, data: [][]u8) Reader.Error!usize {
-        const self: *TcpConnection = @alignCast(@fieldParentPtr("reader", reader));
-        var vectors_buffer: [8][]u8 = undefined;
-        const vector_count, const data_size = try reader.writableVector(&vectors_buffer, data);
-        const timeout: Io.Timeout = if (self.tcp.read_timeout_ns) |ns| .{ .duration = .{ .raw = .fromNanoseconds(ns), .clock = .awake } } else .none;
-        const result = self.tcp.io.operateTimeout(.{ .net_read = .{ .socket_handle = self.stream.socket.handle, .data = vectors_buffer[0..vector_count] } }, timeout) catch return error.ReadFailed;
-        const read = result.net_read catch return error.ReadFailed;
-        if (read.data_len == 0) return error.EndOfStream;
-        if (read.data_len > data_size) {
-            reader.end += read.data_len - data_size;
-            return data_size;
-        }
-        return read.data_len;
     }
 };

@@ -4,11 +4,12 @@
 //! (woken by `commitListener`), and a heartbeat when none came for a while.
 //! It does not read while streaming: a replica only acks a copy.
 //!
-//! TEMPORARY, to be replaced: a thread per replica with blocking I/O. A
-//! replica that stops reading blocks its thread in a write (no write
-//! deadline), and the master never learns a replica's lag. The direction:
-//! one event-driven I/O thread, write deadlines, a bounded backlog per
-//! replica, acks read while streaming.
+//! TEMPORARY, to be replaced: two threads per replica (its own and its
+//! watchdog's) with blocking I/O. A replica that stops reading blocks its
+//! thread in a write until the watchdog lets it go (`timeout_ns`), and
+//! the master never learns a replica's lag. The direction: one
+//! event-driven I/O thread, deadlines checked in its loop, a bounded
+//! backlog per replica, acks read while streaming.
 
 const std = @import("std");
 const Io = std.Io;
@@ -22,6 +23,7 @@ const Network = @import("network.zig").Network;
 const Connection = @import("network.zig").Connection;
 const Listener = @import("network.zig").Listener;
 const SpinLock = @import("spin_lock.zig").SpinLock;
+const Watchdog = @import("watchdog.zig").Watchdog;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 
 const log = std.log.scoped(.replication);
@@ -35,6 +37,11 @@ pub const Options = struct {
     /// its own, deleted once sent.
     copies_directory: []const u8,
     heartbeat_ns: u64 = std.time.ns_per_s,
+    /// A replica that reads nothing sent, or sends nothing awaited, for
+    /// this long is let go (longer than `heartbeat_ns`).
+    timeout_ns: u64 = 5 * std.time.ns_per_s,
+    /// What making a copy, or a replica loading it, may take.
+    copy_timeout_ns: u64 = 10 * std.time.ns_per_min,
     max_replicas: usize = 16,
 };
 
@@ -178,22 +185,28 @@ pub const Server = struct {
         var store = store_shared;
         defer store.deinit();
         defer self.release(replica);
-        self.converse(&store, replica.connection.?) catch |err| switch (err) {
+        var watchdog: Watchdog = .{ .clock = self.clock, .connection = replica.connection.?, .timeout_ns = self.options.timeout_ns };
+        watchdog.start() catch return;
+        defer watchdog.stop();
+        self.converse(&store, replica.connection.?, &watchdog) catch |err| switch (err) {
             error.Stopped => {},
             else => log.info("a replica's conversation ended: {t}", .{err}),
         };
     }
 
-    fn converse(self: *Server, store: *KeyValueStore, connection: Connection) !void {
+    fn converse(self: *Server, store: *KeyValueStore, connection: Connection, watchdog: *Watchdog) !void {
         const reader = connection.reader();
         const writer = connection.writer();
         const hello = switch (try protocol.read(reader)) {
             .hello => |hello| hello,
             else => return error.UnexpectedMessage,
         };
+        watchdog.fed();
         var answer = try master.answer(store, hello, self.options.token);
         if (answer == .snapshot) {
-            try self.sendCopy(store, writer);
+            try self.sendCopy(store, writer, watchdog);
+            // The replica loads the copy before it acks.
+            watchdog.allow(self.options.copy_timeout_ns);
             const acked = switch (try protocol.read(reader)) {
                 .ack => |lsn| lsn,
                 else => return error.UnexpectedMessage,
@@ -209,44 +222,51 @@ pub const Server = struct {
                 .snapshot => unreachable,
             }
             try writer.flush();
+            watchdog.fed();
         }
         var next = switch (answer) {
             .stream => |first| first,
             else => return,
         };
-        try self.stream(store, writer, &next);
+        try self.stream(store, writer, watchdog, &next);
     }
 
-    fn sendCopy(self: *Server, store: *KeyValueStore, writer: *Io.Writer) !void {
+    fn sendCopy(self: *Server, store: *KeyValueStore, writer: *Io.Writer, watchdog: *Watchdog) !void {
         var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
         const directory = try std.fmt.bufPrint(&path_buffer, "{s}/copy-{d}", .{ self.options.copies_directory, self.copies_made.fetchAdd(1, .monotonic) });
         const cwd = Io.Dir.cwd();
         cwd.deleteTree(self.io, directory) catch {};
         try cwd.createDirPath(self.io, directory);
         defer cwd.deleteTree(self.io, directory) catch {};
+        watchdog.allow(self.options.copy_timeout_ns);
         try store.copyDatabase(directory);
+        watchdog.fed();
         var file_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
         const file_path = try std.fmt.bufPrint(&file_path_buffer, "{s}/{s}", .{ directory, KeyValueStore.data_file_name });
         var file = try cwd.openFile(self.io, file_path, .{});
         defer file.close(self.io);
         var buffer: [64 << 10]u8 = undefined;
         var file_reader = file.reader(self.io, &buffer);
-        try master.sendSnapshot(writer, &file_reader.interface);
+        var feeding = watchdog.feedingWriter(writer);
+        try master.sendSnapshot(&feeding.interface, &file_reader.interface);
         try writer.flush();
+        watchdog.fed();
     }
 
     /// Sends the change sets from `next.*` as they are committed, and a
     /// heartbeat each `heartbeat_ns` with none, until stopped.
-    fn stream(self: *Server, store: *KeyValueStore, writer: *Io.Writer, next: *u64) !void {
+    fn stream(self: *Server, store: *KeyValueStore, writer: *Io.Writer, watchdog: *Watchdog, next: *u64) !void {
         var deadline = self.clock.now();
         while (true) {
             if (try master.sendChangeSets(store, writer, next) > 0) {
                 try writer.flush();
+                watchdog.fed();
                 deadline = self.clock.now() + self.options.heartbeat_ns;
             }
             if (self.clock.now() >= deadline) {
                 try master.sendHeartbeat(store, writer);
                 try writer.flush();
+                watchdog.fed();
                 deadline = self.clock.now() + self.options.heartbeat_ns;
             }
             _ = self.clock.wait(&self.signal, next.* - 1, deadline) orelse return error.Stopped;

@@ -1,12 +1,12 @@
 //! A replica's replication thread: it connects to the master, holds the
 //! conversation of replica.zig with it (a copy first if the master says
 //! so, then the change sets as they come) and, when the conversation
-//! ends for any reason, connects again after a while. Reads that wait too
-//! long (the network's read timeout, a few heartbeats) end it too.
+//! ends for any reason, connects again after a while. A master silent for
+//! too long (`timeout_ns`, a few heartbeats) ends it too (watchdog.zig).
 //!
 //! TEMPORARY, to be replaced: every refusal is retried, the permanent ones
-//! (token, versions, another master) too, and the read timeout is not tied
-//! to the master's heartbeat.
+//! (token, versions, another master) too, the timeout is not tied to the
+//! master's heartbeat, and the watchdog is a thread of its own.
 
 const std = @import("std");
 const Io = std.Io;
@@ -19,6 +19,7 @@ const Signal = @import("clock.zig").Signal;
 const Network = @import("network.zig").Network;
 const Connection = @import("network.zig").Connection;
 const SpinLock = @import("spin_lock.zig").SpinLock;
+const Watchdog = @import("watchdog.zig").Watchdog;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 
 const log = std.log.scoped(.replication);
@@ -34,6 +35,11 @@ pub const Options = struct {
     /// the longest.
     first_retry_ns: u64 = 100 * std.time.ns_per_ms,
     longest_retry_ns: u64 = 5 * std.time.ns_per_s,
+    /// A master that sends nothing for this long is left (longer than its
+    /// heartbeat).
+    timeout_ns: u64 = 5 * std.time.ns_per_s,
+    /// What loading a copy may take.
+    copy_timeout_ns: u64 = 10 * std.time.ns_per_min,
 };
 
 pub const Follower = struct {
@@ -99,7 +105,7 @@ pub const Follower = struct {
     /// last followed it.
     pub fn lastRefusal(self: *Follower) ?protocol.Refusal {
         const reason = self.refusal.load(.acquire);
-        return if (reason == 0) null else @enumFromInt(reason);
+        return if (reason == 0) null else @fromBackingInt(@intCast(reason));
     }
 
     fn stopped(self: *Follower) bool {
@@ -132,38 +138,52 @@ pub const Follower = struct {
         }
         // A stop that came before the connection was held.
         if (self.stopped()) return error.Stopped;
+        var watchdog: Watchdog = .{ .clock = self.clock, .connection = connection, .timeout_ns = self.options.timeout_ns };
+        try watchdog.start();
+        defer watchdog.stop();
         const reader = connection.reader();
         const writer = connection.writer();
         const hello = try replica.hello(&self.store, self.options.token);
         try protocol.write(writer, .{ .hello = hello });
         try writer.flush();
-        switch (try replica.receiveAnswer(reader, hello.applied_lsn)) {
+        const answer = try replica.receiveAnswer(reader, hello.applied_lsn);
+        watchdog.fed();
+        switch (answer) {
             .refused => |reason| {
                 log.info("the master turned this replica away: {t}", .{reason});
-                self.refusal.store(@intFromEnum(reason), .release);
+                self.refusal.store(@backingInt(reason), .release);
                 return false;
             },
             .stream => {},
             .snapshot => {
-                const lsn = try self.loadCopy(reader);
+                const lsn = try self.loadCopy(reader, &watchdog);
                 try replica.sendAck(writer, lsn);
                 try writer.flush();
+                watchdog.fed();
                 self.clock.raise(&self.applied, lsn);
             },
         }
         self.refusal.store(0, .release);
         var receiver: replica.ChangeSetReceiver = .{};
         defer receiver.deinit(self.allocator);
-        while (true) switch (try receiver.receive(&self.store, try protocol.read(reader))) {
-            .part => {},
-            .change_set => |lsn| self.clock.raise(&self.applied, lsn),
-            .heartbeat => |last| self.master_lsn.store(last, .release),
-        };
+        while (true) {
+            const message = try protocol.read(reader);
+            // Applying a large change set may take long.
+            if (message == .change_set_part and message.change_set_part.final) watchdog.allow(self.options.copy_timeout_ns) else watchdog.fed();
+            switch (try receiver.receive(&self.store, message)) {
+                .part => {},
+                .change_set => |lsn| {
+                    watchdog.fed();
+                    self.clock.raise(&self.applied, lsn);
+                },
+                .heartbeat => |last| self.master_lsn.store(last, .release),
+            }
+        }
     }
 
     /// Receives the master's copy into a file and loads it; returns the
     /// LSN it holds.
-    fn loadCopy(self: *Follower, reader: *Io.Reader) !u64 {
+    fn loadCopy(self: *Follower, reader: *Io.Reader, watchdog: *Watchdog) !u64 {
         var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
         const directory = try std.fmt.bufPrint(&path_buffer, "{s}/copy-{d}", .{ self.options.copies_directory, self.copies_made });
         self.copies_made += 1;
@@ -178,9 +198,12 @@ pub const Follower = struct {
             defer file.close(self.io);
             var buffer: [64 << 10]u8 = undefined;
             var file_writer = file.writer(self.io, &buffer);
-            _ = try replica.receiveSnapshot(reader, &file_writer.interface);
+            // Fed by each part written.
+            var feeding = watchdog.feedingWriter(&file_writer.interface);
+            _ = try replica.receiveSnapshot(reader, &feeding.interface);
             try file_writer.interface.flush();
         }
+        watchdog.allow(self.options.copy_timeout_ns);
         return self.store.loadCopy(directory);
     }
 };

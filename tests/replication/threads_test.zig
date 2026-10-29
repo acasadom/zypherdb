@@ -2,7 +2,7 @@
 //! on the loopback: an empty replica gets a copy of its master and then
 //! each change set as it is committed, resumes after the master restarts,
 //! is turned away with the wrong token, and a read on it can wait to see a
-//! write on the master.
+//! write on the master. A silent replica or master is let go.
 
 const std = @import("std");
 const testing = std.testing;
@@ -29,7 +29,7 @@ const Setup = struct {
     tmp: testing.TmpDir,
     base: [128]u8 = undefined,
     clock: SystemClock = .{ .io = testing.io },
-    tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator, .read_timeout_ns = 500 * millisecond },
+    tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator },
     master: KeyValueStore = undefined,
     replica: KeyValueStore = undefined,
 
@@ -59,11 +59,17 @@ const Setup = struct {
     }
 
     fn startServer(self: *Setup, address: []const u8, copies: []u8) !*Server {
+        return self.startServerFor(address, copies, 16);
+    }
+
+    fn startServerFor(self: *Setup, address: []const u8, copies: []u8, max_replicas: usize) !*Server {
         const server = try Server.start(testing.allocator, testing.io, self.clock.clock(), self.tcp.network(), &self.master, .{
             .address = address,
             .token = token,
             .copies_directory = try self.path("master-copies", copies),
             .heartbeat_ns = 50 * millisecond,
+            .timeout_ns = 500 * millisecond,
+            .max_replicas = max_replicas,
         });
         self.master.commit_listener = server.commitListener();
         return server;
@@ -76,6 +82,7 @@ const Setup = struct {
             .copies_directory = try self.path("replica-copies", copies),
             .first_retry_ns = 10 * millisecond,
             .longest_retry_ns = 100 * millisecond,
+            .timeout_ns = 500 * millisecond,
         });
     }
 
@@ -121,17 +128,20 @@ test "a replica resumes after its master restarts" {
     defer setup.deinit();
     var copies: [2][256]u8 = undefined;
     var server = try setup.startServer("127.0.0.1:0", &copies[0]);
+    var stopped = false;
+    defer if (!stopped) server.stop();
     var address: [max_address_bytes]u8 = undefined;
     const follower = try setup.startFollower(server, token, &address, &copies[1]);
     defer follower.stop();
     try setup.expectCaughtUp(follower, try setup.write(0, 10));
     var listened: [max_address_bytes]u8 = undefined;
     const at = server.address(&listened);
-    server.stop();
     setup.master.commit_listener = null;
+    server.stop();
+    stopped = true;
     const last = try setup.write(10, 10);
     server = try setup.startServer(at, &copies[0]);
-    defer server.stop();
+    stopped = false;
     try setup.expectCaughtUp(follower, last);
     try setup.expectCaughtUp(follower, try setup.write(20, 5));
 }
@@ -182,4 +192,50 @@ test "a read on the replica waits to see a write committed on the master" {
     const start = clock.now();
     try testing.expectEqual(@as(?u64, last), follower.waitApplied(last + 1, start + 50 * millisecond));
     try testing.expect(clock.now() >= start + 50 * millisecond);
+}
+
+test "a silent replica is let go and frees its place" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    _ = try setup.write(0, 3);
+    var copies: [2][256]u8 = undefined;
+    const server = try setup.startServerFor("127.0.0.1:0", &copies[0], 1);
+    defer server.stop();
+    var address: [max_address_bytes]u8 = undefined;
+    // It takes the only place and says nothing.
+    const silent = try setup.tcp.network().connect(server.address(&address));
+    defer silent.close();
+    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    defer follower.stop();
+    try setup.expectCaughtUp(follower, (try setup.master.changeLogState()).?.next_lsn - 1);
+    // The master shut the silent one down.
+    try testing.expectError(error.EndOfStream, zypherdb.replication_protocol.read(silent.reader()));
+}
+
+test "a replica leaves a silent master and connects again" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    // A master that accepts and says nothing.
+    const listener = try setup.tcp.network().listen("127.0.0.1:0");
+    defer listener.close();
+    var address: [max_address_bytes]u8 = undefined;
+    var copies: [256]u8 = undefined;
+    const follower = try Follower.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{
+        .master_address = listener.address(&address),
+        .token = token,
+        .copies_directory = try setup.path("replica-copies", &copies),
+        .first_retry_ns = 10 * millisecond,
+        .timeout_ns = 100 * millisecond,
+    });
+    defer follower.stop();
+    const first = try listener.accept();
+    defer first.close();
+    try testing.expectEqual(.hello, std.meta.activeTag(try zypherdb.replication_protocol.read(first.reader())));
+    // Left after its timeout: the connection ends and another comes.
+    try testing.expectError(error.EndOfStream, zypherdb.replication_protocol.read(first.reader()));
+    const second = try listener.accept();
+    defer second.close();
+    try testing.expectEqual(.hello, std.meta.activeTag(try zypherdb.replication_protocol.read(second.reader())));
 }
