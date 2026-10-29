@@ -281,3 +281,54 @@ test "a change set that is not one is refused" {
     var to_the_log = change_log.Iterator{ .bytes = &.{ 0x02, @backingInt(change_log.Table.changes), 0, 0, 0, 0 } };
     try testing.expectError(error.MalformedChangeSet, to_the_log.next());
 }
+
+test "a database loads a copy of a master over what it held, while readers keep what they saw" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var source_path: [256]u8 = undefined;
+    var source = try openAt(&tmp, "source", &source_path);
+    defer source.deinit();
+    try source.startChangeLog();
+    var g = Graph.init(&source, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Person {id: i})-[:OWNS]->(:Thing)", &.{});
+    try expectQuery(&ast, &g, "CREATE INDEX FOR (p:Person) ON (p.id)", &.{});
+    var base_buffer: [128]u8 = undefined;
+    var copy_buffer: [256]u8 = undefined;
+    const copy_path = try std.fmt.bufPrint(&copy_buffer, "{s}/copy", .{testPath(&tmp, &base_buffer)});
+    try tmp.dir.createDirPath(testing.io, "copy");
+    try source.copyDatabase(copy_path);
+    try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.id < 5 DETACH DELETE p", &.{});
+
+    // What the database held before: records, an index, keys of its own.
+    var target_path: [256]u8 = undefined;
+    var target = try openAt(&tmp, "target", &target_path);
+    defer target.deinit();
+    var target_graph = Graph.init(&target, testing.allocator);
+    try expectQuery(&ast, &target_graph, "UNWIND range(1, 50) AS i CREATE (:Other {id: i})-[:R]->(:Other)", &.{});
+    try expectQuery(&ast, &target_graph, "CREATE INDEX FOR (o:Other) ON (o.id)", &.{});
+    try target.put("mine", "value");
+
+    var reader = try target.share();
+    errdefer reader.deinit();
+    try reader.beginRead();
+    const applied = try target.loadCopy(copy_path);
+    try testing.expect(try reader.exists("mine"));
+    reader.abortRead();
+    try testing.expect(!try reader.exists("mine"));
+    try testing.expectEqual(@as(?u64, applied), try target.appliedLsn());
+    try testing.expectEqual(try source.databaseId(), try target.databaseId());
+    try testing.expect(try target.get("mine") == null);
+    try testing.expectError(error.ReadOnlyReplica, target.put("mine", "value"));
+
+    const state = (try source.changeLogState()).?;
+    try replay(&source, &target, applied + 1, state.next_lsn);
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    try testing.expectEqual(try contents(&source), try contents(&reader));
+    // Closing a share leaves the database open.
+    reader.deinit();
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    // A master loads no copy.
+    try testing.expectError(error.WriteFailed, source.loadCopy(copy_path));
+}

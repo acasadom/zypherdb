@@ -12,12 +12,17 @@
 //!     to be begun again cheaply), `beginWrite() Error!Transaction`,
 //!     `copy(allocator, directory) Error!void` (writes a compacted copy of
 //!     the database as of one moment, writers not blocked, into `directory`,
-//!     which must exist and hold no database; `open` opens it).
+//!     which must exist and hold no database; `open` opens it),
+//!     `share() Environment` (another environment on the same open
+//!     database, for another thread; its `close` leaves the database open,
+//!     and it is closed before the environment it shares).
 //! - `Transaction`: a snapshot (read) or the single writer (write).
 //!     `commit() Error!void` (a failed commit is aborted), `abort()` (a
 //!     read transaction ends better with `Environment.endRead`),
 //!     `get(Table, key) Error!?[]const u8`, `put(Table, key, value) Error!void`,
 //!     `delete(Table, key) Error!void` (deleting an absent key succeeds),
+//!     `clear(Table) Error!void` (deletes every key of a table but `main`,
+//!     whose keys starting with `#` are the engine's catalog of tables),
 //!     `openCursor(Table) Error!Cursor`.
 //! - `Cursor`: a position in one table of one transaction, in key order.
 //!     `close()`, `first() Error!?Entry`, `find(key) Error!?[]const u8` (the
@@ -28,9 +33,10 @@
 //! - Reads never copy: the bytes a `get` or a cursor returns are the
 //!   engine's, valid until the transaction ends or writes (the layers above
 //!   rely on it to read records without allocating).
-//! - One write transaction at a time per environment; any number of read
-//!   transactions, also several at once in one thread (nested scans), each a
-//!   consistent snapshot as of its start.
+//! - One write transaction at a time per database (a writer in another
+//!   thread waits); any number of read transactions, also several at once
+//!   in one thread (nested scans), each a consistent snapshot as of its
+//!   start.
 //! - Several processes may open the same database (the multiprocess model:
 //!   one writer at a time, readers never blocked).
 //! - Keys of the `main` table are byte strings in lexicographic order. Keys of
@@ -93,8 +99,8 @@ pub const Options = struct { durability: Durability = .full };
 pub fn check(comptime Engine: type) void {
     const required = .{
         .{ Engine, &.{ "data_file_name", "Environment", "Transaction", "Cursor" } },
-        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "copy" } },
-        .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "openCursor" } },
+        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "copy", "share" } },
+        .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "clear", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },
     };
     inline for (required) |entry| {

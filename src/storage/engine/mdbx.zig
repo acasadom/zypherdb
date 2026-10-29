@@ -38,6 +38,9 @@ pub const Environment = struct {
     /// allocation and keeps its reader slot.
     parked_reads: [max_parked_reads]*c.MDBX_txn = undefined,
     parked_read_count: usize = 0,
+    /// Whether this is a share of another environment (`share`), which
+    /// leaves the database open when it closes.
+    shared: bool = false,
 
     const max_parked_reads = 4;
 
@@ -92,7 +95,12 @@ pub const Environment = struct {
     pub fn close(self: *Environment) void {
         for (self.parked_reads[0..self.parked_read_count]) |transaction| _ = c.mdbx_txn_abort(transaction);
         self.parked_read_count = 0;
-        _ = c.mdbx_env_close_ex(self.handle, false);
+        if (!self.shared) _ = c.mdbx_env_close_ex(self.handle, false);
+    }
+
+    /// Another environment on the same open database, for another thread.
+    pub fn share(self: *Environment) Environment {
+        return .{ .handle = self.handle, .tables = self.tables, .shared = true };
     }
 
     /// Writes every commit so far to disk (what `full` durability does at
@@ -170,6 +178,11 @@ pub const Transaction = struct {
         const key_val = makeVal(key);
         const rc = c.mdbx_del(self.handle, self.tables[@backingInt(table)], &key_val, null);
         if (rc != c.MDBX_SUCCESS and rc != c.MDBX_NOTFOUND) return error.DeleteFailed;
+    }
+
+    pub fn clear(self: Transaction, table: Table) Error!void {
+        std.debug.assert(table != .main);
+        if (c.mdbx_drop(self.handle, self.tables[@backingInt(table)], false) != c.MDBX_SUCCESS) return error.DeleteFailed;
     }
 
     pub fn openCursor(self: Transaction, table: Table) Error!Cursor {

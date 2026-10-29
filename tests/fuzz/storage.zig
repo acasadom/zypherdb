@@ -33,7 +33,8 @@ pub const Options = struct {
     /// A directory for a replica: with one, a seed of even number starts the
     /// change log, and at each check the replica applies the new change sets
     /// and must equal the model too. The replica starts empty (seeds that are
-    /// multiples of 4) or as a copy of the database at the first check.
+    /// multiples of 4) or as a copy of the database at the first check,
+    /// and now and then loads a new copy over what it holds.
     replica: ?[]const u8 = null,
 };
 
@@ -119,6 +120,8 @@ pub const Swarm = struct {
 pub const Statistics = struct {
     performed: [operation_count]u64 = @splat(0),
     refused: [operation_count][refusals.len]u64 = @splat(@splat(0)),
+    /// Copies of the database a replica loaded over what it held.
+    reloads: u64 = 0,
 
     /// The failures the model predicts.
     pub const refusals = [_]anyerror{ error.NodeStillConnected, error.UnsupportedPropertyType, error.ConstraintViolation, error.InvalidExpression };
@@ -131,6 +134,7 @@ pub const Statistics = struct {
 
     pub fn add(self: *Statistics, other: Statistics) void {
         for (&self.performed, other.performed) |*total, count| total.* += count;
+        self.reloads += other.reloads;
         for (&self.refused, other.refused) |*totals, counts| {
             for (totals, counts) |*total, count| total.* += count;
         }
@@ -143,6 +147,7 @@ pub const Statistics = struct {
             for (refused, refusals) |count, refusal| if (count > 0) try writer.print(", {d} {t}", .{ count, refusal });
             try writer.writeAll("\n");
         }
+        if (self.reloads > 0) try writer.print("  replica copy reloads: {d}\n", .{self.reloads});
     }
 };
 
@@ -184,6 +189,9 @@ const Fuzzer = struct {
     replica_next_lsn: u64 = 1,
     /// Where the replica is copied to at the first check, if it starts as a copy.
     replica_copy_path: ?[]const u8 = null,
+    /// Where new copies the replica loads are made (in its directory), if
+    /// it loads any.
+    reload_path: ?[]u8 = null,
 
     /// Fuzzing needs no durability: commits only reach the page cache.
     const store_options = KeyValueStore.Options{ .durability = .deferred };
@@ -208,7 +216,10 @@ const Fuzzer = struct {
             try self.store.startChangeLog();
             if (options.seed % 4 == 0) {
                 self.replica = try KeyValueStore.openWithOptions(allocator, replica_path, store_options);
-            } else self.replica_copy_path = replica_path;
+            } else {
+                self.replica_copy_path = replica_path;
+                self.reload_path = try std.fmt.allocPrint(allocator, "{s}/reload", .{replica_path});
+            }
         };
         if (options.verbose) try out.print("seed {d}, swarm: {f}{s}\n", .{ options.seed, self.swarm, if (self.replica != null) ", with a replica" else if (self.replica_copy_path != null) ", with a replica from a copy" else "" });
     }
@@ -218,6 +229,7 @@ const Fuzzer = struct {
         if (self.snapshot) |*snapshot| snapshot.deinit();
         self.model.deinit();
         if (self.replica) |*replica| replica.deinit();
+        if (self.reload_path) |path| self.allocator.free(path);
         self.store.deinit();
         self.values.deinit();
         self.scratch.deinit();
@@ -633,7 +645,15 @@ const Fuzzer = struct {
             self.replica = try KeyValueStore.openWithOptions(self.allocator, path, store_options);
             self.replica_next_lsn = try self.replica.?.becomeReplica() + 1;
             self.replica_copy_path = null;
-        }
+        } else if (self.reload_path) |path| if (self.random().uintLessThan(u8, 8) == 0) {
+            // As a replica that fell behind the log does.
+            const io = std.Io.Threaded.global_single_threaded.io();
+            try std.Io.Dir.cwd().createDirPath(io, path);
+            defer std.Io.Dir.cwd().deleteTree(io, path) catch {};
+            try self.store.copyDatabase(path);
+            self.replica_next_lsn = try self.replica.?.loadCopy(path) + 1;
+            self.statistics.reloads += 1;
+        };
         const replica = &(self.replica orelse return);
         const state = (try self.store.changeLogState()) orelse return self.fail("the change log is not started", .{});
         while (self.replica_next_lsn < state.next_lsn) : (self.replica_next_lsn += 1) {
