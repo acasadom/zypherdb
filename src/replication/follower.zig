@@ -5,11 +5,12 @@
 //! acking heartbeats). When the conversation ends for any reason the loop
 //! connects again after a while. A master silent for too long
 //! (`timeout_ns`, a few heartbeats) ends it too: the session's deadline,
-//! checked by the loop on the clock.
+//! checked by the loop on the clock. A refusal that asking again cannot
+//! help (a wrong token, another version, another master) stops the loop
+//! for good: `halted` tells why.
 //!
-//! TEMPORARY, to be replaced: every refusal is retried, the permanent ones
-//! (token, versions, another master) too, and the timeout is not tied to
-//! the master's heartbeat.
+//! TEMPORARY, to be replaced: the timeout is not tied to the master's
+//! heartbeat.
 
 const std = @import("std");
 const Io = std.Io;
@@ -62,6 +63,8 @@ pub const Follower = struct {
     master_lsn: std.atomic.Value(u64) = .init(0),
     /// Why the master last turned this replica away, if it did.
     refusal: std.atomic.Value(u8) = .init(0),
+    /// The permanent refusal that stopped the loop, if one did.
+    halt: std.atomic.Value(u8) = .init(0),
     /// The loop's store, for its hellos; the applier's shares it.
     store: KeyValueStore,
     /// Raised by the applier when it is done with something, and by `stop`.
@@ -114,7 +117,7 @@ pub const Follower = struct {
     }
 
     /// Waits until change set `lsn` is applied or `deadline` comes; returns
-    /// the last applied then, or null once stopped.
+    /// the last applied then, or null once stopped or halted.
     pub fn waitApplied(self: *Follower, lsn: u64, deadline: u64) ?u64 {
         if (lsn == 0) return self.applied.value;
         return self.clock.wait(&self.applied, lsn - 1, deadline);
@@ -124,6 +127,14 @@ pub const Follower = struct {
     /// last followed it.
     pub fn lastRefusal(self: *Follower) ?protocol.Refusal {
         const reason = self.refusal.load(.acquire);
+        return if (reason == 0) null else @fromBackingInt(@intCast(reason));
+    }
+
+    /// The refusal that made the replica stop following its master for
+    /// good (`Refusal.permanent`), or null while it follows. The threads
+    /// stay until `stop`.
+    pub fn halted(self: *Follower) ?protocol.Refusal {
+        const reason = self.halt.load(.acquire);
         return if (reason == 0) null else @fromBackingInt(@intCast(reason));
     }
 
@@ -143,6 +154,11 @@ pub const Follower = struct {
             // The next hello tells what the replica applied: nothing may be
             // left half done.
             self.applier.drop();
+            if (self.halted() != null) {
+                // Its waiters would wait for nothing.
+                self.clock.stop(&self.applied);
+                return;
+            }
             retry = if (conversation.streamed) self.options.first_retry_ns else @min(retry * 2, self.options.longest_retry_ns);
             self.sleep(self.clock.now() + retry);
         }
@@ -210,6 +226,7 @@ const Conversation = struct {
                         .refused => |reason| {
                             log.info("the master turned this replica away: {t}", .{reason});
                             follower.refusal.store(@backingInt(reason), .release);
+                            if (reason.permanent()) follower.halt.store(@backingInt(reason), .release);
                             return;
                         },
                         .copy_part => |bytes| try self.writeCopyPart(bytes),

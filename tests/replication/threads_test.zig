@@ -2,7 +2,9 @@
 //! on the loopback: an empty replica gets a copy of its master and then
 //! each change set as it is committed, resumes after the master restarts,
 //! is turned away with the wrong token, and a read on it can wait to see a
-//! write on the master. A silent replica or master is let go.
+//! write on the master. The master tells each replica's lag. A silent
+//! replica or master is let go; a refusal asking again cannot help stops
+//! the replica.
 
 const std = @import("std");
 const testing = std.testing;
@@ -10,6 +12,7 @@ const zypherdb = @import("zypherdb");
 
 const KeyValueStore = zypherdb.KeyValueStore;
 const Server = zypherdb.replication_server.Server;
+const ReplicaState = zypherdb.replication_server.ReplicaState;
 const Follower = zypherdb.replication_follower.Follower;
 const SystemClock = zypherdb.replication_clock.SystemClock;
 const Tcp = zypherdb.replication_tcp.Tcp;
@@ -134,6 +137,41 @@ const Setup = struct {
         }
     }
 
+    /// Sends `message` on `connection`, all of it.
+    fn send(self: *Setup, connection: Connection, message: protocol.Message) !void {
+        var frame: [256]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&frame);
+        try protocol.write(&writer, message);
+        var unsent = writer.buffered();
+        const deadline = self.clock.clock().now() + patience;
+        while (unsent.len > 0) {
+            const count = connection.send(unsent) catch |err| switch (err) {
+                error.Closed => return error.ConnectionClosed,
+                error.WouldBlock => {
+                    var watched: Watched = .{ .source = .{ .connection = connection }, .wanted = .{ .writable = true } };
+                    try self.waitFor(&watched, deadline);
+                    continue;
+                },
+            };
+            unsent = unsent[count..];
+        }
+    }
+
+    /// Waits until the master serves `count` replicas, the first streaming
+    /// and acked up to `lsn` (any if null).
+    fn expectStates(self: *Setup, server: *Server, count: usize, lsn: ?u64) !void {
+        const clock = self.clock.clock();
+        const deadline = clock.now() + patience;
+        var buffer: [4]ReplicaState = undefined;
+        while (clock.now() < deadline) : (try testing.io.sleep(.fromMilliseconds(5), .awake)) {
+            const states = server.replicaStates(&buffer);
+            if (states.len != count) continue;
+            const expected = lsn orelse return;
+            if (states[0].phase == .streaming and states[0].acked_lsn == expected) return;
+        }
+        return error.TestTimedOut;
+    }
+
     /// The first message from `connection`, a frame read into `buffer`.
     fn receiveMessage(self: *Setup, connection: Connection, buffer: []u8) !protocol.Message {
         var filled: usize = 0;
@@ -166,6 +204,30 @@ test "an empty replica gets a copy, then each change set committed" {
     try setup.expectCaughtUp(follower, try setup.write(20, 30));
     // Writes on the replica are refused.
     try testing.expectError(error.ReadOnlyReplica, setup.replica.beginWrite());
+}
+
+test "the master tells how far each replica is, and forgets one gone" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    _ = try setup.write(0, 5);
+    var copies: [2][256]u8 = undefined;
+    const server = try setup.startServer("127.0.0.1:0", &copies[0]);
+    defer server.stop();
+    try setup.expectStates(server, 0, null);
+    var address: [max_address_bytes]u8 = undefined;
+    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    var stopped = false;
+    defer if (!stopped) follower.stop();
+    const last = try setup.write(5, 5);
+    try setup.expectCaughtUp(follower, last);
+    // Its ack comes with the next heartbeat.
+    try setup.expectStates(server, 1, last);
+    const later = try setup.write(10, 3);
+    try setup.expectStates(server, 1, later);
+    follower.stop();
+    stopped = true;
+    try setup.expectStates(server, 0, null);
 }
 
 test "a replica resumes after its master restarts" {
@@ -205,9 +267,45 @@ test "a replica with the wrong token is turned away" {
     defer follower.stop();
     const clock = setup.clock.clock();
     const deadline = clock.now() + patience;
-    while (follower.lastRefusal() == null and clock.now() < deadline) try testing.io.sleep(.fromMilliseconds(5), .awake);
-    try testing.expectEqual(zypherdb.replication_protocol.Refusal.token, follower.lastRefusal().?);
+    while (follower.halted() == null and clock.now() < deadline) try testing.io.sleep(.fromMilliseconds(5), .awake);
+    try testing.expectEqual(@as(?protocol.Refusal, .token), follower.halted());
+    try testing.expectEqual(@as(?protocol.Refusal, .token), follower.lastRefusal());
     try testing.expectEqual(@as(?u64, null), try setup.replica.appliedLsn());
+    // Halted, it wakes whoever waits for a change set.
+    try testing.expectEqual(@as(?u64, null), follower.waitApplied(1, clock.now() + patience));
+}
+
+test "a replica asks again after a refusal that may pass, never after one that cannot" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    // A master that refuses as told.
+    const listener = try setup.tcp.network().listen("127.0.0.1:0");
+    defer listener.close();
+    var address: [max_address_bytes]u8 = undefined;
+    var copies: [256]u8 = undefined;
+    const follower = try Follower.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{
+        .master_address = listener.address(&address),
+        .token = token,
+        .copies_directory = try setup.path("replica-copies", &copies),
+        .first_retry_ns = 10 * millisecond,
+        .longest_retry_ns = 10 * millisecond,
+    });
+    defer follower.stop();
+    const buffer = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
+    defer testing.allocator.free(buffer);
+    for ([_]protocol.Refusal{ .not_master, .not_master, .database_id }) |reason| {
+        const connection = try setup.accept(listener);
+        defer connection.close();
+        try testing.expectEqual(.hello, std.meta.activeTag(try setup.receiveMessage(connection, buffer)));
+        try setup.send(connection, .{ .refused = reason });
+        try testing.expectEqual(@as(?usize, null), try setup.receive(connection, buffer));
+        if (!reason.permanent()) try testing.expectEqual(@as(?protocol.Refusal, null), follower.halted());
+    }
+    try testing.expectEqual(@as(?protocol.Refusal, .database_id), follower.halted());
+    // Many retries' worth later, nobody has come again.
+    try testing.io.sleep(.fromMilliseconds(200), .awake);
+    try testing.expectEqual(@as(?Connection, null), try listener.accept());
 }
 
 test "a read on the replica waits to see a write committed on the master" {

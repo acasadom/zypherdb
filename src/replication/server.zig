@@ -4,7 +4,8 @@
 //! (it may take minutes; the loop goes on meanwhile). A commit wakes the
 //! loop (`commitListener`) to send its change set; a replica that reads
 //! nothing sent, or says nothing awaited, for `timeout_ns` is let go: the
-//! session's deadlines, checked by the loop on the clock.
+//! session's deadlines, checked by the loop on the clock. Each replica
+//! acks how far it applied; `replicaStates` tells it, and so its lag.
 
 const std = @import("std");
 const Io = std.Io;
@@ -43,6 +44,22 @@ pub const Options = struct {
     max_replicas: usize = 16,
 };
 
+/// A replica served, as the loop last saw it.
+pub const ReplicaState = struct {
+    phase: Phase,
+    /// The last change set it applied, as it last acked (0 until it
+    /// streams): its lag is the master's last LSN minus this.
+    acked_lsn: u64,
+
+    pub const Phase = enum {
+        /// Connected, its hello not answered yet.
+        introducing,
+        /// A copy is made for it, sent, or loaded.
+        copying,
+        streaming,
+    };
+};
+
 pub const Server = struct {
     allocator: Allocator,
     /// For the copies' files and the worker's lock.
@@ -62,6 +79,11 @@ pub const Server = struct {
     replicas: []?*Replica,
     /// The copies asked for so far: each one's directory is numbered.
     copies_asked: u64 = 0,
+    /// What `replicaStates` tells: the first `states_count`, published by
+    /// the loop under `states_mutex`.
+    states: []ReplicaState,
+    states_count: usize = 0,
+    states_mutex: Io.Mutex = .init,
 
     const Replica = struct {
         connection: Connection,
@@ -87,6 +109,8 @@ pub const Server = struct {
         const replicas = try allocator.alloc(?*Replica, options.max_replicas);
         errdefer allocator.free(replicas);
         @memset(replicas, null);
+        const states = try allocator.alloc(ReplicaState, options.max_replicas);
+        errdefer allocator.free(states);
         var shared = try store.share();
         errdefer shared.deinit();
         var copier_store = try store.share();
@@ -106,6 +130,7 @@ pub const Server = struct {
             .wakeup = wakeup,
             .copier = .{ .allocator = allocator, .io = io, .store = copier_store, .wakeup = wakeup, .copies_directory = options.copies_directory },
             .replicas = replicas,
+            .states = states,
         };
         try self.copier.start();
         errdefer self.copier.stop();
@@ -125,12 +150,23 @@ pub const Server = struct {
         self.wakeup.close();
         self.store.deinit();
         self.allocator.free(self.replicas);
+        self.allocator.free(self.states);
         self.allocator.destroy(self);
     }
 
     /// Where the server listens (the port chosen, if asked to choose).
     pub fn address(self: *Server, buffer: *[network.max_address_bytes]u8) []const u8 {
         return self.listener.address(buffer);
+    }
+
+    /// The replicas served now, at most `buffer.len` of them, as the loop
+    /// last saw them (it looks at least each heartbeat).
+    pub fn replicaStates(self: *Server, buffer: []ReplicaState) []ReplicaState {
+        self.states_mutex.lockUncancelable(self.io);
+        defer self.states_mutex.unlock(self.io);
+        const count = @min(buffer.len, self.states_count);
+        @memcpy(buffer[0..count], self.states[0..count]);
+        return buffer[0..count];
     }
 
     /// For the master's writing store (`KeyValueStore.commit_listener`).
@@ -145,7 +181,10 @@ pub const Server = struct {
     }
 
     fn run(self: *Server) void {
-        defer for (self.replicas) |*slot| if (slot.*) |replica| self.release(slot, replica);
+        defer {
+            for (self.replicas) |*slot| if (slot.*) |replica| self.release(slot, replica);
+            self.publishStates();
+        }
         var watched: [network.max_watched]Watched = undefined;
         // The replica each watched connection is of, from `watched[2]` on.
         var watched_slots: [network.max_watched]usize = undefined;
@@ -179,6 +218,7 @@ pub const Server = struct {
                 watched_slots[count] = index;
                 count += 1;
             }
+            self.publishStates();
             const timeout: ?u64 = if (deadline == std.math.maxInt(Instant)) null else deadline -| now;
             self.network.wait(watched[0..count], timeout) catch |err| {
                 log.warn("waiting on the network failed: {t}", .{err});
@@ -190,6 +230,24 @@ pub const Server = struct {
                 self.takeCopies();
             }
             if (watched[0].ready.readable) self.acceptReplicas();
+        }
+    }
+
+    fn publishStates(self: *Server) void {
+        self.states_mutex.lockUncancelable(self.io);
+        defer self.states_mutex.unlock(self.io);
+        self.states_count = 0;
+        for (self.replicas) |slot| {
+            const session = &(slot orelse continue).session;
+            const phase: ReplicaState.Phase = switch (session.state) {
+                .awaiting_hello => .introducing,
+                .making_copy, .sending_copy, .awaiting_copy_ack => .copying,
+                .streaming => .streaming,
+                // Not served: let go once told.
+                .refused => continue,
+            };
+            self.states[self.states_count] = .{ .phase = phase, .acked_lsn = session.acked_lsn };
+            self.states_count += 1;
         }
     }
 

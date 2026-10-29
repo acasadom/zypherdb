@@ -103,6 +103,13 @@ pub const Refusal = enum(u8) {
     /// a replica itself.
     not_master = 7,
     _,
+
+    /// Whether asking again cannot help until someone changes something:
+    /// all but `not_master` (the master may be starting). A reason this
+    /// version does not know is taken as permanent.
+    pub fn permanent(self: Refusal) bool {
+        return self != .not_master;
+    }
 };
 
 pub const ChangeSetPart = struct {
