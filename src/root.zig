@@ -34,6 +34,8 @@ pub const replication_master = @import("replication/master.zig");
 pub const replication_replica = @import("replication/replica.zig");
 pub const replication_clock = @import("replication/clock.zig");
 pub const replication_network = @import("replication/network.zig");
+pub const replication_server = @import("replication/server.zig");
+pub const replication_follower = @import("replication/follower.zig");
 
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
 pub const storage_engine = @tagName(@import("build_options").storage_engine);
