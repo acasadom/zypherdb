@@ -31,6 +31,7 @@ pub const layout = @import("storage/layout.zig");
 pub const change_log = @import("storage/change_log.zig");
 pub const replication_protocol = @import("replication/protocol.zig");
 pub const replication_master = @import("replication/master.zig");
+pub const replication_replica = @import("replication/replica.zig");
 
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
 pub const storage_engine = @tagName(@import("build_options").storage_engine);
