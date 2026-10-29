@@ -126,6 +126,9 @@ pub const KeyValueStore = struct {
     replica: ?bool = null,
     /// Told the LSN of each change set this store commits.
     commit_listener: ?CommitListener = null,
+    /// The LSN of the last change set this store committed, if any: a
+    /// replica that applied it sees this store's writes.
+    last_committed_lsn: ?u64 = null,
 
     pub const CommitListener = struct {
         context: *anyopaque,
@@ -198,6 +201,7 @@ pub const KeyValueStore = struct {
         try transaction.commit();
         const recorder = self.change_recorder orelse return;
         if (recorder.chunks == 0) return;
+        self.last_committed_lsn = recorder.state.next_lsn - 1;
         if (self.commit_listener) |listener| listener.committed(listener.context, recorder.state.next_lsn - 1);
     }
 

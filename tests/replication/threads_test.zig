@@ -1,7 +1,8 @@
 //! Replication's threads (replication/server.zig, follower.zig) over TCP
 //! on the loopback: an empty replica gets a copy of its master and then
 //! each change set as it is committed, resumes after the master restarts,
-//! and is turned away with the wrong token.
+//! is turned away with the wrong token, and a read on it can wait to see a
+//! write on the master.
 
 const std = @import("std");
 const testing = std.testing;
@@ -151,4 +152,34 @@ test "a replica with the wrong token is turned away" {
     while (follower.lastRefusal() == null and clock.now() < deadline) try testing.io.sleep(.fromMilliseconds(5), .awake);
     try testing.expectEqual(zypherdb.replication_protocol.Refusal.token, follower.lastRefusal().?);
     try testing.expectEqual(@as(?u64, null), try setup.replica.appliedLsn());
+}
+
+test "a read on the replica waits to see a write committed on the master" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [2][256]u8 = undefined;
+    const server = try setup.startServer("127.0.0.1:0", &copies[0]);
+    defer server.stop();
+    var address: [max_address_bytes]u8 = undefined;
+    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    defer follower.stop();
+    const clock = setup.clock.clock();
+    for (0..20) |index| {
+        var key: [32]u8 = undefined;
+        const written = try std.fmt.bufPrint(&key, "written {d}", .{index});
+        try setup.master.beginWrite();
+        try setup.master.put(written, "value");
+        try setup.master.commitWrite();
+        const lsn = setup.master.last_committed_lsn.?;
+        try testing.expect(follower.waitApplied(lsn, clock.now() + patience).? >= lsn);
+        try setup.replica.beginRead();
+        defer setup.replica.commitRead();
+        try testing.expect(try setup.replica.exists(written));
+    }
+    // A change set never committed: the wait ends at its deadline.
+    const last = setup.master.last_committed_lsn.?;
+    const start = clock.now();
+    try testing.expectEqual(@as(?u64, last), follower.waitApplied(last + 1, start + 50 * millisecond));
+    try testing.expect(clock.now() >= start + 50 * millisecond);
 }

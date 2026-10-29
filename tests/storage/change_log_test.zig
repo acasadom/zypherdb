@@ -367,4 +367,5 @@ test "a commit listener is told the LSN of each change set committed" {
     try store.put("aborted", "value");
     store.abortWrite();
     try testing.expectEqualSlices(u64, &.{ 1, 2 }, heard.lsns[0..heard.count]);
+    try testing.expectEqual(@as(?u64, 2), store.last_committed_lsn);
 }
