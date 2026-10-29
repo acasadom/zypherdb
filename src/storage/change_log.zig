@@ -17,6 +17,8 @@
 //!     lsn (u64) | chunk (u32)    a part of the change set of transaction lsn
 //!     12 zero bytes              the log's state (`State`)
 //!     "replica"                  on a replica, the last LSN applied (u64)
+//!     "database"                 the master's id (`DatabaseId`), on it and
+//!                                on its replicas
 //!
 //! big-endian, so the parts sort by LSN, then in order. A change set is
 //! the transaction's writes in order, cut into chunks of at most
@@ -28,7 +30,10 @@
 //! A replica applies the master's change sets in LSN order
 //! (`KeyValueStore.applyChangeSet`), each in a write transaction that also
 //! stores its LSN, so after a crash it resumes where it stopped, applying
-//! none twice and skipping none. A replica writes nothing else.
+//! none twice and skipping none. A replica writes nothing else. It starts
+//! as a copy of its master (`KeyValueStore.copyDatabase`) made a replica
+//! (`becomeReplica`): the copy holds the master's log, whose state says
+//! which change sets it already has.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -83,6 +88,18 @@ pub const State = struct {
 
 const state_key: [12]u8 = @splat(0);
 const replica_key = "replica";
+const database_key = "database";
+
+/// A master's id, random, made when its log starts: a replica follows only
+/// the master it was copied from.
+pub const DatabaseId = [16]u8;
+
+/// The id of the master this database is or was copied from, if any.
+pub fn databaseId(transaction: Transaction) engine.Error!?DatabaseId {
+    const bytes = try transaction.get(.changes, database_key) orelse return null;
+    if (bytes.len != @sizeOf(DatabaseId)) return error.ReadFailed;
+    return bytes[0..@sizeOf(DatabaseId)].*;
+}
 
 fn chunkKey(lsn: u64, chunk: u32) [12]u8 {
     var key: [12]u8 = undefined;
@@ -97,12 +114,30 @@ pub fn readState(transaction: Transaction) engine.Error!?State {
     return State.decode(bytes) orelse error.ReadFailed;
 }
 
-/// Starts the log, if it is not started, in write transaction `transaction`.
-pub fn start(transaction: Transaction) engine.Error!State {
+/// Starts the log, if it is not started, in write transaction `transaction`,
+/// giving the database the id `id` if it has none.
+pub fn start(transaction: Transaction, id: DatabaseId) engine.Error!State {
     if (try readState(transaction)) |state| return state;
+    if (try databaseId(transaction) == null) try transaction.put(.changes, database_key, &id);
     const state = State{};
     try transaction.put(.changes, &state_key, &state.encode());
     return state;
+}
+
+/// Makes a copy of a master, in write transaction `transaction`, a replica
+/// that has applied every change set the copy holds: drops the copied log
+/// and returns that LSN. Fails with `WriteFailed` unless the database is a
+/// copy of a master (its log started, not a replica).
+pub fn becomeReplica(transaction: Transaction) engine.Error!u64 {
+    const state = try readState(transaction) orelse return error.WriteFailed;
+    if (try appliedLsn(transaction) != null) return error.WriteFailed;
+    for (state.oldest_lsn..state.next_lsn) |lsn| _ = try dropChangeSet(transaction, lsn);
+    try transaction.delete(.changes, &state_key);
+    const applied = state.next_lsn - 1;
+    var encoded: [8]u8 = undefined;
+    std.mem.writeInt(u64, &encoded, applied, .big);
+    try transaction.put(.changes, replica_key, &encoded);
+    return applied;
 }
 
 /// The change set of transaction `lsn`, its chunks joined (owned by the

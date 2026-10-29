@@ -241,6 +241,64 @@ test "a master applies no change sets" {
     try testing.expect(try store.appliedLsn() == null);
 }
 
+test "a copy of a master becomes a replica that follows it from where the copy was made" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var source_path: [256]u8 = undefined;
+    var source = try openAt(&tmp, "source", &source_path);
+    defer source.deinit();
+
+    try testing.expect(try source.databaseId() == null);
+    try source.startChangeLog();
+    const id = (try source.databaseId()).?;
+    var g = Graph.init(&source, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Person {id: i})", &.{});
+    try expectQuery(&ast, &g, "CREATE INDEX FOR (p:Person) ON (p.id)", &.{});
+    const copied = (try source.changeLogState()).?;
+
+    var base_buffer: [128]u8 = undefined;
+    var target_buffer: [256]u8 = undefined;
+    const target_path = try std.fmt.bufPrint(&target_buffer, "{s}/target", .{testPath(&tmp, &base_buffer)});
+    try tmp.dir.createDirPath(testing.io, "target");
+    try source.copyDatabase(target_path);
+    // Written after the copy: the replica gets them from the log.
+    try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.id > 10 SET p.old = true", &.{});
+    try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.id < 5 DETACH DELETE p", &.{});
+
+    var target = try KeyValueStore.open(testing.allocator, target_path);
+    defer target.deinit();
+    try testing.expectEqual(copied.next_lsn - 1, try target.becomeReplica());
+    try testing.expectEqual(@as(?u64, copied.next_lsn - 1), try target.appliedLsn());
+    try testing.expectEqual(@as(?change_log.DatabaseId, id), try target.databaseId());
+    // The copied log is gone: a replica keeps none.
+    try testing.expect(try target.changeLogState() == null);
+    try testing.expect(try target.changeSet(copied.oldest_lsn) == null);
+    try testing.expectError(error.ReadOnlyReplica, target.put("mine", "value"));
+
+    const state = (try source.changeLogState()).?;
+    try replay(&source, &target, copied.next_lsn, state.next_lsn);
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    // Started again, the log keeps its id.
+    try source.startChangeLog();
+    try testing.expectEqual(@as(?change_log.DatabaseId, id), try source.databaseId());
+}
+
+test "only a copy of a master becomes a replica, once" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [128]u8 = undefined;
+    var store = try KeyValueStore.open(testing.allocator, testPath(&tmp, &path_buffer));
+    defer store.deinit();
+    try store.put("key", "value");
+    try testing.expectError(error.WriteFailed, store.becomeReplica());
+    try store.startChangeLog();
+    try store.put("key", "other");
+    try testing.expectEqual(@as(u64, 1), try store.becomeReplica());
+    try testing.expectError(error.WriteFailed, store.becomeReplica());
+}
+
 test "a change set that is not one is refused" {
     var changes = change_log.Iterator{ .bytes = &.{ 0x01, 0x00, 0x00, 0x00, 0x00, 0x05, 'a' } };
     try testing.expectError(error.MalformedChangeSet, changes.next());

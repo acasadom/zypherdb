@@ -8,7 +8,10 @@
 //!     `open(allocator, path, Options) Error!Environment`, `close()`,
 //!     `sync() Error!void`, `beginRead() Error!Transaction`,
 //!     `endRead(Transaction)` (ends a read transaction, perhaps keeping it
-//!     to be begun again cheaply), `beginWrite() Error!Transaction`.
+//!     to be begun again cheaply), `beginWrite() Error!Transaction`,
+//!     `copy(allocator, directory) Error!void` (writes a compacted copy of
+//!     the database as of one moment, writers not blocked, into `directory`,
+//!     which must exist and hold no database; `open` opens it).
 //! - `Transaction`: a snapshot (read) or the single writer (write).
 //!     `commit() Error!void` (a failed commit is aborted), `abort()` (a
 //!     read transaction ends better with `Environment.endRead`),
@@ -89,7 +92,7 @@ pub const Options = struct { durability: Durability = .full };
 pub fn check(comptime Engine: type) void {
     const required = .{
         .{ Engine, &.{ "Environment", "Transaction", "Cursor" } },
-        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite" } },
+        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "copy" } },
         .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },
     };

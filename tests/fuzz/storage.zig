@@ -32,7 +32,8 @@ pub const Options = struct {
     verbose: bool = false,
     /// A directory for a replica: with one, a seed of even number starts the
     /// change log, and at each check the replica applies the new change sets
-    /// and must equal the model too.
+    /// and must equal the model too. The replica starts empty (seeds that are
+    /// multiples of 4) or as a copy of the database at the first check.
     replica: ?[]const u8 = null,
 };
 
@@ -181,6 +182,8 @@ const Fuzzer = struct {
     replica: ?KeyValueStore = null,
     /// The next change set the replica applies.
     replica_next_lsn: u64 = 1,
+    /// Where the replica is copied to at the first check, if it starts as a copy.
+    replica_copy_path: ?[]const u8 = null,
 
     /// Fuzzing needs no durability: commits only reach the page cache.
     const store_options = KeyValueStore.Options{ .durability = .deferred };
@@ -203,9 +206,11 @@ const Fuzzer = struct {
         self.graph = Graph.init(&self.store, allocator);
         if (options.replica) |replica_path| if (options.seed % 2 == 0) {
             try self.store.startChangeLog();
-            self.replica = try KeyValueStore.openWithOptions(allocator, replica_path, store_options);
+            if (options.seed % 4 == 0) {
+                self.replica = try KeyValueStore.openWithOptions(allocator, replica_path, store_options);
+            } else self.replica_copy_path = replica_path;
         };
-        if (options.verbose) try out.print("seed {d}, swarm: {f}{s}\n", .{ options.seed, self.swarm, if (self.replica != null) ", with a replica" else "" });
+        if (options.verbose) try out.print("seed {d}, swarm: {f}{s}\n", .{ options.seed, self.swarm, if (self.replica != null) ", with a replica" else if (self.replica_copy_path != null) ", with a replica from a copy" else "" });
     }
 
     fn deinit(self: *Fuzzer) void {
@@ -623,6 +628,12 @@ const Fuzzer = struct {
     /// The replica applies the change sets committed since the last check,
     /// then must pass the same checks as the database.
     fn verifyReplica(self: *Fuzzer) !void {
+        if (self.replica_copy_path) |path| {
+            try self.store.copyDatabase(path);
+            self.replica = try KeyValueStore.openWithOptions(self.allocator, path, store_options);
+            self.replica_next_lsn = try self.replica.?.becomeReplica() + 1;
+            self.replica_copy_path = null;
+        }
         const replica = &(self.replica orelse return);
         const state = (try self.store.changeLogState()) orelse return self.fail("the change log is not started", .{});
         while (self.replica_next_lsn < state.next_lsn) : (self.replica_next_lsn += 1) {

@@ -100,6 +100,13 @@ pub const Environment = struct {
         if (rc != c.MDBX_SUCCESS and rc != -1) return error.WriteFailed;
     }
 
+    pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
+        // libmdbx copies to a file: the data file of a database in `directory`.
+        const c_path = std.fs.path.joinZ(allocator, &.{ directory, "mdbx.dat" }) catch return error.OutOfMemory;
+        defer allocator.free(c_path);
+        if (c.mdbx_env_copy(self.handle, c_path.ptr, c.MDBX_CP_COMPACT) != c.MDBX_SUCCESS) return error.WriteFailed;
+    }
+
     pub fn beginRead(self: *Environment) Error!Transaction {
         while (self.parked_read_count > 0) {
             self.parked_read_count -= 1;
