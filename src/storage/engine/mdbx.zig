@@ -82,7 +82,6 @@ pub const Environment = struct {
         if (c.mdbx_dbi_open(transaction, null, c.MDBX_DB_DEFAULTS, &tables[@backingInt(Table.main)]) != c.MDBX_SUCCESS) return error.OpenFailed;
         if (c.mdbx_dbi_open(transaction, "#nodes", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@backingInt(Table.nodes)]) != c.MDBX_SUCCESS) return error.OpenFailed;
         if (c.mdbx_dbi_open(transaction, "#relationships", c.MDBX_CREATE | c.MDBX_INTEGERKEY, &tables[@backingInt(Table.relationships)]) != c.MDBX_SUCCESS) return error.OpenFailed;
-        if (c.mdbx_dbi_open(transaction, "#changes", c.MDBX_CREATE, &tables[@backingInt(Table.changes)]) != c.MDBX_SUCCESS) return error.OpenFailed;
         return tables;
     }
 
