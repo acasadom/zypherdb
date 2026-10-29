@@ -32,6 +32,8 @@ pub const MDB_RDONLY: c_uint = 0x20000;
 /// can hold several concurrent readers (needed for nested scans). Each read
 /// txn then owns a reader-table slot until it is aborted.
 pub const MDB_NOTLS: c_uint = 0x200000;
+/// `mdb_env_copy2`: omit free pages from the copy.
+pub const MDB_CP_COMPACT: c_uint = 0x01;
 pub const MDB_NOSYNC: c_uint = 0x10000;
 pub const MDB_NOMETASYNC: c_uint = 0x40000;
 /// mdb_dbi_open flags.
@@ -80,4 +82,5 @@ pub extern "c" fn mdb_del(txn: *MDB_txn, dbi: MDB_dbi, key: *MDB_val, data: ?*MD
 pub extern "c" fn mdb_cursor_open(txn: *MDB_txn, dbi: MDB_dbi, cursor: *?*MDB_cursor) c_int;
 pub extern "c" fn mdb_cursor_close(cursor: *MDB_cursor) void;
 pub extern "c" fn mdb_env_sync(env: *MDB_env, force: c_int) c_int;
+pub extern "c" fn mdb_env_copy2(env: *MDB_env, path: [*:0]const u8, flags: c_uint) c_int;
 pub extern "c" fn mdb_cursor_get(cursor: *MDB_cursor, key: *MDB_val, data: *MDB_val, op: c_int) c_int;
