@@ -10,6 +10,7 @@ test {
     _ = @import("replication/replica_test.zig");
     _ = @import("replication/clock_test.zig");
     _ = @import("replication/network_test.zig");
+    _ = @import("replication/event_network_test.zig");
     _ = @import("replication/threads_test.zig");
     _ = @import("replication/sessions_test.zig");
     _ = @import("storage/graph_test.zig");
