@@ -134,9 +134,9 @@ pub const ReadError = Reader.Error || error{ MalformedFrame, ChecksumMismatch };
 /// (`part_bytes`, `max_token_bytes`, `max_engine_name_bytes`).
 pub fn write(writer: *Writer, message: Message) Writer.Error!void {
     var checksum: ChecksumSink = .{};
-    checksum.crc.update(&.{@intFromEnum(message)});
+    checksum.crc.update(&.{@backingInt(message)});
     encodePayload(&checksum, message) catch unreachable;
-    try writer.writeByte(@intFromEnum(message));
+    try writer.writeByte(@backingInt(message));
     try writer.writeInt(u32, @intCast(checksum.length), .big);
     try writer.writeInt(u32, checksum.crc.final(), .big);
     try encodePayload(writer, message);
@@ -208,7 +208,7 @@ fn encodePayload(sink: anytype, message: Message) !void {
             try sink.writeInt(u16, @intCast(hello.token.len), .big);
             try sink.writeAll(hello.token);
         },
-        .refused => |reason| try sink.writeByte(@intFromEnum(reason)),
+        .refused => |reason| try sink.writeByte(@backingInt(reason)),
         .stream, .snapshot_end, .heartbeat, .ack => |lsn_or_size| try sink.writeInt(u64, lsn_or_size, .big),
         .snapshot_part => |bytes| {
             std.debug.assert(bytes.len <= part_bytes);
@@ -245,7 +245,7 @@ fn decodePayload(kind: Kind, payload: []const u8) ?Message {
                 .token = token,
             } };
         },
-        .refused => .{ .refused = @enumFromInt(cursor.int(u8) orelse return null) },
+        .refused => .{ .refused = @fromBackingInt(@intCast(cursor.int(u8) orelse return null)) },
         .stream => .{ .stream = cursor.int(u64) orelse return null },
         .snapshot_end => .{ .snapshot_end = cursor.int(u64) orelse return null },
         .heartbeat => .{ .heartbeat = cursor.int(u64) orelse return null },

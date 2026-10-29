@@ -119,19 +119,19 @@ fn expectMalformed(kind: u8, payload: []const u8) !void {
 test "a frame with a right checksum but a wrong payload is malformed" {
     try expectMalformed(0, "");
     try expectMalformed(9, "");
-    try expectMalformed(@intFromEnum(protocol.Kind.ack), "\x00\x00\x00\x00\x00\x00\x00");
-    try expectMalformed(@intFromEnum(protocol.Kind.ack), "\x00\x00\x00\x00\x00\x00\x00\x07\x00");
-    try expectMalformed(@intFromEnum(protocol.Kind.change_set_part), "\x00\x00\x00\x00\x00\x00\x00\x01\x02");
-    try expectMalformed(@intFromEnum(protocol.Kind.hello), "ZYPQ");
+    try expectMalformed(@backingInt(protocol.Kind.ack), "\x00\x00\x00\x00\x00\x00\x00");
+    try expectMalformed(@backingInt(protocol.Kind.ack), "\x00\x00\x00\x00\x00\x00\x00\x07\x00");
+    try expectMalformed(@backingInt(protocol.Kind.change_set_part), "\x00\x00\x00\x00\x00\x00\x00\x01\x02");
+    try expectMalformed(@backingInt(protocol.Kind.hello), "ZYPQ");
     // A hello whose token length runs past the payload.
     const no_id: [16]u8 = @splat(0);
     const no_lsn: [8]u8 = @splat(0);
-    try expectMalformed(@intFromEnum(protocol.Kind.hello), "ZYPR" ++ "\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x04lmdb" ++ "\x00" ++ no_id ++ no_lsn ++ "\x00\x09abc");
+    try expectMalformed(@backingInt(protocol.Kind.hello), "ZYPR" ++ "\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x04lmdb" ++ "\x00" ++ no_id ++ no_lsn ++ "\x00\x09abc");
 }
 
 test "a frame longer than any message is refused before it is read" {
     var header: [9]u8 = undefined;
-    header[0] = @intFromEnum(protocol.Kind.snapshot_part);
+    header[0] = @backingInt(protocol.Kind.snapshot_part);
     std.mem.writeInt(u32, header[1..5], @intCast(protocol.max_payload_bytes + 1), .big);
     std.mem.writeInt(u32, header[5..9], 0, .big);
     var reader: std.Io.Reader = .fixed(&header);

@@ -48,7 +48,7 @@ pub const ConversationError = protocol.ReadError || error{UnexpectedMessage};
 /// to `applied_lsn`. A copy's first part is left in `reader` for
 /// `receiveSnapshot`.
 pub fn receiveAnswer(reader: *Reader, applied_lsn: u64) ConversationError!Answer {
-    if (try reader.peekByte() == @intFromEnum(protocol.Kind.snapshot_part)) return .snapshot;
+    if (try reader.peekByte() == @backingInt(protocol.Kind.snapshot_part)) return .snapshot;
     return switch (try protocol.read(reader)) {
         .refused => |reason| .{ .refused = reason },
         .stream => |first| if (first == applied_lsn + 1) .stream else error.UnexpectedMessage,
