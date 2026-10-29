@@ -39,6 +39,7 @@ pub const replication_network = @import("replication/network.zig");
 pub const replication_tcp = @import("replication/tcp.zig");
 pub const replication_memory_network = @import("replication/memory_network.zig");
 pub const replication_master_node = @import("replication/master_node.zig");
+pub const replication_replica_node = @import("replication/replica_node.zig");
 pub const replication_server = @import("replication/server.zig");
 pub const replication_follower = @import("replication/follower.zig");
 
