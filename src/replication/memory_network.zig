@@ -20,11 +20,41 @@ pub const MemoryNetwork = struct {
     listeners: std.ArrayList(*MemoryListener) = .empty,
     /// The port the next `listen` at port 0 gets.
     next_port: u16 = 1,
+    /// A simulation's partition: while set, every connect fails as if
+    /// nobody listened.
+    refusing: bool = false,
+    /// The connections open at either end, for a simulation to `cut`.
+    links: std.ArrayList(*Link) = .empty,
+    /// The connects asked for so far.
+    connects: u64 = 0,
+    /// The bytes sent and received so far: a simulation's measure of
+    /// progress.
+    bytes_moved: u64 = 0,
 
     /// Once every listener is closed.
     pub fn deinit(self: *MemoryNetwork) void {
         std.debug.assert(self.listeners.items.len == 0);
+        std.debug.assert(self.links.items.len == 0);
         self.listeners.deinit(self.allocator);
+        self.links.deinit(self.allocator);
+    }
+
+    /// The connections open at either end.
+    pub fn linkCount(self: *const MemoryNetwork) usize {
+        return self.links.items.len;
+    }
+
+    /// Breaks connection `index` (below `linkCount`) as a network failure
+    /// does: the bytes on their way are lost, and each end fails
+    /// (`Closed`) from then on. Each end is still its owner's to close.
+    pub fn cut(self: *MemoryNetwork, index: usize) void {
+        const link = self.links.items[index];
+        for (&link.pipes) |*pipe| {
+            pipe.start = 0;
+            pipe.length = 0;
+            pipe.sender_closed = true;
+            pipe.receiver_closed = true;
+        }
     }
 
     pub fn network(self: *MemoryNetwork) Network {
@@ -61,8 +91,10 @@ pub const MemoryNetwork = struct {
     fn connect(context: *anyopaque, address: []const u8) Error!Connection {
         const self: *MemoryNetwork = @ptrCast(@alignCast(context));
         const split = try network_module.splitAddress(address);
+        self.connects += 1;
         const link = try Link.create(self);
-        const listener = self.find(split.host, split.port) orelse {
+        const found = if (self.refusing) null else self.find(split.host, split.port);
+        const listener = found orelse {
             link.end(1).close();
             return link.end(0);
         };
@@ -201,7 +233,9 @@ const Link = struct {
         const allocator = network.allocator;
         const link = try allocator.create(Link);
         errdefer allocator.destroy(link);
+        try network.links.ensureUnusedCapacity(allocator, 1);
         const bytes = try allocator.alloc(u8, 2 * network.capacity);
+        network.links.appendAssumeCapacity(link);
         link.* = .{
             .network = network,
             .pipes = .{ .{ .bytes = bytes[0..network.capacity] }, .{ .bytes = bytes[network.capacity..] } },
@@ -233,7 +267,9 @@ const Link = struct {
         const self: *End = @ptrCast(@alignCast(context));
         const in = self.incoming();
         if (in.length == 0) return if (in.sender_closed) error.Closed else error.WouldBlock;
-        return in.take(buffer);
+        const count = in.take(buffer);
+        self.link.network.bytes_moved += count;
+        return count;
     }
 
     fn send(context: *anyopaque, bytes: []const u8) error{ WouldBlock, Closed }!usize {
@@ -241,7 +277,9 @@ const Link = struct {
         const out = self.outgoing();
         if (out.receiver_closed) return error.Closed;
         if (out.room() == 0) return error.WouldBlock;
-        return out.put(bytes);
+        const count = out.put(bytes);
+        self.link.network.bytes_moved += count;
+        return count;
     }
 
     fn close(context: *anyopaque) void {
@@ -251,6 +289,8 @@ const Link = struct {
         const link = self.link;
         link.open_ends -= 1;
         if (link.open_ends != 0) return;
+        const links = &link.network.links;
+        _ = links.swapRemove(std.mem.indexOfScalar(*Link, links.items, link).?);
         const allocator = link.network.allocator;
         allocator.free(link.pipes[0].bytes.ptr[0 .. 2 * link.pipes[0].bytes.len]);
         allocator.destroy(link);

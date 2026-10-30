@@ -52,6 +52,7 @@ jobs:
           zig build fuzz -- query --seed ${{ github.run_id }} --seeds 10 --quiet
           zig build fuzz -- faults --seed ${{ github.run_id }} --seeds 10 --steps 60 --quiet
           zig build fuzz -- crash --seed ${{ github.run_id }} --seeds 2 --quiet
+          zig build fuzz -- replication --seed ${{ github.run_id }} --seeds 10 --quiet
 
       - name: Build the shared library
         run: zig build

@@ -51,6 +51,7 @@ Every technique on this page is a choice of oracle:
 | Snapshot tests | Plans and error messages | The text a person read and approved |
 | Fault fuzzer | Storage that fails on purpose | A twin database whose storage never fails |
 | Crash fuzzer | A writer killed with SIGKILL | A twin that ran the same statements without dying |
+| Replication simulator | A master and replicas, with faults, on a simulated network and clock | The master, at each LSN a replica reaches |
 | Pair assertions | Every record that crosses the storage boundary | The layout the encoder promises |
 | LMDB and libmdbx | The same seeds on both engines | The other engine |
 
@@ -317,6 +318,53 @@ several processes writing in turn, are not tested either.
 **What it found.** No bug, in 200 seeds on each engine (more than 800 crashes each). Two planted bugs —
 a counter written after the commit, and writes made outside the transaction — were both found.
 
+## The replication simulator
+
+**What it is.** A master and one to three replicas run in one process, on one thread, driven by a
+seed (`tests/fuzz/replication.zig`). Each side of replication is a node with no thread of its own
+(`src/replication/master_node.zig`, `replica_node.zig`): the server and the follower run each one on a
+thread, waiting on the network until something is ready or the node's deadline comes; the simulator
+runs them on a network in memory (`src/replication/memory_network.zig`) and a clock of its own, and
+decides everything a thread or the operating system would: when the master commits, when time
+passes, when a copy of the database is made, when a replica applies what it received. A node steps
+only when something it watches is ready or its deadline has come, as on its thread, so a node that
+forgets to wake itself is seen to sleep.
+
+It also breaks things: connections cut (the bytes in flight lost), a partition during which no
+replica can connect, a replica frozen for a while, a replica restarted (its database closed and
+opened again), the master's node restarted, and large transactions. Swarm testing picks, per seed,
+the number of replicas, which faults happen and how often, the network's buffer size (down to 61
+bytes, so messages arrive in pieces), and how much change log the master keeps (sometimes so little
+that a replica that falls behind must get a new copy).
+
+The checks: a replica never applies past the master's last LSN; whenever it reaches an LSN, its
+database equals the master's at that LSN (the simulator keeps a digest of the master after each
+commit), and, sampled, passes the integrity checker; a replica never halts. Then the faults stop: within
+two simulated minutes every replica must stream, applied and acknowledged up to the master's last LSN,
+and stay so for twenty heartbeats with no new connection.
+
+**From TigerBeetle.** Adapted from the VOPR, smaller: one master, no consensus to check, and the
+storage engine is real, not simulated (it writes to the disk, so the disk never fails here and a
+crash loses nothing the operating system held).
+
+**What it guarantees.** Under the faults above, in any order and timing the seeds reach, a replica
+only ever holds a state the master held, and comes back to the master's state once the faults stop,
+without spinning or reconnecting for nothing.
+
+**What it does not guarantee.** The real network (`src/replication/tcp.zig`) and the threads are not
+in it; the threaded tests (`tests/replication/threads_test.zig`) cover them on every system. Messages
+are never corrupted, duplicated or reordered (TCP does not); a disk that fails or loses unsynced
+writes is not simulated; the master's database is never lost or rolled back.
+
+**What it found.** A copy loaded by a replica gave the storage engine integer keys that were not
+8-byte aligned (a read the C standard leaves undefined, caught by the sanitizer), in its first 30
+seeds. And a master that computed the checksum of a whole part of a copy each time it looked
+for room to send it: a seed whose network buffer was 61 bytes ran for hours instead of seconds. Planted bugs found: a change set that skips its deletes, a replica that resumes one LSN too
+far, an acknowledgement of the wrong LSN, a copy that keeps the replica's old rows, and a master that
+never wakes for its heartbeats (which the threaded tests miss: other events wake it there). Two
+planted bugs survive because they only delay: a copy acknowledged at the next heartbeat instead of
+at once, and a reconnection delay that never shrinks.
+
 ## Pair assertions
 
 **What it is.** An assertion checks, while the program runs, something that must be true. A **pair**
@@ -368,7 +416,7 @@ on every change and again every night, each time from a new first seed (the run'
 covered grow every day instead of repeating the same ones.
 
 - **On every push and pull request** (`.github/workflows/ci.yml`), a short run of each fuzzer: ten
-  seeds of the storage, query and fault fuzzers and two of the crash fuzzer, in Debug, under a minute.
+  seeds of the storage, query and fault fuzzers and the replication simulator, two of the crash fuzzer, in Debug, under a minute.
 - **Every night, and on demand** (`.github/workflows/fuzz.yml`), a long run in ReleaseSafe: 300 seeds
   of each fuzzer (30 of the crash fuzzer), on LMDB and libmdbx, on Linux and macOS. A last job
   compares the query fuzzer's digests: the four builds must give every generated query the same
@@ -385,7 +433,8 @@ what their generators produce.
 
 - **The VOPR**, TigerBeetle's deterministic simulator of a whole cluster: network, clocks, disks and
   crashes, all simulated in one process and driven by a seed. ZypherDB is one process with no network,
-  and its engine does the I/O. It becomes the right tool with replication (below).
+  and its engine does the I/O. With replication, a smaller one was built: the replication simulator
+above.
 - **Static allocation.** TigerBeetle allocates all its memory at startup and never again, which removes
   out-of-memory failures and leaks by construction. A query engine cannot know in advance how much
   memory a query needs; ZypherDB allocates per query, and frees per query through arenas.
@@ -398,9 +447,7 @@ ZypherDB is a single machine today. When replication is built, the hard failures
 messages lost, delayed, duplicated or reordered, replicas that crash and come back, clocks that
 disagree, a change log that arrives torn. The plan for then:
 
-- a **deterministic simulation** in the style of the VOPR: a primary and replicas in one process, with
-  the network, the clock and faults on the change log simulated and driven by a seed, and a checker
-  that compares each replica with the primary at every position of the log;
+- a **deterministic simulation** in the style of the VOPR: built, see the replication simulator above;
 - a **consistency model** written down first — what a reader on a replica may see — and then tests of it
   in the style of Jepsen;
 - **versioned log and storage formats**, tested between replicas of different versions.
@@ -450,3 +497,5 @@ In order, with the file to read for each technique:
 5. `src/storage/engine/faulty.zig`, then `tests/fuzz/faults.zig` — failing on purpose.
 6. `tests/fuzz/crash.zig` — a program that kills itself, and the parent that checks what is left.
 7. `src/storage/layout.zig` — the layout, as functions that both the checker and the assertions use.
+8. `src/replication/memory_network.zig`, then `tests/fuzz/replication.zig` — replication on one
+   thread, with time and faults in the simulator's hands.
