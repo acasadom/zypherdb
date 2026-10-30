@@ -369,3 +369,50 @@ test "a commit listener is told the LSN of each change set committed" {
     try testing.expectEqualSlices(u64, &.{ 1, 2 }, heard.lsns[0..heard.count]);
     try testing.expectEqual(@as(?u64, 2), store.last_committed_lsn);
 }
+
+test "a store that wrote before the change log started logs its writes once it is started" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [256]u8 = undefined;
+    var starter = try openAt(&tmp, "db", &path);
+    defer starter.deinit();
+    // Another store on the database, as another process has.
+    var writer = try starter.share();
+    defer writer.deinit();
+
+    try writer.beginWrite();
+    try writer.put("before", "1");
+    try writer.commitWrite();
+    try starter.startChangeLog();
+    try writer.beginWrite();
+    try writer.put("after", "2");
+    try writer.commitWrite();
+
+    try testing.expectEqual(@as(u64, 2), (try starter.changeLogState()).?.next_lsn);
+    try testing.expectEqual(@as(?u64, 1), writer.last_committed_lsn);
+}
+
+test "a store that wrote before the database became a replica refuses writes once it is one" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var master = try openAt(&tmp, "master", &master_path);
+    defer master.deinit();
+    try master.startChangeLog();
+    try master.beginWrite();
+    try master.put("key", "value");
+    try master.commitWrite();
+
+    var replica_path: [256]u8 = undefined;
+    var replica = try openAt(&tmp, "replica", &replica_path);
+    defer replica.deinit();
+    // Another store on the database, as another process has.
+    var writer = try replica.share();
+    defer writer.deinit();
+    try writer.beginWrite();
+    try writer.put("local", "1");
+    try writer.commitWrite();
+
+    try replay(&master, &replica, 1, 2);
+    try testing.expectError(error.ReadOnlyReplica, writer.beginWrite());
+}
