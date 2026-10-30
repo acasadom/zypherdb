@@ -187,10 +187,12 @@ Direct writes, each its own transaction unless inside `write()`:
   > reports is a bug in ZypherDB: please report it with the output.
 - `sync()` — writes every commit so far to disk (for `"deferred"` durability).
 - `last_lsn` — the number of the last change the database has: on a master the last write
-  committed, on a replica the last change applied; 0 without replication.
+  committed, on a replica the last change applied, also in a process that opened it without a
+  role; 0 on a database that is neither.
 - `wait_for(lsn, timeout=5.0) -> bool` — on a replica, waits until the master's change `lsn` is
   applied, at most `timeout` seconds, and returns whether it is: call it before reading a write
-  just made on the master. `True` at once on a master or without replication.
+  just made on the master, also in a process that opened the replica without a role. `True` at
+  once on a database that is no replica.
 - `replication_status() -> dict | None` — how replication goes, for monitoring: a master's
   replicas and their lag, or a replica's progress and why it halted
   (see [replication](replication.md#watching-it)); `None` without replication.

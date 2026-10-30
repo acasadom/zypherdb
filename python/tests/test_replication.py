@@ -119,5 +119,23 @@ def test_one_process_runs_replication_and_the_others_writes_reach_the_replicas(t
                 env=environment, capture_output=True, text=True, timeout=60, check=True,
             ).stdout.splitlines()
             assert "replication already runs on this database in another process" in output[0]
-            assert replica.wait_for(master.last_lsn, timeout=20)
-            assert replica.query("MATCH (p:Person) RETURN p.name") == [["Grace"]]
+            lsn = int(output[1])
+            assert lsn == master.last_lsn > 0
+            # A reader without a role on the replica waits for it too.
+            output = subprocess.run(
+                [sys.executable, "-c", _READER, str(tmp_path / "replica"), str(lsn)],
+                env=environment, capture_output=True, text=True, timeout=60, check=True,
+            ).stdout.splitlines()
+            assert output == ["True", "[['Grace']]", "False"]
+
+
+_READER = r"""
+import sys
+from zypherdb import Database
+
+path, lsn = sys.argv[1], int(sys.argv[2])
+with Database(path) as db:
+    print(db.wait_for(lsn, timeout=20))
+    print(db.query("MATCH (p:Person) RETURN p.name"))
+    print(db.wait_for(lsn + 1, timeout=0.2))
+"""

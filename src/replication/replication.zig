@@ -248,6 +248,29 @@ pub const Replication = struct {
     }
 };
 
+/// The LSN of the last change set the database of `store` has: on a master
+/// the last committed, on a replica the last applied, 0 on neither; in any
+/// process, whether or not it runs replication.
+pub fn lastLsn(store: *KeyValueStore) !u64 {
+    if (try store.changeLogState()) |state| return state.next_lsn - 1;
+    return try store.appliedLsn() orelse 0;
+}
+
+/// On a process that does not run replication: waits until the database,
+/// if it is a replica, has applied change set `lsn` of its master, at most
+/// `timeout_ns`, looking at it every millisecond; whether it has. True at
+/// once on a database that is no replica.
+pub fn waitApplied(store: *KeyValueStore, lsn: u64, timeout_ns: u64) !bool {
+    const io = Io.Threaded.global_single_threaded.io();
+    const deadline = Io.Clock.awake.now(io).nanoseconds +| timeout_ns;
+    while (true) {
+        const applied = try store.appliedLsn() orelse return true;
+        if (applied >= lsn) return true;
+        if (Io.Clock.awake.now(io).nanoseconds >= deadline) return false;
+        io.sleep(.fromMilliseconds(1), .awake) catch return false;
+    }
+}
+
 fn appendRefusal(json: *std.ArrayList(u8), allocator: Allocator, refusal: ?Refusal) Allocator.Error!void {
     const reason = refusal orelse return json.appendSlice(allocator, "null");
     const name = std.enums.tagName(Refusal, reason) orelse "unknown";

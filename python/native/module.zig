@@ -850,28 +850,28 @@ fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyO
 }
 
 /// `last_lsn(db)`: the last change set the database has (a master's last
-/// committed, a replica's last applied); 0 without replication.
+/// committed, a replica's last applied), with a role or without; 0 on
+/// neither.
 fn lastLsn(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = parseDatabase(args) orelse return null;
-    const replication = database.replication orelse return py.PyLong_FromUnsignedLongLong(0);
-    const status = replication.status(&.{}) catch return storageFailure();
-    return py.PyLong_FromUnsignedLongLong(switch (status) {
-        .master => |master| master.last_lsn,
-        .replica => |replica| replica.applied_lsn,
-    });
+    return py.PyLong_FromUnsignedLongLong(zypherdb.replication.lastLsn(&database.store) catch return storageFailure());
 }
 
 /// `wait_for(db, lsn, timeout_ms)`: whether the master's change set `lsn`
-/// is applied here within the timeout (at once on a master).
+/// is applied here within the timeout (at once on a database that is no
+/// replica), also without a role.
 fn waitFor(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var capsule: ?*py.PyObject = null;
     var lsn: c_ulonglong = 0;
     var timeout_ms: c_ulonglong = 0;
     if (parseTuple(args, "OKK", &capsule, &lsn, &timeout_ms) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
-    const replication = database.replication orelse return py.PyBool_FromLong(1);
+    const timeout_ns = timeout_ms *| std.time.ns_per_ms;
     const thread_state = py.PyEval_SaveThread();
-    const applied = replication.waitFor(lsn, timeout_ms *| std.time.ns_per_ms);
+    const applied = if (database.replication) |replication|
+        replication.waitFor(lsn, timeout_ns)
+    else
+        zypherdb.replication.waitApplied(&database.store, lsn, timeout_ns) catch false;
     py.PyEval_RestoreThread(thread_state);
     return py.PyBool_FromLong(@intFromBool(applied));
 }

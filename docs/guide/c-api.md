@@ -352,10 +352,11 @@ stops replication.
 > on a trusted network.
 
 `zypherdb_last_lsn` is the number of the last change the database has: on a master the last
-committed, on a replica the last applied; 0 without replication. `zypherdb_wait_for` waits until
-the master's change `lsn` is applied, at most `timeout_ms`, and returns whether it is: to read on
-a replica a write made on the master, pass it the master's `zypherdb_last_lsn` after the write. It
-returns `true` at once on a master or without replication.
+committed, on a replica the last applied, also in a context opened without a role; 0 on a
+database that is neither. `zypherdb_wait_for` waits until the master's change `lsn` is applied, at
+most `timeout_ms`, and returns whether it is: to read on a replica a write made on the master, pass
+it the master's `zypherdb_last_lsn` after the write. It works in a context opened without a role
+too, and returns `true` at once on a database that is no replica.
 
 `zypherdb_replication_status` returns how replication goes as JSON, or `NULL` without replication.
 A master's:

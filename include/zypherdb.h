@@ -76,7 +76,7 @@ int zypherdb_sync(zypherdb_context *context);
 zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
                                            const char *address, size_t address_len, const char *token,
                                            size_t token_len);
-/* The last change set this database has (master: committed, replica: applied); 0 without replication. */
+/* The last change set this database has (master: committed, replica: applied), with or without a role. */
 uint64_t zypherdb_last_lsn(zypherdb_context *context);
 /* Waits until the master's change set lsn is applied here, at most timeout_ms; whether it is. */
 bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);

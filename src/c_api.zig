@@ -164,23 +164,21 @@ pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, d
 }
 
 /// The LSN of the last change set this database has: on a master the last
-/// committed, on a replica the last applied; 0 without replication.
+/// committed, on a replica the last applied, in any process (with a role or
+/// without); 0 on a database that is neither.
 pub export fn zypherdb_last_lsn(context: *Context) u64 {
-    const replication = context.replication orelse return 0;
-    const status = replication.status(&.{}) catch return 0;
-    return switch (status) {
-        .master => |master| master.last_lsn,
-        .replica => |replica| replica.applied_lsn,
-    };
+    return replication_module.lastLsn(&context.store) catch 0;
 }
 
 /// Waits until change set `lsn` of the master is applied here, at most
 /// `timeout_ms`; whether it is. Read on a replica after it to see a write
-/// made on the master (`zypherdb_last_lsn` there after the write). True at
-/// once on a master or without replication.
+/// made on the master (`zypherdb_last_lsn` there after the write), also in a
+/// process that opened the replica without a role. True at once on a
+/// database that is no replica.
 pub export fn zypherdb_wait_for(context: *Context, lsn: u64, timeout_ms: u64) bool {
-    const replication = context.replication orelse return true;
-    return replication.waitFor(lsn, timeout_ms *| std.time.ns_per_ms);
+    const timeout_ns = timeout_ms *| std.time.ns_per_ms;
+    const replication = context.replication orelse return replication_module.waitApplied(&context.store, lsn, timeout_ns) catch false;
+    return replication.waitFor(lsn, timeout_ns);
 }
 
 /// How replication goes, as JSON (see docs/guide/c-api.md); the buffer
