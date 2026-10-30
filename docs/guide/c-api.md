@@ -344,8 +344,9 @@ const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_l
 (`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
 writes. `token` is the secret a replica sends; the context keeps its own copy of `address` and
 `token`. It returns `NULL` when the database cannot be opened or replication cannot start (the
-address is taken, a database that was a master is opened as a replica, or another process runs
-replication on the database: one process at a time does, the others open it without a role). Closing the context
+address is taken, or a database that was a master is opened as a replica). While another process
+runs replication on the database the context stands by (`"standby": true` in its status) and
+takes over when that process closes it or dies. Closing the context
 stops replication.
 
 > **Warning.** Replication is not encrypted: the token and the data travel in clear. Run it only
@@ -362,14 +363,14 @@ too, and returns `true` at once on a database that is no replica.
 A master's:
 
 ```json
-{"role": "master", "address": "0.0.0.0:7000", "last_lsn": 120,
+{"role": "master", "standby": false, "address": "0.0.0.0:7000", "last_lsn": 120,
  "replicas": [{"phase": "streaming", "acked_lsn": 118, "lag": 2}]}
 ```
 
 A replica's (`halted` and `last_refusal` are a reason's name, such as `"token"`, or `null`):
 
 ```json
-{"role": "replica", "applied_lsn": 118, "master_lsn": 120, "lag": 2, "last_refusal": null, "halted": null}
+{"role": "replica", "standby": false, "applied_lsn": 118, "master_lsn": 120, "lag": 2, "last_refusal": null, "halted": null}
 ```
 
 The text belongs to the context, and stays valid until the next status or `zypherdb_close`.

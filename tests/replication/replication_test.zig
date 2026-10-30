@@ -111,20 +111,95 @@ test "a replica told the wrong token halts, and says why" {
     try testing.expectEqual(.token, (try following.status(&.{})).replica.halted.?);
 }
 
-test "one process runs replication on a database at a time" {
+/// Waits until `replication` runs replication (no longer stands by).
+fn expectTakesOver(replication: *Replication) !void {
+    const deadline = std.Io.Clock.awake.now(testing.io).nanoseconds + patience;
+    while (switch (try replication.status(&.{})) {
+        inline else => |either| either.standby,
+    }) : (try testing.io.sleep(.fromMilliseconds(5), .awake)) {
+        if (std.Io.Clock.awake.now(testing.io).nanoseconds > deadline) return error.TestTimedOut;
+    }
+}
+
+fn commit(store: *KeyValueStore, key: []const u8) !u64 {
+    try store.beginWrite();
+    try store.put(key, "value");
+    try store.commitWrite();
+    return store.last_committed_lsn.?;
+}
+
+test "a process standing by takes over a master's replication when the one running it stops" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var master_path = std.mem.zeroes([256]u8);
+    var replica_path = std.mem.zeroes([256]u8);
     var master = try open(&tmp, "master", &master_path);
     defer master.deinit();
     // Another store on the database, as another process has.
     var other = try master.share();
     defer other.deinit();
-    const role: zypherdb.replication.Role = .{ .master = .{ .address = "127.0.0.1:0", .token = token } };
+    var replica = try open(&tmp, "replica", &replica_path);
+    defer replica.deinit();
 
-    const serving = try Replication.start(testing.allocator, &master, pathOf(&master_path), role);
-    try testing.expectError(error.ReplicationRunsElsewhere, Replication.start(testing.allocator, &other, pathOf(&master_path), role));
-    serving.stop();
-    const again = try Replication.start(testing.allocator, &other, pathOf(&master_path), role);
-    again.stop();
+    const timing: zypherdb.replication.Role.Master = .{ .address = "127.0.0.1:0", .token = token, .heartbeat_ns = 50 * std.time.ns_per_ms, .timeout_ns = 500 * std.time.ns_per_ms };
+    const first = try Replication.start(testing.allocator, &master, pathOf(&master_path), .{ .master = timing });
+    var first_stopped = false;
+    defer if (!first_stopped) first.stop();
+    var address_buffer: [max_address_bytes]u8 = undefined;
+    const address = first.address(&address_buffer).?;
+    var second_role = timing;
+    second_role.address = address;
+    const second = try Replication.start(testing.allocator, &other, pathOf(&master_path), .{ .master = second_role });
+    defer second.stop();
+    try testing.expect((try second.status(&.{})).master.standby);
+    try testing.expectEqual(null, second.address(&address_buffer));
+
+    const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
+        .master_address = address,
+        .token = token,
+        .timeout_ns = 500 * std.time.ns_per_ms,
+    } });
+    defer following.stop();
+    try testing.expect(following.waitFor(try commit(&master, "first"), patience));
+
+    first.stop();
+    first_stopped = true;
+    try expectTakesOver(second);
+    try testing.expect(following.waitFor(try commit(&other, "second"), patience));
+}
+
+test "a process standing by takes over a replica's replication when the one running it stops" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path = std.mem.zeroes([256]u8);
+    var replica_path = std.mem.zeroes([256]u8);
+    var master = try open(&tmp, "master", &master_path);
+    defer master.deinit();
+    var replica = try open(&tmp, "replica", &replica_path);
+    defer replica.deinit();
+    var other = try replica.share();
+    defer other.deinit();
+
+    const serving = try Replication.start(testing.allocator, &master, pathOf(&master_path), .{ .master = .{ .address = "127.0.0.1:0", .token = token, .heartbeat_ns = 50 * std.time.ns_per_ms } });
+    defer serving.stop();
+    var address_buffer: [max_address_bytes]u8 = undefined;
+    const role: zypherdb.replication.Role = .{ .replica = .{ .master_address = serving.address(&address_buffer).?, .token = token, .timeout_ns = 500 * std.time.ns_per_ms } };
+    const first = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), role);
+    var first_stopped = false;
+    defer if (!first_stopped) first.stop();
+    const second = try Replication.start(testing.allocator, &other, pathOf(&replica_path), role);
+    defer second.stop();
+    try testing.expect((try second.status(&.{})).replica.standby);
+    try testing.expectError(error.ReadOnlyReplica, other.beginWrite());
+
+    const lsn = try commit(&master, "first");
+    try testing.expect(first.waitFor(lsn, patience));
+    // Standing by, it waits by looking at the database.
+    try testing.expect(second.waitFor(lsn, patience));
+
+    first.stop();
+    first_stopped = true;
+    try expectTakesOver(second);
+    try testing.expect(second.waitFor(try commit(&master, "second"), patience));
+    try testing.expectEqual(null, (try second.status(&.{})).replica.halted);
 }

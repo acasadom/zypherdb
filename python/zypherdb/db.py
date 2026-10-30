@@ -112,7 +112,9 @@ class Database:
         there, reconnecting on its own, and refuses writes. Either needs
         `token`, the secret a replica must send. Replication is not
         encrypted: the token and the data travel in clear, so run it only
-        on a trusted network.
+        on a trusted network. While another process runs replication on the
+        database this one stands by, and takes over when that one closes it or
+        dies; give a master a fixed port so its replicas find whichever runs.
         """
         if durability not in _DURABILITY:
             raise ValueError(f"durability must be one of {', '.join(_DURABILITY)}, not {durability!r}")
@@ -182,17 +184,19 @@ class Database:
 
         A master::
 
-            {"role": "master", "address": "0.0.0.0:7000", "last_lsn": 120,
+            {"role": "master", "standby": False, "address": "0.0.0.0:7000", "last_lsn": 120,
              "replicas": [{"phase": "streaming", "acked_lsn": 118, "lag": 2}]}
 
         `phase` is "introducing", "copying" (a copy of the database is made,
         sent or loaded) or "streaming"; `lag` is how many changes the replica
         has yet to apply, as it last told. A replica::
 
-            {"role": "replica", "applied_lsn": 118, "master_lsn": 120,
+            {"role": "replica", "standby": False, "applied_lsn": 118, "master_lsn": 120,
              "lag": 2, "last_refusal": None, "halted": None}
 
-        `halted` names why the replica stopped following for good (e.g.
+        `standby` is True in a process that opened the database with a role
+        while another process runs replication on it: it takes over when
+        that one closes the database or dies. `halted` names why the replica stopped following for good (e.g.
         "token": the master refused its token); `last_refusal` why the master
         last turned it away.
         """

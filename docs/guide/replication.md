@@ -65,13 +65,14 @@ waiting.
 
 ```python
 status = master.replication_status()
-print(status["role"], status["last_lsn"], len(status["replicas"]))
+print(status["role"], status["standby"], status["last_lsn"], len(status["replicas"]))
 ```
 
 ```text
-master 1 1
+master False 1 1
 ```
 
+`standby` is true in a process standing by to take over (see below), which serves no replica.
 Each replica served has a `phase` (`"introducing"`, `"copying"` while a copy of the database is
 made, sent or loaded, `"streaming"` once it follows change by change), the last change it applied
 as it last told (`acked_lsn`, at least each heartbeat, one second), and its `lag`, the changes it
@@ -79,11 +80,11 @@ has yet to apply. On a replica:
 
 ```python
 status = replica.replication_status()
-print(status["role"], status["applied_lsn"], status["halted"])
+print(status["role"], status["standby"], status["applied_lsn"], status["halted"])
 ```
 
 ```text
-replica 1 None
+replica False 1 None
 ```
 
 `master_lsn` is the master's last change as its last heartbeat told, and `lag` the difference.
@@ -101,11 +102,17 @@ master.close()
 
 ## What to know
 
-- **One process runs replication.** The process that opens the database with `serve` or
-  `replicate_from` holds a lock on `replication.lock` in its directory until it closes it (or
-  ends); another process that opens it with a role gets a `StorageError`. Other processes open
-  the same directory without a role: on the master they write too, and their writes reach the
-  replicas within a heartbeat; on a replica they read.
+- **One process runs replication, others stand by.** The process that opens the database with
+  `serve` or `replicate_from` first runs replication, holding a lock on `replication.lock` in its
+  directory. Another process that opens it with a role stands by: it works as any other process,
+  and when the first one closes the database or dies, it takes over within a fraction of a
+  second, from where replication was (the change log and the last change applied are in the
+  database, not in the process). Replicas reconnect on their own. `replication_status()` tells
+  which process is which (`"standby"`). So that a master's replicas find the process taking over,
+  give a fixed port (`"0.0.0.0:7000"`, not port 0), and the same address and token in every
+  process. Processes may also open the directory without a role: on the master they write too,
+  and their writes reach the replicas within a heartbeat; on a replica they read, and
+  `last_lsn` and `wait_for` work in them as well.
 - **Copies.** A replica's first copy is the whole database, written to `replication-copies` in
   the database's directory on both machines while it is sent and loaded, so plan disk space for
   one more copy on each side. With libmdbx a copy is at least 16 MiB.

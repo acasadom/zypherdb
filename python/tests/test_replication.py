@@ -93,40 +93,58 @@ def test_closing_stops_serving(tmp_path):
         assert address_of(db) == address
 
 
-_OTHER_PROCESS = r"""
-import sys
+_STANDBY = r"""
+import sys, time
 from zypherdb import Database
-from zypherdb.errors import StorageError
 
 path, address = sys.argv[1], sys.argv[2]
-try:
-    Database(path, serve=address, token="the master's token")
-except StorageError as error:
-    print(error)
-with Database(path) as db:
+with Database(path, serve=address, token="the master's token") as db:
+    print(db.replication_status()["standby"], flush=True)
+    sys.stdin.readline()  # the parent's master closed
+    deadline = time.monotonic() + 20
+    while db.replication_status()["standby"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    print(db.replication_status()["standby"], flush=True)
     db.query("CREATE (:Person {name: 'Grace'})")
-    print(db.last_lsn)
+    print(db.last_lsn, flush=True)
+    sys.stdin.readline()  # the parent read it on the replica
 """
 
 
-def test_one_process_runs_replication_and_the_others_writes_reach_the_replicas(tmp_path):
+def test_a_process_standing_by_takes_over_and_a_reader_without_a_role_waits(tmp_path):
     path = str(tmp_path / "master")
-    with Database(path, serve="127.0.0.1:0", token=TOKEN) as master:
-        with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
-            environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
-            output = subprocess.run(
-                [sys.executable, "-c", _OTHER_PROCESS, path, "127.0.0.1:0"],
-                env=environment, capture_output=True, text=True, timeout=60, check=True,
-            ).stdout.splitlines()
-            assert "replication already runs on this database in another process" in output[0]
-            lsn = int(output[1])
-            assert lsn == master.last_lsn > 0
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
+    master = Database(path, serve="127.0.0.1:0", token=TOKEN)
+    address = address_of(master)
+    standby = subprocess.Popen(
+        [sys.executable, "-c", _STANDBY, path, address],
+        env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        with Database(str(tmp_path / "replica"), replicate_from=address, token=TOKEN) as replica:
+            assert standby.stdout.readline().strip() == "True"
+            master.query("CREATE (:Person {name: 'Ada'})")
+            assert replica.wait_for(master.last_lsn, timeout=20)
+            master.close()
+            standby.stdin.write("closed\n")
+            standby.stdin.flush()
+            assert standby.stdout.readline().strip() == "False"
+            lsn = int(standby.stdout.readline())
+            assert replica.wait_for(lsn, timeout=20)
+            assert replica.query("MATCH (p:Person) RETURN p.name ORDER BY p.name") == [["Ada"], ["Grace"]]
             # A reader without a role on the replica waits for it too.
             output = subprocess.run(
                 [sys.executable, "-c", _READER, str(tmp_path / "replica"), str(lsn)],
                 env=environment, capture_output=True, text=True, timeout=60, check=True,
             ).stdout.splitlines()
-            assert output == ["True", "[['Grace']]", "False"]
+            assert output == ["True", "[['Ada'], ['Grace']]", "False"]
+            standby.stdin.write("done\n")
+            standby.stdin.flush()
+        assert standby.wait(timeout=60) == 0
+    finally:
+        master.close()
+        if standby.poll() is None:
+            standby.kill()
 
 
 _READER = r"""
@@ -136,6 +154,6 @@ from zypherdb import Database
 path, lsn = sys.argv[1], int(sys.argv[2])
 with Database(path) as db:
     print(db.wait_for(lsn, timeout=20))
-    print(db.query("MATCH (p:Person) RETURN p.name"))
+    print(db.query("MATCH (p:Person) RETURN p.name ORDER BY p.name"))
     print(db.wait_for(lsn + 1, timeout=0.2))
 """

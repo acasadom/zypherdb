@@ -410,7 +410,7 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     defer zypherdb_close(master);
     var length: usize = 0;
     const master_status = c_api.zypherdb_replication_status(master, &length).?[0..length];
-    try testing.expect(std.mem.startsWith(u8, master_status, "{\"role\":\"master\",\"address\":\"127.0.0.1:"));
+    try testing.expect(std.mem.startsWith(u8, master_status, "{\"role\":\"master\",\"standby\":false,\"address\":\"127.0.0.1:"));
     const address_start = std.mem.indexOf(u8, master_status, "127.0.0.1:").?;
     var address_buffer: [64]u8 = undefined;
     const address = try std.fmt.bufPrint(&address_buffer, "{s}", .{master_status[address_start..std.mem.indexOfScalarPos(u8, master_status, address_start, '"').?]});
