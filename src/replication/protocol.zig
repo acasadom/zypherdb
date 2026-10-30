@@ -150,9 +150,11 @@ pub fn write(writer: *Writer, message: Message) Writer.Error!void {
 
 /// The bytes `write` writes for `message`.
 pub fn frameLength(message: Message) usize {
-    var checksum: ChecksumSink = .{};
-    encodePayload(&checksum, message) catch unreachable;
-    return header_bytes + checksum.length;
+    // No checksum: a sender asks this each time it looks for room for a
+    // part, which may be many times per part.
+    var counter: LengthSink = .{};
+    encodePayload(&counter, message) catch unreachable;
+    return header_bytes + counter.length;
 }
 
 /// A frame decoded from the front of a run of bytes.
@@ -293,6 +295,26 @@ pub fn tokensMatch(sent: []const u8, expected: []const u8) bool {
     return std.crypto.timing_safe.eql([Sha256.digest_length]u8, sent_digest, expected_digest);
 }
 
+/// Counts what is written to it.
+const LengthSink = struct {
+    length: usize = 0,
+
+    fn writeAll(self: *LengthSink, bytes: []const u8) error{}!void {
+        self.length += bytes.len;
+    }
+
+    fn writeByte(self: *LengthSink, byte: u8) error{}!void {
+        _ = byte;
+        self.length += 1;
+    }
+
+    fn writeInt(self: *LengthSink, comptime T: type, value: T, comptime endian: std.builtin.Endian) error{}!void {
+        _ = value;
+        _ = endian;
+        self.length += @sizeOf(T);
+    }
+};
+
 /// Counts and checksums what is written to it.
 const ChecksumSink = struct {
     crc: Crc32 = .init(),
@@ -314,7 +336,8 @@ const ChecksumSink = struct {
     }
 };
 
-/// Writes `message`'s payload to `sink`, a `*Writer` or a `*ChecksumSink`.
+/// Writes `message`'s payload to `sink`, a `*Writer`, a `*ChecksumSink` or
+/// a `*LengthSink`.
 fn encodePayload(sink: anytype, message: Message) !void {
     switch (message) {
         .hello => |hello| {
