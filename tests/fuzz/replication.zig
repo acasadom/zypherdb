@@ -238,6 +238,8 @@ const Replica = struct {
     frozen_until: Instant = 0,
     /// The LSN its database was last checked at.
     checked_lsn: ?u64 = null,
+    /// False after a restart that failed to open it again.
+    open: bool = false,
 };
 
 const Simulation = struct {
@@ -276,6 +278,7 @@ const Simulation = struct {
             replica.path = try std.fmt.allocPrint(allocator, "{s}/replica-{d}", .{ path, i });
             replica.copies_path = try std.fmt.allocPrint(allocator, "{s}/replica-{d}-copies", .{ path, i });
             try Io.Dir.cwd().createDirPath(io, replica.path);
+            replica.open = false;
             try self.openReplica(replica);
         }
     }
@@ -372,10 +375,13 @@ const Simulation = struct {
             .timeout_ns = timeout_ns,
             .max_unapplied_bytes = self.swarm.max_unapplied_bytes,
         });
+        replica.open = true;
     }
 
     fn closeReplica(self: *Simulation, replica: *Replica) void {
         _ = self;
+        if (!replica.open) return;
+        replica.open = false;
         replica.node.deinit();
         replica.applier.deinit();
         replica.wakeup.close();
