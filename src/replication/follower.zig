@@ -92,6 +92,11 @@ pub const Follower = struct {
         return self.node.lastRefusal();
     }
 
+    /// The master's last LSN, as its last heartbeat told (0 before one).
+    pub fn masterLsn(self: *Follower) u64 {
+        return self.node.master_lsn.load(.acquire);
+    }
+
     /// The refusal that made the replica stop following its master for
     /// good (`Refusal.permanent`), or null while it follows. The threads
     /// stay until `stop`.

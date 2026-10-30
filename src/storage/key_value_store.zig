@@ -124,6 +124,9 @@ pub const KeyValueStore = struct {
     change_log_limit: u64 = 512 << 20,
     /// Whether this database is a replica (change_log.zig), once known.
     replica: ?bool = null,
+    /// Set on a store whose database follows a master: it refuses writes
+    /// before its first copy makes it a replica too.
+    follows_master: bool = false,
     /// Told the LSN of each change set this store commits.
     commit_listener: ?CommitListener = null,
     /// The LSN of the last change set this store committed, if any: a
@@ -222,6 +225,7 @@ pub const KeyValueStore = struct {
     }
 
     fn refuseOnReplica(self: *KeyValueStore, transaction: engine.Transaction) StorageError!void {
+        if (self.follows_master) return error.ReadOnlyReplica;
         if (self.replica orelse true) self.replica = try change_log.appliedLsn(transaction) != null;
         if (self.replica.?) return error.ReadOnlyReplica;
     }
