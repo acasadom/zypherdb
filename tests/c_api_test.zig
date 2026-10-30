@@ -393,3 +393,45 @@ test "C ABI: a prepared statement runs again with new parameters" {
     const broken = "MATCH (n RETURN n";
     try testing.expect(c_api.zypherdb_prepare(context, broken.ptr, broken.len) == null);
 }
+
+test "C ABI: a replica opened with its role follows its master and waits to see its writes" {
+    var master_tmp = testing.tmpDir(.{});
+    defer master_tmp.cleanup();
+    var replica_tmp = testing.tmpDir(.{});
+    defer replica_tmp.cleanup();
+    var master_buffer: [256]u8 = undefined;
+    const master_path = std.fmt.bufPrint(&master_buffer, ".zig-cache/tmp/{s}", .{&master_tmp.sub_path}) catch unreachable;
+    var replica_buffer: [256]u8 = undefined;
+    const replica_path = std.fmt.bufPrint(&replica_buffer, ".zig-cache/tmp/{s}", .{&replica_tmp.sub_path}) catch unreachable;
+    const token = "the master's token";
+
+    const any_port = "127.0.0.1:0";
+    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len).?;
+    defer zypherdb_close(master);
+    var length: usize = 0;
+    const master_status = c_api.zypherdb_replication_status(master, &length).?[0..length];
+    try testing.expect(std.mem.startsWith(u8, master_status, "{\"role\":\"master\",\"address\":\"127.0.0.1:"));
+    const address_start = std.mem.indexOf(u8, master_status, "127.0.0.1:").?;
+    var address_buffer: [64]u8 = undefined;
+    const address = try std.fmt.bufPrint(&address_buffer, "{s}", .{master_status[address_start..std.mem.indexOfScalarPos(u8, master_status, address_start, '"').?]});
+
+    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len).?;
+    defer zypherdb_close(replica);
+
+    const create = "CREATE (:Person {name: 'Ada'})";
+    zypherdb_result_free(zypherdb_query(master, create.ptr, create.len).?);
+    const lsn = c_api.zypherdb_last_lsn(master);
+    try testing.expect(lsn > 0);
+    try testing.expect(c_api.zypherdb_wait_for(replica, lsn, 20_000));
+    try testing.expectEqual(lsn, c_api.zypherdb_last_lsn(replica));
+
+    const count = "MATCH (p:Person) RETURN count(p)";
+    const result = zypherdb_query(replica, count.ptr, count.len).?;
+    defer zypherdb_result_free(result);
+    try testing.expectEqual(@as(i64, 1), zypherdb_result_int(result, 0, 0));
+    try testing.expectEqual(null, zypherdb_query(replica, create.ptr, create.len));
+
+    const replica_status = c_api.zypherdb_replication_status(replica, &length).?[0..length];
+    try testing.expect(std.mem.startsWith(u8, replica_status, "{\"role\":\"replica\","));
+    try testing.expect(std.mem.endsWith(u8, replica_status, "\"last_refusal\":null,\"halted\":null}"));
+}

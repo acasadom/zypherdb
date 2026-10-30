@@ -25,6 +25,10 @@ typedef struct zypherdb_statement zypherdb_statement;
 #define ZYPHERDB_DURABILITY_RELAXED 1  /* a power failure can lose the last commit */
 #define ZYPHERDB_DURABILITY_DEFERRED 2 /* the OS or zypherdb_sync writes commits */
 
+/* Replication roles for zypherdb_open_replicated. */
+#define ZYPHERDB_ROLE_MASTER 0  /* serves replicas at the address */
+#define ZYPHERDB_ROLE_REPLICA 1 /* follows the master at the address, refuses writes */
+
 /* Mutator return codes. */
 #define ZYPHERDB_OK 0
 #define ZYPHERDB_STORAGE_ERROR 1
@@ -68,6 +72,16 @@ typedef struct zypherdb_statement zypherdb_statement;
 zypherdb_context *zypherdb_open(const char *path, size_t path_len);
 zypherdb_context *zypherdb_open_with_durability(const char *path, size_t path_len, int durability);
 int zypherdb_sync(zypherdb_context *context);
+/* Opens with a replication role; the token goes in clear: use a trusted network. NULL on failure. */
+zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
+                                           const char *address, size_t address_len, const char *token,
+                                           size_t token_len);
+/* The last change set this database has (master: committed, replica: applied); 0 without replication. */
+uint64_t zypherdb_last_lsn(zypherdb_context *context);
+/* Waits until the master's change set lsn is applied here, at most timeout_ms; whether it is. */
+bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);
+/* How replication goes, as JSON; the buffer belongs to the context. NULL without replication. */
+const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_len);
 /* The directory LOAD CSV reads from; path_len 0 turns LOAD CSV off (as after opening). */
 int zypherdb_set_import_directory(zypherdb_context *context, const char *path, size_t path_len);
 void zypherdb_close(zypherdb_context *context);
