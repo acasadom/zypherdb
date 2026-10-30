@@ -336,7 +336,14 @@ pub const KeyValueStore = struct {
             var entry = try cursor.first();
             while (entry) |found| : (entry = try cursor.next()) {
                 if (table == .main and found.key[0] == catalog_key_start) continue;
-                try transaction.put(table, found.key, found.value);
+                // An integer key goes to the engine aligned, as a u64 (it
+                // need not be, in the copy's pages).
+                var id: u64 = undefined;
+                const key = if (comptime table.hasIntegerKeys()) aligned: {
+                    @memcpy(std.mem.asBytes(&id), found.key);
+                    break :aligned std.mem.asBytes(&id);
+                } else found.key;
+                try transaction.put(table, key, found.value);
             }
         }
         try transaction.commit();
