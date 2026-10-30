@@ -116,6 +116,8 @@ pub extern "c" fn mdbx_dbi_open(txn: *MDBX_txn, name: ?[*:0]const u8, flags: c_u
 pub extern "c" fn mdbx_get(txn: *const MDBX_txn, dbi: MDBX_dbi, key: *const MDBX_val, data: *MDBX_val) c_int;
 pub extern "c" fn mdbx_put(txn: *MDBX_txn, dbi: MDBX_dbi, key: *const MDBX_val, data: *MDBX_val, flags: c_uint) c_int;
 pub extern "c" fn mdbx_del(txn: *MDBX_txn, dbi: MDBX_dbi, key: *const MDBX_val, data: ?*const MDBX_val) c_int;
+/// Empties table `dbi` (`del` false keeps the table itself).
+pub extern "c" fn mdbx_drop(txn: *MDBX_txn, dbi: MDBX_dbi, del: bool) c_int;
 
 // --- Cursors ---
 

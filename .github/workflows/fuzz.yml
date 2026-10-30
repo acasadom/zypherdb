@@ -70,6 +70,9 @@ jobs:
       - name: Crash fuzzer
         run: zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=${{ matrix.engine }} -- crash --seed "$FIRST_SEED" --seeds "$(( SEEDS / 10 ))" --dir fuzz-out | tee fuzz-logs/crash.txt
 
+      - name: Replication simulator
+        run: zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=${{ matrix.engine }} -- replication --seed "$FIRST_SEED" --seeds "$SEEDS" --steps 2000 --dir fuzz-out | tee fuzz-logs/replication.txt
+
       - name: How to replay the failure
         if: failure()
         run: |

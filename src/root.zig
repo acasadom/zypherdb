@@ -29,6 +29,19 @@ pub const property_indexes = @import("storage/property_indexes.zig");
 /// The layout of stored bytes, checked; and which names can be stored.
 pub const layout = @import("storage/layout.zig");
 pub const change_log = @import("storage/change_log.zig");
+pub const replication_protocol = @import("replication/protocol.zig");
+pub const replication_master = @import("replication/master.zig");
+pub const replication_replica = @import("replication/replica.zig");
+pub const replication_master_session = @import("replication/master_session.zig");
+pub const replication_replica_session = @import("replication/replica_session.zig");
+pub const replication_clock = @import("replication/clock.zig");
+pub const replication_network = @import("replication/network.zig");
+pub const replication_tcp = @import("replication/tcp.zig");
+pub const replication_memory_network = @import("replication/memory_network.zig");
+pub const replication_master_node = @import("replication/master_node.zig");
+pub const replication_replica_node = @import("replication/replica_node.zig");
+pub const replication_server = @import("replication/server.zig");
+pub const replication_follower = @import("replication/follower.zig");
 
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
 pub const storage_engine = @tagName(@import("build_options").storage_engine);

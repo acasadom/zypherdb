@@ -1,5 +1,5 @@
 //! Shared test support: temporary stores, the "people and movies" fixture
-//! graph, and query assertions.
+//! graph, query assertions, and digests of a store's contents.
 
 const std = @import("std");
 const testing = std.testing;
@@ -41,6 +41,31 @@ fn identicalTypes(a: Value, b: Value) bool {
 /// The path of a test's temporary directory, relative to the build root.
 pub fn testPath(tmp: *testing.TmpDir, buffer: []u8) []const u8 {
     return std.fmt.bufPrint(buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+}
+
+/// A digest of every key and value of the graph's tables (not the log's,
+/// nor the engine's catalog of tables in the main one), and how many there are.
+pub const Contents = struct { digest: u64, entries: usize };
+
+pub fn contents(store: *KeyValueStore) !Contents {
+    var hasher = std.hash.Wyhash.init(0);
+    var entries: usize = 0;
+    try store.beginRead();
+    defer store.abortRead();
+    inline for (.{ "main", "nodes", "relationships" }) |table| {
+        var scan = if (comptime std.mem.eql(u8, table, "main")) try store.scanAll() else if (comptime std.mem.eql(u8, table, "nodes")) try store.scanNodes() else try store.scanRelationships();
+        defer scan.deinit();
+        while (try scan.next()) |entry| {
+            if (comptime std.mem.eql(u8, table, "main")) if (entry.key.len > 0 and entry.key[0] == '#') continue;
+            hasher.update(table);
+            hasher.update(std.mem.asBytes(&entry.key.len));
+            hasher.update(entry.key);
+            hasher.update(std.mem.asBytes(&entry.value.len));
+            hasher.update(entry.value);
+            entries += 1;
+        }
+    }
+    return .{ .digest = hasher.final(), .entries = entries };
 }
 
 /// Opens a fresh store in the test's temporary directory.

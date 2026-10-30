@@ -14,31 +14,7 @@ const change_log = zypherdb.change_log;
 const support = @import("../support.zig");
 const testPath = support.testPath;
 const expectQuery = support.expectQuery;
-
-/// A digest of every key and value of the graph's tables (not the log's,
-/// nor the engine's catalog of tables in the main one), and how many there are.
-const Contents = struct { digest: u64, entries: usize };
-
-fn contents(store: *KeyValueStore) !Contents {
-    var hasher = std.hash.Wyhash.init(0);
-    var entries: usize = 0;
-    try store.beginRead();
-    defer store.abortRead();
-    inline for (.{ "main", "nodes", "relationships" }) |table| {
-        var scan = if (comptime std.mem.eql(u8, table, "main")) try store.scanAll() else if (comptime std.mem.eql(u8, table, "nodes")) try store.scanNodes() else try store.scanRelationships();
-        defer scan.deinit();
-        while (try scan.next()) |entry| {
-            if (comptime std.mem.eql(u8, table, "main")) if (entry.key.len > 0 and entry.key[0] == '#') continue;
-            hasher.update(table);
-            hasher.update(std.mem.asBytes(&entry.key.len));
-            hasher.update(entry.key);
-            hasher.update(std.mem.asBytes(&entry.value.len));
-            hasher.update(entry.value);
-            entries += 1;
-        }
-    }
-    return .{ .digest = hasher.final(), .entries = entries };
-}
+const contents = support.contents;
 
 /// The replica `target` applies the change sets `first` up to, not
 /// including, `end` of `source`.
@@ -304,4 +280,92 @@ test "a change set that is not one is refused" {
     try testing.expectError(error.MalformedChangeSet, changes.next());
     var to_the_log = change_log.Iterator{ .bytes = &.{ 0x02, @backingInt(change_log.Table.changes), 0, 0, 0, 0 } };
     try testing.expectError(error.MalformedChangeSet, to_the_log.next());
+}
+
+test "a database loads a copy of a master over what it held, while readers keep what they saw" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var source_path: [256]u8 = undefined;
+    var source = try openAt(&tmp, "source", &source_path);
+    defer source.deinit();
+    try source.startChangeLog();
+    var g = Graph.init(&source, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Person {id: i})-[:OWNS]->(:Thing)", &.{});
+    try expectQuery(&ast, &g, "CREATE INDEX FOR (p:Person) ON (p.id)", &.{});
+    var base_buffer: [128]u8 = undefined;
+    var copy_buffer: [256]u8 = undefined;
+    const copy_path = try std.fmt.bufPrint(&copy_buffer, "{s}/copy", .{testPath(&tmp, &base_buffer)});
+    try tmp.dir.createDirPath(testing.io, "copy");
+    try source.copyDatabase(copy_path);
+    try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.id < 5 DETACH DELETE p", &.{});
+
+    // What the database held before: records, an index, keys of its own.
+    var target_path: [256]u8 = undefined;
+    var target = try openAt(&tmp, "target", &target_path);
+    defer target.deinit();
+    var target_graph = Graph.init(&target, testing.allocator);
+    try expectQuery(&ast, &target_graph, "UNWIND range(1, 50) AS i CREATE (:Other {id: i})-[:R]->(:Other)", &.{});
+    try expectQuery(&ast, &target_graph, "CREATE INDEX FOR (o:Other) ON (o.id)", &.{});
+    try target.put("mine", "value");
+
+    var reader = try target.share();
+    errdefer reader.deinit();
+    try reader.beginRead();
+    const applied = try target.loadCopy(copy_path);
+    try testing.expect(try reader.exists("mine"));
+    reader.abortRead();
+    try testing.expect(!try reader.exists("mine"));
+    try testing.expectEqual(@as(?u64, applied), try target.appliedLsn());
+    try testing.expectEqual(try source.databaseId(), try target.databaseId());
+    try testing.expect(try target.get("mine") == null);
+    try testing.expectError(error.ReadOnlyReplica, target.put("mine", "value"));
+
+    const state = (try source.changeLogState()).?;
+    try replay(&source, &target, applied + 1, state.next_lsn);
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    try testing.expectEqual(try contents(&source), try contents(&reader));
+    // Closing a share leaves the database open.
+    reader.deinit();
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    // A master loads no copy.
+    try testing.expectError(error.WriteFailed, source.loadCopy(copy_path));
+}
+
+test "a commit listener is told the LSN of each change set committed" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [256]u8 = undefined;
+    var store = try openAt(&tmp, "master", &path);
+    defer store.deinit();
+    const Heard = struct {
+        lsns: [4]u64 = undefined,
+        count: usize = 0,
+        fn committed(context: *anyopaque, lsn: u64) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.lsns[self.count] = lsn;
+            self.count += 1;
+        }
+    };
+    var heard: Heard = .{};
+    store.commit_listener = .{ .context = &heard, .committed = Heard.committed };
+    // Before the change log starts, a commit has no LSN.
+    try store.beginWrite();
+    try store.put("before", "log");
+    try store.commitWrite();
+    try store.startChangeLog();
+    for ([_][]const u8{ "one", "two" }) |key| {
+        try store.beginWrite();
+        try store.put(key, "value");
+        try store.commitWrite();
+    }
+    // Neither does one that changed nothing, nor one aborted.
+    try store.beginWrite();
+    try store.commitWrite();
+    try store.beginWrite();
+    try store.put("aborted", "value");
+    store.abortWrite();
+    try testing.expectEqualSlices(u64, &.{ 1, 2 }, heard.lsns[0..heard.count]);
+    try testing.expectEqual(@as(?u64, 2), store.last_committed_lsn);
 }

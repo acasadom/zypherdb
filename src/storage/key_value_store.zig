@@ -124,6 +124,16 @@ pub const KeyValueStore = struct {
     change_log_limit: u64 = 512 << 20,
     /// Whether this database is a replica (change_log.zig), once known.
     replica: ?bool = null,
+    /// Told the LSN of each change set this store commits.
+    commit_listener: ?CommitListener = null,
+    /// The LSN of the last change set this store committed, if any: a
+    /// replica that applied it sees this store's writes.
+    last_committed_lsn: ?u64 = null,
+
+    pub const CommitListener = struct {
+        context: *anyopaque,
+        committed: *const fn (context: *anyopaque, lsn: u64) void,
+    };
 
     pub const SchemaDefinitions = struct {
         version: u64,
@@ -189,6 +199,10 @@ pub const KeyValueStore = struct {
         self.active_write_transaction = null;
         self.write_transaction_memo = .{};
         try transaction.commit();
+        const recorder = self.change_recorder orelse return;
+        if (recorder.chunks == 0) return;
+        self.last_committed_lsn = recorder.state.next_lsn - 1;
+        if (self.commit_listener) |listener| listener.committed(listener.context, recorder.state.next_lsn - 1);
     }
 
     pub fn abortWrite(self: *KeyValueStore) void {
@@ -273,10 +287,13 @@ pub const KeyValueStore = struct {
         return .applied;
     }
 
+    /// The one file of a copy (`copyDatabase`), in its directory.
+    pub const data_file_name = engine.data_file_name;
+
     /// Writes a compacted copy of the database as it is now, its change log
-    /// included, into `directory`, which must exist and hold no database.
-    /// Writers go on meanwhile. A copy of a master becomes a replica of it
-    /// with `becomeReplica`.
+    /// included, into `directory`, which must exist and hold no database,
+    /// as one file (`data_file_name`). Writers go on meanwhile. A copy of a
+    /// master becomes a replica of it with `becomeReplica`.
     pub fn copyDatabase(self: *KeyValueStore, directory: []const u8) StorageError!void {
         return self.environment.copy(self.allocator, directory);
     }
@@ -293,6 +310,81 @@ pub const KeyValueStore = struct {
         self.replica = true;
         self.change_log_started = false;
         return applied;
+    }
+
+    /// Makes everything this database holds the copy of a master in
+    /// `directory` (`copyDatabase`), in one write transaction (readers see
+    /// the database as it was until it commits), and the database a replica
+    /// of that master that has applied every change set the copy holds;
+    /// returns that LSN. The copy becomes a replica too, to be deleted.
+    /// Fails with `WriteFailed` on a master.
+    pub fn loadCopy(self: *KeyValueStore, directory: []const u8) StorageError!u64 {
+        if (self.inTransaction()) return error.WriteFailed;
+        var copied = try KeyValueStore.open(self.allocator, directory);
+        defer copied.deinit();
+        const applied = try copied.becomeReplica();
+        const source = try copied.environment.beginRead();
+        defer copied.environment.endRead(source);
+        const transaction = try self.environment.beginWrite();
+        errdefer transaction.abort();
+        if (try change_log.readState(transaction) != null) return error.WriteFailed;
+        try clearMainTable(self.allocator, transaction);
+        inline for (.{ Table.nodes, Table.relationships, Table.changes }) |table| try transaction.clear(table);
+        inline for (comptime std.enums.values(Table)) |table| {
+            var cursor = try source.openCursor(table);
+            defer cursor.close();
+            var entry = try cursor.first();
+            while (entry) |found| : (entry = try cursor.next()) {
+                if (table == .main and found.key[0] == catalog_key_start) continue;
+                // An integer key goes to the engine aligned, as a u64 (it
+                // need not be, in the copy's pages).
+                var id: u64 = undefined;
+                const key = if (comptime table.hasIntegerKeys()) aligned: {
+                    @memcpy(std.mem.asBytes(&id), found.key);
+                    break :aligned std.mem.asBytes(&id);
+                } else found.key;
+                try transaction.put(table, key, found.value);
+            }
+        }
+        try transaction.commit();
+        self.replica = true;
+        self.change_log_started = false;
+        // The copy's schema may have the version of the one cached.
+        self.forgetSchemaDefinitions();
+        return applied;
+    }
+
+    /// Keys of the main table starting with it are the engine's catalog of
+    /// tables (engine/contract.zig).
+    const catalog_key_start = '#';
+
+    fn clearMainTable(allocator: std.mem.Allocator, transaction: engine.Transaction) StorageError!void {
+        var cursor = try transaction.openCursor(.main);
+        defer cursor.close();
+        var key: std.ArrayList(u8) = .empty;
+        defer key.deinit(allocator);
+        var entry = try cursor.first();
+        while (entry) |found| {
+            if (found.key[0] == catalog_key_start) {
+                entry = try cursor.seek(&.{catalog_key_start + 1});
+                continue;
+            }
+            // The cursor's bytes do not outlive the delete.
+            key.clearRetainingCapacity();
+            try key.appendSlice(allocator, found.key);
+            try transaction.delete(.main, key.items);
+            entry = try cursor.seek(key.items);
+        }
+    }
+
+    /// Another store on this open database, for another thread (a store is
+    /// used by one thread at a time); deinit it before this one. Each store
+    /// learns on its own that the database became a replica: one becomes
+    /// it (`loadCopy`, `applyChangeSet`) before another writes.
+    pub fn share(self: *KeyValueStore) StorageError!KeyValueStore {
+        const records = self.allocator.create(RecordCache) catch return error.OutOfMemory;
+        records.* = .{};
+        return .{ .environment = self.environment.share(), .allocator = self.allocator, .records = records, .change_log_limit = self.change_log_limit };
     }
 
     /// The id of the master this database is or was copied from, null if
