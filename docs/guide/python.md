@@ -20,7 +20,7 @@ import zypherdb, tempfile
 db = zypherdb.Database(tempfile.mkdtemp())
 ```
 
-### `Database(path, durability="full", temporals="python", import_directory=None)`
+### `Database(path, durability="full", temporals="python", import_directory=None, serve=None, replicate_from=None, token=None)`
 
 Opens the database in directory `path`, creating the directory and the database if they do not
 exist. A database is used as a context manager (`with Database(path) as db:`), which closes it on
@@ -41,6 +41,11 @@ exit, or closed with `close()`.
 - `import_directory` — the directory `LOAD CSV` reads from: a query's `file:///name.csv` is
   `name.csv` in it, and nothing outside it can be read. Without one, `LOAD CSV` raises
   `ExternalResourceError`. A path that is not a directory raises `ValueError`.
+- `serve`, `replicate_from`, `token` — a replication role (see [replication](replication.md)):
+  `serve="host:port"` makes the database a master that serves replicas there, and
+  `replicate_from="host:port"` a replica of the master there, which refuses writes. Either needs
+  `token`, the secret a replica sends; both at once raise `ValueError`. Replication is not
+  encrypted: run it only on a trusted network.
 
 ### `query(text, parameters=None, /, **named) -> list[list]`
 
@@ -181,6 +186,14 @@ Direct writes, each its own transaction unless inside `write()`:
   > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
   > reports is a bug in ZypherDB: please report it with the output.
 - `sync()` — writes every commit so far to disk (for `"deferred"` durability).
+- `last_lsn` — the number of the last change the database has: on a master the last write
+  committed, on a replica the last change applied; 0 without replication.
+- `wait_for(lsn, timeout=5.0) -> bool` — on a replica, waits until the master's change `lsn` is
+  applied, at most `timeout` seconds, and returns whether it is: call it before reading a write
+  just made on the master. `True` at once on a master or without replication.
+- `replication_status() -> dict | None` — how replication goes, for monitoring: a master's
+  replicas and their lag, or a replica's progress and why it halted
+  (see [replication](replication.md#watching-it)); `None` without replication.
 - `close()` — releases the database. Using it afterwards raises `ClosedError`.
 
 ## Values

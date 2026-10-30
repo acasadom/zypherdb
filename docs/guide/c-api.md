@@ -328,6 +328,50 @@ valid until the next check or `zypherdb_close`.
 > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
 > reports is a bug in ZypherDB: please report it with the output.
 
+## Replication
+
+```c
+zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
+                                           const char *address, size_t address_len, const char *token,
+                                           size_t token_len);
+uint64_t zypherdb_last_lsn(zypherdb_context *context);
+bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);
+const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_len);
+```
+
+`zypherdb_open_replicated` opens the database with a replication role (see
+[replication](replication.md)): `ZYPHERDB_ROLE_MASTER` (0) serves replicas at `address`
+(`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
+writes. `token` is the secret a replica sends; the context keeps its own copy of `address` and
+`token`. It returns `NULL` when the database cannot be opened or replication cannot start (the
+address is taken, or a database that was a master is opened as a replica). Closing the context
+stops replication.
+
+> **Warning.** Replication is not encrypted: the token and the data travel in clear. Run it only
+> on a trusted network.
+
+`zypherdb_last_lsn` is the number of the last change the database has: on a master the last
+committed, on a replica the last applied; 0 without replication. `zypherdb_wait_for` waits until
+the master's change `lsn` is applied, at most `timeout_ms`, and returns whether it is: to read on
+a replica a write made on the master, pass it the master's `zypherdb_last_lsn` after the write. It
+returns `true` at once on a master or without replication.
+
+`zypherdb_replication_status` returns how replication goes as JSON, or `NULL` without replication.
+A master's:
+
+```json
+{"role": "master", "address": "0.0.0.0:7000", "last_lsn": 120,
+ "replicas": [{"phase": "streaming", "acked_lsn": 118, "lag": 2}]}
+```
+
+A replica's (`halted` and `last_refusal` are a reason's name, such as `"token"`, or `null`):
+
+```json
+{"role": "replica", "applied_lsn": 118, "master_lsn": 120, "lag": 2, "last_refusal": null, "halted": null}
+```
+
+The text belongs to the context, and stays valid until the next status or `zypherdb_close`.
+
 ## Threads and processes
 
 A context is not thread-safe, so serialize the calls on one context. Each process opens the
