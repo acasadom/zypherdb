@@ -49,6 +49,22 @@ pub const ReplicaState = struct {
     /// The last change set it applied, as it last acked (0 until it
     /// streams): its lag is the master's last LSN minus this.
     acked_lsn: u64,
+    /// When it connected, on the node's clock.
+    connected_at: Instant,
+    name_buffer: [protocol.max_name_bytes]u8,
+    name_length: u8,
+    address_buffer: [network.max_address_bytes]u8,
+    address_length: u8,
+
+    /// What it calls itself ("" until its hello came).
+    pub fn name(self: *const ReplicaState) []const u8 {
+        return self.name_buffer[0..self.name_length];
+    }
+
+    /// Where it connected from, "host:port".
+    pub fn address(self: *const ReplicaState) []const u8 {
+        return self.address_buffer[0..self.address_length];
+    }
 
     pub const Phase = enum {
         /// Connected, its hello not answered yet.
@@ -178,6 +194,10 @@ pub const MasterNode = struct {
         buffers: []u8,
         /// What the connection was ready for at the last wait.
         ready: Readiness = .{},
+        connected_at: Instant,
+        /// Where it connected from: the first `address_length` bytes.
+        address_buffer: [network.max_address_bytes]u8 = undefined,
+        address_length: u8 = 0,
         /// The copy asked for, or sent, for this replica.
         copy_number: ?u64 = null,
         copy_file: ?Io.File = null,
@@ -316,7 +336,8 @@ pub const MasterNode = struct {
         defer self.states_mutex.unlock(self.io);
         self.states_count = 0;
         for (self.replicas) |slot| {
-            const session = &(slot orelse continue).session;
+            const replica = slot orelse continue;
+            const session = &replica.session;
             const phase: ReplicaState.Phase = switch (session.state) {
                 .awaiting_hello => .introducing,
                 .making_copy, .sending_copy, .awaiting_copy_ack => .copying,
@@ -324,7 +345,18 @@ pub const MasterNode = struct {
                 // Not served: let go once told.
                 .refused => continue,
             };
-            self.states[self.states_count] = .{ .phase = phase, .acked_lsn = session.acked_lsn };
+            const state = &self.states[self.states_count];
+            state.* = .{
+                .phase = phase,
+                .acked_lsn = session.acked_lsn,
+                .connected_at = replica.connected_at,
+                .name_buffer = undefined,
+                .name_length = session.name_length,
+                .address_buffer = undefined,
+                .address_length = replica.address_length,
+            };
+            @memcpy(state.name_buffer[0..state.name_length], session.name());
+            @memcpy(state.address_buffer[0..state.address_length], replica.address_buffer[0..replica.address_length]);
             self.states_count += 1;
         }
     }
@@ -392,7 +424,9 @@ pub const MasterNode = struct {
                 .copy_timeout_ns = self.options.copy_timeout_ns,
             }, now),
             .buffers = buffers,
+            .connected_at = now,
         };
+        replica.address_length = @intCast(connection.peer(&replica.address_buffer).len);
         return replica;
     }
 

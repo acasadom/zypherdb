@@ -108,6 +108,26 @@ pub fn localAddress(handle: Handle) Error!IpAddress {
     return system_address.to();
 }
 
+/// Where the other end of a connected `handle` is.
+pub fn peerAddress(handle: Handle) Error!IpAddress {
+    try started();
+    var system_address: SystemAddress = .{ .bytes = undefined, .length = @sizeOf(SystemAddress.Storage) };
+    const result = if (is_windows)
+        winsock.getpeername(handle, &system_address.bytes, &system_address.length)
+    else
+        c.getpeername(handle, @ptrCast(&system_address.bytes), &system_address.length);
+    if (result != 0) return error.NetworkFailed;
+    return system_address.to();
+}
+
+/// The name of this host, in `buffer`.
+pub fn hostName(buffer: *[256]u8) Error![]const u8 {
+    try started();
+    const result = if (is_windows) winsock.gethostname(buffer, buffer.len) else c.gethostname(buffer, buffer.len);
+    if (result != 0) return error.NetworkFailed;
+    return std.mem.sliceTo(buffer, 0);
+}
+
 /// The next connection waiting on a listening `handle`, not blocking;
 /// null if none waits.
 pub fn accept(handle: Handle) Error!?Handle {
@@ -394,6 +414,8 @@ const winsock = struct {
     extern "ws2_32" fn bind(socket: SOCKET, address: *const anyopaque, length: c_int) callconv(.winapi) c_int;
     extern "ws2_32" fn listen(socket: SOCKET, backlog: c_int) callconv(.winapi) c_int;
     extern "ws2_32" fn getsockname(socket: SOCKET, address: *anyopaque, length: *c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn getpeername(socket: SOCKET, address: *anyopaque, length: *c_int) callconv(.winapi) c_int;
+    extern "ws2_32" fn gethostname(name: [*]u8, length: c_int) callconv(.winapi) c_int;
     extern "ws2_32" fn accept(socket: SOCKET, address: ?*anyopaque, length: ?*c_int) callconv(.winapi) SOCKET;
     extern "ws2_32" fn connect(socket: SOCKET, address: *const anyopaque, length: c_int) callconv(.winapi) c_int;
     extern "ws2_32" fn recv(socket: SOCKET, buffer: [*]u8, length: c_int, flags: c_int) callconv(.winapi) c_int;

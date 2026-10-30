@@ -820,8 +820,9 @@ fn abortWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject 
 
 // --- Replication -------------------------------------------------------------------
 
-/// `start_replication(db, path, role, address, token)`: role 0 serves
-/// replicas at `address`, role 1 follows the master at `address`.
+/// `start_replication(db, path, role, address, token, name)`: role 0 serves
+/// replicas at `address`, role 1 follows the master at `address` calling
+/// itself `name` (None: the host's name).
 fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var capsule: ?*py.PyObject = null;
     var path_pointer: [*c]const u8 = undefined;
@@ -831,18 +832,25 @@ fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyO
     var address_length: py.Py_ssize_t = 0;
     var token_pointer: [*c]const u8 = undefined;
     var token_length: py.Py_ssize_t = 0;
-    if (parseTuple(args, "Os#is#s#", &capsule, &path_pointer, &path_length, &role, &address_pointer, &address_length, &token_pointer, &token_length) == 0) return null;
+    var name_pointer: [*c]const u8 = null;
+    var name_length: py.Py_ssize_t = 0;
+    if (parseTuple(args, "Os#is#s#z#", &capsule, &path_pointer, &path_length, &role, &address_pointer, &address_length, &token_pointer, &token_length, &name_pointer, &name_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     const address = address_pointer[0..@intCast(address_length)];
     const token = token_pointer[0..@intCast(token_length)];
     const replication_role: zypherdb.replication.Role = switch (role) {
         0 => .{ .master = .{ .address = address, .token = token } },
-        1 => .{ .replica = .{ .master_address = address, .token = token } },
+        1 => .{ .replica = .{
+            .master_address = address,
+            .token = token,
+            .name = if (name_pointer == null) null else name_pointer[0..@intCast(name_length)],
+        } },
         else => return raise(py.PyExc_ValueError, "unknown role {d}", .{role}),
     };
     database.replication = Replication.start(allocator, &database.store, path_pointer[0..@intCast(path_length)], replication_role) catch |err| return switch (err) {
         error.MasterDatabase => raise(classes.storage_error, "the database is a master: a replica must start from an empty database or a replica", .{}),
         error.ReadOnlyReplica => raise(classes.storage_error, "the database is a replica: it cannot serve replicas", .{}),
+        error.NameTooLong => raise(py.PyExc_ValueError, "a replica's name is at most {d} bytes", .{zypherdb.replication_protocol.max_name_bytes}),
         else => raise(classes.storage_error, "replication could not start at {s}: {t}", .{ address, err }),
     };
     return none();

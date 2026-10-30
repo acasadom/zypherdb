@@ -75,6 +75,8 @@ const ms = std.time.ns_per_ms;
 const heartbeat_ns = 100 * ms;
 const timeout_ns = 500 * ms;
 const max_replicas = 3;
+/// What each replica calls itself: its index in `Simulation.replicas`.
+const replica_names = [max_replicas][]const u8{ "replica-0", "replica-1", "replica-2" };
 /// Simulated time the faults off may take to bring every replica up to
 /// date.
 const settle_ns = 120 * std.time.ns_per_s;
@@ -374,8 +376,13 @@ const Simulation = struct {
             .longest_retry_ns = 200 * ms,
             .timeout_ns = timeout_ns,
             .max_unapplied_bytes = self.swarm.max_unapplied_bytes,
+            .name = replica_names[self.indexOf(replica)],
         });
         replica.open = true;
+    }
+
+    fn indexOf(self: *const Simulation, replica: *const Replica) usize {
+        return (@intFromPtr(replica) - @intFromPtr(&self.replicas[0])) / @sizeOf(Replica);
     }
 
     fn closeReplica(self: *Simulation, replica: *Replica) void {
@@ -653,6 +660,28 @@ const Simulation = struct {
         for (self.replicas[0..self.swarm.replicas]) |*replica| {
             if (try digest(&replica.store) != try digest(&self.master.store)) return self.fail("a replica up to date differs from the master", .{});
             try self.checkIntegrity(replica);
+        }
+        try self.checkIdentities();
+    }
+
+    /// The master serves each replica once, by its name, from its
+    /// connection; each replica streams, last heard within a timeout.
+    fn checkIdentities(self: *Simulation) !void {
+        var buffer: [max_replicas + 1]master_node.ReplicaState = undefined;
+        const states = self.master.node.replicaStates(&buffer);
+        for (self.replicas[0..self.swarm.replicas], 0..) |*replica, i| {
+            const node = &replica.node;
+            if (node.phase() != .streaming) return self.fail("replica {d} is up to date but tells {t}", .{ i, node.phase() });
+            const heard = node.lastHeard() orelse return self.fail("replica {d} never heard from its master", .{i});
+            if (self.clock.time - heard > timeout_ns) return self.fail("replica {d} last heard from its master too long ago", .{i});
+            var served: usize = 0;
+            for (states) |*state| {
+                if (!std.mem.eql(u8, state.name(), replica_names[i])) continue;
+                served += 1;
+                if (!std.mem.startsWith(u8, state.address(), "memory:")) return self.fail("replica {d} served from {s}", .{ i, state.address() });
+                if (state.connected_at > self.clock.time) return self.fail("replica {d} connected in the future", .{i});
+            }
+            if (served != 1) return self.fail("replica {d} served {d} times", .{ i, served });
         }
     }
 

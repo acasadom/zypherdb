@@ -50,10 +50,13 @@ pub const max_token_bytes: usize = 1024;
 /// The largest name of a storage engine.
 pub const max_engine_name_bytes: usize = 32;
 
-const part_header_bytes = 9;
-const hello_fixed_bytes = magic.len + 2 + 4 + 1 + 16 + 8 + 2;
+/// The largest name a replica gives itself.
+pub const max_name_bytes: usize = 255;
 
-pub const max_payload_bytes: usize = @max(part_bytes + part_header_bytes, hello_fixed_bytes + max_engine_name_bytes + max_token_bytes);
+const part_header_bytes = 9;
+const hello_fixed_bytes = magic.len + 2 + 4 + 1 + 16 + 8 + 2 + 1;
+
+pub const max_payload_bytes: usize = @max(part_bytes + part_header_bytes, hello_fixed_bytes + max_engine_name_bytes + max_token_bytes + max_name_bytes);
 
 const header_bytes = 9;
 
@@ -86,6 +89,9 @@ pub const Hello = struct {
     /// The last change set the replica applied (0 if none).
     applied_lsn: u64,
     token: []const u8,
+    /// What the replica calls itself, for its master's status (its host's
+    /// name, unless told another).
+    name: []const u8 = "",
 };
 
 /// Why a master turns a replica away.
@@ -343,6 +349,7 @@ fn encodePayload(sink: anytype, message: Message) !void {
         .hello => |hello| {
             std.debug.assert(hello.storage_engine.len <= max_engine_name_bytes);
             std.debug.assert(hello.token.len <= max_token_bytes);
+            std.debug.assert(hello.name.len <= max_name_bytes);
             try sink.writeAll(&magic);
             try sink.writeInt(u16, hello.protocol_version, .big);
             try sink.writeInt(u32, hello.storage_format, .big);
@@ -353,6 +360,8 @@ fn encodePayload(sink: anytype, message: Message) !void {
             try sink.writeInt(u64, hello.applied_lsn, .big);
             try sink.writeInt(u16, @intCast(hello.token.len), .big);
             try sink.writeAll(hello.token);
+            try sink.writeByte(@intCast(hello.name.len));
+            try sink.writeAll(hello.name);
         },
         .refused => |reason| try sink.writeByte(@backingInt(reason)),
         .stream, .snapshot_end, .heartbeat, .ack => |lsn_or_size| try sink.writeInt(u64, lsn_or_size, .big),
@@ -381,6 +390,7 @@ fn decodePayload(kind: Kind, payload: []const u8) ?Message {
             const database_id = (cursor.take(16) orelse return null)[0..16].*;
             const applied_lsn = cursor.int(u64) orelse return null;
             const token = cursor.take(cursor.int(u16) orelse return null) orelse return null;
+            const name = cursor.take(cursor.int(u8) orelse return null) orelse return null;
             if (has_database_id > 1 or storage_engine.len > max_engine_name_bytes or token.len > max_token_bytes) return null;
             break :hello .{ .hello = .{
                 .protocol_version = protocol_version,
@@ -389,6 +399,7 @@ fn decodePayload(kind: Kind, payload: []const u8) ?Message {
                 .database_id = if (has_database_id == 1) database_id else null,
                 .applied_lsn = applied_lsn,
                 .token = token,
+                .name = name,
             } };
         },
         .refused => .{ .refused = @fromBackingInt(@intCast(cursor.int(u8) orelse return null)) },

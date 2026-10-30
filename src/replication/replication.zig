@@ -16,7 +16,10 @@ const SystemClock = @import("clock.zig").SystemClock;
 const Tcp = @import("tcp.zig").Tcp;
 const server_module = @import("server.zig");
 const Server = server_module.Server;
-const Follower = @import("follower.zig").Follower;
+const follower_module = @import("follower.zig");
+const Follower = follower_module.Follower;
+const Instant = @import("clock.zig").Instant;
+const sockets = @import("sockets.zig");
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 const Signal = @import("clock.zig").Signal;
 const network = @import("network.zig");
@@ -25,6 +28,7 @@ const log = std.log.scoped(.replication);
 
 pub const ReplicaState = server_module.ReplicaState;
 pub const Refusal = protocol.Refusal;
+pub const Phase = follower_module.Phase;
 
 /// The directory, inside the database's, where copies for or from other
 /// nodes are kept while they are sent or loaded.
@@ -59,6 +63,9 @@ pub const Role = union(enum) {
         master_address: []const u8,
         token: []const u8,
         timeout_ns: u64 = 5 * std.time.ns_per_s,
+        /// What the replica calls itself in its master's status, at most
+        /// `protocol.max_name_bytes`; null: this host's name.
+        name: ?[]const u8 = null,
     };
 };
 
@@ -74,10 +81,24 @@ pub const Status = union(enum) {
         last_lsn: u64,
         /// The replicas served now (the rest of the buffer given is unused).
         replicas: []ReplicaState,
+        /// When the status was taken: a replica connected `now -
+        /// connected_at` nanoseconds ago.
+        now: Instant,
     };
 
     pub const Replica = struct {
         standby: bool,
+        /// What the replica calls itself to its master.
+        name: []const u8,
+        master_address: []const u8,
+        /// Where it is in following its master (`connecting` while
+        /// standing by).
+        phase: Phase,
+        /// When the master was last heard from; null if never.
+        last_heard: ?Instant,
+        /// When the status was taken: the master was last heard from `now
+        /// - last_heard` nanoseconds ago.
+        now: Instant,
         /// The last change set applied (0 before the first copy).
         applied_lsn: u64,
         /// The master's last LSN, as its last heartbeat told (0 before one).
@@ -105,6 +126,8 @@ pub const Replication = struct {
     role: Role,
     role_address: []u8,
     role_token: []u8,
+    /// A replica's name (its host's, if not given); empty on a master.
+    role_name: []u8,
     copies_directory: []u8,
     /// `lock_file_name`, locked while this process runs replication.
     lock_file: Io.File,
@@ -135,6 +158,7 @@ pub const Replication = struct {
             .role = role,
             .role_address = &.{},
             .role_token = &.{},
+            .role_name = &.{},
             .copies_directory = try std.fmt.allocPrint(allocator, "{s}/" ++ copies_directory_name, .{path}),
             .lock_file = undefined,
         };
@@ -158,6 +182,18 @@ pub const Replication = struct {
             },
         }
         errdefer allocator.free(self.role_token);
+        if (self.role == .replica) {
+            const replica = &self.role.replica;
+            var host_buffer: [256]u8 = undefined;
+            const name = replica.name orelse host: {
+                const host = sockets.hostName(&host_buffer) catch "";
+                break :host host[0..@min(host.len, protocol.max_name_bytes)];
+            };
+            if (name.len > protocol.max_name_bytes) return error.NameTooLong;
+            self.role_name = try allocator.dupe(u8, name);
+            replica.name = self.role_name;
+        }
+        errdefer allocator.free(self.role_name);
         const io = self.threaded.io();
         self.clock = .{ .io = io };
         self.tcp = .{ .io = io, .allocator = allocator };
@@ -196,6 +232,7 @@ pub const Replication = struct {
         self.allocator.free(self.copies_directory);
         self.allocator.free(self.role_address);
         self.allocator.free(self.role_token);
+        self.allocator.free(self.role_name);
         self.allocator.destroy(self);
     }
 
@@ -220,6 +257,7 @@ pub const Replication = struct {
                     .token = replica.token,
                     .copies_directory = self.copies_directory,
                     .timeout_ns = replica.timeout_ns,
+                    .name = self.role_name,
                 }), .release);
             },
         }
@@ -272,12 +310,18 @@ pub const Replication = struct {
                     .standby = server == null,
                     .last_lsn = try lastLsn(self.store),
                     .replicas = if (server) |running| running.replicaStates(buffer) else buffer[0..0],
+                    .now = self.clock.clock().now(),
                 } };
             },
             .replica => {
                 const follower = self.follower.load(.acquire);
                 return .{ .replica = .{
                     .standby = follower == null,
+                    .name = self.role_name,
+                    .master_address = self.role_address,
+                    .phase = if (follower) |running| running.phase() else .connecting,
+                    .last_heard = if (follower) |running| running.lastHeard() else null,
+                    .now = self.clock.clock().now(),
                     .applied_lsn = try self.store.appliedLsn() orelse 0,
                     .master_lsn = if (follower) |running| running.masterLsn() else 0,
                     .last_refusal = if (follower) |running| running.lastRefusal() else null,
@@ -288,34 +332,59 @@ pub const Replication = struct {
     }
 
     /// `status` as JSON, owned by the caller: a master's
-    /// {"role", "standby", "address", "last_lsn", "replicas": [{"phase",
-    /// "acked_lsn", "lag"}]}, a replica's {"role", "standby",
-    /// "applied_lsn", "master_lsn", "lag", "last_refusal", "halted"} (a
-    /// refusal's name, or null).
+    /// {"role", "standby", "address", "last_lsn", "replicas": [{"name",
+    /// "address", "connected_ms", "phase", "acked_lsn", "lag"}]}, a
+    /// replica's {"role", "standby", "name", "master_address", "phase",
+    /// "last_contact_ms" (ago, or null), "applied_lsn", "master_lsn", "lag",
+    /// "last_refusal", "halted"} (a refusal's name, or null).
     pub fn statusJson(self: *Replication, allocator: Allocator) ![]u8 {
+        var out: Io.Writer.Allocating = .init(allocator);
+        defer out.deinit();
+        self.writeStatusJson(&out.writer) catch |err| switch (err) {
+            error.WriteFailed => return error.OutOfMemory,
+            else => |other| return other,
+        };
+        return out.toOwnedSlice();
+    }
+
+    fn writeStatusJson(self: *Replication, json: *Io.Writer) !void {
         var buffer: [max_replicas]ReplicaState = undefined;
-        var json: std.ArrayList(u8) = .empty;
-        errdefer json.deinit(allocator);
         switch (try self.status(&buffer)) {
             .master => |master| {
                 var address_buffer: [network.max_address_bytes]u8 = undefined;
                 const listening = self.address(&address_buffer) orelse self.role_address;
-                try json.print(allocator, "{{\"role\":\"master\",\"standby\":{},\"address\":\"{s}\",\"last_lsn\":{d},\"replicas\":[", .{ master.standby, listening, master.last_lsn });
-                for (master.replicas, 0..) |replica, index| {
-                    if (index > 0) try json.append(allocator, ',');
-                    try json.print(allocator, "{{\"phase\":\"{t}\",\"acked_lsn\":{d},\"lag\":{d}}}", .{ replica.phase, replica.acked_lsn, master.last_lsn -| replica.acked_lsn });
+                try json.print("{{\"role\":\"master\",\"standby\":{},\"address\":", .{master.standby});
+                try writeString(json, listening);
+                try json.print(",\"last_lsn\":{d},\"replicas\":[", .{master.last_lsn});
+                for (master.replicas, 0..) |*replica, index| {
+                    if (index > 0) try json.writeByte(',');
+                    try json.writeAll("{\"name\":");
+                    try writeString(json, replica.name());
+                    try json.writeAll(",\"address\":");
+                    try writeString(json, replica.address());
+                    try json.print(",\"connected_ms\":{d},\"phase\":\"{t}\",\"acked_lsn\":{d},\"lag\":{d}}}", .{
+                        (master.now -| replica.connected_at) / std.time.ns_per_ms,
+                        replica.phase,
+                        replica.acked_lsn,
+                        master.last_lsn -| replica.acked_lsn,
+                    });
                 }
-                try json.appendSlice(allocator, "]}");
+                try json.writeAll("]}");
             },
             .replica => |replica| {
-                try json.print(allocator, "{{\"role\":\"replica\",\"standby\":{},\"applied_lsn\":{d},\"master_lsn\":{d},\"lag\":{d},\"last_refusal\":", .{ replica.standby, replica.applied_lsn, replica.master_lsn, replica.master_lsn -| replica.applied_lsn });
-                try appendRefusal(&json, allocator, replica.last_refusal);
-                try json.appendSlice(allocator, ",\"halted\":");
-                try appendRefusal(&json, allocator, replica.halted);
-                try json.append(allocator, '}');
+                try json.print("{{\"role\":\"replica\",\"standby\":{},\"name\":", .{replica.standby});
+                try writeString(json, replica.name);
+                try json.writeAll(",\"master_address\":");
+                try writeString(json, replica.master_address);
+                try json.print(",\"phase\":\"{t}\",\"last_contact_ms\":", .{replica.phase});
+                if (replica.last_heard) |at| try json.print("{d}", .{(replica.now -| at) / std.time.ns_per_ms}) else try json.writeAll("null");
+                try json.print(",\"applied_lsn\":{d},\"master_lsn\":{d},\"lag\":{d},\"last_refusal\":", .{ replica.applied_lsn, replica.master_lsn, replica.master_lsn -| replica.applied_lsn });
+                try writeRefusal(json, replica.last_refusal);
+                try json.writeAll(",\"halted\":");
+                try writeRefusal(json, replica.halted);
+                try json.writeByte('}');
             },
         }
-        return json.toOwnedSlice(allocator);
     }
 
     /// Waits until change set `lsn` of the master is applied here, at most
@@ -351,10 +420,13 @@ pub fn waitApplied(store: *KeyValueStore, lsn: u64, timeout_ns: u64) !bool {
     }
 }
 
-fn appendRefusal(json: *std.ArrayList(u8), allocator: Allocator, refusal: ?Refusal) Allocator.Error!void {
-    const reason = refusal orelse return json.appendSlice(allocator, "null");
-    const name = std.enums.tagName(Refusal, reason) orelse "unknown";
-    try json.print(allocator, "\"{s}\"", .{name});
+fn writeRefusal(json: *Io.Writer, refusal: ?Refusal) Io.Writer.Error!void {
+    const reason = refusal orelse return json.writeAll("null");
+    try writeString(json, std.enums.tagName(Refusal, reason) orelse "unknown");
+}
+
+fn writeString(json: *Io.Writer, string: []const u8) Io.Writer.Error!void {
+    try std.json.Stringify.encodeJsonString(string, .{}, json);
 }
 
 /// Opens (or creates) the database's `lock_file_name`.

@@ -25,6 +25,7 @@ const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 const log = std.log.scoped(.replication);
 
 pub const Options = replica_node.Options;
+pub const Phase = replica_node.Phase;
 
 pub const Follower = struct {
     allocator: Allocator,
@@ -95,6 +96,17 @@ pub const Follower = struct {
     /// The master's last LSN, as its last heartbeat told (0 before one).
     pub fn masterLsn(self: *Follower) u64 {
         return self.node.master_lsn.load(.acquire);
+    }
+
+    /// Where the replica is in following its master.
+    pub fn phase(self: *Follower) Phase {
+        return self.node.phase();
+    }
+
+    /// When the master was last heard from, on the follower's clock; null
+    /// if never.
+    pub fn lastHeard(self: *Follower) ?u64 {
+        return self.node.lastHeard();
     }
 
     /// The refusal that made the replica stop following its master for

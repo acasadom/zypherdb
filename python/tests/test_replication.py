@@ -41,25 +41,43 @@ def test_a_replica_refuses_writes(master, tmp_path):
 
 
 def test_both_tell_how_replication_goes(master, tmp_path):
-    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN, name="eu-1 ñ") as replica:
         master.query("CREATE (:Person)")
         lsn = master.last_lsn
         assert replica.wait_for(lsn, timeout=20)
         status = replica.replication_status()
         assert status["role"] == "replica"
+        assert status["name"] == "eu-1 ñ"
+        assert status["master_address"] == address_of(master)
+        assert status["phase"] in ("copying", "streaming")
+        assert status["last_contact_ms"] >= 0
         assert status["applied_lsn"] == lsn
         assert status["halted"] is None
         status = master.replication_status()
         assert status["role"] == "master"
         assert status["last_lsn"] == lsn
         assert len(status["replicas"]) == 1
-        assert status["replicas"][0]["phase"] in ("introducing", "copying", "streaming")
+        served = status["replicas"][0]
+        assert served["phase"] in ("introducing", "copying", "streaming")
+        assert served["address"].startswith("127.0.0.1:")
+        assert served["connected_ms"] >= 0
+
+
+def test_a_replica_is_named_after_its_host_unless_told(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+        assert replica.replication_status()["name"]
+    with pytest.raises(ValueError, match="at most 255 bytes"):
+        Database(str(tmp_path / "other"), replicate_from=address_of(master), token=TOKEN, name="n" * 256)
+    with pytest.raises(ValueError, match="only a replica"):
+        Database(str(tmp_path / "another"), serve="127.0.0.1:0", token=TOKEN, name="eu-1")
 
 
 def test_a_replica_told_the_wrong_token_halts_and_says_why(master, tmp_path):
     with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token="another") as replica:
         assert not replica.wait_for(1, timeout=20)
-        assert replica.replication_status()["halted"] == "token"
+        status = replica.replication_status()
+        assert status["halted"] == "token"
+        assert status["phase"] == "halted"
 
 
 def test_without_replication(tmp_path):

@@ -23,8 +23,10 @@ master = zypherdb.Database(tempfile.mkdtemp(), serve="127.0.0.1:0", token="a lon
 address = master.replication_status()["address"]
 
 # On each replica's machine, in an empty directory.
-replica = zypherdb.Database(tempfile.mkdtemp(), replicate_from=address, token="a long random secret")
+replica = zypherdb.Database(tempfile.mkdtemp(), replicate_from=address, token="a long random secret", name="eu-1")
 ```
+
+`name` is what the replica calls itself in its master's status; without it, the name of its host.
 
 From then on the replica works on its own: it connects to the master, gets a copy of the whole
 database, then each change committed there, in order. If the connection breaks, or either side
@@ -73,21 +75,37 @@ master False 1 1
 ```
 
 `standby` is true in a process standing by to take over (see below), which serves no replica.
-Each replica served has a `phase` (`"introducing"`, `"copying"` while a copy of the database is
-made, sent or loaded, `"streaming"` once it follows change by change), the last change it applied
-as it last told (`acked_lsn`, at least each heartbeat, one second), and its `lag`, the changes it
-has yet to apply. On a replica:
+Each replica served has its `name`, the `address` it connected from, how long ago it connected
+(`connected_ms`), a `phase` (`"introducing"`, `"copying"` while a copy of the database is made,
+sent or loaded, `"streaming"` once it follows change by change), the last change it applied as it
+last told (`acked_lsn`, at least each heartbeat, one second), and its `lag`, the changes it has yet
+to apply:
 
 ```python
-status = replica.replication_status()
-print(status["role"], status["standby"], status["applied_lsn"], status["halted"])
+served = status["replicas"][0]
+print(served["name"], served["address"].startswith("127.0.0.1:"))
 ```
 
 ```text
-replica False 1 None
+eu-1 True
 ```
 
-`master_lsn` is the master's last change as its last heartbeat told, and `lag` the difference.
+On a replica:
+
+```python
+status = replica.replication_status()
+print(status["role"], status["standby"], status["name"], status["applied_lsn"], status["halted"])
+```
+
+```text
+replica False eu-1 1 None
+```
+
+`phase` is `"connecting"` (also while waiting to connect again, or standing by), `"copying"`,
+`"streaming"` or `"halted"`; `master_address` is the master it follows, and `last_contact_ms` how
+long ago it last heard from it (`None` if never): a master silent for a few seconds is left, and
+the replica connects again. `master_lsn` is the master's last change as its last heartbeat told,
+and `lag` the difference.
 `halted` is set when the replica stopped following for good, because asking again cannot help: it
 names the reason — `"token"` (the master refused the token), `"database_id"` (it is a replica of
 another master), `"ahead"` (it has changes the master never made: the master was restored from an

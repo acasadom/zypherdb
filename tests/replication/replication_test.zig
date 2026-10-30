@@ -11,6 +11,7 @@ const KeyValueStore = zypherdb.KeyValueStore;
 const Replication = zypherdb.replication.Replication;
 const ReplicaState = zypherdb.replication.ReplicaState;
 const max_address_bytes = zypherdb.replication_network.max_address_bytes;
+const protocol = zypherdb.replication_protocol;
 
 const support = @import("../support.zig");
 const testPath = support.testPath;
@@ -52,15 +53,19 @@ test "a replica opened with its role refuses writes, follows the master and wait
     // The caller's address and token may go once `start` returns.
     var callers_address: [max_address_bytes]u8 = undefined;
     var callers_token: [token.len]u8 = token.*;
+    const name = "eu \"1\"";
+    var callers_name: [name.len]u8 = name.*;
     @memcpy(callers_address[0..address.len], address);
     const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
         .master_address = callers_address[0..address.len],
         .token = &callers_token,
         .timeout_ns = 500 * std.time.ns_per_ms,
+        .name = &callers_name,
     } });
     defer following.stop();
     @memset(&callers_address, 'x');
     @memset(&callers_token, 'x');
+    @memset(&callers_name, 'x');
     try testing.expectError(error.ReadOnlyReplica, replica.beginWrite());
 
     try master.beginWrite();
@@ -77,15 +82,72 @@ test "a replica opened with its role refuses writes, follows the master and wait
     const replica_status = (try following.status(&.{})).replica;
     try testing.expectEqual(lsn, replica_status.applied_lsn);
     try testing.expectEqual(null, replica_status.halted);
+    try testing.expectEqualStrings(name, replica_status.name);
+    try testing.expectEqualStrings(address, replica_status.master_address);
+    try testing.expect(replica_status.last_heard.? <= replica_status.now);
 
     var buffer: [4]ReplicaState = undefined;
     const deadline = std.Io.Clock.awake.now(testing.io).nanoseconds + patience;
     while (true) : (try testing.io.sleep(.fromMilliseconds(5), .awake)) {
         const master_status = (try serving.status(&buffer)).master;
         try testing.expectEqual(lsn, master_status.last_lsn);
-        if (master_status.replicas.len == 1 and master_status.replicas[0].acked_lsn == lsn) break;
+        // Applied before its node tells it streams.
+        if (master_status.replicas.len == 1 and master_status.replicas[0].acked_lsn == lsn and (try following.status(&.{})).replica.phase == .streaming) {
+            const served = &master_status.replicas[0];
+            try testing.expectEqualStrings(name, served.name());
+            try testing.expect(std.mem.startsWith(u8, served.address(), "127.0.0.1:"));
+            try testing.expect(served.connected_at <= master_status.now);
+            break;
+        }
         if (std.Io.Clock.awake.now(testing.io).nanoseconds > deadline) return error.TestTimedOut;
     }
+
+    // The same as JSON, the name escaped.
+    const master_json = try serving.statusJson(testing.allocator);
+    defer testing.allocator.free(master_json);
+    const told = try std.json.parseFromSlice(std.json.Value, testing.allocator, master_json, .{});
+    defer told.deinit();
+    const served = told.value.object.get("replicas").?.array.items[0].object;
+    try testing.expectEqualStrings(name, served.get("name").?.string);
+    try testing.expectEqualStrings("streaming", served.get("phase").?.string);
+    try testing.expectEqual(0, served.get("lag").?.integer);
+    try testing.expect(served.get("connected_ms").?.integer >= 0);
+    const replica_json = try following.statusJson(testing.allocator);
+    defer testing.allocator.free(replica_json);
+    const following_told = try std.json.parseFromSlice(std.json.Value, testing.allocator, replica_json, .{});
+    defer following_told.deinit();
+    const replica_told = following_told.value.object;
+    try testing.expectEqualStrings(name, replica_told.get("name").?.string);
+    try testing.expectEqualStrings(address, replica_told.get("master_address").?.string);
+    try testing.expectEqualStrings("streaming", replica_told.get("phase").?.string);
+    try testing.expect(replica_told.get("last_contact_ms").?.integer >= 0);
+}
+
+test "a replica's name is its host's unless given, and no longer than a hello carries" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var replica_path = std.mem.zeroes([256]u8);
+    var replica = try open(&tmp, "replica", &replica_path);
+    defer replica.deinit();
+
+    const long_name: [protocol.max_name_bytes + 1]u8 = @splat('n');
+    try testing.expectError(error.NameTooLong, Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
+        .master_address = "127.0.0.1:1",
+        .token = token,
+        .name = &long_name,
+    } }));
+
+    const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
+        .master_address = "127.0.0.1:1",
+        .token = token,
+    } });
+    defer following.stop();
+    const status = (try following.status(&.{})).replica;
+    try testing.expect(status.name.len > 0);
+    try testing.expectEqual(null, status.last_heard);
+    const json = try following.statusJson(testing.allocator);
+    defer testing.allocator.free(json);
+    try testing.expect(std.mem.indexOf(u8, json, "\"last_contact_ms\":null") != null);
 }
 
 test "a replica told the wrong token halts, and says why" {
@@ -108,7 +170,9 @@ test "a replica told the wrong token halts, and says why" {
     defer following.stop();
 
     try testing.expect(!following.waitFor(1, patience));
-    try testing.expectEqual(.token, (try following.status(&.{})).replica.halted.?);
+    const status = (try following.status(&.{})).replica;
+    try testing.expectEqual(.token, status.halted.?);
+    try testing.expectEqual(.halted, status.phase);
 }
 
 /// Waits until `replication` runs replication (no longer stands by).

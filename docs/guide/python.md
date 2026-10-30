@@ -20,7 +20,7 @@ import zypherdb, tempfile
 db = zypherdb.Database(tempfile.mkdtemp())
 ```
 
-### `Database(path, durability="full", temporals="python", import_directory=None, serve=None, replicate_from=None, token=None)`
+### `Database(path, durability="full", temporals="python", import_directory=None, serve=None, replicate_from=None, token=None, name=None)`
 
 Opens the database in directory `path`, creating the directory and the database if they do not
 exist. A database is used as a context manager (`with Database(path) as db:`), which closes it on
@@ -46,6 +46,8 @@ exit, or closed with `close()`.
   `replicate_from="host:port"` a replica of the master there, which refuses writes. Either needs
   `token`, the secret a replica sends; both at once raise `ValueError`. Replication is not
   encrypted: run it only on a trusted network.
+- `name` — what a replica calls itself in its master's status (at most 255 bytes in UTF-8); by
+  default the name of its host. Given to a database that is not a replica, `ValueError`.
 
 ### `query(text, parameters=None, /, **named) -> list[list]`
 
@@ -194,7 +196,7 @@ Direct writes, each its own transaction unless inside `write()`:
   just made on the master, also in a process that opened the replica without a role. `True` at
   once on a database that is no replica.
 - `replication_status() -> dict | None` — how replication goes, for monitoring: a master's
-  replicas and their lag, or a replica's progress and why it halted
+  replicas (name, address, phase, lag), or a replica's phase, progress and why it halted
   (see [replication](replication.md#watching-it)); `None` without replication.
 - `close()` — releases the database. Using it afterwards raises `ClosedError`.
 

@@ -406,7 +406,7 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     const token = "the master's token";
 
     const any_port = "127.0.0.1:0";
-    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len).?;
+    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0).?;
     defer zypherdb_close(master);
     var length: usize = 0;
     const master_status = c_api.zypherdb_replication_status(master, &length).?[0..length];
@@ -415,7 +415,8 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     var address_buffer: [64]u8 = undefined;
     const address = try std.fmt.bufPrint(&address_buffer, "{s}", .{master_status[address_start..std.mem.indexOfScalarPos(u8, master_status, address_start, '"').?]});
 
-    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len).?;
+    const name = "replica-1";
+    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, name.ptr, name.len).?;
     defer zypherdb_close(replica);
 
     const create = "CREATE (:Person {name: 'Ada'})";
@@ -432,6 +433,6 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     try testing.expectEqual(null, zypherdb_query(replica, create.ptr, create.len));
 
     const replica_status = c_api.zypherdb_replication_status(replica, &length).?[0..length];
-    try testing.expect(std.mem.startsWith(u8, replica_status, "{\"role\":\"replica\","));
+    try testing.expect(std.mem.startsWith(u8, replica_status, "{\"role\":\"replica\",\"standby\":false,\"name\":\"replica-1\",\"master_address\":\""));
     try testing.expect(std.mem.endsWith(u8, replica_status, "\"last_refusal\":null,\"halted\":null}"));
 }

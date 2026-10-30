@@ -145,14 +145,19 @@ pub export fn zypherdb_sync(context: *Context) c_int {
 /// Opens with a replication role: `ROLE_MASTER` serves replicas at
 /// `address` ("host:port"), `ROLE_REPLICA` follows the master at `address`
 /// (and refuses writes). A replica must not have been a master. Both send
-/// `token` in clear: run replication on a trusted network. NULL when the
-/// database cannot be opened or replication cannot start.
-pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, durability: c_int, role: c_int, address_ptr: [*]const u8, address_len: usize, token_ptr: [*]const u8, token_len: usize) ?*Context {
+/// `token` in clear: run replication on a trusted network. A replica calls
+/// itself `name` in its master's status (NULL: the host's name). NULL when
+/// the database cannot be opened or replication cannot start.
+pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, durability: c_int, role: c_int, address_ptr: [*]const u8, address_len: usize, token_ptr: [*]const u8, token_len: usize, name_ptr: ?[*]const u8, name_len: usize) ?*Context {
     const address = address_ptr[0..address_len];
     const token = token_ptr[0..token_len];
     const replication_role: replication_module.Role = switch (role) {
         ROLE_MASTER => .{ .master = .{ .address = address, .token = token } },
-        ROLE_REPLICA => .{ .replica = .{ .master_address = address, .token = token } },
+        ROLE_REPLICA => .{ .replica = .{
+            .master_address = address,
+            .token = token,
+            .name = if (name_ptr) |name| name[0..name_len] else null,
+        } },
         else => return null,
     };
     const context = zypherdb_open_with_durability(path_ptr, path_len, durability) orelse return null;

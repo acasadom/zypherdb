@@ -333,7 +333,7 @@ valid until the next check or `zypherdb_close`.
 ```c
 zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
                                            const char *address, size_t address_len, const char *token,
-                                           size_t token_len);
+                                           size_t token_len, const char *name, size_t name_len);
 uint64_t zypherdb_last_lsn(zypherdb_context *context);
 bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);
 const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_len);
@@ -342,9 +342,10 @@ const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_l
 `zypherdb_open_replicated` opens the database with a replication role (see
 [replication](replication.md)): `ZYPHERDB_ROLE_MASTER` (0) serves replicas at `address`
 (`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
-writes. `token` is the secret a replica sends; the context keeps its own copy of `address` and
-`token`. It returns `NULL` when the database cannot be opened or replication cannot start (the
-address is taken, or a database that was a master is opened as a replica). While another process
+writes. `token` is the secret a replica sends. `name` (at most 255 bytes) is what a replica calls
+itself in its master's status; `NULL` takes the name of its host, and a master ignores it. The
+context keeps its own copy of `address`, `token` and `name`. It returns `NULL` when the database cannot be opened or replication cannot start (the
+address is taken, a database that was a master is opened as a replica, or the name is too long). While another process
 runs replication on the database the context stands by (`"standby": true` in its status) and
 takes over when that process closes it or dies. Closing the context
 stops replication.
@@ -364,13 +365,18 @@ A master's:
 
 ```json
 {"role": "master", "standby": false, "address": "0.0.0.0:7000", "last_lsn": 120,
- "replicas": [{"phase": "streaming", "acked_lsn": 118, "lag": 2}]}
+ "replicas": [{"name": "eu-1", "address": "10.0.0.7:51234", "connected_ms": 86400000,
+               "phase": "streaming", "acked_lsn": 118, "lag": 2}]}
 ```
 
-A replica's (`halted` and `last_refusal` are a reason's name, such as `"token"`, or `null`):
+A replica's (`phase` is `"connecting"`, `"copying"`, `"streaming"` or `"halted"`;
+`last_contact_ms` is how long ago the master was last heard from, `null` if never; `halted` and
+`last_refusal` are a reason's name, such as `"token"`, or `null`):
 
 ```json
-{"role": "replica", "standby": false, "applied_lsn": 118, "master_lsn": 120, "lag": 2, "last_refusal": null, "halted": null}
+{"role": "replica", "standby": false, "name": "eu-1", "master_address": "10.0.0.5:7000",
+ "phase": "streaming", "last_contact_ms": 120, "applied_lsn": 118, "master_lsn": 120, "lag": 2,
+ "last_refusal": null, "halted": null}
 ```
 
 The text belongs to the context, and stays valid until the next status or `zypherdb_close`.
