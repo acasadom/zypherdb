@@ -36,6 +36,7 @@ const KeyValueStore = zypherdb.KeyValueStore;
 const Executor = zypherdb.Executor;
 const Diagnostic = zypherdb.Diagnostic;
 const Statement = zypherdb.Statement;
+const Replication = zypherdb.replication.Replication;
 const EntitySnapshot = @FieldType(Executor, "entities");
 
 const allocator = std.heap.c_allocator;
@@ -58,6 +59,8 @@ const Database = struct {
     /// The memory a query runs in, kept from one query to the next (up to
     /// `retained_scratch` bytes) instead of asked for again each time.
     scratch: std.heap.ArenaAllocator,
+    /// Replication, on a database opened with a role.
+    replication: ?*Replication = null,
 };
 
 const retained_scratch = 1 << 20;
@@ -74,6 +77,7 @@ fn doneWith(scratch: *std.heap.ArenaAllocator) void {
 
 /// Frees what an open database holds, and the database.
 fn release(database: *Database) void {
+    if (database.replication) |replication| replication.stop();
     database.statements.deinit();
     database.scratch.deinit();
     database.store.deinit();
@@ -531,6 +535,7 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     database.import_directory = null;
     database.statements = zypherdb.StatementCache.init(allocator);
     database.scratch = std.heap.ArenaAllocator.init(allocator);
+    database.replication = null;
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
         release(database);
         return null;
@@ -612,7 +617,7 @@ fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]
 }
 
 fn noteFailure(diagnostic: *Diagnostic, err: anyerror) void {
-    if (diagnostic.message().len == 0) diagnostic.set(zypherdb.diagnostics.codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
+    if (diagnostic.message().len == 0) zypherdb.diagnostics.noteError(diagnostic, err);
 }
 
 /// The statement prepared for the call's text: the cached one, or a new one
@@ -811,6 +816,73 @@ fn abortWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject 
     const database = parseDatabase(args) orelse return null;
     database.graph.abortWrite();
     return none();
+}
+
+// --- Replication -------------------------------------------------------------------
+
+/// `start_replication(db, path, role, address, token)`: role 0 serves
+/// replicas at `address`, role 1 follows the master at `address`.
+fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var path_pointer: [*c]const u8 = undefined;
+    var path_length: py.Py_ssize_t = 0;
+    var role: c_int = 0;
+    var address_pointer: [*c]const u8 = undefined;
+    var address_length: py.Py_ssize_t = 0;
+    var token_pointer: [*c]const u8 = undefined;
+    var token_length: py.Py_ssize_t = 0;
+    if (parseTuple(args, "Os#is#s#", &capsule, &path_pointer, &path_length, &role, &address_pointer, &address_length, &token_pointer, &token_length) == 0) return null;
+    const database = databaseOf(capsule) orelse return null;
+    const address = address_pointer[0..@intCast(address_length)];
+    const token = token_pointer[0..@intCast(token_length)];
+    const replication_role: zypherdb.replication.Role = switch (role) {
+        0 => .{ .master = .{ .address = address, .token = token } },
+        1 => .{ .replica = .{ .master_address = address, .token = token } },
+        else => return raise(py.PyExc_ValueError, "unknown role {d}", .{role}),
+    };
+    database.replication = Replication.start(allocator, &database.store, path_pointer[0..@intCast(path_length)], replication_role) catch |err| return switch (err) {
+        error.MasterDatabase => raise(classes.storage_error, "the database is a master: a replica must start from an empty database or a replica", .{}),
+        error.ReadOnlyReplica => raise(classes.storage_error, "the database is a replica: it cannot serve replicas", .{}),
+        else => raise(classes.storage_error, "replication could not start at {s}: {t}", .{ address, err }),
+    };
+    return none();
+}
+
+/// `last_lsn(db)`: the last change set the database has (a master's last
+/// committed, a replica's last applied); 0 without replication.
+fn lastLsn(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    const database = parseDatabase(args) orelse return null;
+    const replication = database.replication orelse return py.PyLong_FromUnsignedLongLong(0);
+    const status = replication.status(&.{}) catch return storageFailure();
+    return py.PyLong_FromUnsignedLongLong(switch (status) {
+        .master => |master| master.last_lsn,
+        .replica => |replica| replica.applied_lsn,
+    });
+}
+
+/// `wait_for(db, lsn, timeout_ms)`: whether the master's change set `lsn`
+/// is applied here within the timeout (at once on a master).
+fn waitFor(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var lsn: c_ulonglong = 0;
+    var timeout_ms: c_ulonglong = 0;
+    if (parseTuple(args, "OKK", &capsule, &lsn, &timeout_ms) == 0) return null;
+    const database = databaseOf(capsule) orelse return null;
+    const replication = database.replication orelse return py.PyBool_FromLong(1);
+    const thread_state = py.PyEval_SaveThread();
+    const applied = replication.waitFor(lsn, timeout_ms *| std.time.ns_per_ms);
+    py.PyEval_RestoreThread(thread_state);
+    return py.PyBool_FromLong(@intFromBool(applied));
+}
+
+/// `replication_status(db)`: how replication goes, as JSON text, or None
+/// without replication.
+fn replicationStatus(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    const database = parseDatabase(args) orelse return null;
+    const replication = database.replication orelse return none();
+    const json = replication.statusJson(allocator) catch return storageFailure();
+    defer allocator.free(json);
+    return string(json);
 }
 
 fn sync(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
@@ -1034,6 +1106,10 @@ var methods = [_]py.PyMethodDef{
     method("open", open),
     method("close", close),
     method("sync", sync),
+    method("start_replication", startReplication),
+    method("last_lsn", lastLsn),
+    method("wait_for", waitFor),
+    method("replication_status", replicationStatus),
     method("query", query),
     method("plan", plan),
     method("prepare", prepare),
