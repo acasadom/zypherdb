@@ -457,7 +457,7 @@ const Simulation = struct {
         }
         var pick = self.random().uintLessThan(u32, total);
         for (weights, 0..) |weight, i| {
-            if (pick < weight) return @enumFromInt(i);
+            if (pick < weight) return @fromBackingInt(@intCast(i));
             pick -= weight;
         }
         unreachable;
