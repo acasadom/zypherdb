@@ -110,3 +110,21 @@ test "a replica told the wrong token halts, and says why" {
     try testing.expect(!following.waitFor(1, patience));
     try testing.expectEqual(.token, (try following.status(&.{})).replica.halted.?);
 }
+
+test "one process runs replication on a database at a time" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path = std.mem.zeroes([256]u8);
+    var master = try open(&tmp, "master", &master_path);
+    defer master.deinit();
+    // Another store on the database, as another process has.
+    var other = try master.share();
+    defer other.deinit();
+    const role: zypherdb.replication.Role = .{ .master = .{ .address = "127.0.0.1:0", .token = token } };
+
+    const serving = try Replication.start(testing.allocator, &master, pathOf(&master_path), role);
+    try testing.expectError(error.ReplicationRunsElsewhere, Replication.start(testing.allocator, &other, pathOf(&master_path), role));
+    serving.stop();
+    const again = try Replication.start(testing.allocator, &other, pathOf(&master_path), role);
+    again.stop();
+}

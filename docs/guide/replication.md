@@ -101,9 +101,11 @@ master.close()
 
 ## What to know
 
-- **One process runs replication.** Open the database with `serve` or `replicate_from` in one
-  process. Other processes may open the same directory without a role: on the master their
-  writes reach the replicas too, within a heartbeat; on a replica they read.
+- **One process runs replication.** The process that opens the database with `serve` or
+  `replicate_from` holds a lock on `replication.lock` in its directory until it closes it (or
+  ends); another process that opens it with a role gets a `StorageError`. Other processes open
+  the same directory without a role: on the master they write too, and their writes reach the
+  replicas within a heartbeat; on a replica they read.
 - **Copies.** A replica's first copy is the whole database, written to `replication-copies` in
   the database's directory on both machines while it is sent and loaded, so plan disk space for
   one more copy on each side. With libmdbx a copy is at least 16 MiB.

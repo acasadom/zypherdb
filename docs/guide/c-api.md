@@ -344,7 +344,8 @@ const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_l
 (`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
 writes. `token` is the secret a replica sends; the context keeps its own copy of `address` and
 `token`. It returns `NULL` when the database cannot be opened or replication cannot start (the
-address is taken, or a database that was a master is opened as a replica). Closing the context
+address is taken, a database that was a master is opened as a replica, or another process runs
+replication on the database: one process at a time does, the others open it without a role). Closing the context
 stops replication.
 
 > **Warning.** Replication is not encrypted: the token and the data travel in clear. Run it only

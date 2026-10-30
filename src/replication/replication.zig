@@ -24,6 +24,11 @@ pub const Refusal = protocol.Refusal;
 /// nodes are kept while they are sent or loaded.
 pub const copies_directory_name = "replication-copies";
 
+/// The file, inside the database's directory, that the process running
+/// replication holds locked: one process runs it, the others only read
+/// (on a replica) or write (on a master) the database.
+pub const lock_file_name = "replication.lock";
+
 /// The most replicas a master serves.
 pub const max_replicas = 16;
 
@@ -85,10 +90,13 @@ pub const Replication = struct {
     /// (the caller's may go once `start` returns).
     role_address: []u8,
     role_token: []u8,
+    /// `lock_file_name`, locked while replication runs.
+    lock_file: Io.File,
 
     /// Starts replication for the database of `store`, in directory
     /// `path`, in `role`. A master's change log starts if it is not
-    /// started; a replica's store refuses writes from now on.
+    /// started; a replica's store refuses writes from now on. Fails with
+    /// `ReplicationRunsElsewhere` while another process runs it.
     pub fn start(allocator: Allocator, store: *KeyValueStore, path: []const u8, role: Role) !*Replication {
         const self = try allocator.create(Replication);
         errdefer allocator.destroy(self);
@@ -102,6 +110,7 @@ pub const Replication = struct {
             .copies_directory = try std.fmt.allocPrint(allocator, "{s}/" ++ copies_directory_name, .{path}),
             .role_address = &.{},
             .role_token = &.{},
+            .lock_file = undefined,
         };
         errdefer self.threaded.deinit();
         errdefer allocator.free(self.copies_directory);
@@ -118,6 +127,8 @@ pub const Replication = struct {
         const io = self.threaded.io();
         self.clock = .{ .io = io };
         self.tcp = .{ .io = io, .allocator = allocator };
+        self.lock_file = try lock(io, path);
+        errdefer self.lock_file.close(io);
         try Io.Dir.cwd().createDirPath(io, self.copies_directory);
         switch (role) {
             .master => |master| {
@@ -159,6 +170,8 @@ pub const Replication = struct {
                 self.store.follows_master = false;
             },
         }
+        // Closing the file lets the lock go.
+        self.lock_file.close(self.threaded.io());
         self.threaded.deinit();
         self.allocator.free(self.copies_directory);
         self.allocator.free(self.role_address);
@@ -239,4 +252,15 @@ fn appendRefusal(json: *std.ArrayList(u8), allocator: Allocator, refusal: ?Refus
     const reason = refusal orelse return json.appendSlice(allocator, "null");
     const name = std.enums.tagName(Refusal, reason) orelse "unknown";
     try json.print(allocator, "\"{s}\"", .{name});
+}
+
+/// Opens the database's `lock_file_name` and locks it; the operating system
+/// lets the lock go when the file is closed or the process ends.
+fn lock(io: Io, path: []const u8) !Io.File {
+    var buffer: [std.fs.max_path_bytes]u8 = undefined;
+    const lock_path = try std.fmt.bufPrint(&buffer, "{s}/" ++ lock_file_name, .{path});
+    const file = try Io.Dir.cwd().createFile(io, lock_path, .{ .truncate = false });
+    errdefer file.close(io);
+    if (!try file.tryLock(io, .exclusive)) return error.ReplicationRunsElsewhere;
+    return file;
 }

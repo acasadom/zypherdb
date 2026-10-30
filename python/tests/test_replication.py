@@ -1,6 +1,11 @@
 """Replication through the Python API: a database opened to serve replicas,
 another opened to replicate from it."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 from zypherdb import Database
@@ -86,3 +91,33 @@ def test_closing_stops_serving(tmp_path):
         address = address_of(db)
     with Database(path, serve=address, token=TOKEN) as db:
         assert address_of(db) == address
+
+
+_OTHER_PROCESS = r"""
+import sys
+from zypherdb import Database
+from zypherdb.errors import StorageError
+
+path, address = sys.argv[1], sys.argv[2]
+try:
+    Database(path, serve=address, token="the master's token")
+except StorageError as error:
+    print(error)
+with Database(path) as db:
+    db.query("CREATE (:Person {name: 'Grace'})")
+    print(db.last_lsn)
+"""
+
+
+def test_one_process_runs_replication_and_the_others_writes_reach_the_replicas(tmp_path):
+    path = str(tmp_path / "master")
+    with Database(path, serve="127.0.0.1:0", token=TOKEN) as master:
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+            environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
+            output = subprocess.run(
+                [sys.executable, "-c", _OTHER_PROCESS, path, "127.0.0.1:0"],
+                env=environment, capture_output=True, text=True, timeout=60, check=True,
+            ).stdout.splitlines()
+            assert "replication already runs on this database in another process" in output[0]
+            assert replica.wait_for(master.last_lsn, timeout=20)
+            assert replica.query("MATCH (p:Person) RETURN p.name") == [["Grace"]]
