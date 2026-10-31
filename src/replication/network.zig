@@ -25,6 +25,7 @@ pub const Connection = struct {
         receive: *const fn (context: *anyopaque, buffer: []u8) error{ WouldBlock, Closed }!usize,
         send: *const fn (context: *anyopaque, bytes: []const u8) error{ WouldBlock, Closed }!usize,
         close: *const fn (context: *anyopaque) void,
+        peer: *const fn (context: *anyopaque, buffer: *[max_address_bytes]u8) []const u8,
     };
 
     /// Bytes from the other end into `buffer`: how many, never 0.
@@ -42,6 +43,11 @@ pub const Connection = struct {
     /// Ends the connection and frees it.
     pub fn close(self: Connection) void {
         self.vtable.close(self.context);
+    }
+
+    /// Where the other end is, "host:port"; "" if that cannot be told.
+    pub fn peer(self: Connection, buffer: *[max_address_bytes]u8) []const u8 {
+        return self.vtable.peer(self.context, buffer);
     }
 };
 

@@ -150,7 +150,7 @@ const TcpConnection = struct {
     /// Connecting still, as far as it knows.
     connecting: bool,
 
-    const vtable: Connection.VTable = .{ .receive = receive, .send = send, .close = close };
+    const vtable: Connection.VTable = .{ .receive = receive, .send = send, .close = close, .peer = peer };
 
     fn connection(self: *TcpConnection) Connection {
         return .{ .context = self, .vtable = &vtable };
@@ -182,6 +182,12 @@ const TcpConnection = struct {
         if (ready == 0) return error.WouldBlock;
         self.connecting = false;
         if (sockets.connectFailed(self.handle)) return error.Closed;
+    }
+
+    fn peer(context: *anyopaque, buffer: *[network_module.max_address_bytes]u8) []const u8 {
+        const self: *TcpConnection = @ptrCast(@alignCast(context));
+        const address = sockets.peerAddress(self.handle) catch return "";
+        return std.fmt.bufPrint(buffer, "{f}", .{address}) catch "";
     }
 
     fn close(context: *anyopaque) void {

@@ -60,6 +60,9 @@ pub const MasterSession = struct {
     /// The copy being sent and its bytes sent so far.
     copy: ?*Reader = null,
     copy_size: u64 = 0,
+    /// What the replica calls itself, once its hello came.
+    name_buffer: [protocol.max_name_bytes]u8 = undefined,
+    name_length: u8 = 0,
 
     pub const State = enum {
         awaiting_hello,
@@ -87,6 +90,18 @@ pub const MasterSession = struct {
         if (self.sending) |bytes| allocator.free(bytes);
     }
 
+    /// What the replica calls itself ("" until its hello came).
+    pub fn name(self: *const MasterSession) []const u8 {
+        return self.name_buffer[0..self.name_length];
+    }
+
+    /// Keeps the replica's name: `hello` is in the inbox, read over next.
+    fn introduced(self: *MasterSession, store: *KeyValueStore, hello: protocol.Hello) StorageError!master.Answer {
+        @memcpy(self.name_buffer[0..hello.name.len], hello.name);
+        self.name_length = @intCast(hello.name.len);
+        return master.answer(store, hello, self.settings.token);
+    }
+
     /// `count` bytes from the replica went into `inbox.unfilled()`.
     pub fn received(self: *MasterSession, count: usize, now: Instant) void {
         self.inbox.filled(count);
@@ -107,7 +122,7 @@ pub const MasterSession = struct {
         while (try self.inbox.next()) |message| {
             switch (self.state) {
                 .awaiting_hello => switch (message) {
-                    .hello => |hello| switch (try master.answer(store, hello, self.settings.token)) {
+                    .hello => |hello| switch (try self.introduced(store, hello)) {
                         .refused => |reason| self.refuse(reason),
                         .stream => |first| {
                             self.outbox.put(.{ .stream = first });

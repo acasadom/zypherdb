@@ -33,6 +33,7 @@ test "every message reads back as written" {
         .database_id = @splat(0xab),
         .applied_lsn = 42,
         .token = "secret",
+        .name = "replica-eu-1",
     } });
     try expectRoundTrip(.{ .hello = .{
         .protocol_version = 7,
@@ -113,6 +114,9 @@ test "a frame with a right checksum but a wrong payload is malformed" {
     const no_id: [16]u8 = @splat(0);
     const no_lsn: [8]u8 = @splat(0);
     try expectMalformed(@backingInt(protocol.Kind.hello), "ZYPR" ++ "\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x04lmdb" ++ "\x00" ++ no_id ++ no_lsn ++ "\x00\x09abc");
+    // One whose name is missing, or runs past it.
+    try expectMalformed(@backingInt(protocol.Kind.hello), "ZYPR" ++ "\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x04lmdb" ++ "\x00" ++ no_id ++ no_lsn ++ "\x00\x03abc");
+    try expectMalformed(@backingInt(protocol.Kind.hello), "ZYPR" ++ "\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x04lmdb" ++ "\x00" ++ no_id ++ no_lsn ++ "\x00\x03abc" ++ "\x05host");
 }
 
 test "tokens match only when equal" {
@@ -131,7 +135,7 @@ fn encodeSequence(buffer: []u8) ![]u8 {
 }
 
 const sequence = [_]Message{
-    .{ .hello = .{ .storage_format = 1, .storage_engine = "lmdb", .database_id = @splat(0xab), .applied_lsn = 42, .token = "secret" } },
+    .{ .hello = .{ .storage_format = 1, .storage_engine = "lmdb", .database_id = @splat(0xab), .applied_lsn = 42, .token = "secret", .name = "host" } },
     .{ .refused = .ahead },
     .{ .stream = 43 },
     .{ .snapshot_part = "the bytes of a copy" },

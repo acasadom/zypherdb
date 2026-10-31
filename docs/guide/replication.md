@@ -1,0 +1,172 @@
+# Replication
+
+A database can keep copies of itself on other machines, up to date as it changes: a **master**
+takes the writes, and each **replica** follows it and answers reads. Replicas spread the reads
+over more machines, and keep the data on more than one.
+
+> **Warning.** Replication is **not encrypted**. The token and every change travel in clear over
+> TCP, so anyone on the network can read them, and anyone who learns the token can follow the
+> master. Run it only on a network you trust (a private network, a VPN or an SSH tunnel), and never
+> open the master's port to the internet.
+
+## Starting it
+
+Replication is a role the database opens with; there is nothing else to start. The master opens
+with `serve`, the address it listens at, and each replica with `replicate_from`, the master's
+address. Both give the same `token`, the secret a replica must send to be served:
+
+```python
+import os, tempfile, zypherdb
+
+# On the master's machine ("0.0.0.0:7000" listens on every interface; port 0 picks a free one).
+master = zypherdb.Database(tempfile.mkdtemp(), serve="127.0.0.1:0", token="a long random secret")
+address = master.replication_status()["address"]
+
+# On each replica's machine, in an empty directory.
+replica = zypherdb.Database(tempfile.mkdtemp(), replicate_from=address, token="a long random secret", name="eu-1")
+```
+
+`name` is what the replica calls itself in its master's status; without it, the name of its host.
+
+From then on the replica works on its own: it connects to the master, gets a copy of the whole
+database, then each change committed there, in order. If the connection breaks, or either side
+restarts, it reconnects and goes on from where it was; if it fell too far behind, it gets a new
+copy. Closing the database stops replication.
+
+A replica refuses writes (`StorageError`, "the database is a replica"): every write goes to the
+master. A database that has been a master cannot become a replica (a replica starts from an empty
+directory or is one already), and a replica cannot serve other replicas.
+
+## Reading your own writes
+
+A replica runs a little behind its master: the time a change takes to arrive and be applied,
+usually milliseconds. A read on a replica right after a write on the master may not see it yet.
+When it must, take the master's `last_lsn` after the write (the number of its last change) and
+have the replica wait for it before reading:
+
+```python
+master.query("CREATE (:Person {name: 'Ada'})")
+lsn = master.last_lsn
+
+if replica.wait_for(lsn, timeout=5.0):
+    print(replica.query("MATCH (p:Person) RETURN p.name"))
+```
+
+```text
+[['Ada']]
+```
+
+`wait_for` returns `False` if the change has not arrived within the timeout (the master is
+unreachable, or the replica halted). Pass the LSN along with whatever the reader needs, for
+example in the response to the request that wrote. A read that may be a little old needs no
+waiting.
+
+## Watching it
+
+`replication_status()` tells how replication goes, for monitoring and alerts. On the master:
+
+```python
+status = master.replication_status()
+print(status["role"], status["standby"], status["last_lsn"], len(status["replicas"]))
+```
+
+```text
+master False 1 1
+```
+
+`standby` is true in a process standing by to take over (see below), which serves no replica.
+Each replica served has its `name`, the `address` it connected from, how long ago it connected
+(`connected_ms`), a `phase` (`"introducing"`, `"copying"` while a copy of the database is made,
+sent or loaded, `"streaming"` once it follows change by change), the last change it applied as it
+last told (`acked_lsn`, at least each heartbeat, one second), and its `lag`, the changes it has yet
+to apply:
+
+```python
+served = status["replicas"][0]
+print(served["name"], served["address"].startswith("127.0.0.1:"))
+```
+
+```text
+eu-1 True
+```
+
+On a replica:
+
+```python
+status = replica.replication_status()
+print(status["role"], status["standby"], status["name"], status["applied_lsn"], status["halted"])
+```
+
+```text
+replica False eu-1 1 None
+```
+
+`phase` is `"connecting"` (also while waiting to connect again, or standing by), `"copying"`,
+`"streaming"` or `"halted"`; `master_address` is the master it follows, and `last_contact_ms` how
+long ago it last heard from it (`None` if never): a master silent for a few seconds is left, and
+the replica connects again. `master_lsn` is the master's last change as its last heartbeat told,
+and `lag` the difference.
+`halted` is set when the replica stopped following for good, because asking again cannot help: it
+names the reason — `"token"` (the master refused the token), `"database_id"` (it is a replica of
+another master), `"ahead"` (it has changes the master never made: the master was restored from an
+older copy), or a version, format or engine the two do not share. A halted replica keeps answering
+reads with what it has; fix the cause and open it again (or start it from an empty directory).
+`last_refusal` names why the master last turned it away, when that was not for good.
+
+```python
+replica.close()
+master.close()
+```
+
+## Staying available
+
+ZypherDB is embedded: a database is available while a process that has it open runs, on the
+machine that holds its directory. Replication keeps going through what can happen to them:
+
+- **A process dies.** Open the database with the same role in more than one process on the
+  machine. One runs replication and the others stand by; when it closes the database or dies,
+  one of them takes over within a fraction of a second (see below). On the master it serves at
+  the same address, so its replicas reconnect on their own and go on from the last change they
+  applied, without a new copy. On a replica it follows the master from the last change applied.
+  The application's other processes keep reading and writing all along.
+- **The machine restarts.** While the master is down its replicas keep answering reads, with the
+  data as of the last change they got, and keep trying to reconnect; writes wait for the master.
+  When the processes open the database again, its replicas reconnect and go on from where they
+  were (or get a new copy if the master's change log no longer holds what they miss). What was
+  committed on the master survives as the durability it was opened with says. A replica that
+  restarts reconnects and catches up the same way.
+- **The machine is lost.** Its replicas keep the data and keep answering reads, but none of them
+  becomes the master, and a replica's directory stays a replica's: writing again needs the
+  master's directory back. Changes committed on the master and not yet applied on a replica
+  exist only there (replication is asynchronous).
+
+So the processes that write run on the master's machine, more than one of them with the master's
+role for a process failure, and a machine failure is covered by restarting it.
+
+## What to know
+
+- **One process runs replication, others stand by.** The process that opens the database with
+  `serve` or `replicate_from` first runs replication, holding a lock on `replication.lock` in its
+  directory. Another process that opens it with a role stands by: it works as any other process,
+  and when the first one closes the database or dies, it takes over within a fraction of a
+  second, from where replication was (the change log and the last change applied are in the
+  database, not in the process). Replicas reconnect on their own. `replication_status()` tells
+  which process is which (`"standby"`). So that a master's replicas find the process taking over,
+  give a fixed port (`"0.0.0.0:7000"`, not port 0), and the same address and token in every
+  process. Processes may also open the directory without a role: on the master they write too,
+  and their writes reach the replicas within a heartbeat; on a replica they read, and
+  `last_lsn` and `wait_for` work in them as well.
+- **Copies.** A replica's first copy is the whole database, written to `replication-copies` in
+  the database's directory on both machines while it is sent and loaded, so plan disk space for
+  one more copy on each side. With libmdbx a copy is at least 16 MiB.
+- **The change log.** The master keeps the recent changes (up to 512 MiB) for replicas that
+  reconnect; one that was away longer gets a new copy.
+- **No failover to another machine.** A replica never becomes a master, on its own or by hand
+  ([staying available](#staying-available)).
+- **The same platform.** A replica must run the same ZypherDB storage format and storage engine
+  as its master, on a machine of the same byte order (every common one is little-endian).
+
+The C interface opens with a role through `zypherdb_open_replicated` (see the
+[C reference](c-api.md#replication)). How replication works inside — the change log, the
+protocol, the copies — is in [storage](storage.md#the-change-log) and the source under
+`src/replication/`.

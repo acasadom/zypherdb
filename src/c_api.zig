@@ -18,6 +18,8 @@ const NodeData = @import("execution/entities.zig").NodeData;
 const SnapshotProperty = @import("execution/entities.zig").Property;
 const PropertyIterator = @import("storage/graph.zig").PropertyIterator;
 const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
+const replication_module = @import("replication/replication.zig");
+const Replication = replication_module.Replication;
 const StorageError = @import("storage/key_value_store.zig").StorageError;
 const integrity = @import("storage/integrity.zig");
 const isStorableName = @import("storage/layout.zig").isStorableName;
@@ -42,6 +44,10 @@ pub const Context = struct {
     export_json: []u8 = &.{},
     /// The last `zypherdb_check` report, owned by the context.
     check_json: []u8 = &.{},
+    /// The last `zypherdb_replication_status` report, owned by the context.
+    status_json: []u8 = &.{},
+    /// Replication, on a database opened with a role.
+    replication: ?*Replication = null,
     /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
     import_directory: ?[]u8 = null,
     /// The statements `zypherdb_query` prepared, by text.
@@ -87,6 +93,9 @@ pub const DURABILITY_FULL: c_int = 0;
 pub const DURABILITY_RELAXED: c_int = 1;
 pub const DURABILITY_DEFERRED: c_int = 2;
 
+pub const ROLE_MASTER: c_int = 0;
+pub const ROLE_REPLICA: c_int = 1;
+
 pub export fn zypherdb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
     return zypherdb_open_with_durability(path_ptr, path_len, DURABILITY_FULL);
 }
@@ -119,6 +128,8 @@ pub export fn zypherdb_open_with_durability(path_ptr: [*]const u8, path_len: usi
     context.diagnostic = Diagnostic.init();
     context.export_json = &.{};
     context.check_json = &.{};
+    context.status_json = &.{};
+    context.replication = null;
     context.import_directory = null;
     context.statements = StatementCache.init(allocator);
     context.scratch = std.heap.ArenaAllocator.init(allocator);
@@ -131,7 +142,64 @@ pub export fn zypherdb_sync(context: *Context) c_int {
     return RETURN_OK;
 }
 
+/// Opens with a replication role: `ROLE_MASTER` serves replicas at
+/// `address` ("host:port"), `ROLE_REPLICA` follows the master at `address`
+/// (and refuses writes). A replica must not have been a master. Both send
+/// `token` in clear: run replication on a trusted network. A replica calls
+/// itself `name` in its master's status (NULL: the host's name). NULL when
+/// the database cannot be opened or replication cannot start.
+pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, durability: c_int, role: c_int, address_ptr: [*]const u8, address_len: usize, token_ptr: [*]const u8, token_len: usize, name_ptr: ?[*]const u8, name_len: usize) ?*Context {
+    const address = address_ptr[0..address_len];
+    const token = token_ptr[0..token_len];
+    const replication_role: replication_module.Role = switch (role) {
+        ROLE_MASTER => .{ .master = .{ .address = address, .token = token } },
+        ROLE_REPLICA => .{ .replica = .{
+            .master_address = address,
+            .token = token,
+            .name = if (name_ptr) |name| name[0..name_len] else null,
+        } },
+        else => return null,
+    };
+    const context = zypherdb_open_with_durability(path_ptr, path_len, durability) orelse return null;
+    context.replication = Replication.start(allocator, &context.store, path_ptr[0..path_len], replication_role) catch {
+        zypherdb_close(context);
+        return null;
+    };
+    return context;
+}
+
+/// The LSN of the last change set this database has: on a master the last
+/// committed, on a replica the last applied, in any process (with a role or
+/// without); 0 on a database that is neither.
+pub export fn zypherdb_last_lsn(context: *Context) u64 {
+    return replication_module.lastLsn(&context.store) catch 0;
+}
+
+/// Waits until change set `lsn` of the master is applied here, at most
+/// `timeout_ms`; whether it is. Read on a replica after it to see a write
+/// made on the master (`zypherdb_last_lsn` there after the write), also in a
+/// process that opened the replica without a role. True at once on a
+/// database that is no replica.
+pub export fn zypherdb_wait_for(context: *Context, lsn: u64, timeout_ms: u64) bool {
+    const timeout_ns = timeout_ms *| std.time.ns_per_ms;
+    const replication = context.replication orelse return replication_module.waitApplied(&context.store, lsn, timeout_ns) catch false;
+    return replication.waitFor(lsn, timeout_ns);
+}
+
+/// How replication goes, as JSON (see docs/guide/c-api.md); the buffer
+/// belongs to the context. NULL without replication or out of memory.
+pub export fn zypherdb_replication_status(context: *Context, out_len: *usize) ?[*]const u8 {
+    const replication = context.replication orelse return null;
+    const json = replication.statusJson(allocator) catch return null;
+    allocator.free(context.status_json);
+    context.status_json = json;
+    out_len.* = json.len;
+    return json.ptr;
+}
+
 pub export fn zypherdb_close(context: *Context) void {
+    if (context.replication) |replication| replication.stop();
+    allocator.free(context.status_json);
     context.statements.deinit();
     context.scratch.deinit();
     allocator.free(context.export_json);
@@ -899,7 +967,7 @@ pub export fn zypherdb_result_list_item_string(result: *const Result, row: usize
 
 /// Sets a generic message + code for a runtime error that never set one.
 fn noteError(diagnostic: *Diagnostic, err: anyerror) void {
-    diagnostic.set(@import("diagnostics.zig").codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
+    @import("diagnostics.zig").noteError(diagnostic, err);
 }
 
 // Force the export functions to be analyzed/emitted even when the test blocks

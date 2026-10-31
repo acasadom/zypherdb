@@ -93,6 +93,7 @@ pub const MemoryNetwork = struct {
         const split = try network_module.splitAddress(address);
         self.connects += 1;
         const link = try Link.create(self);
+        link.number = self.connects;
         const found = if (self.refusing) null else self.find(split.host, split.port);
         const listener = found orelse {
             link.end(1).close();
@@ -213,6 +214,8 @@ const Link = struct {
     pipes: [2]Pipe,
     ends: [2]End,
     open_ends: u2 = 2,
+    /// Which connect made it: each end's `peer` is "memory:<number>".
+    number: u64 = 0,
 
     const End = struct {
         link: *Link,
@@ -227,7 +230,7 @@ const Link = struct {
         }
     };
 
-    const vtable: Connection.VTable = .{ .receive = receive, .send = send, .close = close };
+    const vtable: Connection.VTable = .{ .receive = receive, .send = send, .close = close, .peer = peer };
 
     fn create(network: *MemoryNetwork) Error!*Link {
         const allocator = network.allocator;
@@ -280,6 +283,11 @@ const Link = struct {
         const count = out.put(bytes);
         self.link.network.bytes_moved += count;
         return count;
+    }
+
+    fn peer(context: *anyopaque, buffer: *[network_module.max_address_bytes]u8) []const u8 {
+        const self: *End = @ptrCast(@alignCast(context));
+        return std.fmt.bufPrint(buffer, "memory:{d}", .{self.link.number}) catch unreachable;
     }
 
     fn close(context: *anyopaque) void {

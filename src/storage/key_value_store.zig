@@ -114,16 +114,14 @@ pub const KeyValueStore = struct {
     /// `fulltext.cachedDefinitions`), kept while the version stays; owned
     /// here so they live as long as the database.
     schema_definitions: ?SchemaDefinitions = null,
-    /// Whether the change log is started on this database (change_log.zig),
-    /// once known; only this process writes to it.
-    change_log_started: ?bool = null,
     /// The writes of the active write transaction, while the change log is
     /// started.
     change_recorder: ?change_log.Recorder = null,
     /// The most bytes of change sets the log keeps.
     change_log_limit: u64 = 512 << 20,
-    /// Whether this database is a replica (change_log.zig), once known.
-    replica: ?bool = null,
+    /// Set on a store whose database follows a master: it refuses writes
+    /// before its first copy makes it a replica too.
+    follows_master: bool = false,
     /// Told the LSN of each change set this store commits.
     commit_listener: ?CommitListener = null,
     /// The LSN of the last change set this store committed, if any: a
@@ -178,11 +176,9 @@ pub const KeyValueStore = struct {
         const transaction = try self.environment.beginWrite();
         errdefer transaction.abort();
         try self.refuseOnReplica(transaction);
-        if (self.change_log_started orelse true) {
-            const state = try change_log.readState(transaction);
-            self.change_log_started = state != null;
-            if (state) |started| self.change_recorder = .{ .state = started };
-        }
+        // Read at each write, not cached: another process (or store) may
+        // start the change log, or make the database a replica, meanwhile.
+        if (try change_log.readState(transaction)) |started| self.change_recorder = .{ .state = started };
         self.active_write_transaction = transaction;
         self.write_transaction_memo = .{};
     }
@@ -222,8 +218,8 @@ pub const KeyValueStore = struct {
     }
 
     fn refuseOnReplica(self: *KeyValueStore, transaction: engine.Transaction) StorageError!void {
-        if (self.replica orelse true) self.replica = try change_log.appliedLsn(transaction) != null;
-        if (self.replica.?) return error.ReadOnlyReplica;
+        if (self.follows_master) return error.ReadOnlyReplica;
+        if (try change_log.appliedLsn(transaction) != null) return error.ReadOnlyReplica;
     }
 
     /// Records a write the active write transaction has just made, if the
@@ -246,7 +242,6 @@ pub const KeyValueStore = struct {
         std.Io.Threaded.global_single_threaded.io().random(&id);
         _ = try change_log.start(transaction, id);
         try transaction.commit();
-        self.change_log_started = true;
     }
 
     /// The change log's state, or null if it was never started.
@@ -283,7 +278,6 @@ pub const KeyValueStore = struct {
             return .already_applied;
         }
         try transaction.commit();
-        self.replica = true;
         return .applied;
     }
 
@@ -307,8 +301,6 @@ pub const KeyValueStore = struct {
         errdefer transaction.abort();
         const applied = try change_log.becomeReplica(transaction);
         try transaction.commit();
-        self.replica = true;
-        self.change_log_started = false;
         return applied;
     }
 
@@ -347,8 +339,6 @@ pub const KeyValueStore = struct {
             }
         }
         try transaction.commit();
-        self.replica = true;
-        self.change_log_started = false;
         // The copy's schema may have the version of the one cached.
         self.forgetSchemaDefinitions();
         return applied;
@@ -378,9 +368,7 @@ pub const KeyValueStore = struct {
     }
 
     /// Another store on this open database, for another thread (a store is
-    /// used by one thread at a time); deinit it before this one. Each store
-    /// learns on its own that the database became a replica: one becomes
-    /// it (`loadCopy`, `applyChangeSet`) before another writes.
+    /// used by one thread at a time); deinit it before this one.
     pub fn share(self: *KeyValueStore) StorageError!KeyValueStore {
         const records = self.allocator.create(RecordCache) catch return error.OutOfMemory;
         records.* = .{};

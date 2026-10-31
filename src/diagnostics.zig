@@ -73,6 +73,12 @@ test "messages too long for the buffer are truncated, not dropped" {
     try std.testing.expect(std.mem.endsWith(u8, d.message(), "..."));
 }
 
+/// Sets the message and code of an engine error that set no diagnostic.
+pub fn noteError(diagnostic: *Diagnostic, err: anyerror) void {
+    if (err == error.ReadOnlyReplica) return diagnostic.set(.storage, 0, "the database is a replica: it refuses writes, which go to its master", .{});
+    diagnostic.set(codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
+}
+
 /// The error code of an engine error, for one that set no diagnostic.
 pub fn codeOf(err: anyerror) ErrorCode {
     return switch (err) {

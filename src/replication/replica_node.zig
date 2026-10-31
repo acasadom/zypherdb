@@ -53,6 +53,20 @@ pub const Options = struct {
     /// The bytes of change sets received and not yet applied past which
     /// the node stops reading until the applier catches up.
     max_unapplied_bytes: usize = 64 << 20,
+    /// What the replica calls itself in its hello, at most
+    /// `protocol.max_name_bytes`.
+    name: []const u8 = "",
+};
+
+/// Where a replica is in following its master.
+pub const Phase = enum(u8) {
+    /// Connecting, waiting to connect again, or introducing itself.
+    connecting,
+    /// Receiving or loading a copy of the master's database.
+    copying,
+    streaming,
+    /// Stopped for good by a refusal (`halted`).
+    halted,
 };
 
 /// What an applier is given, in order.
@@ -224,6 +238,11 @@ pub const ReplicaNode = struct {
     refusal: std.atomic.Value(u8) = .init(0),
     /// The permanent refusal that stopped the node, if one did. Any thread.
     halt: std.atomic.Value(u8) = .init(0),
+    /// `Phase`, as the last step left it. Any thread.
+    phase_value: std.atomic.Value(u8) = .init(@backingInt(Phase.connecting)),
+    /// When the master was last heard from (`never_heard` if it was not).
+    /// Any thread.
+    last_heard: std.atomic.Value(Instant) = .init(never_heard),
     /// The node's own store, for its hellos.
     store: KeyValueStore,
     /// The owner's: raised by the applier when it is done with something.
@@ -279,10 +298,36 @@ pub const ReplicaNode = struct {
         return if (reason == 0) null else @fromBackingInt(@intCast(reason));
     }
 
+    const never_heard = std.math.maxInt(Instant);
+
+    /// Where the replica is in following its master. Any thread.
+    pub fn phase(self: *const ReplicaNode) Phase {
+        // Halted before the step that halted it ends.
+        if (self.halted() != null) return .halted;
+        return @fromBackingInt(@intCast(self.phase_value.load(.acquire)));
+    }
+
+    /// When the master was last heard from, on the node's clock; null if
+    /// never. Any thread.
+    pub fn lastHeard(self: *const ReplicaNode) ?Instant {
+        const at = self.last_heard.load(.acquire);
+        return if (at == never_heard) null else at;
+    }
+
     /// Moves the conversation on at `now`, with what was `ready`: connects
     /// when it is time, receives, hands what came to the applier, takes
     /// what it did, sends; ends the conversation on any failure.
     pub fn step(self: *ReplicaNode, now: Instant) void {
+        self.advance(now);
+        const phase_now: Phase = if (self.halted() != null) .halted else if (self.conversation) |conversation| switch (conversation.session.state) {
+            .awaiting_answer => .connecting,
+            .receiving_copy, .loading_copy => .copying,
+            .streaming => .streaming,
+        } else .connecting;
+        self.phase_value.store(@backingInt(phase_now), .release);
+    }
+
+    fn advance(self: *ReplicaNode, now: Instant) void {
         if (self.wakeup_ready) {
             self.wakeup_ready = false;
             self.wakeup.clear();
@@ -343,7 +388,8 @@ pub const ReplicaNode = struct {
         errdefer self.allocator.destroy(conversation);
         const buffers = try self.allocator.alloc(u8, 2 * protocol.max_frame_bytes);
         errdefer self.allocator.free(buffers);
-        const hello = try replica.hello(&self.store, self.options.token);
+        var hello = try replica.hello(&self.store, self.options.token);
+        hello.name = self.options.name;
         const connection = try self.network.connect(self.options.master_address);
         conversation.* = .{
             .connection = connection,
@@ -405,6 +451,7 @@ const Conversation = struct {
                     error.Closed => return error.ConnectionClosed,
                 };
                 session.received(count, now);
+                node.last_heard.store(now, .release);
                 while (try session.next(node.allocator)) |event| switch (event) {
                     .refused => |reason| {
                         log.info("the master turned this replica away: {t}", .{reason});

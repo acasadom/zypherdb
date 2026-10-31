@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import threading
 
@@ -75,7 +76,17 @@ class Database:
             db.query("CREATE (n:Movie {title: 'The Matrix'})")
     """
 
-    def __init__(self, path: str, durability: str = "full", temporals: str = "python", import_directory: str | None = None):
+    def __init__(
+        self,
+        path: str,
+        durability: str = "full",
+        temporals: str = "python",
+        import_directory: str | None = None,
+        serve: str | None = None,
+        replicate_from: str | None = None,
+        token: str | None = None,
+        name: str | None = None,
+    ):
         """Opens (or creates) the database in directory `path`.
 
         `durability` is how much a commit waits for the disk: "full" (each
@@ -94,6 +105,19 @@ class Database:
         `import_directory` is the directory LOAD CSV reads from: a query's
         `file:///name.csv` is `name.csv` in it, and nothing outside it can be
         read. Without one, LOAD CSV is off.
+
+        `serve` makes the database a master that serves replicas at that
+        address ("host:port"; "0.0.0.0:7000" for every interface).
+        `replicate_from` makes it a replica of the master at that address: it
+        gets a copy of the master's database, then each change committed
+        there, reconnecting on its own, and refuses writes. Either needs
+        `token`, the secret a replica must send. Replication is not
+        encrypted: the token and the data travel in clear, so run it only
+        on a trusted network. While another process runs replication on the
+        database this one stands by, and takes over when that one closes it or
+        dies; give a master a fixed port so its replicas find whichever runs.
+        `name` is what a replica calls itself in its master's status (at
+        most 255 bytes in UTF-8; by default the host's name).
         """
         if durability not in _DURABILITY:
             raise ValueError(f"durability must be one of {', '.join(_DURABILITY)}, not {durability!r}")
@@ -101,7 +125,20 @@ class Database:
         os.makedirs(path, exist_ok=True)
         if temporals not in _TEMPORALS:
             raise ValueError(f"temporals must be one of {', '.join(_TEMPORALS)}, not {temporals!r}")
+        if serve is not None and replicate_from is not None:
+            raise ValueError("a database either serves replicas or replicates from a master, not both")
+        role = (0, serve) if serve is not None else (1, replicate_from) if replicate_from is not None else None
+        if role is not None and not token:
+            raise ValueError("replication needs a token")
+        if name is not None and replicate_from is None:
+            raise ValueError("only a replica has a name")
         self._db = native.open(path, _DURABILITY[durability], _TEMPORALS[temporals])
+        if role is not None:
+            try:
+                native.start_replication(self._db, path, role[0], role[1], token, name)
+            except BaseException:
+                native.close(self._db)
+                raise
         if import_directory is not None:
             if not os.path.isdir(import_directory):
                 native.close(self._db)
@@ -117,6 +154,69 @@ class Database:
         """Writes every commit so far to disk (for "deferred" durability)."""
         with self._lock:
             native.sync(self._handle())
+
+    # --- Replication ---------------------------------------------------------
+
+    @property
+    def last_lsn(self) -> int:
+        """The number (LSN) of the last change this database has.
+
+        On a master, the last write committed: read it after a write and pass
+        it to a replica's `wait_for` to read that write there. On a replica,
+        the last change applied. Also in a process that opened the database
+        without a role; 0 on a database that is neither.
+        """
+        with self._lock:
+            return native.last_lsn(self._handle())
+
+    def wait_for(self, lsn: int, timeout: float = 5.0) -> bool:
+        """Waits until the master's change `lsn` is applied here, at most
+        `timeout` seconds; returns whether it is.
+
+        A replica runs behind its master by the time a change takes to
+        arrive. To read on a replica a write just made on the master, take
+        the master's `last_lsn` after the write and call this on the replica
+        before reading, also in a process that opened the replica without a
+        role. True at once on a database that is no replica.
+        """
+        if lsn < 0 or timeout < 0:
+            raise ValueError("lsn and timeout must not be negative")
+        with self._lock:
+            return native.wait_for(self._handle(), lsn, int(timeout * 1000))
+
+    def replication_status(self) -> dict | None:
+        """How replication goes, for monitoring; None without replication.
+
+        A master::
+
+            {"role": "master", "standby": False, "address": "0.0.0.0:7000", "last_lsn": 120,
+             "replicas": [{"name": "eu-1", "address": "10.0.0.7:51234", "connected_ms": 86400000,
+                           "phase": "streaming", "acked_lsn": 118, "lag": 2}]}
+
+        Each replica's `name` is the one it gave (its host's by default),
+        `address` where it connected from, `connected_ms` how long ago.
+        `phase` is "introducing", "copying" (a copy of the database is made,
+        sent or loaded) or "streaming"; `lag` is how many changes the replica
+        has yet to apply, as it last told. A replica::
+
+            {"role": "replica", "standby": False, "name": "eu-1", "master_address": "10.0.0.5:7000",
+             "phase": "streaming", "last_contact_ms": 120, "applied_lsn": 118, "master_lsn": 120,
+             "lag": 2, "last_refusal": None, "halted": None}
+
+        Its `phase` is "connecting" (also while waiting to connect again, and
+        while standing by), "copying", "streaming" or "halted";
+        `last_contact_ms` is how long ago its master was last heard from
+        (None if never).
+
+        `standby` is True in a process that opened the database with a role
+        while another process runs replication on it: it takes over when
+        that one closes the database or dies. `halted` names why the replica stopped following for good (e.g.
+        "token": the master refused its token); `last_refusal` why the master
+        last turned it away.
+        """
+        with self._lock:
+            text = native.replication_status(self._handle())
+        return None if text is None else json.loads(text)
 
     def close(self) -> None:
         with self._lock:
