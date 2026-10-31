@@ -7,6 +7,7 @@ test {
     _ = @import("storage/change_log_test.zig");
     _ = @import("replication/protocol_test.zig");
     _ = @import("replication/values_test.zig");
+    _ = @import("replication/forwarding_test.zig");
     _ = @import("replication/master_test.zig");
     _ = @import("replication/replica_test.zig");
     _ = @import("replication/clock_test.zig");

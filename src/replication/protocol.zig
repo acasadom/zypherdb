@@ -22,6 +22,15 @@
 //! so a replica knows how far behind it is and that the master is alive.
 //! The replica answers with `ack`s of the last LSN it applied.
 //!
+//! A replica that forwards writes opens a connection of its own for them,
+//! with `writer_hello` (protocol version, the id of the master it copies,
+//! the token, its name). The master answers `refused` and closes, or
+//! `writer_ready`; then each write is a `request_part`* the master runs and
+//! answers with `answer_part`*, under the id the request gave, one write
+//! at a time. A request or an answer is cut into parts of at most
+//! `part_bytes`, the last one marked final; forwarding.zig tells what their
+//! bytes hold.
+//!
 //! Every message is one frame, integers big-endian:
 //!
 //!     kind (u8) | payload length (u32) | CRC-32 of kind and payload (u32) | payload
@@ -55,8 +64,13 @@ pub const max_name_bytes: usize = 255;
 
 const part_header_bytes = 9;
 const hello_fixed_bytes = magic.len + 2 + 4 + 1 + 16 + 8 + 2 + 1;
+const writer_hello_fixed_bytes = magic.len + 2 + 16 + 2 + 1;
 
-pub const max_payload_bytes: usize = @max(part_bytes + part_header_bytes, hello_fixed_bytes + max_engine_name_bytes + max_token_bytes + max_name_bytes);
+pub const max_payload_bytes: usize = @max(
+    part_bytes + part_header_bytes,
+    hello_fixed_bytes + max_engine_name_bytes + max_token_bytes + max_name_bytes,
+    writer_hello_fixed_bytes + max_token_bytes + max_name_bytes,
+);
 
 const header_bytes = 9;
 
@@ -74,6 +88,10 @@ pub const Kind = enum(u8) {
     change_set_part = 6,
     heartbeat = 7,
     ack = 8,
+    writer_hello = 9,
+    writer_ready = 10,
+    request_part = 11,
+    answer_part = 12,
 };
 
 /// A replica introduces itself.
@@ -118,6 +136,26 @@ pub const Refusal = enum(u8) {
     }
 };
 
+/// A replica's connection for forwarded writes introduces itself.
+pub const WriterHello = struct {
+    protocol_version: u16 = version,
+    /// The master the replica's database is a copy of: only a replica
+    /// that holds a copy forwards writes.
+    database_id: DatabaseId,
+    token: []const u8,
+    /// The replica's name, as in its `Hello`.
+    name: []const u8 = "",
+};
+
+/// A part of a forwarded write's request or of its answer.
+pub const WritePart = struct {
+    /// The request's, chosen by the replica; its answer carries it back.
+    id: u64,
+    /// The request's or the answer's last part.
+    final: bool,
+    bytes: []const u8,
+};
+
 pub const ChangeSetPart = struct {
     lsn: u64,
     /// The change set's last part.
@@ -138,6 +176,10 @@ pub const Message = union(Kind) {
     heartbeat: u64,
     /// The replica's last applied LSN.
     ack: u64,
+    writer_hello: WriterHello,
+    writer_ready: void,
+    request_part: WritePart,
+    answer_part: WritePart,
 };
 
 pub const DecodeError = error{ MalformedFrame, ChecksumMismatch };
@@ -375,6 +417,24 @@ fn encodePayload(sink: anytype, message: Message) !void {
             try sink.writeByte(@intFromBool(part.final));
             try sink.writeAll(part.bytes);
         },
+        .writer_hello => |hello| {
+            std.debug.assert(hello.token.len <= max_token_bytes);
+            std.debug.assert(hello.name.len <= max_name_bytes);
+            try sink.writeAll(&magic);
+            try sink.writeInt(u16, hello.protocol_version, .big);
+            try sink.writeAll(&hello.database_id);
+            try sink.writeInt(u16, @intCast(hello.token.len), .big);
+            try sink.writeAll(hello.token);
+            try sink.writeByte(@intCast(hello.name.len));
+            try sink.writeAll(hello.name);
+        },
+        .writer_ready => {},
+        .request_part, .answer_part => |part| {
+            std.debug.assert(part.bytes.len <= part_bytes);
+            try sink.writeInt(u64, part.id, .big);
+            try sink.writeByte(@intFromBool(part.final));
+            try sink.writeAll(part.bytes);
+        },
     }
 }
 
@@ -414,11 +474,29 @@ fn decodePayload(kind: Kind, payload: []const u8) ?Message {
             if (final > 1) return null;
             break :part .{ .change_set_part = .{ .lsn = lsn, .final = final == 1, .bytes = cursor.rest() } };
         },
+        .writer_hello => hello: {
+            if (!std.mem.eql(u8, cursor.take(magic.len) orelse return null, &magic)) return null;
+            const protocol_version = cursor.int(u16) orelse return null;
+            const database_id = (cursor.take(16) orelse return null)[0..16].*;
+            const token = cursor.take(cursor.int(u16) orelse return null) orelse return null;
+            const name = cursor.take(cursor.int(u8) orelse return null) orelse return null;
+            if (token.len > max_token_bytes) return null;
+            break :hello .{ .writer_hello = .{ .protocol_version = protocol_version, .database_id = database_id, .token = token, .name = name } };
+        },
+        .writer_ready => .writer_ready,
+        .request_part, .answer_part => part: {
+            const id = cursor.int(u64) orelse return null;
+            const final = cursor.int(u8) orelse return null;
+            if (final > 1) return null;
+            const write_part: WritePart = .{ .id = id, .final = final == 1, .bytes = cursor.rest() };
+            break :part if (kind == .request_part) .{ .request_part = write_part } else .{ .answer_part = write_part };
+        },
     };
     if (cursor.bytes.len != 0) return null;
     if (switch (message) {
         .snapshot_part => |bytes| bytes.len > part_bytes,
         .change_set_part => |part| part.bytes.len > part_bytes,
+        .request_part, .answer_part => |part| part.bytes.len > part_bytes,
         else => false,
     }) return null;
     return message;
