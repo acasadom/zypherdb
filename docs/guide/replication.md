@@ -118,6 +118,31 @@ replica.close()
 master.close()
 ```
 
+## Staying available
+
+ZypherDB is embedded: a database is available while a process that has it open runs, on the
+machine that holds its directory. Replication keeps going through what can happen to them:
+
+- **A process dies.** Open the database with the same role in more than one process on the
+  machine. One runs replication and the others stand by; when it closes the database or dies,
+  one of them takes over within a fraction of a second (see below). On the master it serves at
+  the same address, so its replicas reconnect on their own and go on from the last change they
+  applied, without a new copy. On a replica it follows the master from the last change applied.
+  The application's other processes keep reading and writing all along.
+- **The machine restarts.** While the master is down its replicas keep answering reads, with the
+  data as of the last change they got, and keep trying to reconnect; writes wait for the master.
+  When the processes open the database again, its replicas reconnect and go on from where they
+  were (or get a new copy if the master's change log no longer holds what they miss). What was
+  committed on the master survives as the durability it was opened with says. A replica that
+  restarts reconnects and catches up the same way.
+- **The machine is lost.** Its replicas keep the data and keep answering reads, but none of them
+  becomes the master, and a replica's directory stays a replica's: writing again needs the
+  master's directory back. Changes committed on the master and not yet applied on a replica
+  exist only there (replication is asynchronous).
+
+So the processes that write run on the master's machine, more than one of them with the master's
+role for a process failure, and a machine failure is covered by restarting it.
+
 ## What to know
 
 - **One process runs replication, others stand by.** The process that opens the database with
@@ -136,8 +161,8 @@ master.close()
   one more copy on each side. With libmdbx a copy is at least 16 MiB.
 - **The change log.** The master keeps the recent changes (up to 512 MiB) for replicas that
   reconnect; one that was away longer gets a new copy.
-- **No automatic failover.** If the master is lost, the replicas keep their data and keep
-  answering reads, but nothing becomes the master on its own. Promoting a replica is planned.
+- **No failover to another machine.** A replica never becomes a master, on its own or by hand
+  ([staying available](#staying-available)).
 - **The same platform.** A replica must run the same ZypherDB storage format and storage engine
   as its master, on a machine of the same byte order (every common one is little-endian).
 
