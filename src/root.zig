@@ -30,6 +30,7 @@ pub const property_indexes = @import("storage/property_indexes.zig");
 pub const layout = @import("storage/layout.zig");
 pub const change_log = @import("storage/change_log.zig");
 pub const replication_protocol = @import("replication/protocol.zig");
+pub const replication_values = @import("replication/values.zig");
 pub const replication_master = @import("replication/master.zig");
 pub const replication_replica = @import("replication/replica.zig");
 pub const replication_master_session = @import("replication/master_session.zig");
