@@ -521,7 +521,8 @@ ZypherDB does not implement these parts of openCypher (and of common Neo4j exten
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
   inside `CALL { … }`; `LOAD CSV` from URLs other than `file:` in the import directory;
 - constraints other than uniqueness on nodes (`IS NOT NULL`, `IS NODE KEY`, relationship
-  constraints); indexes other than full-text change nothing (every property is already indexed).
+  constraints); `TEXT`, `POINT`, `VECTOR` and `LOOKUP` indexes (`CREATE INDEX` makes a range
+  index, `CREATE FULLTEXT INDEX` a full-text one).
 
 The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`
 gives the current pass rate per area.
