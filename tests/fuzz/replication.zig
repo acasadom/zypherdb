@@ -221,6 +221,8 @@ const Master = struct {
     /// Raised by each commit and each copy made; outlives the node.
     wakeup: Wakeup,
     copier: master_node.InlineCopier,
+    /// No replica forwards writes yet: it stays idle.
+    runner: master_node.InlineRunner,
     node: MasterNode,
     copies_path: []const u8,
     /// The nodes alive, for the writes.
@@ -294,6 +296,7 @@ const Simulation = struct {
         const master = &self.master;
         master.node.deinit();
         master.copier.deinit();
+        master.runner.deinit();
         master.store.commit_listener = null;
         master.store.deinit();
         master.wakeup.close();
@@ -328,7 +331,9 @@ const Simulation = struct {
         const master = &self.master;
         master.copier = .{ .allocator = self.allocator, .io = self.io, .store = try master.store.share(), .wakeup = master.wakeup, .copies_directory = master.copies_path };
         errdefer master.copier.deinit();
-        master.node = try MasterNode.init(self.allocator, self.io, self.network.network(), &master.store, master.wakeup, master.copier.copier(), .{
+        master.runner = .{ .allocator = self.allocator, .store = try master.store.share(), .wakeup = master.wakeup };
+        errdefer master.runner.deinit();
+        master.node = try MasterNode.init(self.allocator, self.io, self.network.network(), &master.store, master.wakeup, master.copier.copier(), master.runner.runner(), .{
             .address = master_address,
             .token = token,
             .copies_directory = master.copies_path,
@@ -453,6 +458,7 @@ const Simulation = struct {
                 self.note("the master's node restarts", .{});
                 self.master.node.deinit();
                 self.master.copier.deinit();
+                self.master.runner.deinit();
                 try self.startMasterNode();
                 self.statistics.master_restarts += 1;
             },

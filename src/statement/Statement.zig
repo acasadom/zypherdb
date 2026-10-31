@@ -135,13 +135,34 @@ pub fn run(self: *Statement, executor: *Executor) ExecutionError![]const Row {
         executor.ast = ast;
         return executor.run(root);
     }
+    const rows = try self.runOpen(executor);
+    try self.commit(executor.graph);
+    return rows;
+}
+
+/// Runs a query (`is_query`) as `run` does, but leaves its transaction
+/// open: the caller then `commit`s or `abort`s it on the executor's graph.
+pub fn runOpen(self: *Statement, executor: *Executor) ExecutionError![]const Row {
+    std.debug.assert(self.is_query);
     const graph = executor.graph;
     if (self.writes) try graph.beginWrite() else try graph.beginRead();
-    errdefer if (self.writes) graph.abortWrite() else graph.abortRead();
+    errdefer self.abort(graph);
     if (self.plan == null or stale(self.plan.?, graph)) try self.replan(graph);
-    const rows = try executor.execute(&self.plan.?, self.root);
-    if (self.writes) try graph.commitWrite() else graph.commitRead();
-    return rows;
+    return executor.execute(&self.plan.?, self.root);
+}
+
+/// Commits the transaction `runOpen` left open.
+pub fn commit(self: *Statement, graph: *Graph) ExecutionError!void {
+    if (!self.writes) return graph.commitRead();
+    graph.commitWrite() catch |err| {
+        graph.abortWrite();
+        return err;
+    };
+}
+
+/// Aborts the transaction `runOpen` left open.
+pub fn abort(self: *Statement, graph: *Graph) void {
+    if (self.writes) graph.abortWrite() else graph.abortRead();
 }
 
 /// An executor for running the statement, allocating in `scratch`.

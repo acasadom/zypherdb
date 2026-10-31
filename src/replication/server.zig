@@ -2,7 +2,8 @@
 //! (master_node.zig: accepts replicas, holds each one's conversation),
 //! waiting on the network until the node's earliest deadline, and a
 //! worker that makes the copies replicas ask for (it may take minutes;
-//! the loop goes on meanwhile). A commit wakes the loop
+//! the loop goes on meanwhile), and one that runs the writes replicas
+//! forward, one at a time. A commit wakes the loop
 //! (`commitListener`) to send its change set. Each replica acks how far
 //! it applied; `replicaStates` tells it, and so its lag.
 
@@ -29,11 +30,12 @@ pub const Server = struct {
     allocator: Allocator,
     clock: Clock,
     network: Network,
-    /// Raised by each commit, each copy made, and `stop`.
+    /// Raised by each commit, each copy made, each write run, and `stop`.
     wakeup: Wakeup,
     stopping: std.atomic.Value(bool) = .init(false),
     loop_thread: ?std.Thread = null,
-    copier: Copier,
+    copier: Worker(CopyWork),
+    runner: Worker(RunWork),
     /// The loop's alone, but for `replicaStates`.
     node: MasterNode,
 
@@ -46,18 +48,23 @@ pub const Server = struct {
         errdefer wakeup.close();
         var copier_store = try store.share();
         errdefer copier_store.deinit();
+        var runner_store = try store.share();
+        errdefer runner_store.deinit();
         self.* = .{
             .allocator = allocator,
             .clock = clock,
             .network = net,
             .wakeup = wakeup,
-            .copier = .{ .allocator = allocator, .io = io, .store = copier_store, .wakeup = wakeup, .copies_directory = options.copies_directory },
+            .copier = .{ .allocator = allocator, .io = io, .wakeup = wakeup, .work = .{ .io = io, .store = copier_store, .copies_directory = options.copies_directory } },
+            .runner = .{ .allocator = allocator, .io = io, .wakeup = wakeup, .work = .{ .allocator = allocator, .store = runner_store } },
             .node = undefined,
         };
-        self.node = try MasterNode.init(allocator, io, net, store, wakeup, self.copier.copier(), options);
+        self.node = try MasterNode.init(allocator, io, net, store, wakeup, self.copier.copier(), self.runner.runner(), options);
         errdefer self.node.deinit();
         try self.copier.start();
         errdefer self.copier.stop();
+        try self.runner.start();
+        errdefer self.runner.stop();
         self.loop_thread = try std.Thread.spawn(.{}, run, .{self});
         return self;
     }
@@ -70,6 +77,8 @@ pub const Server = struct {
         if (self.loop_thread) |thread| thread.join();
         self.copier.stop();
         self.copier.deinit();
+        self.runner.stop();
+        self.runner.deinit();
         self.node.deinit();
         self.wakeup.close();
         self.allocator.destroy(self);
@@ -113,89 +122,166 @@ pub const Server = struct {
     }
 };
 
-/// The worker that makes copies of the master's database, one at a time
-/// (`master_node.makeCopy`); the loop asks for them and takes them when
-/// the wakeup tells it some are made.
-const Copier = struct {
-    allocator: Allocator,
+/// A worker thread that does the jobs the loop asks for, one at a time
+/// and in order, and raises the wakeup when some are done. `Work` does
+/// each (`work(*Work, Job) Done`) and frees what is left once stopped
+/// (`dropJob`, `dropDone`, `deinit`).
+fn Worker(comptime Work: type) type {
+    return struct {
+        allocator: Allocator,
+        io: Io,
+        wakeup: Wakeup,
+        work: Work,
+        thread: ?std.Thread = null,
+        mutex: Io.Mutex = .init,
+        condition: Io.Condition = .init,
+        /// Under `mutex`.
+        asked: std.ArrayList(Work.Job) = .empty,
+        done: std.ArrayList(Work.Done) = .empty,
+        stopping: bool = false,
+
+        const Self = @This();
+
+        fn start(self: *Self) !void {
+            self.thread = try std.Thread.spawn(.{}, run, .{self});
+        }
+
+        /// Waits for the job in hand, if any.
+        fn stop(self: *Self) void {
+            self.mutex.lockUncancelable(self.io);
+            self.stopping = true;
+            self.condition.broadcast(self.io);
+            self.mutex.unlock(self.io);
+            if (self.thread) |thread| thread.join();
+            self.thread = null;
+        }
+
+        /// Once stopped: frees the jobs not done and those done and not
+        /// taken.
+        fn deinit(self: *Self) void {
+            for (self.asked.items) |job| self.work.dropJob(job);
+            self.asked.deinit(self.allocator);
+            for (self.done.items) |done| self.work.dropDone(done);
+            self.done.deinit(self.allocator);
+            self.work.deinit();
+        }
+
+        fn ask(self: *Self, job: Work.Job) Allocator.Error!void {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            self.asked.append(self.allocator, job) catch |err| {
+                self.work.dropJob(job);
+                return err;
+            };
+            self.condition.signal(self.io);
+        }
+
+        fn take(self: *Self) std.ArrayList(Work.Done) {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            const done = self.done;
+            self.done = .empty;
+            return done;
+        }
+
+        fn run(self: *Self) void {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            while (true) {
+                while (!self.stopping and self.asked.items.len == 0) self.condition.waitUncancelable(self.io, &self.mutex);
+                if (self.stopping) return;
+                const job = self.asked.orderedRemove(0);
+                self.mutex.unlock(self.io);
+                const done = self.work.work(job);
+                self.mutex.lockUncancelable(self.io);
+                // The loop is gone once stopping: `Server.stop` frees it.
+                self.done.append(self.allocator, done) catch {
+                    self.work.dropDone(done);
+                    continue;
+                };
+                self.wakeup.raise();
+            }
+        }
+
+        fn copier(self: *Self) master_node.Copier {
+            return .{ .context = self, .vtable = &.{ .ask = askCopy, .take = takeCopies } };
+        }
+
+        fn askCopy(context: *anyopaque, number: u64) Allocator.Error!void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return self.ask(number);
+        }
+
+        fn takeCopies(context: *anyopaque) std.ArrayList(master_node.Copier.Made) {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return self.take();
+        }
+
+        fn runner(self: *Self) master_node.Runner {
+            return .{ .context = self, .vtable = &.{ .run = askRun, .take = takeRuns } };
+        }
+
+        fn askRun(context: *anyopaque, asked: master_node.Runner.Asked) Allocator.Error!void {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return self.ask(asked);
+        }
+
+        fn takeRuns(context: *anyopaque) std.ArrayList(master_node.Runner.Ran) {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return self.take();
+        }
+    };
+}
+
+/// Makes copies of the master's database (`master_node.makeCopy`).
+const CopyWork = struct {
     io: Io,
     store: KeyValueStore,
-    wakeup: Wakeup,
     copies_directory: []const u8,
-    thread: ?std.Thread = null,
-    mutex: Io.Mutex = .init,
-    condition: Io.Condition = .init,
-    /// Under `mutex`.
-    asked: std.ArrayList(u64) = .empty,
-    made: std.ArrayList(Made) = .empty,
-    stopping: bool = false,
 
-    const Made = master_node.Copier.Made;
+    const Job = u64;
+    const Done = master_node.Copier.Made;
 
-    fn copier(self: *Copier) master_node.Copier {
-        return .{ .context = self, .vtable = &.{ .ask = ask, .take = take } };
+    fn work(self: *CopyWork, number: u64) Done {
+        const failed = if (master_node.makeCopy(self.io, &self.store, self.copies_directory, number)) false else |err| blk: {
+            log.warn("making copy {d} failed: {t}", .{ number, err });
+            break :blk true;
+        };
+        return .{ .number = number, .failed = failed };
     }
 
-    fn start(self: *Copier) !void {
-        self.thread = try std.Thread.spawn(.{}, run, .{self});
+    fn dropJob(_: *CopyWork, _: u64) void {}
+
+    fn dropDone(self: *CopyWork, made: Done) void {
+        copies.delete(self.io, self.copies_directory, made.number);
     }
 
-    /// Waits for the copy being made, if one is.
-    fn stop(self: *Copier) void {
-        self.mutex.lockUncancelable(self.io);
-        self.stopping = true;
-        self.condition.broadcast(self.io);
-        self.mutex.unlock(self.io);
-        if (self.thread) |thread| thread.join();
-        self.thread = null;
-    }
-
-    /// Once stopped: deletes the copies made and not taken.
-    fn deinit(self: *Copier) void {
-        for (self.made.items) |made| copies.delete(self.io, self.copies_directory, made.number);
-        self.made.deinit(self.allocator);
-        self.asked.deinit(self.allocator);
+    fn deinit(self: *CopyWork) void {
         self.store.deinit();
     }
+};
 
-    fn ask(context: *anyopaque, number: u64) Allocator.Error!void {
-        const self: *Copier = @ptrCast(@alignCast(context));
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        try self.asked.append(self.allocator, number);
-        self.condition.signal(self.io);
+/// Runs the writes replicas forward (`master_node.runWrite`).
+const RunWork = struct {
+    allocator: Allocator,
+    store: KeyValueStore,
+
+    const Job = master_node.Runner.Asked;
+    const Done = master_node.Runner.Ran;
+
+    fn work(self: *RunWork, asked: Job) Done {
+        return master_node.runWrite(self.allocator, &self.store, asked);
     }
 
-    fn take(context: *anyopaque) std.ArrayList(Made) {
-        const self: *Copier = @ptrCast(@alignCast(context));
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        const made = self.made;
-        self.made = .empty;
-        return made;
+    fn dropJob(self: *RunWork, asked: Job) void {
+        self.allocator.free(asked.request);
     }
 
-    fn run(self: *Copier) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        while (true) {
-            while (!self.stopping and self.asked.items.len == 0) self.condition.waitUncancelable(self.io, &self.mutex);
-            if (self.stopping) return;
-            const number = self.asked.orderedRemove(0);
-            self.mutex.unlock(self.io);
-            const failed = if (master_node.makeCopy(self.io, &self.store, self.copies_directory, number)) false else |err| blk: {
-                log.warn("making copy {d} failed: {t}", .{ number, err });
-                break :blk true;
-            };
-            self.mutex.lockUncancelable(self.io);
-            // The loop is gone once stopping: `Server.stop` deletes it.
-            self.made.append(self.allocator, .{ .number = number, .failed = failed }) catch {
-                self.mutex.unlock(self.io);
-                copies.delete(self.io, self.copies_directory, number);
-                self.mutex.lockUncancelable(self.io);
-                continue;
-            };
-            self.wakeup.raise();
-        }
+    fn dropDone(self: *RunWork, ran: Done) void {
+        if (ran.answer) |answer| self.allocator.free(answer);
+    }
+
+    fn deinit(self: *RunWork) void {
+        self.store.deinit();
     }
 };

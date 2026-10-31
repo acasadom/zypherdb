@@ -29,7 +29,9 @@
 //! answers with `answer_part`*, under the id the request gave, one write
 //! at a time. A request or an answer is cut into parts of at most
 //! `part_bytes`, the last one marked final; forwarding.zig tells what their
-//! bytes hold.
+//! bytes hold. While it sends no answer, a write running or not, the master
+//! sends a `heartbeat` each interval and the replica `ack`s each one, so
+//! either side knows the other is alive.
 //!
 //! Every message is one frame, integers big-endian:
 //!

@@ -31,9 +31,14 @@ pub const Settings = struct {
     copy_timeout_ns: u64,
 };
 
-pub const Event = enum {
+pub const Event = union(enum) {
     /// Make a copy of the database for this replica, then `copyMade`.
     make_copy,
+    /// The connection is a replica's for forwarded writes: its
+    /// conversation goes on in a `WriterSession` (writer_session.zig),
+    /// with this session's inbox and outbox. The hello's slices are views
+    /// into the inbox, valid until its `unfilled`.
+    writer: protocol.WriterHello,
 };
 
 pub const Error = protocol.DecodeError || StorageError || error{ UnexpectedMessage, NotMaster, ChangeSetDropped, CopyOutdated, ReadFailed };
@@ -133,6 +138,7 @@ pub const MasterSession = struct {
                             return .make_copy;
                         },
                     },
+                    .writer_hello => |hello| return .{ .writer = hello },
                     else => return error.UnexpectedMessage,
                 },
                 .awaiting_copy_ack => switch (message) {

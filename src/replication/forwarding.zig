@@ -100,6 +100,14 @@ pub fn encodeAnswer(list: *std.ArrayList(u8), allocator: Allocator, answer: Answ
     if (list.items.len - start > max_answer_bytes) return error.TooLarge;
 }
 
+/// Sets the LSN of a `done` answer `encodeAnswer` wrote at the front of
+/// `bytes`: the master writes its rows before it commits, so a result too
+/// large to send fails the statement instead of answering for a commit.
+pub fn setAnswerLsn(bytes: []u8, lsn: u64) void {
+    std.debug.assert(bytes[0] == 0x00);
+    std.mem.writeInt(u64, bytes[1..9], lsn, .big);
+}
+
 fn appendInt(list: *std.ArrayList(u8), allocator: Allocator, comptime T: type, n: T) Allocator.Error!void {
     var bytes: [@sizeOf(T)]u8 = undefined;
     std.mem.writeInt(T, &bytes, n, .big);

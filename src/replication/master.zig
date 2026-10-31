@@ -36,6 +36,18 @@ pub fn answer(store: *KeyValueStore, hello: protocol.Hello, token: []const u8) S
     return goOn(state, hello.applied_lsn);
 }
 
+/// Answers a replica's `writer_hello` for the master `store`, which expects
+/// `token`: why it is refused, or null if its writes are run. Only a
+/// replica of this master forwards them.
+pub fn answerWriter(store: *KeyValueStore, hello: protocol.WriterHello, token: []const u8) StorageError!?protocol.Refusal {
+    if (hello.protocol_version != protocol.version) return .protocol_version;
+    if (!protocol.tokensMatch(hello.token, token)) return .token;
+    if (try store.changeLogState() == null) return .not_master;
+    const id = try store.databaseId() orelse return .not_master;
+    if (!std.mem.eql(u8, &hello.database_id, &id)) return .database_id;
+    return null;
+}
+
 /// Where a replica of this master that applied up to `applied_lsn` goes on
 /// from: after its `hello`, or after the `ack` of a copy it was sent.
 pub fn resumeFrom(store: *KeyValueStore, applied_lsn: u64) StorageError!Answer {
