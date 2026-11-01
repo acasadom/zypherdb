@@ -118,7 +118,10 @@ pub const Follower = struct {
 
     fn run(self: *Follower) void {
         var watched_buffer: [2]Watched = undefined;
-        while (!self.stopping.load(.acquire)) {
+        while (true) {
+            // Before looking: a `stop` raises it after.
+            self.node.clearWakeup();
+            if (self.stopping.load(.acquire)) return;
             const now = self.clock.now();
             self.node.step(now);
             if (self.node.halted() != null) return;

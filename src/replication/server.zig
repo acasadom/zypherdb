@@ -108,7 +108,10 @@ pub const Server = struct {
 
     fn run(self: *Server) void {
         var watched_buffer: [network.max_watched]Watched = undefined;
-        while (!self.stopping.load(.acquire)) {
+        while (true) {
+            // Before looking: a `stop` raises it after.
+            self.node.clearWakeup();
+            if (self.stopping.load(.acquire)) return;
             const now = self.clock.now();
             self.node.step(now);
             const watched = self.node.watch(&watched_buffer);

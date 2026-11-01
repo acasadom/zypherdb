@@ -285,6 +285,9 @@ pub const MasterNode = struct {
     /// What the listener and the wakeup were ready for at the last wait.
     listener_ready: bool = false,
     wakeup_ready: bool = false,
+    /// The wakeup was cleared since the last step: copies made or writes
+    /// run may wait.
+    woken: bool = false,
     /// The copies asked for so far: each one's directory is numbered.
     copies_asked: u64 = 0,
     /// The writes run so far: each is numbered.
@@ -377,9 +380,9 @@ pub const MasterNode = struct {
     /// the copies made and the writes run, accepts replicas, receives and
     /// sends, and lets go of the replicas finished or silent for too long.
     pub fn step(self: *MasterNode, now: Instant) void {
-        if (self.wakeup_ready) {
-            self.wakeup_ready = false;
-            self.wakeup.clear();
+        self.clearWakeup();
+        if (self.woken) {
+            self.woken = false;
             self.takeCopies();
             self.takeWrites();
         }
@@ -409,6 +412,15 @@ pub const MasterNode = struct {
             }
         }
         self.publishStates();
+    }
+
+    /// Clears the wakeup if it was ready: before the owner looks at what
+    /// raised it, or a raise meanwhile is lost. `step` does it too.
+    pub fn clearWakeup(self: *MasterNode) void {
+        if (!self.wakeup_ready) return;
+        self.wakeup_ready = false;
+        self.wakeup.clear();
+        self.woken = true;
     }
 
     /// What to wait on before the next step: the listener, the wakeup,

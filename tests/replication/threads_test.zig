@@ -557,3 +557,32 @@ test "a forwarder sends writes to the master from several threads, one at a time
     defer empty.stop();
     try testing.expectEqual(Outcome{ .failed = error.NoCopy }, empty.forward("not even sent"));
 }
+
+test "replication's threads stop however soon after they start" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [2][256]u8 = undefined;
+    var address: [max_address_bytes]u8 = undefined;
+    // A stop raised while a loop looks at nothing, idle with no deadline,
+    // must not be lost.
+    var request: std.ArrayList(u8) = .empty;
+    defer request.deinit(testing.allocator);
+    try forwarding.encodeRequest(&request, testing.allocator, .{ .text = "RETURN 1 AS one", .parameters = &.{} });
+    for (0..200) |round| {
+        const server = try setup.startServer("127.0.0.1:0", &copies[0]);
+        const follower = try setup.startFollower(server, token, &address, &copies[1]);
+        const sender = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.master, .{
+            .master_address = server.address(&address),
+            .token = token,
+        });
+        // Each raises a loop's wakeup just before its stop.
+        const outcome = sender.forward(request.items);
+        if (outcome == .answer) testing.allocator.free(outcome.answer);
+        _ = try setup.write(round, 1);
+        sender.stop();
+        follower.stop();
+        setup.master.commit_listener = null;
+        server.stop();
+    }
+}
