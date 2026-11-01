@@ -333,7 +333,9 @@ valid until the next check or `zypherdb_close`.
 ```c
 zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
                                            const char *address, size_t address_len, const char *token,
-                                           size_t token_len, const char *name, size_t name_len);
+                                           size_t token_len, const char *name, size_t name_len,
+                                           bool forward_writes, uint64_t request_timeout_ms);
+bool zypherdb_result_visible(const zypherdb_result *result);
 uint64_t zypherdb_last_lsn(zypherdb_context *context);
 bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);
 const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_len);
@@ -343,7 +345,10 @@ const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_l
 [replication](replication.md)): `ZYPHERDB_ROLE_MASTER` (0) serves replicas at `address`
 (`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
 writes. `token` is the secret a replica sends. `name` (at most 255 bytes) is what a replica calls
-itself in its master's status; `NULL` takes the name of its host, and a master ignores it. The
+itself in its master's status; `NULL` takes the name of its host, and a master ignores it. A
+replica opened with `forward_writes` sends the statements that write to its master instead of
+refusing them, each taking at most `request_timeout_ms` (0: 30 s); `zypherdb_result_visible` is
+false for a forwarded write the replica had not applied in that time. The
 context keeps its own copy of `address`, `token` and `name`. It returns `NULL` when the database cannot be opened or replication cannot start (the
 address is taken, a database that was a master is opened as a replica, or the name is too long). While another process
 runs replication on the database the context stands by (`"standby": true` in its status) and

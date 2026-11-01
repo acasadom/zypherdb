@@ -86,6 +86,8 @@ class Database:
         replicate_from: str | None = None,
         token: str | None = None,
         name: str | None = None,
+        forward_writes: bool = False,
+        forward_timeout: float = 30.0,
     ):
         """Opens (or creates) the database in directory `path`.
 
@@ -118,6 +120,10 @@ class Database:
         dies; give a master a fixed port so its replicas find whichever runs.
         `name` is what a replica calls itself in its master's status (at
         most 255 bytes in UTF-8; by default the host's name).
+
+        `forward_writes` makes a replica send the statements that write to its
+        master instead of refusing them; each takes at most `forward_timeout`
+        seconds, from sending it to having applied what it wrote here.
         """
         if durability not in _DURABILITY:
             raise ValueError(f"durability must be one of {', '.join(_DURABILITY)}, not {durability!r}")
@@ -132,10 +138,14 @@ class Database:
             raise ValueError("replication needs a token")
         if name is not None and replicate_from is None:
             raise ValueError("only a replica has a name")
+        if forward_writes and replicate_from is None:
+            raise ValueError("only a replica forwards writes")
+        if not forward_timeout > 0:
+            raise ValueError("forward_timeout must be positive")
         self._db = native.open(path, _DURABILITY[durability], _TEMPORALS[temporals])
         if role is not None:
             try:
-                native.start_replication(self._db, path, role[0], role[1], token, name)
+                native.start_replication(self._db, path, role[0], role[1], token, name, forward_writes, max(1, round(forward_timeout * 1000)))
             except BaseException:
                 native.close(self._db)
                 raise

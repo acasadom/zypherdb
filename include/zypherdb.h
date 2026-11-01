@@ -73,10 +73,12 @@ zypherdb_context *zypherdb_open(const char *path, size_t path_len);
 zypherdb_context *zypherdb_open_with_durability(const char *path, size_t path_len, int durability);
 int zypherdb_sync(zypherdb_context *context);
 /* Opens with a replication role; the token goes in clear: use a trusted network. A replica's name
- * (NULL: the host's) shows in its master's status. NULL on failure. */
+ * (NULL: the host's) shows in its master's status. A replica with forward_writes sends the statements
+ * that write to its master, each taking at most request_timeout_ms (0: 30 s). NULL on failure. */
 zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
                                            const char *address, size_t address_len, const char *token,
-                                           size_t token_len, const char *name, size_t name_len);
+                                           size_t token_len, const char *name, size_t name_len,
+                                           bool forward_writes, uint64_t request_timeout_ms);
 /* The last change set this database has (master: committed, replica: applied), with or without a role. */
 uint64_t zypherdb_last_lsn(zypherdb_context *context);
 /* Waits until the master's change set lsn is applied here, at most timeout_ms; whether it is. */
@@ -106,6 +108,8 @@ zypherdb_result *zypherdb_query(zypherdb_context *context, const char *query, si
 zypherdb_result *zypherdb_query_with_parameters(zypherdb_context *context, const char *query, size_t query_len,
                                             const char *parameters_json, size_t parameters_len);
 void zypherdb_result_free(zypherdb_result *result);
+/* False for a write forwarded to the master that the replica had not applied in time. */
+bool zypherdb_result_visible(const zypherdb_result *result);
 
 /* Prepared statements: a query parsed, checked and planned once, run again
  * and again with new parameters (zypherdb_query keeps the ones it prepares, by

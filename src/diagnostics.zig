@@ -19,6 +19,14 @@ pub const ErrorCode = enum(u32) {
     arithmetic = 9,
     constraint_violation = 10,
     external_resource = 11,
+    /// A replica that forwards writes refused one it cannot forward.
+    write_not_forwarded = 12,
+    /// A forwarded write did not run: the master could not be reached, or
+    /// turned it away.
+    master_unreachable = 13,
+    /// A forwarded write was sent, then the connection was lost or the
+    /// time ran out: the master may have committed it or not.
+    outcome_unknown = 14,
 };
 
 pub const Diagnostic = struct {

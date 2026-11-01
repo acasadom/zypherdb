@@ -48,6 +48,7 @@ pub const replication_replica_node = @import("replication/replica_node.zig");
 pub const replication_server = @import("replication/server.zig");
 pub const replication_follower = @import("replication/follower.zig");
 pub const replication_forwarder = @import("replication/forwarder.zig");
+pub const replication_replica_writes = @import("replication/replica_writes.zig");
 pub const replication = @import("replication/replication.zig");
 
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).

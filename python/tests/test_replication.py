@@ -175,3 +175,75 @@ with Database(path) as db:
     print(db.query("MATCH (p:Person) RETURN p.name ORDER BY p.name"))
     print(db.wait_for(lsn + 1, timeout=0.2))
 """
+
+
+def forwarding_replica(master, tmp_path, name="replica", **options):
+    replica = Database(str(tmp_path / name), replicate_from=address_of(master), token=TOKEN, forward_writes=True, **options)
+    # Its first copy: a write before it has no master's database to name.
+    master.query("CREATE (:Seed)")
+    assert replica.wait_for(master.last_lsn, timeout=20)
+    return replica
+
+
+def test_a_replica_that_forwards_writes_sends_them_to_its_master(master, tmp_path):
+    with forwarding_replica(master, tmp_path) as replica:
+        [[ada]] = replica.query("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"})
+        assert ada.labels == ("Person",)
+        assert ada.properties == {"name": "Ada"}
+        # Read-your-writes, and the master has it.
+        assert replica.query("MATCH (p:Person) RETURN p.name") == [["Ada"]]
+        assert master.query("MATCH (p:Person) RETURN p.name") == [["Ada"]]
+        replica.query("CREATE CONSTRAINT person_name FOR (p:Person) REQUIRE p.name IS UNIQUE")
+        with pytest.raises(ZypherDBError, match="constraint .person_name."):
+            replica.query("CREATE (:Person {name: 'Ada'})")
+        assert replica.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+
+
+def test_a_replica_refuses_what_it_cannot_forward(master, tmp_path):
+    with forwarding_replica(master, tmp_path) as replica:
+        replica._define_procedure("test.names", [], [("name", "STRING?")], [["Ada"]])
+        with pytest.raises(ZypherDBError, match="defined in this process"):
+            replica.query("CALL test.names() YIELD name CREATE (:Person {name: name})")
+        assert replica.query("CALL test.names() YIELD name RETURN name") == [["Ada"]]
+        with pytest.raises(ZypherDBError, match="LOAD CSV"):
+            replica.query("LOAD CSV FROM 'file:///people.csv' AS row CREATE (:Person)")
+        with pytest.raises(ZypherDBError, match="PROFILE"):
+            replica.profile("CREATE (:Person)")
+        with pytest.raises(ZypherDBError, match="write blocks"):
+            with replica.write():
+                pass
+        assert master.query("MATCH (p:Person) RETURN count(p)") == [[0]]
+
+
+def test_a_forwarded_write_to_a_master_gone_did_not_run(tmp_path):
+    master = Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN)
+    try:
+        replica = forwarding_replica(master, tmp_path, forward_timeout=1.0)
+    finally:
+        master.close()
+    with replica:
+        with pytest.raises(ZypherDBError, match="did not run"):
+            replica.query("CREATE (:Person)")
+
+
+def test_a_process_standing_by_on_a_replica_forwards_writes_too(master, tmp_path):
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
+    with forwarding_replica(master, tmp_path) as replica:
+        output = subprocess.run(
+            [sys.executable, "-c", _FORWARDING_STANDBY, str(tmp_path / "replica"), address_of(master)],
+            env=environment, capture_output=True, text=True, timeout=60, check=True,
+        ).stdout.splitlines()
+        assert output == ["True", "[['Grace']]"]
+        assert replica.wait_for(master.last_lsn, timeout=20)
+        assert replica.query("MATCH (p:Person) RETURN p.name") == [["Grace"]]
+
+
+_FORWARDING_STANDBY = r"""
+import sys
+from zypherdb import Database
+
+path, address = sys.argv[1], sys.argv[2]
+with Database(path, replicate_from=address, token="the master's token", forward_writes=True) as db:
+    print(db.replication_status()["standby"])
+    print(db.query("CREATE (p:Person {name: 'Grace'}) RETURN p.name"))
+"""
