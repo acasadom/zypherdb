@@ -34,6 +34,7 @@ pub const replication_values = @import("replication/values.zig");
 pub const replication_forwarding = @import("replication/forwarding.zig");
 pub const replication_forwarded_writes = @import("replication/forwarded_writes.zig");
 pub const replication_writer_session = @import("replication/writer_session.zig");
+pub const replication_forwarding_session = @import("replication/forwarding_session.zig");
 pub const replication_master = @import("replication/master.zig");
 pub const replication_replica = @import("replication/replica.zig");
 pub const replication_master_session = @import("replication/master_session.zig");

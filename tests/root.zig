@@ -10,6 +10,7 @@ test {
     _ = @import("replication/forwarding_test.zig");
     _ = @import("replication/forwarded_writes_test.zig");
     _ = @import("replication/writer_session_test.zig");
+    _ = @import("replication/forwarding_session_test.zig");
     _ = @import("replication/master_test.zig");
     _ = @import("replication/replica_test.zig");
     _ = @import("replication/clock_test.zig");
