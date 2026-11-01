@@ -5,7 +5,7 @@
 //! write on the master. The master tells each replica's lag. A silent
 //! replica or master is let go; a refusal asking again cannot help stops
 //! the replica. A write a replica forwards runs on the master and is
-//! answered.
+//! answered, also through its forwarder, from several threads.
 
 const std = @import("std");
 const testing = std.testing;
@@ -15,6 +15,8 @@ const KeyValueStore = zypherdb.KeyValueStore;
 const Server = zypherdb.replication_server.Server;
 const ReplicaState = zypherdb.replication_server.ReplicaState;
 const Follower = zypherdb.replication_follower.Follower;
+const Forwarder = zypherdb.replication_forwarder.Forwarder;
+const Outcome = zypherdb.replication_forwarder.Outcome;
 const SystemClock = zypherdb.replication_clock.SystemClock;
 const Tcp = zypherdb.replication_tcp.Tcp;
 const Connection = zypherdb.replication_network.Connection;
@@ -500,4 +502,58 @@ test "a master holds a writer per replica at most" {
     var second: Writer = try .open(&setup, server, (try setup.master.databaseId()).?);
     defer second.close();
     try testing.expectError(error.EndOfStream, second.receive(&setup));
+}
+
+test "a forwarder sends writes to the master from several threads, one at a time, and returns each answer" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [256]u8 = undefined;
+    const server = try setup.startServer("127.0.0.1:0", &copies);
+    defer server.stop();
+    var address: [max_address_bytes]u8 = undefined;
+    // On the master's database, as a standby forwards.
+    const sender = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.master, .{
+        .master_address = server.address(&address),
+        .token = token,
+        .timeout_ns = 500 * millisecond,
+    });
+    defer sender.stop();
+
+    const Sending = struct {
+        fn run(forwarding_sender: *Forwarder, first: usize, failures: *std.atomic.Value(u32)) void {
+            send(forwarding_sender, first) catch {
+                _ = failures.fetchAdd(1, .monotonic);
+            };
+        }
+
+        fn send(forwarding_sender: *Forwarder, first: usize) !void {
+            var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            for (first..first + 5) |number| {
+                var request: std.ArrayList(u8) = .empty;
+                try forwarding.encodeRequest(&request, a, .{ .text = "CREATE (d:Door {number: $number}) RETURN d.number AS number", .parameters = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }} });
+                const outcome = forwarding_sender.forward(request.items);
+                if (outcome != .answer) return error.NotAnswered;
+                defer testing.allocator.free(outcome.answer);
+                const done = (try forwarding.decodeAnswer(try a.dupe(u8, outcome.answer), a)).done;
+                if (!Value.eql(.{ .int = @intCast(number) }, done.rows[0][0])) return error.WrongAnswer;
+            }
+        }
+    };
+    var failures: std.atomic.Value(u32) = .init(0);
+    var threads: [3]std.Thread = undefined;
+    for (&threads, 0..) |*thread, index| thread.* = try std.Thread.spawn(.{}, Sending.run, .{ sender, index * 5, &failures });
+    for (threads) |thread| thread.join();
+    try testing.expectEqual(0, failures.load(.monotonic));
+    try testing.expectEqual(15, (try setup.master.changeLogState()).?.next_lsn - 1);
+
+    // A replica that holds no copy of a master yet forwards nothing.
+    const empty = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{
+        .master_address = server.address(&address),
+        .token = token,
+    });
+    defer empty.stop();
+    try testing.expectEqual(Outcome{ .failed = error.NoCopy }, empty.forward("not even sent"));
 }
