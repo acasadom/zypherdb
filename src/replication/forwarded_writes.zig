@@ -37,7 +37,7 @@ pub fn run(graph: *Graph, allocator: Allocator, request_bytes: []const u8) Alloc
         };
         answer.clearRetainingCapacity();
         forwarding.encodeAnswer(&answer, allocator, .{ .failed = .{
-            .code = @intFromEnum(diagnostic.code),
+            .code = @backingInt(diagnostic.code),
             .position = @intCast(diagnostic.pos),
             .message = diagnostic.message(),
         } }) catch |encode_err| switch (encode_err) {

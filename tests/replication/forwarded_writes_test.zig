@@ -65,7 +65,7 @@ const Master = struct {
     fn expectFailure(self: *Master, text: []const u8, code: ErrorCode) !void {
         const lsn = try self.lastLsn();
         const answer_ = try self.run(text, &.{});
-        try testing.expectEqual(@intFromEnum(code), answer_.failed.code);
+        try testing.expectEqual(@backingInt(code), answer_.failed.code);
         try testing.expect(answer_.failed.message.len > 0);
         try testing.expectEqual(lsn, try self.lastLsn());
     }
@@ -138,6 +138,6 @@ test "a malformed request is answered with a failure" {
     defer master.deinit();
     for ([_][]const u8{ "", "\xff\xff\xff\xff", "\x00\x00\x00\x00\x05" }) |request| {
         const answer = try master.answer(request);
-        try testing.expectEqual(@intFromEnum(ErrorCode.invalid_expression), answer.failed.code);
+        try testing.expectEqual(@backingInt(ErrorCode.invalid_expression), answer.failed.code);
     }
 }
