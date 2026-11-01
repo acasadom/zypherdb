@@ -185,13 +185,16 @@ test "a closed end is told to the other, after what it sent" {
             try testing.expectEqualStrings("bye", &received);
             _ = try waitFor(network, .{ .connection = server }, .{ .readable = true });
             try testing.expectError(error.Closed, server.receive(&received));
-            // TCP may take a send or two before it knows the other end is gone.
-            for (0..100) |_| {
+            // TCP may take a send or two before it knows the other end is
+            // gone: the first draws the other end's reset, which comes
+            // later the busier the machine.
+            for (0..2000) |_| {
                 _ = server.send("more") catch |err| switch (err) {
                     error.Closed => return,
                     error.WouldBlock => {},
                 };
                 _ = try waitFor(network, .{ .connection = server }, .{ .writable = true });
+                try testing.io.sleep(.fromMilliseconds(1), .awake);
             }
             return error.NeverClosed;
         }
