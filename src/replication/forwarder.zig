@@ -42,7 +42,7 @@ pub const Options = struct {
     /// in this long.
     timeout_ns: u64 = 5 * std.time.ns_per_s,
     /// The longest a request may take, however alive the master is.
-    request_timeout_ns: u64 = 60 * std.time.ns_per_s,
+    request_timeout_ns: u64 = 30 * std.time.ns_per_s,
     /// What the replica calls itself in its hello, at most
     /// `protocol.max_name_bytes`.
     name: []const u8 = "",
