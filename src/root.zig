@@ -108,6 +108,7 @@ pub const Token = lexer.Token;
 pub const Executor = @import("execution/Executor.zig");
 pub const ExecutionError = Executor.ExecutionError;
 pub const Row = Executor.Row;
+pub const entities = @import("execution/entities.zig");
 /// The planner's switches (`Executor.plan_options`): the query fuzzer turns
 /// optimizations off to compare results.
 pub const PlanOptions = @import("planning/builder.zig").Options;

@@ -96,6 +96,28 @@ test "a forwarded write commits on the master and answers its rows and LSN" {
     try testing.expectEqual(0, bare.rows.len);
 }
 
+test "a forwarded write answers the entities its rows refer to, as it left them" {
+    var master: Master = undefined;
+    try master.init();
+    defer master.deinit();
+    const created = (try master.run("CREATE (a:Door:Exit {name: 'B7'})-[r:LEADS_TO {steps: 3}]->(b:Room) RETURN a, r, [b] AS rooms", &.{})).done;
+    const door = created.entities.nodes.get(created.rows[0][0].node).?;
+    try testing.expectEqual(2, door.labels.len);
+    try testing.expectEqual(1, door.properties.len);
+    try testing.expectEqualStrings("name", door.properties[0].name);
+    try testing.expect(Value.eql(.{ .string = "B7" }, door.properties[0].value));
+    const leads_to = created.entities.relationships.getContext(created.rows[0][1].relationship, .{}).?;
+    try testing.expect(Value.eql(.{ .int = 3 }, leads_to[0].value));
+    // Inside a list too.
+    const room = created.entities.nodes.get(created.rows[0][2].list[0].node).?;
+    try testing.expectEqualStrings("Room", room.labels[0]);
+    try testing.expectEqual(3, created.entities.nodes.count() + created.entities.relationships.count());
+    // A node the write deleted keeps its id, with nothing else.
+    const deleted = (try master.run("MATCH (b:Room) DETACH DELETE b RETURN b", &.{})).done;
+    const gone = deleted.entities.nodes.get(deleted.rows[0][0].node).?;
+    try testing.expectEqual(0, gone.labels.len + gone.properties.len);
+}
+
 test "a schema command runs in a transaction of its own" {
     var master: Master = undefined;
     try master.init();

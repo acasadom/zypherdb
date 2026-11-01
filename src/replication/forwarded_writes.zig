@@ -1,7 +1,7 @@
 //! Runs on the master the writes its replicas forward: each request
 //! (forwarding.zig) is a statement run in a transaction of its own on the
 //! master's database, as an application's query would be, and its answer
-//! is the rows or the error. Nothing of the replica's process is there: no
+//! is the rows (with the entities they refer to) or the error. Nothing of the replica's process is there: no
 //! import directory (LOAD CSV fails), no procedures it defined.
 //!
 //! The rows are written before a write commits: a result too large to send
@@ -15,6 +15,7 @@ const Graph = @import("../storage/graph.zig").Graph;
 const Statement = @import("../statement/Statement.zig");
 const Executor = @import("../execution/Executor.zig");
 const Value = @import("../value.zig").Value;
+const EntitySnapshot = @import("../execution/entities.zig").EntitySnapshot;
 const diagnostics = @import("../diagnostics.zig");
 const Diagnostic = diagnostics.Diagnostic;
 
@@ -62,23 +63,28 @@ fn answerRequest(graph: *Graph, scratch: Allocator, allocator: Allocator, reques
         // A schema command, EXPLAIN, PROFILE: in its own transaction, with
         // a few rows.
         const rows = try statement.run(&executor);
-        try encodeDone(answer, allocator, scratch, statement.columns, rows, try lastLsn(graph));
+        try encodeDone(answer, allocator, scratch, statement.columns, rows, &executor.entities, try lastLsn(graph));
         return;
     }
     const rows = try statement.runOpen(&executor);
     {
         errdefer statement.abort(graph);
-        try encodeDone(answer, allocator, scratch, statement.columns, rows, 0);
+        try encodeDone(answer, allocator, scratch, statement.columns, rows, &executor.entities, 0);
     }
     try statement.commit(graph);
     forwarding.setAnswerLsn(answer.items, try lastLsn(graph));
 }
 
-fn encodeDone(answer: *std.ArrayList(u8), allocator: Allocator, scratch: Allocator, columns: []const []const u8, rows: []const Executor.Row, lsn: u64) !void {
+fn encodeDone(answer: *std.ArrayList(u8), allocator: Allocator, scratch: Allocator, columns: []const []const u8, rows: []const Executor.Row, entities: *const EntitySnapshot, lsn: u64) !void {
     // Without columns (no RETURN) the rows hold nothing to send.
     const row_values = try scratch.alloc([]const Value, if (columns.len == 0) 0 else rows.len);
     for (row_values, rows[0..row_values.len]) |*values, row| values.* = row.items;
-    try forwarding.encodeAnswer(answer, allocator, .{ .done = .{ .lsn = lsn, .columns = columns, .rows = row_values } });
+    try forwarding.encodeAnswer(answer, allocator, .{ .done = .{
+        .lsn = lsn,
+        .columns = columns,
+        .rows = row_values,
+        .entities = if (columns.len == 0) .{} else entities.*,
+    } });
 }
 
 /// The master's last LSN, outside any transaction.

@@ -12,12 +12,20 @@
 //!
 //!     0x00 | lsn (u64) | column count (u32) | per column its name length (u32) and name
 //!          | row count (u32) | per row its values, one per column
+//!          | node count (u32) | per node its id (u64), label count (u32), per
+//!            label its length (u32) and name, then its properties
+//!          | relationship count (u32) | per relationship its value (values.zig),
+//!            then its properties
 //!     0x01 | error code (u32) | position (u32) | message length (u32) | message
 //!
 //! The first: the statement ran and, if it changed anything, committed;
 //! `lsn` is the master's last LSN once it is done, so a replica that has
 //! applied it reads what the statement wrote (or read). The second: it
 //! failed, with the `Diagnostic` the master's run left (nothing committed).
+//! The nodes and relationships after the rows are those the rows refer to,
+//! as the statement left them (execution/entities.zig): a replica shows
+//! them whole even before it has applied the write. Properties are a count
+//! (u32), then per property its name length (u32), name and value.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -25,6 +33,9 @@ const value_module = @import("../value.zig");
 const Value = value_module.Value;
 const MapEntry = value_module.MapEntry;
 const values = @import("values.zig");
+const entities_module = @import("../execution/entities.zig");
+const EntitySnapshot = entities_module.EntitySnapshot;
+const Property = entities_module.Property;
 
 /// The largest request a master takes (statement text and parameters).
 pub const max_request_bytes: usize = 16 << 20;
@@ -49,6 +60,9 @@ pub const Done = struct {
     columns: []const []const u8,
     /// Each as long as `columns`; none without columns.
     rows: []const []const Value,
+    /// The labels and properties of every node and relationship the rows
+    /// refer to.
+    entities: EntitySnapshot = .{},
 };
 
 pub const Failure = struct {
@@ -89,6 +103,22 @@ pub fn encodeAnswer(list: *std.ArrayList(u8), allocator: Allocator, answer: Answ
                     if (list.items.len - start > max_answer_bytes) return error.TooLarge;
                 }
             }
+            try appendInt(list, allocator, u32, done.entities.nodes.count());
+            var nodes = done.entities.nodes.iterator();
+            while (nodes.next()) |node| {
+                try appendInt(list, allocator, u64, node.key_ptr.*);
+                try appendInt(list, allocator, u32, @intCast(node.value_ptr.labels.len));
+                for (node.value_ptr.labels) |label| try appendBytes(list, allocator, label);
+                try appendProperties(list, allocator, node.value_ptr.properties);
+                if (list.items.len - start > max_answer_bytes) return error.TooLarge;
+            }
+            try appendInt(list, allocator, u32, done.entities.relationships.count());
+            var relationships = done.entities.relationships.iterator();
+            while (relationships.next()) |relationship| {
+                try values.encode(list, allocator, .{ .relationship = relationship.key_ptr.* });
+                try appendProperties(list, allocator, relationship.value_ptr.*);
+                if (list.items.len - start > max_answer_bytes) return error.TooLarge;
+            }
         },
         .failed => |failure| {
             try list.append(allocator, 0x01);
@@ -119,6 +149,14 @@ fn appendBytes(list: *std.ArrayList(u8), allocator: Allocator, bytes: []const u8
     try list.appendSlice(allocator, bytes);
 }
 
+fn appendProperties(list: *std.ArrayList(u8), allocator: Allocator, properties: []const Property) values.EncodeError!void {
+    try appendInt(list, allocator, u32, @intCast(properties.len));
+    for (properties) |property| {
+        try appendBytes(list, allocator, property.name);
+        try values.encode(list, allocator, property.value);
+    }
+}
+
 pub const DecodeError = values.DecodeError || error{MalformedMessage};
 
 /// The request `bytes` holds, whole. Its text is a view into `bytes`; the
@@ -135,8 +173,9 @@ pub fn decodeRequest(bytes: []const u8, allocator: Allocator) DecodeError!Reques
     return .{ .text = text, .parameters = parameters.map };
 }
 
-/// The answer `bytes` holds, whole. Its names and message are views into
-/// `bytes`; rows and values are allocated with `allocator` (an arena suits).
+/// The answer `bytes` holds, whole. Its names, labels and message are views
+/// into `bytes`; rows, values and entities are allocated with `allocator`
+/// (an arena suits). An entity given twice is refused.
 pub fn decodeAnswer(bytes: []const u8, allocator: Allocator) DecodeError!Answer {
     if (bytes.len > max_answer_bytes) return error.MalformedMessage;
     var cursor: Cursor = .{ .bytes = bytes };
@@ -151,17 +190,28 @@ pub fn decodeAnswer(bytes: []const u8, allocator: Allocator) DecodeError!Answer 
             const rows = try allocator.alloc([]const Value, row_count);
             for (rows) |*row| {
                 const row_values = try allocator.alloc(Value, columns.len);
-                for (row_values) |*value| {
-                    const decoded = values.decode(cursor.bytes, allocator) catch |err| return switch (err) {
-                        error.MalformedValue => error.MalformedMessage,
-                        else => |other| other,
-                    };
-                    value.* = decoded.value;
-                    cursor.bytes = cursor.bytes[decoded.length..];
-                }
+                for (row_values) |*value| value.* = try cursor.value(allocator);
                 row.* = row_values;
             }
-            break :done .{ .done = .{ .lsn = lsn, .columns = columns, .rows = rows } };
+            var entities: EntitySnapshot = .{};
+            // An id, a label count and a property count at least.
+            for (0..try cursor.count(16)) |_| {
+                const id = try cursor.int(u64);
+                const labels = try allocator.alloc([]const u8, try cursor.count(4));
+                for (labels) |*label| label.* = try cursor.take(try cursor.int(u32));
+                const entry = try entities.nodes.getOrPut(allocator, id);
+                if (entry.found_existing) return error.MalformedMessage;
+                entry.value_ptr.* = .{ .labels = labels, .properties = try cursor.properties(allocator) };
+            }
+            // A relationship's tag, ids, type length and property count.
+            for (0..try cursor.count(33)) |_| {
+                const relationship = try cursor.value(allocator);
+                if (relationship != .relationship) return error.MalformedMessage;
+                const entry = try entities.relationships.getOrPutContext(allocator, relationship.relationship, .{});
+                if (entry.found_existing) return error.MalformedMessage;
+                entry.value_ptr.* = try cursor.properties(allocator);
+            }
+            break :done .{ .done = .{ .lsn = lsn, .columns = columns, .rows = rows, .entities = entities } };
         },
         0x01 => .{ .failed = .{
             .code = try cursor.int(u32),
@@ -186,6 +236,25 @@ const Cursor = struct {
 
     fn int(self: *Cursor, comptime T: type) error{MalformedMessage}!T {
         return std.mem.readInt(T, (try self.take(@sizeOf(T)))[0..@sizeOf(T)], .big);
+    }
+
+    fn value(self: *Cursor, allocator: Allocator) DecodeError!Value {
+        const decoded = values.decode(self.bytes, allocator) catch |err| return switch (err) {
+            error.MalformedValue => error.MalformedMessage,
+            else => |other| other,
+        };
+        self.bytes = self.bytes[decoded.length..];
+        return decoded.value;
+    }
+
+    fn properties(self: *Cursor, allocator: Allocator) DecodeError![]const Property {
+        // A name length and a value's tag at least.
+        const list = try allocator.alloc(Property, try self.count(5));
+        for (list) |*property| property.* = .{
+            .name = try self.take(try self.int(u32)),
+            .value = try self.value(allocator),
+        };
+        return list;
     }
 
     /// A count of things that take at least `least_bytes` each, refused if
