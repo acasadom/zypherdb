@@ -9,12 +9,20 @@
 //! A node steps only when something it watches is ready or its deadline
 //! comes, as on its thread.
 //!
+//! Each replica forwards writes (forwarder.zig), and so does a standby on
+//! the master's machine, which goes on when the master's node restarts as
+//! when another process takes over: the master runs them (a write in its
+//! hands is lost when its node restarts) when the simulation says.
+//!
 //! Checked: a replica's applied LSN is never past the master's last, and
 //! at each LSN it applies its database equals the master's at that LSN
 //! (and, sampled, its derived structures agree); a replica never halts.
-//! Once the faults stop, every replica streams, acked and applied up to
-//! the master's last LSN, equal to the master, and stays so for a while
-//! with no new connection.
+//! A forwarded write runs once at most; one answered ran, at the LSN the
+//! answer tells, and its rows are its own; one told unreachable never
+//! runs; one unknown may run, once. Once the faults stop, every replica
+//! streams, acked and applied up to the master's last LSN, equal to the
+//! master, and stays so for a while with no new connection; a write each
+//! process forwards then is answered.
 //!
 //! Swarm testing: each seed chooses the replicas, the faults and their
 //! rates, the network's capacity and how much change log the master keeps.
@@ -39,6 +47,9 @@ const master_node = zypherdb.replication_master_node;
 const MasterNode = master_node.MasterNode;
 const replica_node = zypherdb.replication_replica_node;
 const ReplicaNode = replica_node.ReplicaNode;
+const forwarder = zypherdb.replication_forwarder;
+const ForwardingNode = forwarder.ForwardingNode;
+const forwarding = zypherdb.replication_forwarding;
 
 pub const Options = struct {
     seed: u64,
@@ -59,6 +70,12 @@ pub const Statistics = struct {
     freezes: u64 = 0,
     replica_restarts: u64 = 0,
     master_restarts: u64 = 0,
+    forwards: u64 = 0,
+    forwarded_writes_run: u64 = 0,
+    forwards_answered: u64 = 0,
+    forwards_unknown: u64 = 0,
+    forwards_unreachable: u64 = 0,
+    forwards_without_copy: u64 = 0,
 
     pub fn add(self: *Statistics, other: Statistics) void {
         inline for (@typeInfo(Statistics).@"struct".field_names) |name| @field(self, name) += @field(other, name);
@@ -74,6 +91,8 @@ const master_address = "master:7000";
 const ms = std.time.ns_per_ms;
 const heartbeat_ns = 100 * ms;
 const timeout_ns = 500 * ms;
+/// What each forwarded write does: a node of its own, by its number.
+const forwarded_write = "CREATE (n:Forwarded {number: $number}) RETURN n.number AS number";
 const max_replicas = 3;
 /// What each replica calls itself: its index in `Simulation.replicas`.
 const replica_names = [max_replicas][]const u8{ "replica-0", "replica-1", "replica-2" };
@@ -91,6 +110,8 @@ const Swarm = struct {
     capacity: usize,
     change_log_limit: u64,
     max_unapplied_bytes: usize,
+    /// The longest a forwarded write may take.
+    request_timeout_ns: u64,
     /// The weight of each move (0: never).
     commit: u32,
     large_commit: u32,
@@ -102,6 +123,8 @@ const Swarm = struct {
     freeze: u32,
     restart_replica: u32,
     restart_master: u32,
+    forward: u32,
+    run_write: u32,
 
     fn choose(random: std.Random) Swarm {
         // libmdbx's copies are 16 MiB at least (its file's growth step),
@@ -113,6 +136,7 @@ const Swarm = struct {
             .capacity = capacities[random.uintLessThan(usize, capacities.len)],
             .change_log_limit = if (random.boolean()) 4 << 10 else 512 << 20,
             .max_unapplied_bytes = if (random.boolean()) 2 << 10 else 64 << 20,
+            .request_timeout_ns = if (random.boolean()) timeout_ns else 10 * timeout_ns,
             .commit = random.intRangeAtMost(u32, 1, 10),
             .large_commit = if (random.uintLessThan(u32, 4) == 0) 1 else 0,
             .pass_time = random.intRangeAtMost(u32, 1, 10),
@@ -123,6 +147,9 @@ const Swarm = struct {
             .freeze = rarely(random),
             .restart_replica = rarely(random),
             .restart_master = rarely(random),
+            .forward = random.intRangeAtMost(u32, 0, 5),
+            // A master slow to run them: writes it holds run out of time.
+            .run_write = if (random.uintLessThan(u32, 4) == 0) 0 else random.intRangeAtMost(u32, 1, 10),
         };
     }
 
@@ -139,7 +166,7 @@ const Swarm = struct {
     }
 };
 
-const Move = enum { commit, large_commit, pass_time, make_copy, apply, cut, partition, freeze, restart_replica, restart_master };
+const Move = enum { commit, large_commit, pass_time, make_copy, apply, cut, partition, freeze, restart_replica, restart_master, forward, run_write };
 
 /// The moves that break things, off once the simulation settles.
 fn isFault(move: Move) bool {
@@ -221,7 +248,6 @@ const Master = struct {
     /// Raised by each commit and each copy made; outlives the node.
     wakeup: Wakeup,
     copier: master_node.InlineCopier,
-    /// No replica forwards writes yet: it stays idle.
     runner: master_node.InlineRunner,
     node: MasterNode,
     copies_path: []const u8,
@@ -242,8 +268,32 @@ const Replica = struct {
     frozen_until: Instant = 0,
     /// The LSN its database was last checked at.
     checked_lsn: ?u64 = null,
+    forwarding: Forwarding,
     /// False after a restart that failed to open it again.
     open: bool = false,
+};
+
+/// A process's forwarded writes: a replica's, or the standby's.
+const Forwarding = struct {
+    /// The process's database: the forwarding node's hellos tell its id.
+    store: *KeyValueStore,
+    wakeup: Wakeup,
+    node: ForwardingNode,
+    /// The write handed over, until it ends.
+    pending: ?Pending = null,
+
+    const Pending = struct {
+        number: u64,
+        /// Its request, the node's to read until it ends.
+        bytes: []u8,
+    };
+};
+
+/// What became of a forwarded write, by its number.
+const ForwardedWrite = struct {
+    /// The LSN its commit reached, once the master ran it.
+    ran_at: ?u64 = null,
+    told: enum { pending, answered, unknown, not_reached, not_sent } = .pending,
 };
 
 const Simulation = struct {
@@ -257,6 +307,11 @@ const Simulation = struct {
     network: MemoryNetwork,
     master: Master,
     replicas: [max_replicas]Replica,
+    /// On the master's machine, apart from its node.
+    standby: Forwarding,
+    /// Each forwarded write's, from 1.
+    last_number: u64 = 0,
+    forwarded_writes: std.AutoHashMapUnmanaged(u64, ForwardedWrite) = .empty,
     /// The master's database at each LSN it committed.
     digests: std.AutoHashMapUnmanaged(u64, u64) = .empty,
     /// The partition lasts until then.
@@ -276,8 +331,10 @@ const Simulation = struct {
             .network = .{ .allocator = allocator, .capacity = swarm.capacity },
             .master = undefined,
             .replicas = undefined,
+            .standby = undefined,
         };
         try self.openMaster(path);
+        try self.openForwarding(&self.standby, &self.master.store, "standby");
         for (self.replicas[0..swarm.replicas], 0..) |*replica, i| {
             replica.path = try std.fmt.allocPrint(allocator, "{s}/replica-{d}", .{ path, i });
             replica.copies_path = try std.fmt.allocPrint(allocator, "{s}/replica-{d}-copies", .{ path, i });
@@ -293,6 +350,8 @@ const Simulation = struct {
             self.allocator.free(replica.path);
             self.allocator.free(replica.copies_path);
         }
+        self.closeForwarding(&self.standby);
+        self.forwarded_writes.deinit(self.allocator);
         const master = &self.master;
         master.node.deinit();
         master.copier.deinit();
@@ -383,7 +442,35 @@ const Simulation = struct {
             .max_unapplied_bytes = self.swarm.max_unapplied_bytes,
             .name = replica_names[self.indexOf(replica)],
         });
+        errdefer replica.node.deinit();
+        try self.openForwarding(&replica.forwarding, &replica.store, replica_names[self.indexOf(replica)]);
         replica.open = true;
+    }
+
+    fn openForwarding(self: *Simulation, process: *Forwarding, store: *KeyValueStore, name: []const u8) !void {
+        const wakeup = try self.network.network().wakeup();
+        errdefer wakeup.close();
+        process.* = .{
+            .store = store,
+            .wakeup = wakeup,
+            .node = try .init(self.allocator, self.network.network(), store, wakeup, .{
+                .master_address = master_address,
+                .token = token,
+                .timeout_ns = timeout_ns,
+                .request_timeout_ns = self.swarm.request_timeout_ns,
+                .name = name,
+            }),
+        };
+    }
+
+    /// A write in hand ends untold: the master may run it yet.
+    fn closeForwarding(self: *Simulation, process: *Forwarding) void {
+        process.node.deinit();
+        process.wakeup.close();
+        if (process.pending) |pending| {
+            self.forwarded_writes.getPtr(pending.number).?.told = .unknown;
+            self.allocator.free(pending.bytes);
+        }
     }
 
     fn indexOf(self: *const Simulation, replica: *const Replica) usize {
@@ -391,9 +478,9 @@ const Simulation = struct {
     }
 
     fn closeReplica(self: *Simulation, replica: *Replica) void {
-        _ = self;
         if (!replica.open) return;
         replica.open = false;
+        self.closeForwarding(&replica.forwarding);
         replica.node.deinit();
         replica.applier.deinit();
         replica.wakeup.close();
@@ -462,6 +549,12 @@ const Simulation = struct {
                 try self.startMasterNode();
                 self.statistics.master_restarts += 1;
             },
+            .forward => {
+                const which = self.random().uintLessThan(usize, self.swarm.replicas + 1);
+                const process = if (which == self.swarm.replicas) &self.standby else &self.replicas[which].forwarding;
+                if (process.pending == null) try self.forward(process);
+            },
+            .run_write => try self.runWrite(),
         }
         _ = try self.stepNodes();
     }
@@ -543,6 +636,85 @@ const Simulation = struct {
         return id;
     }
 
+    /// Hands a write over to `process`, which holds none.
+    fn forward(self: *Simulation, process: *Forwarding) !void {
+        self.last_number += 1;
+        const number = self.last_number;
+        var request: std.ArrayList(u8) = .empty;
+        defer request.deinit(self.allocator);
+        try forwarding.encodeRequest(&request, self.allocator, .{ .text = forwarded_write, .parameters = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }} });
+        try self.forwarded_writes.put(self.allocator, number, .{});
+        const bytes = try request.toOwnedSlice(self.allocator);
+        process.pending = .{ .number = number, .bytes = bytes };
+        process.node.request(number, bytes, self.clock.time);
+        process.wakeup.raise();
+        self.statistics.forwards += 1;
+        self.note("write {d} is forwarded", .{number});
+    }
+
+    /// The master runs the oldest write forwarded to it, if any.
+    fn runWrite(self: *Simulation) !void {
+        const runner = &self.master.runner;
+        if (runner.waiting() == 0) return;
+        try runner.runNext();
+        const answer = runner.ran.items[runner.ran.items.len - 1].answer orelse return;
+        var arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer arena.deinit();
+        const done = switch (try forwarding.decodeAnswer(answer, arena.allocator())) {
+            .done => |done| done,
+            .failed => |failure| return self.fail("a forwarded write failed on the master: {s}", .{failure.message}),
+        };
+        const number: u64 = @intCast(done.rows[0][0].int);
+        const write = self.forwarded_writes.getPtr(number) orelse return self.fail("the master ran write {d}, never forwarded", .{number});
+        if (write.ran_at != null) return self.fail("the master ran write {d} twice", .{number});
+        if (write.told == .not_reached or write.told == .not_sent) return self.fail("the master ran write {d}, told {t}", .{ number, write.told });
+        if (done.lsn != try self.lastLsn()) return self.fail("write {d} answered LSN {d}, not the master's last", .{ number, done.lsn });
+        write.ran_at = done.lsn;
+        try self.digests.put(self.allocator, done.lsn, try digest(&self.master.store));
+        self.statistics.forwarded_writes_run += 1;
+        self.note("the master runs write {d}: LSN {d}", .{ number, done.lsn });
+    }
+
+    /// The write `process` held ended as `finished` tells.
+    fn finish(self: *Simulation, process: *Forwarding, finished: forwarder.Finished) !void {
+        const pending = process.pending.?;
+        process.pending = null;
+        defer self.allocator.free(pending.bytes);
+        defer process.node.free(finished.outcome);
+        if (finished.id != pending.number) return self.fail("write {d} ended as write {d}", .{ pending.number, finished.id });
+        const write = self.forwarded_writes.getPtr(pending.number).?;
+        switch (finished.outcome) {
+            .answer => |answer| {
+                var arena: std.heap.ArenaAllocator = .init(self.allocator);
+                defer arena.deinit();
+                const done = switch (try forwarding.decodeAnswer(answer, arena.allocator())) {
+                    .done => |done| done,
+                    .failed => |failure| return self.fail("write {d} failed: {s}", .{ pending.number, failure.message }),
+                };
+                if (done.rows.len != 1 or done.rows[0][0].int != pending.number) return self.fail("write {d} answered another's rows", .{pending.number});
+                if (write.ran_at != done.lsn) return self.fail("write {d} answered LSN {d}, ran at {?d}", .{ pending.number, done.lsn, write.ran_at });
+                write.told = .answered;
+                self.statistics.forwards_answered += 1;
+            },
+            .unknown => {
+                write.told = .unknown;
+                self.statistics.forwards_unknown += 1;
+            },
+            .master_unreachable => {
+                if (write.ran_at != null) return self.fail("write {d} ran, told unreachable", .{pending.number});
+                write.told = .not_reached;
+                self.statistics.forwards_unreachable += 1;
+            },
+            .refused => |reason| return self.fail("write {d} refused: {t}", .{ pending.number, reason }),
+            .failed => |err| {
+                if (err != error.NoCopy or try process.store.databaseId() != null) return self.fail("write {d} failed: {t}", .{ pending.number, err });
+                write.told = .not_sent;
+                self.statistics.forwards_without_copy += 1;
+            },
+        }
+        self.note("write {d} ends {t}", .{ pending.number, write.told });
+    }
+
     /// Time passes: up to the earliest deadline of what waits, or by a
     /// little.
     fn passTime(self: *Simulation) void {
@@ -557,14 +729,18 @@ const Simulation = struct {
     }
 
     fn earliestDeadline(self: *Simulation) ?Instant {
-        var earliest: ?Instant = self.master.node.deadline();
+        var earliest: ?Instant = earlier(self.master.node.deadline(), self.standby.node.deadline());
         const now = self.clock.time;
         for (self.replicas[0..self.swarm.replicas]) |*replica| {
-            const at = if (replica.frozen_until > now) replica.frozen_until else replica.node.deadline() orelse continue;
-            earliest = if (earliest) |known| @min(known, at) else at;
+            earliest = earlier(earliest, if (replica.frozen_until > now) replica.frozen_until else earlier(replica.node.deadline(), replica.forwarding.node.deadline()));
         }
         if (self.partition_until > now) earliest = if (earliest) |known| @min(known, self.partition_until) else self.partition_until;
         return earliest;
+    }
+
+    fn earlier(one: ?Instant, other: ?Instant) ?Instant {
+        const at = one orelse return other;
+        return if (other) |known| @min(at, known) else at;
     }
 
     /// `replica` applies the oldest work it was given, then is checked
@@ -628,8 +804,22 @@ const Simulation = struct {
                 stepped = true;
             }
             if (node.halted()) |reason| return self.fail("a replica halted: {t}", .{reason});
+            if (try self.stepForwarding(&replica.forwarding, now)) stepped = true;
         }
+        if (try self.stepForwarding(&self.standby, now)) stepped = true;
         return stepped;
+    }
+
+    fn stepForwarding(self: *Simulation, process: *Forwarding, now: Instant) !bool {
+        var buffer: [2]Watched = undefined;
+        const node = &process.node;
+        const watched = node.watch(&buffer);
+        try self.network.network().wait(watched, null);
+        node.ready(watched);
+        if (!anyReady(watched) and !due(node.deadline(), now)) return false;
+        node.step(now);
+        if (node.take()) |finished| try self.finish(process, finished);
+        return true;
     }
 
     fn anyReady(watched: []const Watched) bool {
@@ -655,6 +845,11 @@ const Simulation = struct {
             }
             try self.drain();
         }
+        try self.forwardFromEach(settle_by);
+        while (!try self.upToDate()) {
+            if (self.clock.time > settle_by) return self.fail("the replicas did not come up to date with the writes forwarded last", .{});
+            try self.drain();
+        }
         self.note("every replica is up to date", .{});
         const connects = self.network.connects;
         const steady_until = self.clock.time + steady_ns;
@@ -668,6 +863,32 @@ const Simulation = struct {
             try self.checkIntegrity(replica);
         }
         try self.checkIdentities();
+    }
+
+    /// Each write in hand ends; then every process forwards one more,
+    /// answered by `settle_by`.
+    fn forwardFromEach(self: *Simulation, settle_by: Instant) !void {
+        while (self.anyForwarding()) {
+            if (self.clock.time > settle_by) return self.fail("the writes forwarded before the faults stopped did not end", .{});
+            try self.drain();
+        }
+        try self.forward(&self.standby);
+        for (self.replicas[0..self.swarm.replicas]) |*replica| try self.forward(&replica.forwarding);
+        for (0..self.swarm.replicas + 1) |i| {
+            const number = self.last_number - i;
+            while (self.forwarded_writes.get(number).?.told == .pending) {
+                if (self.clock.time > settle_by) return self.fail("write {d}, forwarded with no faults, did not end", .{number});
+                try self.drain();
+            }
+            const told = self.forwarded_writes.get(number).?.told;
+            if (told != .answered) return self.fail("write {d}, forwarded with no faults, ended {t}", .{ number, told });
+        }
+    }
+
+    /// Whether a process holds a write that did not end.
+    fn anyForwarding(self: *Simulation) bool {
+        for (self.replicas[0..self.swarm.replicas]) |*replica| if (replica.forwarding.pending != null) return true;
+        return self.standby.pending != null;
     }
 
     /// The master serves each replica once, by its name, from its
@@ -703,6 +924,10 @@ const Simulation = struct {
                 self.statistics.copies_made += 1;
             }
             var applied = false;
+            while (self.master.runner.waiting() > 0) {
+                try self.runWrite();
+                applied = true;
+            }
             for (self.replicas[0..self.swarm.replicas]) |*replica| {
                 while (replica.applier.waiting() > 0) {
                     try self.apply(replica);
