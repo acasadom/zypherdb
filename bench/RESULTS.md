@@ -252,23 +252,40 @@ What Python adds now: about 1.4 µs per query, and about 35 ns per returned cell
 about 1 µs (its labels tuple and properties dict). The cycle collector is paused while a result is
 built, and entities are built without running their `__init__`.
 
-## Writes forwarded by a replica (November 2026)
+## What replication costs (November 2026)
 
-`python bench/forwarded_write.py` on an Apple M5 laptop: a master and a replica in one process,
-over the loopback interface, 500 single-node `CREATE`s each. Medians:
+`python bench/replication_costs.py` on an Apple M5 laptop (10 cores): 100,000 people with 5
+relationships each, every database in a process of its own, replicas connected over the
+loopback interface (a real network adds its round trip to a replica's lag and to a forwarded
+write). Typical medians of three runs; single-node `CREATE`s, reads with the page cache warm.
 
-| Write | `durability="full"` | `durability="deferred"` |
+**Without replication** nothing changed: the engine and Python benchmarks against `main` (before
+replication) are within noise.
+
+**Reads** cost the same everywhere: on a database without replication, on a master (with or
+without replicas), on a replica, and on a replica opened with `forward_writes=True` that forwards
+nothing: about 1.7 µs for a point lookup, 3.5 µs for one hop, 5.5 ms for a scan of 100k nodes.
+
+**Writes**, `durability="deferred"` (no wait for the disk, so what replication adds shows):
+
+| Write | Median | Writes/s (one thread) |
 | --- | ---: | ---: |
-| on the master | 15.0 ms | 18.5 µs |
-| on the master, then `wait_for` on the replica | 15.9 ms | 58.2 µs |
-| forwarded by the replica (`forward_writes=True`) | 15.0 ms | 69.9 µs |
+| no replication | 24 µs | 40,000 |
+| master, no replica | 30 µs | 32,000 |
+| master, one replica | 31-38 µs | 25,000-31,000 |
+| forwarded by a replica | 92-100 µs | 10,000 |
 
-With `"full"` the master's commit to disk is nearly all of it. Without it, a forwarded write
-costs about 50 µs more than a local one: the round trip to the master, and the change coming
-back to the replica; about 12 µs more than writing on the master and waiting by hand. A real
-network adds its round trip.
+A master writes each change to its change log too, replicas or not (+6 µs). A forwarded write
+costs about 60 µs more than one on the master: the round trip and the change coming back to the
+replica. From 4 threads a replica forwards about 11,000 writes a second: it sends one at a time.
+A replica has a write on the master about 50-250 µs later (median; p95 up to 2 ms).
 
-The read path does not change: an A/B of the engine benchmark against the code before write
-forwarding is within noise, and so is the Python one (`bench/python_overhead.py`) once `Rows` is
-built in place, without copying the rows into it (a first version that copied them cost 13% on
-results of 100k rows).
+**Writes**, `durability="full"`: a commit waits for the disk (8 ms on this laptop), and that is
+nearly all of it: without replication or on a master with no replica, 8 ms; a forwarded write
+16 ms (the master's commit, then the replica's). With master and replica on the same machine,
+both commit to the same disk and slow each other (a master write 12-13 ms, a replica 15-16 ms
+behind); with the replica at `durability="deferred"` the master is back to 6-8 ms and the replica
+60 µs behind. On two machines each has its own disk.
+
+A process idle for a few seconds reads 2-3 times slower at first on macOS (its core slows down,
+or it is moved): the benchmark keeps each process busy for 0.3 s before measuring its reads.
