@@ -453,7 +453,14 @@ pub const Replication = struct {
     /// Waits until change set `lsn` of the master is applied here, at most
     /// `timeout_ns`; whether it is. A master has every change set it made.
     pub fn waitFor(self: *Replication, lsn: u64, timeout_ns: u64) bool {
-        const follower = self.follower.load(.acquire) orelse return waitApplied(self.store, lsn, timeout_ns) catch false;
+        return self.waitForFollowing(lsn, timeout_ns) orelse waitApplied(self.store, lsn, timeout_ns) catch false;
+    }
+
+    /// As `waitFor`, in a process that follows the master; null in one
+    /// standing by, where only the store tells. Touches nothing of the
+    /// database: any thread may call it while others use it.
+    pub fn waitForFollowing(self: *Replication, lsn: u64, timeout_ns: u64) ?bool {
+        const follower = self.follower.load(.acquire) orelse return null;
         const clock = self.clock.clock();
         const applied = follower.waitApplied(lsn, clock.now() +| timeout_ns) orelse return false;
         return applied >= lsn;

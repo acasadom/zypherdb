@@ -16,6 +16,11 @@
 //!     begin_write(db)  commit_write(db)   abort_write(db)
 //!     allocate_node_id(db) -> int         add_node(db, id, label)
 //!     add_edge(db, source, target, type)  set_property(db, id, name, value)
+//!
+//! On a replica that forwards writes, `query` and `statement_query` return a
+//! write to forward instead of rows: `forward_send(pending)` sends it without
+//! the database (no lock on it need be held), `forward_rows(pending, visible)`
+//! makes its rows.
 
 const std = @import("std");
 const zypherdb = @import("zypherdb");
@@ -167,10 +172,15 @@ fn raise(class: ?*py.PyObject, comptime fmt: []const u8, args: anytype) ?*py.PyO
 
 /// Raises the exception for the database's last error.
 fn raiseQueryError(database: *Database) ?*py.PyObject {
-    const message = database.diagnostic.message();
+    return raiseDiagnostic(&database.diagnostic);
+}
+
+/// Raises the exception for the error `diagnostic` tells.
+fn raiseDiagnostic(diagnostic: *const Diagnostic) ?*py.PyObject {
+    const message = diagnostic.message();
     const text = py.PyUnicode_FromStringAndSize(message.ptr, @intCast(message.len)) orelse return null;
     defer py.Py_DecRef(text);
-    const code = py.PyLong_FromLong(@intCast(@backingInt(database.diagnostic.code))) orelse return null;
+    const code = py.PyLong_FromLong(@intCast(@backingInt(diagnostic.code))) orelse return null;
     defer py.Py_DecRef(code);
     const exception = py.PyObject_CallFunctionObjArgs(classes.query_error, code, text, @as(?*py.PyObject, null)) orelse return null;
     defer py.Py_DecRef(exception);
@@ -602,11 +612,106 @@ fn environmentOf(database: *Database) Statement.Environment {
 }
 
 /// A statement's rows; not `visible` when a write forwarded to the master
-/// has not come back to this replica yet.
+/// has not come back to this replica yet. A write to forward has none yet:
+/// it is `forward`, to send.
 const Ran = struct {
     rows: []const zypherdb.Row,
     visible: bool = true,
+    forward: ?*PendingForward = null,
 };
+
+/// A write a replica forwards to its master, from the call that routed it
+/// to the ones that send it (`forward_send`) and make its rows
+/// (`forward_rows`). It holds what they need apart from the database, so
+/// that no lock on the database is held while the write is on its way:
+/// other threads go on using it, and only the thread that wrote waits.
+const PendingForward = struct {
+    arena: std.heap.ArenaAllocator,
+    replication: *Replication,
+    request: []const u8 = &.{},
+    /// When the request's time began.
+    since: u64,
+    iso_temporals: bool,
+    diagnostic: Diagnostic = .init(),
+    done: ?zypherdb.replication_forwarding.Done = null,
+
+    fn create(database: *Database, statement: *const Statement, executor: *const Executor) !*PendingForward {
+        const replication = database.replication.?;
+        const pending = try allocator.create(PendingForward);
+        pending.* = .{ .arena = .init(allocator), .replication = replication, .since = replication.now(), .iso_temporals = database.iso_temporals };
+        errdefer pending.destroy();
+        pending.request = try replica_writes.encodeRequest(statement, executor.parameters, pending.arena.allocator(), &database.diagnostic);
+        return pending;
+    }
+
+    fn destroy(self: *PendingForward) void {
+        self.arena.deinit();
+        allocator.destroy(self);
+    }
+};
+
+const pending_capsule_name = "zypherdb.PendingForward";
+
+fn destroyPendingCapsule(capsule: ?*py.PyObject) callconv(.c) void {
+    const pointer = py.PyCapsule_GetPointer(capsule, pending_capsule_name) orelse return;
+    const pending: *PendingForward = @ptrCast(@alignCast(pointer));
+    pending.destroy();
+}
+
+fn pendingOf(capsule: ?*py.PyObject) ?*PendingForward {
+    const pointer = py.PyCapsule_GetPointer(capsule, pending_capsule_name) orelse return null;
+    return @ptrCast(@alignCast(pointer));
+}
+
+/// A query's result: its rows, or the write to forward.
+fn resultOrPending(ran: Ran, executor: *Executor, database: *Database) ?*py.PyObject {
+    const pending = ran.forward orelse return resultObject(ran, outputOf(executor, database));
+    return py.PyCapsule_New(pending, pending_capsule_name, destroyPendingCapsule) orelse {
+        pending.destroy();
+        return null;
+    };
+}
+
+/// `forward_send(pending) -> (lsn, visible, time_left_ms)`: sends the write
+/// to the master and waits for its answer, then until this replica has
+/// applied it, at most the request's time; with neither the GIL nor any
+/// lock on the database held. `visible` is None in a process standing by,
+/// which has no follower to wait on: the caller looks at the database for
+/// `time_left_ms`.
+fn forwardSend(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    if (parseTuple(args, "O", &capsule) == 0) return null;
+    const pending = pendingOf(capsule) orelse return null;
+    if (pending.done != null) return raise(py.PyExc_ValueError, "this write was sent already", .{});
+    const replication = pending.replication;
+    var visible: ?bool = null;
+    var left_ns: u64 = 0;
+    const thread_state = py.PyEval_SaveThread();
+    const sent = replica_writes.send(replication, pending.request, pending.arena.allocator(), &pending.diagnostic);
+    if (sent) |done| {
+        visible = replication.waitForFollowing(done.lsn, replica_writes.timeLeft(replication, pending.since));
+        left_ns = replica_writes.timeLeft(replication, pending.since);
+    } else |_| {}
+    py.PyEval_RestoreThread(thread_state);
+    const done = sent catch |err| {
+        noteFailure(&pending.diagnostic, err);
+        return raiseDiagnostic(&pending.diagnostic);
+    };
+    pending.done = done;
+    const visible_object = if (visible) |seen| py.PyBool_FromLong(@intFromBool(seen)) else none();
+    return py.Py_BuildValue("(KNK)", @as(c_ulonglong, done.lsn), visible_object, @as(c_ulonglong, left_ns / std.time.ns_per_ms));
+}
+
+/// `forward_rows(pending, visible) -> Rows`: the rows of a write sent.
+fn forwardRows(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var visible: c_int = 1;
+    if (parseTuple(args, "Op", &capsule, &visible) == 0) return null;
+    const pending = pendingOf(capsule) orelse return null;
+    const done = pending.done orelse return raise(py.PyExc_ValueError, "this write was not sent", .{});
+    const rows = replica_writes.rowsOf(done, pending.arena.allocator()) catch return py.PyErr_NoMemory();
+    return resultObject(.{ .rows = rows, .visible = visible != 0 }, .{ .entities = &pending.done.?.entities, .iso_temporals = pending.iso_temporals });
+}
 
 /// Runs `statement` with the call's parameters, with the GIL released
 /// (other Python threads go on meanwhile); null on failure, with the
@@ -623,11 +728,11 @@ fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?Ra
     if (forwardsWrites(database)) {
         const route = replica_writes.route(statement, database.table_procedures.items, &database.diagnostic) catch return null;
         if (route == .forward) {
-            const forwarded = replica_writes.forward(database.replication.?, statement, executor) catch |err| {
+            const pending = PendingForward.create(database, statement, executor) catch |err| {
                 noteFailure(&database.diagnostic, err);
                 return null;
             };
-            return .{ .rows = forwarded.rows, .visible = forwarded.visible };
+            return .{ .rows = &.{}, .forward = pending };
         }
     }
     const rows = statement.run(executor) catch |err| {
@@ -676,7 +781,7 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
     var executor = statement.executorFor(&call.database.graph, arena);
     const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
-    return resultObject(ran, &executor, call.database);
+    return resultOrPending(ran, &executor, call.database);
 }
 
 /// `prepare(db, text)`: `(statement, parameters, columns)`: a prepared
@@ -728,7 +833,7 @@ fn statementQuery(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
     const call = QueryCall{ .database = database, .text = statement.text, .parameters = parameters };
     var executor = statement.executorFor(&database.graph, arena);
     const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(database);
-    return resultObject(ran, &executor, database);
+    return resultOrPending(ran, &executor, database);
 }
 
 const statement_capsule_name = "zypherdb.Statement";
@@ -764,10 +869,14 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     defer if (owned) |statement| statement.destroy();
     const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
     var executor = statement.executorFor(&call.database.graph, arena);
-    const lines = (runStatement(call, statement, &executor) orelse return raiseQueryError(call.database)).rows;
+    const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
+    // EXPLAIN runs here; PROFILE of a write is refused on a replica.
+    std.debug.assert(ran.forward == null);
+    const lines = ran.rows;
 
-    const rows = rowsObject(executor.profiled_rows, &executor, call.database) orelse return null;
-    const plan_lines = rowsObject(lines, &executor, call.database) orelse {
+    const output = outputOf(&executor, call.database);
+    const rows = rowsObject(executor.profiled_rows, output) orelse return null;
+    const plan_lines = rowsObject(lines, output) orelse {
         py.Py_DecRef(rows);
         return null;
     };
@@ -785,7 +894,7 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 
 /// A query's result: its rows as a `Rows` (a list of lists of Python
 /// values), `visible` set to False only when not.
-fn resultObject(ran: Ran, executor: *Executor, database: *Database) ?*py.PyObject {
+fn resultObject(ran: Ran, output: Output) ?*py.PyObject {
     // As in `rowsObject`, the cycle collector is paused while the rows are made.
     const collector_was_enabled = py.PyGC_Disable() != 0;
     defer if (collector_was_enabled) {
@@ -794,7 +903,7 @@ fn resultObject(ran: Ran, executor: *Executor, database: *Database) ?*py.PyObjec
     // An empty `Rows`, without the cost of calling the class.
     const result = py.PyType_GenericAlloc(@ptrCast(@alignCast(classes.rows)), 0) orelse return null;
     for (ran.rows) |row| {
-        const cells = rowObject(row, executor, database) orelse {
+        const cells = rowObject(row, output) orelse {
             py.Py_DecRef(result);
             return null;
         };
@@ -818,8 +927,13 @@ fn resultObject(ran: Ran, executor: *Executor, database: *Database) ?*py.PyObjec
     return result;
 }
 
+/// How the rows `executor` made on `database` become Python objects.
+fn outputOf(executor: *const Executor, database: *const Database) Output {
+    return .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals };
+}
+
 /// `rows` as a list of lists of Python values.
-fn rowsObject(rows: []const zypherdb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
+fn rowsObject(rows: []const zypherdb.Row, output: Output) ?*py.PyObject {
     // Building a large result makes thousands of containers, which would set
     // off Python's cycle collector over and over; none of them can be part of
     // a cycle yet, so it is paused meanwhile.
@@ -829,7 +943,7 @@ fn rowsObject(rows: []const zypherdb.Row, executor: *Executor, database: *Databa
     };
     const result = py.PyList_New(@intCast(rows.len)) orelse return null;
     for (rows, 0..) |row, i| {
-        const cells = rowObject(row, executor, database) orelse {
+        const cells = rowObject(row, output) orelse {
             py.Py_DecRef(result);
             return null;
         };
@@ -839,10 +953,10 @@ fn rowsObject(rows: []const zypherdb.Row, executor: *Executor, database: *Databa
 }
 
 /// One row as a list of Python values.
-fn rowObject(row: zypherdb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
+fn rowObject(row: zypherdb.Row, output: Output) ?*py.PyObject {
     const cells = py.PyList_New(@intCast(row.items.len)) orelse return null;
     for (row.items, 0..) |cell, j| {
-        const object = objectOf(cell, .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals }) orelse {
+        const object = objectOf(cell, output) orelse {
             py.Py_DecRef(cells);
             return null;
         };
@@ -1201,6 +1315,8 @@ var methods = [_]py.PyMethodDef{
     method("plan", plan),
     method("prepare", prepare),
     method("statement_query", statementQuery),
+    method("forward_send", forwardSend),
+    method("forward_rows", forwardRows),
     method("begin_write", beginWrite),
     method("commit_write", commitWrite),
     method("abort_write", abortWrite),

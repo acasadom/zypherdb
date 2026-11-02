@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import threading
+import time
 
 from ._engine import native
 from .errors import ZypherDBError, ClosedError
@@ -62,7 +63,11 @@ class PreparedQuery:
             db = database._handle()
             if database._in_write:
                 raise ZypherDBError("query() cannot run inside a write() block")
-            return native.statement_query(db, self._statement, values)
+            result = native.statement_query(db, self._statement, values)
+            if type(result) is Rows:
+                return result
+            database._forwarding += 1
+        return database._forward(result)
 
     def __repr__(self) -> str:
         return f"PreparedQuery({self.text!r})"
@@ -160,6 +165,11 @@ class Database:
         # mutators that themselves take the lock.
         self._lock = threading.RLock()
         self._in_write = False
+        # Writes forwarded to the master and not back yet: they hold no lock
+        # meanwhile (only the thread that wrote waits), and `close` waits
+        # for them.
+        self._forwarding = 0
+        self._forwarded = threading.Condition(self._lock)
 
     def sync(self) -> None:
         """Writes every commit so far to disk (for "deferred" durability)."""
@@ -231,6 +241,8 @@ class Database:
 
     def close(self) -> None:
         with self._lock:
+            while self._forwarding:
+                self._forwarded.wait()
             if self._db is not None:
                 native.close(self._db)
                 self._db = None
@@ -274,7 +286,36 @@ class Database:
             db = self._handle()
             if self._in_write:
                 raise ZypherDBError("query() cannot run inside a write() block")
-            return native.query(db, text, values)
+            result = native.query(db, text, values)
+            if type(result) is Rows:
+                return result
+            self._forwarding += 1
+        return self._forward(result)
+
+    def _forward(self, pending) -> Rows:
+        """Sends a write to the master and returns its rows once this replica
+        has it, without holding the lock: the other threads go on reading."""
+        try:
+            lsn, visible, left_ms = native.forward_send(pending)
+            if visible is None:  # standing by: no follower to wait on here
+                visible = self._applied(lsn, left_ms / 1000)
+            return native.forward_rows(pending, visible)
+        finally:
+            with self._lock:
+                self._forwarding -= 1
+                self._forwarded.notify_all()
+
+    def _applied(self, lsn: int, timeout: float) -> bool:
+        """Whether this replica applies change `lsn` within `timeout` seconds,
+        looking every millisecond, with the lock only while looking."""
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                if native.last_lsn(self._handle()) >= lsn:
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.001)
 
     def prepare(self, text: str) -> "PreparedQuery":
         """Parse, check and plan a query once, to run it again and again with new parameters.
