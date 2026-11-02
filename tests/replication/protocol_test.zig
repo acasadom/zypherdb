@@ -53,6 +53,12 @@ test "every message reads back as written" {
     try expectRoundTrip(.{ .change_set_part = .{ .lsn = std.math.maxInt(u64), .final = true, .bytes = "" } });
     try expectRoundTrip(.{ .heartbeat = 100 });
     try expectRoundTrip(.{ .ack = 99 });
+    try expectRoundTrip(.{ .writer_hello = .{ .database_id = @splat(0xcd), .token = "secret", .name = "edge-3" } });
+    try expectRoundTrip(.{ .writer_hello = .{ .protocol_version = 2, .database_id = @splat(0), .token = "" } });
+    try expectRoundTrip(.writer_ready);
+    try expectRoundTrip(.{ .request_part = .{ .id = 1, .final = false, .bytes = "CREATE" } });
+    try expectRoundTrip(.{ .request_part = .{ .id = std.math.maxInt(u64), .final = true, .bytes = "" } });
+    try expectRoundTrip(.{ .answer_part = .{ .id = 7, .final = true, .bytes = "\x00" } });
 }
 
 test "messages follow one another in a stream" {
@@ -105,7 +111,14 @@ fn expectMalformed(kind: u8, payload: []const u8) !void {
 
 test "a frame with a right checksum but a wrong payload is malformed" {
     try expectMalformed(0, "");
-    try expectMalformed(9, "");
+    try expectMalformed(13, "");
+    try expectMalformed(@backingInt(protocol.Kind.writer_ready), "\x00");
+    try expectMalformed(@backingInt(protocol.Kind.request_part), "\x00\x00\x00\x00\x00\x00\x00\x01\x02");
+    try expectMalformed(@backingInt(protocol.Kind.answer_part), "\x00\x00\x00\x00\x00\x00\x00\x01");
+    try expectMalformed(@backingInt(protocol.Kind.writer_hello), "ZYPQ");
+    // A writer hello whose name runs past the payload.
+    const any_id: [16]u8 = @splat(0);
+    try expectMalformed(@backingInt(protocol.Kind.writer_hello), "ZYPR" ++ "\x00\x01" ++ any_id ++ "\x00\x01a" ++ "\x05abc");
     try expectMalformed(@backingInt(protocol.Kind.ack), "\x00\x00\x00\x00\x00\x00\x00");
     try expectMalformed(@backingInt(protocol.Kind.ack), "\x00\x00\x00\x00\x00\x00\x00\x07\x00");
     try expectMalformed(@backingInt(protocol.Kind.change_set_part), "\x00\x00\x00\x00\x00\x00\x00\x01\x02");
@@ -144,6 +157,11 @@ const sequence = [_]Message{
     .{ .change_set_part = .{ .lsn = 9, .final = true, .bytes = "" } },
     .{ .heartbeat = 100 },
     .{ .ack = 99 },
+    .{ .writer_hello = .{ .database_id = @splat(0xcd), .token = "secret", .name = "edge-3" } },
+    .writer_ready,
+    .{ .request_part = .{ .id = 3, .final = false, .bytes = "MERGE" } },
+    .{ .request_part = .{ .id = 3, .final = true, .bytes = "" } },
+    .{ .answer_part = .{ .id = 3, .final = true, .bytes = "\x01" } },
 };
 
 /// Feeds `frames` to an inbox in pieces of `piece` bytes (the last one

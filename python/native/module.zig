@@ -37,6 +37,7 @@ const Executor = zypherdb.Executor;
 const Diagnostic = zypherdb.Diagnostic;
 const Statement = zypherdb.Statement;
 const Replication = zypherdb.replication.Replication;
+const replica_writes = zypherdb.replication_replica_writes;
 const EntitySnapshot = @FieldType(Executor, "entities");
 
 const allocator = std.heap.c_allocator;
@@ -116,6 +117,8 @@ const Classes = struct {
     node: ?*py.PyObject = null,
     relationship: ?*py.PyObject = null,
     path: ?*py.PyObject = null,
+    /// `rows()`: a query's result, a list subclass with a `visible` flag.
+    rows: ?*py.PyObject = null,
     /// `query_error(code, message) -> exception`.
     query_error: ?*py.PyObject = null,
     storage_error: ?*py.PyObject = null,
@@ -598,10 +601,17 @@ fn environmentOf(database: *Database) Statement.Environment {
     return .{ .graph = &database.graph, .diagnostic = &database.diagnostic, .table_procedures = database.table_procedures.items };
 }
 
+/// A statement's rows; not `visible` when a write forwarded to the master
+/// has not come back to this replica yet.
+const Ran = struct {
+    rows: []const zypherdb.Row,
+    visible: bool = true,
+};
+
 /// Runs `statement` with the call's parameters, with the GIL released
 /// (other Python threads go on meanwhile); null on failure, with the
 /// diagnostic set. `executor` is the statement's, allocating in the call's arena.
-fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]const zypherdb.Row {
+fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?Ran {
     const database = call.database;
     database.diagnostic.clear();
     executor.diagnostic = &database.diagnostic;
@@ -610,10 +620,27 @@ fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]
     executor.import_directory = database.import_directory;
     const thread_state = py.PyEval_SaveThread();
     defer py.PyEval_RestoreThread(thread_state);
-    return statement.run(executor) catch |err| {
+    if (forwardsWrites(database)) {
+        const route = replica_writes.route(statement, database.table_procedures.items, &database.diagnostic) catch return null;
+        if (route == .forward) {
+            const forwarded = replica_writes.forward(database.replication.?, statement, executor) catch |err| {
+                noteFailure(&database.diagnostic, err);
+                return null;
+            };
+            return .{ .rows = forwarded.rows, .visible = forwarded.visible };
+        }
+    }
+    const rows = statement.run(executor) catch |err| {
         noteFailure(&database.diagnostic, err);
         return null;
     };
+    return .{ .rows = rows };
+}
+
+/// Whether the database is a replica that forwards writes to its master.
+fn forwardsWrites(database: *Database) bool {
+    const replication = database.replication orelse return false;
+    return replication.forwardsWrites();
 }
 
 fn noteFailure(diagnostic: *Diagnostic, err: anyerror) void {
@@ -648,8 +675,8 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     defer if (owned) |statement| statement.destroy();
     const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
     var executor = statement.executorFor(&call.database.graph, arena);
-    const rows = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
-    return rowsObject(rows, &executor, call.database);
+    const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
+    return resultObject(ran, &executor, call.database);
 }
 
 /// `prepare(db, text)`: `(statement, parameters, columns)`: a prepared
@@ -700,8 +727,8 @@ fn statementQuery(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
     const parameters = parametersOf(parameters_object, arena) orelse return null;
     const call = QueryCall{ .database = database, .text = statement.text, .parameters = parameters };
     var executor = statement.executorFor(&database.graph, arena);
-    const rows = runStatement(call, statement, &executor) orelse return raiseQueryError(database);
-    return rowsObject(rows, &executor, database);
+    const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(database);
+    return resultObject(ran, &executor, database);
 }
 
 const statement_capsule_name = "zypherdb.Statement";
@@ -737,7 +764,7 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     defer if (owned) |statement| statement.destroy();
     const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
     var executor = statement.executorFor(&call.database.graph, arena);
-    const lines = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
+    const lines = (runStatement(call, statement, &executor) orelse return raiseQueryError(call.database)).rows;
 
     const rows = rowsObject(executor.profiled_rows, &executor, call.database) orelse return null;
     const plan_lines = rowsObject(lines, &executor, call.database) orelse {
@@ -756,6 +783,41 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     return py.Py_BuildValue("(NNN)", rows, plan_lines, parents);
 }
 
+/// A query's result: its rows as a `Rows` (a list of lists of Python
+/// values), `visible` set to False only when not.
+fn resultObject(ran: Ran, executor: *Executor, database: *Database) ?*py.PyObject {
+    // As in `rowsObject`, the cycle collector is paused while the rows are made.
+    const collector_was_enabled = py.PyGC_Disable() != 0;
+    defer if (collector_was_enabled) {
+        _ = py.PyGC_Enable();
+    };
+    // An empty `Rows`, without the cost of calling the class.
+    const result = py.PyType_GenericAlloc(@ptrCast(@alignCast(classes.rows)), 0) orelse return null;
+    for (ran.rows) |row| {
+        const cells = rowObject(row, executor, database) orelse {
+            py.Py_DecRef(result);
+            return null;
+        };
+        defer py.Py_DecRef(cells);
+        if (py.PyList_Append(result, cells) != 0) {
+            py.Py_DecRef(result);
+            return null;
+        }
+    }
+    if (!ran.visible) {
+        const not_visible = py.PyBool_FromLong(0) orelse {
+            py.Py_DecRef(result);
+            return null;
+        };
+        defer py.Py_DecRef(not_visible);
+        if (py.PyObject_SetAttrString(result, "visible", not_visible) != 0) {
+            py.Py_DecRef(result);
+            return null;
+        }
+    }
+    return result;
+}
+
 /// `rows` as a list of lists of Python values.
 fn rowsObject(rows: []const zypherdb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
     // Building a large result makes thousands of containers, which would set
@@ -767,20 +829,26 @@ fn rowsObject(rows: []const zypherdb.Row, executor: *Executor, database: *Databa
     };
     const result = py.PyList_New(@intCast(rows.len)) orelse return null;
     for (rows, 0..) |row, i| {
-        const cells = py.PyList_New(@intCast(row.items.len)) orelse {
+        const cells = rowObject(row, executor, database) orelse {
             py.Py_DecRef(result);
             return null;
         };
         _ = py.PyList_SetItem(result, @intCast(i), cells);
-        for (row.items, 0..) |cell, j| {
-            const object = objectOf(cell, .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals }) orelse {
-                py.Py_DecRef(result);
-                return null;
-            };
-            _ = py.PyList_SetItem(cells, @intCast(j), object);
-        }
     }
     return result;
+}
+
+/// One row as a list of Python values.
+fn rowObject(row: zypherdb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
+    const cells = py.PyList_New(@intCast(row.items.len)) orelse return null;
+    for (row.items, 0..) |cell, j| {
+        const object = objectOf(cell, .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals }) orelse {
+            py.Py_DecRef(cells);
+            return null;
+        };
+        _ = py.PyList_SetItem(cells, @intCast(j), object);
+    }
+    return cells;
 }
 
 // --- Writes ------------------------------------------------------------------------
@@ -802,6 +870,11 @@ fn writeFailure(database: *Database, err: anyerror) ?*py.PyObject {
 
 fn beginWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = parseDatabase(args) orelse return null;
+    if (forwardsWrites(database)) {
+        database.diagnostic.clear();
+        replica_writes.refuseWriteBlock(&database.diagnostic);
+        return raiseQueryError(database);
+    }
     database.graph.beginWrite() catch return storageFailure();
     return none();
 }
@@ -820,9 +893,11 @@ fn abortWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject 
 
 // --- Replication -------------------------------------------------------------------
 
-/// `start_replication(db, path, role, address, token, name)`: role 0 serves
-/// replicas at `address`, role 1 follows the master at `address` calling
-/// itself `name` (None: the host's name).
+/// `start_replication(db, path, role, address, token, name, forward_writes,
+/// request_timeout_ms)`: role 0 serves replicas at `address`, role 1
+/// follows the master at `address` calling itself `name` (None: the host's
+/// name), forwarding the statements that write if `forward_writes`, each
+/// in at most `request_timeout_ms`.
 fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var capsule: ?*py.PyObject = null;
     var path_pointer: [*c]const u8 = undefined;
@@ -834,7 +909,9 @@ fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyO
     var token_length: py.Py_ssize_t = 0;
     var name_pointer: [*c]const u8 = null;
     var name_length: py.Py_ssize_t = 0;
-    if (parseTuple(args, "Os#is#s#z#", &capsule, &path_pointer, &path_length, &role, &address_pointer, &address_length, &token_pointer, &token_length, &name_pointer, &name_length) == 0) return null;
+    var forward_writes: c_int = 0;
+    var request_timeout_ms: c_ulonglong = 0;
+    if (parseTuple(args, "Os#is#s#z#pK", &capsule, &path_pointer, &path_length, &role, &address_pointer, &address_length, &token_pointer, &token_length, &name_pointer, &name_length, &forward_writes, &request_timeout_ms) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     const address = address_pointer[0..@intCast(address_length)];
     const token = token_pointer[0..@intCast(token_length)];
@@ -844,6 +921,8 @@ fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyO
             .master_address = address,
             .token = token,
             .name = if (name_pointer == null) null else name_pointer[0..@intCast(name_length)],
+            .forward_writes = forward_writes != 0,
+            .request_timeout_ns = request_timeout_ms *| std.time.ns_per_ms,
         } },
         else => return raise(py.PyExc_ValueError, "unknown role {d}", .{role}),
     };

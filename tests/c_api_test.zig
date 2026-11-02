@@ -406,7 +406,7 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     const token = "the master's token";
 
     const any_port = "127.0.0.1:0";
-    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0).?;
+    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0).?;
     defer zypherdb_close(master);
     var length: usize = 0;
     const master_status = c_api.zypherdb_replication_status(master, &length).?[0..length];
@@ -416,7 +416,7 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     const address = try std.fmt.bufPrint(&address_buffer, "{s}", .{master_status[address_start..std.mem.indexOfScalarPos(u8, master_status, address_start, '"').?]});
 
     const name = "replica-1";
-    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, name.ptr, name.len).?;
+    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, name.ptr, name.len, false, 0).?;
     defer zypherdb_close(replica);
 
     const create = "CREATE (:Person {name: 'Ada'})";
@@ -435,4 +435,109 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     const replica_status = c_api.zypherdb_replication_status(replica, &length).?[0..length];
     try testing.expect(std.mem.startsWith(u8, replica_status, "{\"role\":\"replica\",\"standby\":false,\"name\":\"replica-1\",\"master_address\":\""));
     try testing.expect(std.mem.endsWith(u8, replica_status, "\"last_refusal\":null,\"halted\":null}"));
+}
+
+/// A master on any port of this host, in `tmp`; its address goes in `buffer`.
+fn openMaster(tmp: *testing.TmpDir, path_buffer: []u8, address_buffer: []u8, token: []const u8) !struct { *c_api.Context, []const u8 } {
+    const path = std.fmt.bufPrint(path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const any_port = "127.0.0.1:0";
+    const master = c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0).?;
+    var length: usize = 0;
+    const status = c_api.zypherdb_replication_status(master, &length).?[0..length];
+    const start = std.mem.indexOf(u8, status, "127.0.0.1:").?;
+    const address = try std.fmt.bufPrint(address_buffer, "{s}", .{status[start..std.mem.indexOfScalarPos(u8, status, start, '"').?]});
+    return .{ master, address };
+}
+
+fn openForwardingReplica(tmp: *testing.TmpDir, path_buffer: []u8, address: []const u8, token: []const u8, request_timeout_ms: u64) *c_api.Context {
+    const path = std.fmt.bufPrint(path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    return c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, null, 0, true, request_timeout_ms).?;
+}
+
+fn expectRefused(context: *c_api.Context, text: []const u8, code: ErrorCode) !void {
+    try testing.expectEqual(null, zypherdb_query(context, text.ptr, text.len));
+    try testing.expectEqual(@as(c_int, @intCast(@backingInt(code))), zypherdb_error_code(context));
+    var length: usize = 0;
+    try testing.expect(zypherdb_last_error(context, &length)[0..length].len > 0);
+}
+
+const ErrorCode = zypherdb.diagnostics.ErrorCode;
+
+/// Waits until `replica` has a copy of `master` (a write made for it).
+fn waitForCopy(master: *c_api.Context, replica: *c_api.Context) !void {
+    const seed = "CREATE (:Seed)";
+    zypherdb_result_free(zypherdb_query(master, seed.ptr, seed.len).?);
+    try testing.expect(c_api.zypherdb_wait_for(replica, c_api.zypherdb_last_lsn(master), 20_000));
+}
+
+test "C ABI: a replica that forwards writes sends them to its master and reads them back" {
+    var master_tmp = testing.tmpDir(.{});
+    defer master_tmp.cleanup();
+    var replica_tmp = testing.tmpDir(.{});
+    defer replica_tmp.cleanup();
+    const token = "the master's token";
+    var master_buffer: [256]u8 = undefined;
+    var address_buffer: [64]u8 = undefined;
+    const master, const address = try openMaster(&master_tmp, &master_buffer, &address_buffer, token);
+    defer zypherdb_close(master);
+    var replica_buffer: [256]u8 = undefined;
+    const replica = openForwardingReplica(&replica_tmp, &replica_buffer, address, token, 20_000);
+    defer zypherdb_close(replica);
+    // Wait for the replica's copy: a write before it has none to name.
+    try waitForCopy(master, replica);
+
+    const create = "CREATE (p:Person {name: 'Ada'}) RETURN p, p.name AS name";
+    const created = zypherdb_query(replica, create.ptr, create.len).?;
+    defer zypherdb_result_free(created);
+    try testing.expect(c_api.zypherdb_result_visible(created));
+    var length: usize = 0;
+    try testing.expectEqualStrings("Ada", zypherdb_result_string(created, 0, 1, &length)[0..length]);
+    const json = zypherdb_result_to_json(created, &length)[0..length];
+    try testing.expect(std.mem.indexOf(u8, json, "\"labels\":[\"Person\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"name\":\"Ada\"") != null);
+    // Read-your-writes: the replica has applied it, the master has it.
+    const count = "MATCH (p:Person) RETURN count(p)";
+    for ([_]*c_api.Context{ replica, master }) |context| {
+        const counted = zypherdb_query(context, count.ptr, count.len).?;
+        defer zypherdb_result_free(counted);
+        try testing.expectEqual(@as(i64, 1), zypherdb_result_int(counted, 0, 0));
+    }
+    // A schema command goes too; SHOW runs here and sees it.
+    const index = "CREATE INDEX person_name FOR (p:Person) ON (p.name)";
+    zypherdb_result_free(zypherdb_query(replica, index.ptr, index.len).?);
+    const show = "SHOW INDEXES";
+    const shown = zypherdb_query(replica, show.ptr, show.len).?;
+    defer zypherdb_result_free(shown);
+    try testing.expect(zypherdb_result_row_count(shown) >= 1);
+    // A write the master fails tells the master's error.
+    const constraint = "CREATE CONSTRAINT person_unique FOR (p:Person) REQUIRE p.name IS UNIQUE";
+    zypherdb_result_free(zypherdb_query(replica, constraint.ptr, constraint.len).?);
+    try expectRefused(replica, "CREATE (:Person {name: 'Ada'})", .constraint_violation);
+    // What cannot go is refused here.
+    try expectRefused(replica, "LOAD CSV FROM 'file:///people.csv' AS row CREATE (:Person {name: row[0]})", .write_not_forwarded);
+    try expectRefused(replica, "PROFILE CREATE (:Person {name: 'Bob'})", .write_not_forwarded);
+    try testing.expect(zypherdb_begin_write(replica) != 0);
+    try testing.expectEqual(@as(c_int, @intCast(@backingInt(ErrorCode.write_not_forwarded))), zypherdb_error_code(replica));
+    // Reads and PROFILE of reads stay here.
+    const profile = "PROFILE MATCH (p:Person) RETURN p.name";
+    zypherdb_result_free(zypherdb_query(replica, profile.ptr, profile.len).?);
+}
+
+test "C ABI: a forwarded write to a master that cannot be reached did not run" {
+    var master_tmp = testing.tmpDir(.{});
+    defer master_tmp.cleanup();
+    var replica_tmp = testing.tmpDir(.{});
+    defer replica_tmp.cleanup();
+    const token = "the master's token";
+    var master_buffer: [256]u8 = undefined;
+    var address_buffer: [64]u8 = undefined;
+    const master, const address = try openMaster(&master_tmp, &master_buffer, &address_buffer, token);
+    var replica_buffer: [256]u8 = undefined;
+    const replica = openForwardingReplica(&replica_tmp, &replica_buffer, address, token, 2_000);
+    defer zypherdb_close(replica);
+    // Before its copy the replica cannot name its master's database.
+    try expectRefused(replica, "CREATE (:Person)", .master_unreachable);
+    try waitForCopy(master, replica);
+    zypherdb_close(master);
+    try expectRefused(replica, "CREATE (:Person)", .master_unreachable);
 }

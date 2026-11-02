@@ -62,6 +62,19 @@ class ArithmeticQueryError(QueryError, ArithmeticError):
     """Integer overflow or division by zero (also an ArithmeticError)."""
 
 
+class WriteNotForwardedError(QueryError):
+    """A replica that forwards writes refused one it cannot forward (e.g. LOAD CSV)."""
+
+
+class MasterUnreachableError(QueryError):
+    """A forwarded write did not run: the master could not be reached, or turned it away."""
+
+
+class OutcomeUnknownError(QueryError):
+    """A forwarded write was sent, then the connection was lost or the time ran
+    out: the master may have committed it or not."""
+
+
 # Error code -> exception class (see src/diagnostics.zig ErrorCode).
 _CODE_TO_ERROR = {
     1: ParseError,
@@ -73,6 +86,9 @@ _CODE_TO_ERROR = {
     9: ArithmeticQueryError,
     10: ConstraintViolationError,
     11: ExternalResourceError,
+    12: WriteNotForwardedError,
+    13: MasterUnreachableError,
+    14: OutcomeUnknownError,
 }
 
 

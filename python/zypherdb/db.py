@@ -9,6 +9,7 @@ import threading
 
 from ._engine import native
 from .errors import ZypherDBError, ClosedError
+from .rows import Rows
 
 _U64_MAX = 2**64 - 1
 
@@ -53,7 +54,7 @@ class PreparedQuery:
         with database._lock:
             self._statement, self.parameters, self.columns = native.prepare(database._handle(), text)
 
-    def query(self, parameters: dict | None = None, /, **named) -> list[list]:
+    def query(self, parameters: dict | None = None, /, **named) -> Rows:
         """Run the query with these parameters; the rows are as :meth:`Database.query` returns them."""
         values = {**parameters, **named} if parameters else named
         database = self._database
@@ -86,6 +87,8 @@ class Database:
         replicate_from: str | None = None,
         token: str | None = None,
         name: str | None = None,
+        forward_writes: bool = False,
+        forward_timeout: float = 30.0,
     ):
         """Opens (or creates) the database in directory `path`.
 
@@ -118,6 +121,10 @@ class Database:
         dies; give a master a fixed port so its replicas find whichever runs.
         `name` is what a replica calls itself in its master's status (at
         most 255 bytes in UTF-8; by default the host's name).
+
+        `forward_writes` makes a replica send the statements that write to its
+        master instead of refusing them; each takes at most `forward_timeout`
+        seconds, from sending it to having applied what it wrote here.
         """
         if durability not in _DURABILITY:
             raise ValueError(f"durability must be one of {', '.join(_DURABILITY)}, not {durability!r}")
@@ -132,10 +139,14 @@ class Database:
             raise ValueError("replication needs a token")
         if name is not None and replicate_from is None:
             raise ValueError("only a replica has a name")
+        if forward_writes and replicate_from is None:
+            raise ValueError("only a replica forwards writes")
+        if not forward_timeout > 0:
+            raise ValueError("forward_timeout must be positive")
         self._db = native.open(path, _DURABILITY[durability], _TEMPORALS[temporals])
         if role is not None:
             try:
-                native.start_replication(self._db, path, role[0], role[1], token, name)
+                native.start_replication(self._db, path, role[0], role[1], token, name, forward_writes, max(1, round(forward_timeout * 1000)))
             except BaseException:
                 native.close(self._db)
                 raise
@@ -238,7 +249,7 @@ class Database:
 
     # --- Querying ------------------------------------------------------------
 
-    def query(self, text: str, parameters: dict | None = None, /, **named) -> list[list]:
+    def query(self, text: str, parameters: dict | None = None, /, **named) -> Rows:
         """Run one openCypher query and return the rows as Python values.
 
         Query parameters (`$name` in the query) come as a dict, as keyword
@@ -253,7 +264,8 @@ class Database:
 
         Cells become `int`, `float`, `str`, `bool`, `None` (null), a `list`, a
         `dict`, a whole :class:`Node` / :class:`Relationship` / :class:`Path`,
-        or a temporal value; rows are lists of cells. Raises a typed
+        or a temporal value; rows are lists of cells, in a :class:`Rows` (a
+        list; on a replica that forwards writes, see its `visible`). Raises a typed
         :class:`QueryError` subclass on failure. The query runs with the GIL
         released, so other threads go on meanwhile.
         """

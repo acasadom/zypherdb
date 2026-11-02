@@ -328,10 +328,7 @@ pub const ReplicaNode = struct {
     }
 
     fn advance(self: *ReplicaNode, now: Instant) void {
-        if (self.wakeup_ready) {
-            self.wakeup_ready = false;
-            self.wakeup.clear();
-        }
+        self.clearWakeup();
         if (self.halted() != null) return;
         if (self.conversation == null) {
             if (now < self.retry_at) return;
@@ -355,6 +352,14 @@ pub const ReplicaNode = struct {
             return;
         }
         self.retry(now, streamed);
+    }
+
+    /// Clears the wakeup if it was ready: before the owner looks at what
+    /// raised it, or a raise meanwhile is lost. `step` does it too.
+    pub fn clearWakeup(self: *ReplicaNode) void {
+        if (!self.wakeup_ready) return;
+        self.wakeup_ready = false;
+        self.wakeup.clear();
     }
 
     /// What to wait on before the next step: the wakeup, then the

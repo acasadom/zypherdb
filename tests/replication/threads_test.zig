@@ -4,7 +4,8 @@
 //! is turned away with the wrong token, and a read on it can wait to see a
 //! write on the master. The master tells each replica's lag. A silent
 //! replica or master is let go; a refusal asking again cannot help stops
-//! the replica.
+//! the replica. A write a replica forwards runs on the master and is
+//! answered, also through its forwarder, from several threads.
 
 const std = @import("std");
 const testing = std.testing;
@@ -14,6 +15,8 @@ const KeyValueStore = zypherdb.KeyValueStore;
 const Server = zypherdb.replication_server.Server;
 const ReplicaState = zypherdb.replication_server.ReplicaState;
 const Follower = zypherdb.replication_follower.Follower;
+const Forwarder = zypherdb.replication_forwarder.Forwarder;
+const Outcome = zypherdb.replication_forwarder.Outcome;
 const SystemClock = zypherdb.replication_clock.SystemClock;
 const Tcp = zypherdb.replication_tcp.Tcp;
 const Connection = zypherdb.replication_network.Connection;
@@ -21,6 +24,8 @@ const Listener = zypherdb.replication_network.Listener;
 const Watched = zypherdb.replication_network.Watched;
 const max_address_bytes = zypherdb.replication_network.max_address_bytes;
 const protocol = zypherdb.replication_protocol;
+const forwarding = zypherdb.replication_forwarding;
+const Value = zypherdb.Value;
 
 const support = @import("../support.zig");
 const testPath = support.testPath;
@@ -347,15 +352,18 @@ test "a silent replica is let go and frees its place" {
     const server = try setup.startServerFor("127.0.0.1:0", &copies[0], 1);
     defer server.stop();
     var address: [max_address_bytes]u8 = undefined;
-    // It takes the only place and says nothing.
+    // They take both places (a replica's and its writer's) and say nothing.
     const silent = try setup.tcp.network().connect(server.address(&address));
     defer silent.close();
+    const also_silent = try setup.tcp.network().connect(server.address(&address));
+    defer also_silent.close();
     const follower = try setup.startFollower(server, token, &address, &copies[1]);
     defer follower.stop();
     try setup.expectCaughtUp(follower, (try setup.master.changeLogState()).?.next_lsn - 1);
-    // The master closed the silent one, having sent it nothing.
+    // The master closed the silent ones, having sent them nothing.
     var buffer: [16]u8 = undefined;
     try testing.expectEqual(@as(?usize, null), try setup.receive(silent, &buffer));
+    try testing.expectEqual(@as(?usize, null), try setup.receive(also_silent, &buffer));
 }
 
 test "a replica leaves a silent master and connects again" {
@@ -385,4 +393,196 @@ test "a replica leaves a silent master and connects again" {
     const second = try setup.accept(listener);
     defer second.close();
     try testing.expectEqual(.hello, std.meta.activeTag(try setup.receiveMessage(second, buffer)));
+}
+
+/// A replica's connection for forwarded writes, by hand.
+const Writer = struct {
+    connection: Connection,
+    inbox: protocol.Inbox,
+    buffer: []u8,
+
+    fn open(setup: *Setup, server: *Server, database_id: protocol.DatabaseId) !Writer {
+        var address: [max_address_bytes]u8 = undefined;
+        const connection = try setup.tcp.network().connect(server.address(&address));
+        errdefer connection.close();
+        const buffer = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
+        errdefer testing.allocator.free(buffer);
+        try setup.send(connection, .{ .writer_hello = .{ .database_id = database_id, .token = token, .name = "edge" } });
+        return .{ .connection = connection, .inbox = .init(buffer), .buffer = buffer };
+    }
+
+    fn close(self: *Writer) void {
+        self.connection.close();
+        testing.allocator.free(self.buffer);
+    }
+
+    /// The next message other than a heartbeat, each heartbeat acked.
+    fn receive(self: *Writer, setup: *Setup) !protocol.Message {
+        while (true) {
+            if (try self.inbox.next()) |message| {
+                if (message != .heartbeat) return message;
+                try setup.send(self.connection, .{ .ack = 0 });
+                continue;
+            }
+            self.inbox.filled(try setup.receive(self.connection, self.inbox.unfilled()) orelse return error.EndOfStream);
+        }
+    }
+};
+
+test "a write a replica forwards runs on the master and is answered" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [256]u8 = undefined;
+    const server = try setup.startServer("127.0.0.1:0", &copies);
+    defer server.stop();
+    var writer: Writer = try .open(&setup, server, (try setup.master.databaseId()).?);
+    defer writer.close();
+    try testing.expect(try writer.receive(&setup) == .writer_ready);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for ([_]u64{ 42, 43 }, [_][]const u8{ "B7", "C1" }) |id, name| {
+        var request: std.ArrayList(u8) = .empty;
+        try forwarding.encodeRequest(&request, a, .{ .text = "CREATE (d:Door {name: $name}) RETURN d.name AS name", .parameters = &.{.{ .key = "name", .value = .{ .string = name } }} });
+        try setup.send(writer.connection, .{ .request_part = .{ .id = id, .final = true, .bytes = request.items } });
+        const part = (try writer.receive(&setup)).answer_part;
+        try testing.expectEqual(id, part.id);
+        try testing.expect(part.final);
+        const done = (try forwarding.decodeAnswer(try a.dupe(u8, part.bytes), a)).done;
+        try testing.expectEqual((try setup.master.changeLogState()).?.next_lsn - 1, done.lsn);
+        try testing.expect(Value.eql(.{ .string = name }, done.rows[0][0]));
+    }
+    // A replica of another master is refused.
+    var other_id = (try setup.master.databaseId()).?;
+    other_id[0] +%= 1;
+    var stranger: Writer = try .open(&setup, server, other_id);
+    defer stranger.close();
+    try testing.expectEqual(protocol.Refusal.database_id, (try stranger.receive(&setup)).refused);
+}
+
+test "a replica's stream goes on beside its forwarded writes" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    _ = try setup.write(0, 3);
+    var copies: [2][256]u8 = undefined;
+    const server = try setup.startServerFor("127.0.0.1:0", &copies[0], 1);
+    defer server.stop();
+    var address: [max_address_bytes]u8 = undefined;
+    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    defer follower.stop();
+    try setup.expectCaughtUp(follower, (try setup.master.changeLogState()).?.next_lsn - 1);
+    var writer: Writer = try .open(&setup, server, (try setup.master.databaseId()).?);
+    defer writer.close();
+    try testing.expect(try writer.receive(&setup) == .writer_ready);
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    var request: std.ArrayList(u8) = .empty;
+    try forwarding.encodeRequest(&request, arena.allocator(), .{ .text = "CREATE (:Door)", .parameters = &.{} });
+    try setup.send(writer.connection, .{ .request_part = .{ .id = 1, .final = true, .bytes = request.items } });
+    const part = (try writer.receive(&setup)).answer_part;
+    const done = (try forwarding.decodeAnswer(try arena.allocator().dupe(u8, part.bytes), arena.allocator())).done;
+    // The replica applies what the forwarded write committed.
+    try setup.expectCaughtUp(follower, done.lsn);
+}
+
+test "a master holds a writer per replica at most" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [256]u8 = undefined;
+    // Places for a replica and its writer.
+    const server = try setup.startServerFor("127.0.0.1:0", &copies, 1);
+    defer server.stop();
+    var first: Writer = try .open(&setup, server, (try setup.master.databaseId()).?);
+    defer first.close();
+    try testing.expect(try first.receive(&setup) == .writer_ready);
+    var second: Writer = try .open(&setup, server, (try setup.master.databaseId()).?);
+    defer second.close();
+    try testing.expectError(error.EndOfStream, second.receive(&setup));
+}
+
+test "a forwarder sends writes to the master from several threads, one at a time, and returns each answer" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [256]u8 = undefined;
+    const server = try setup.startServer("127.0.0.1:0", &copies);
+    defer server.stop();
+    var address: [max_address_bytes]u8 = undefined;
+    // On the master's database, as a standby forwards.
+    const sender = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.master, .{
+        .master_address = server.address(&address),
+        .token = token,
+        .timeout_ns = 500 * millisecond,
+    });
+    defer sender.stop();
+
+    const Sending = struct {
+        fn run(forwarding_sender: *Forwarder, first: usize, failures: *std.atomic.Value(u32)) void {
+            send(forwarding_sender, first) catch {
+                _ = failures.fetchAdd(1, .monotonic);
+            };
+        }
+
+        fn send(forwarding_sender: *Forwarder, first: usize) !void {
+            var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+            defer arena.deinit();
+            const a = arena.allocator();
+            for (first..first + 5) |number| {
+                var request: std.ArrayList(u8) = .empty;
+                try forwarding.encodeRequest(&request, a, .{ .text = "CREATE (d:Door {number: $number}) RETURN d.number AS number", .parameters = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }} });
+                const outcome = forwarding_sender.forward(request.items);
+                if (outcome != .answer) return error.NotAnswered;
+                defer testing.allocator.free(outcome.answer);
+                const done = (try forwarding.decodeAnswer(try a.dupe(u8, outcome.answer), a)).done;
+                if (!Value.eql(.{ .int = @intCast(number) }, done.rows[0][0])) return error.WrongAnswer;
+            }
+        }
+    };
+    var failures: std.atomic.Value(u32) = .init(0);
+    var threads: [3]std.Thread = undefined;
+    for (&threads, 0..) |*thread, index| thread.* = try std.Thread.spawn(.{}, Sending.run, .{ sender, index * 5, &failures });
+    for (threads) |thread| thread.join();
+    try testing.expectEqual(0, failures.load(.monotonic));
+    try testing.expectEqual(15, (try setup.master.changeLogState()).?.next_lsn - 1);
+
+    // A replica that holds no copy of a master yet forwards nothing.
+    const empty = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{
+        .master_address = server.address(&address),
+        .token = token,
+    });
+    defer empty.stop();
+    try testing.expectEqual(Outcome{ .failed = error.NoCopy }, empty.forward("not even sent"));
+}
+
+test "replication's threads stop however soon after they start" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [2][256]u8 = undefined;
+    var address: [max_address_bytes]u8 = undefined;
+    // A stop raised while a loop looks at nothing, idle with no deadline,
+    // must not be lost.
+    var request: std.ArrayList(u8) = .empty;
+    defer request.deinit(testing.allocator);
+    try forwarding.encodeRequest(&request, testing.allocator, .{ .text = "RETURN 1 AS one", .parameters = &.{} });
+    for (0..200) |round| {
+        const server = try setup.startServer("127.0.0.1:0", &copies[0]);
+        const follower = try setup.startFollower(server, token, &address, &copies[1]);
+        const sender = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.master, .{
+            .master_address = server.address(&address),
+            .token = token,
+        });
+        // Each raises a loop's wakeup just before its stop.
+        const outcome = sender.forward(request.items);
+        if (outcome == .answer) testing.allocator.free(outcome.answer);
+        _ = try setup.write(round, 1);
+        sender.stop();
+        follower.stop();
+        setup.master.commit_listener = null;
+        server.stop();
+    }
 }

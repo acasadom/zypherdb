@@ -6,6 +6,8 @@
 //! when it stops or dies. What it tells
 //! (`status`, `waitFor`) is for the application: how far behind each
 //! replica is, and a read on a replica that must see a write on the master.
+//! A replica opened to forward writes also sends the statements that write
+//! to its master (`forward`), over a connection of its own (forwarder.zig).
 
 const std = @import("std");
 const Io = std.Io;
@@ -18,6 +20,8 @@ const server_module = @import("server.zig");
 const Server = server_module.Server;
 const follower_module = @import("follower.zig");
 const Follower = follower_module.Follower;
+const forwarder_module = @import("forwarder.zig");
+const Forwarder = forwarder_module.Forwarder;
 const Instant = @import("clock.zig").Instant;
 const sockets = @import("sockets.zig");
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
@@ -29,6 +33,7 @@ const log = std.log.scoped(.replication);
 pub const ReplicaState = server_module.ReplicaState;
 pub const Refusal = protocol.Refusal;
 pub const Phase = follower_module.Phase;
+pub const Outcome = forwarder_module.Outcome;
 
 /// The directory, inside the database's, where copies for or from other
 /// nodes are kept while they are sent or loaded.
@@ -66,6 +71,12 @@ pub const Role = union(enum) {
         /// What the replica calls itself in its master's status, at most
         /// `protocol.max_name_bytes`; null: this host's name.
         name: ?[]const u8 = null,
+        /// Statements that write go to the master (`forward`) instead of
+        /// being refused.
+        forward_writes: bool = false,
+        /// The longest a forwarded write may take, from sending it to
+        /// having applied what it committed.
+        request_timeout_ns: u64 = 30 * std.time.ns_per_s,
     };
 };
 
@@ -139,6 +150,10 @@ pub const Replication = struct {
     /// While another process runs replication: the thread that takes over
     /// once it stops.
     standby_thread: ?std.Thread = null,
+    /// A replica's forwarder, started by the first write it forwards, in
+    /// whichever process (standing by or not); under `forwarder_mutex`.
+    forwarder: ?*Forwarder = null,
+    forwarder_mutex: Io.Mutex = .init,
 
     /// Starts replication for the database of `store`, in directory
     /// `path`, in `role`. A master's change log starts if it is not
@@ -221,6 +236,7 @@ pub const Replication = struct {
         const io = self.threaded.io();
         self.clock.clock().stop(&self.stopping);
         if (self.standby_thread) |thread| thread.join();
+        if (self.forwarder) |forwarder| forwarder.stop();
         self.store.commit_listener = null;
         self.store.follows_master = false;
         if (self.server.swap(null, .acq_rel)) |server| server.stop();
@@ -385,6 +401,53 @@ pub const Replication = struct {
                 try json.writeByte('}');
             },
         }
+    }
+
+    /// Whether this is a replica that forwards the statements that write.
+    pub fn forwardsWrites(self: *const Replication) bool {
+        return self.role == .replica and self.role.replica.forward_writes;
+    }
+
+    /// The longest a forwarded write may take (`Role.Replica`).
+    pub fn requestTimeout(self: *const Replication) u64 {
+        return self.role.replica.request_timeout_ns;
+    }
+
+    /// The clock forwarded writes are timed with.
+    pub fn now(self: *Replication) Instant {
+        return self.clock.clock().now();
+    }
+
+    /// Sends the request `bytes` (forwarding.zig) to the master and waits
+    /// for how it ended; the first one starts the forwarder. Only on a
+    /// replica that `forwardsWrites`. An answer's bytes are the caller's,
+    /// to free with the replication's allocator. Any thread, one request
+    /// at a time.
+    pub fn forward(self: *Replication, bytes: []const u8) !Outcome {
+        std.debug.assert(self.forwardsWrites());
+        return (try self.startedForwarder()).forward(bytes);
+    }
+
+    fn startedForwarder(self: *Replication) !*Forwarder {
+        const io = self.threaded.io();
+        self.forwarder_mutex.lockUncancelable(io);
+        defer self.forwarder_mutex.unlock(io);
+        if (self.forwarder) |forwarder| return forwarder;
+        const replica = self.role.replica;
+        const forwarder = try Forwarder.start(self.allocator, io, self.clock.clock(), self.tcp.network(), self.store, .{
+            .master_address = replica.master_address,
+            .token = replica.token,
+            .timeout_ns = replica.timeout_ns,
+            .request_timeout_ns = replica.request_timeout_ns,
+            .name = self.role_name,
+        });
+        self.forwarder = forwarder;
+        return forwarder;
+    }
+
+    /// Frees the bytes of an answer `forward` returned.
+    pub fn freeAnswer(self: *Replication, bytes: []u8) void {
+        self.allocator.free(bytes);
     }
 
     /// Waits until change set `lsn` of the master is applied here, at most

@@ -30,6 +30,11 @@ pub const property_indexes = @import("storage/property_indexes.zig");
 pub const layout = @import("storage/layout.zig");
 pub const change_log = @import("storage/change_log.zig");
 pub const replication_protocol = @import("replication/protocol.zig");
+pub const replication_values = @import("replication/values.zig");
+pub const replication_forwarding = @import("replication/forwarding.zig");
+pub const replication_forwarded_writes = @import("replication/forwarded_writes.zig");
+pub const replication_writer_session = @import("replication/writer_session.zig");
+pub const replication_forwarding_session = @import("replication/forwarding_session.zig");
 pub const replication_master = @import("replication/master.zig");
 pub const replication_replica = @import("replication/replica.zig");
 pub const replication_master_session = @import("replication/master_session.zig");
@@ -42,6 +47,8 @@ pub const replication_master_node = @import("replication/master_node.zig");
 pub const replication_replica_node = @import("replication/replica_node.zig");
 pub const replication_server = @import("replication/server.zig");
 pub const replication_follower = @import("replication/follower.zig");
+pub const replication_forwarder = @import("replication/forwarder.zig");
+pub const replication_replica_writes = @import("replication/replica_writes.zig");
 pub const replication = @import("replication/replication.zig");
 
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
@@ -102,6 +109,7 @@ pub const Token = lexer.Token;
 pub const Executor = @import("execution/Executor.zig");
 pub const ExecutionError = Executor.ExecutionError;
 pub const Row = Executor.Row;
+pub const entities = @import("execution/entities.zig");
 /// The planner's switches (`Executor.plan_options`): the query fuzzer turns
 /// optimizations off to compare results.
 pub const PlanOptions = @import("planning/builder.zig").Options;

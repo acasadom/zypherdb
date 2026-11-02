@@ -95,6 +95,7 @@ const Conversation = struct {
     fn step(self: *Conversation) !void {
         while (try self.master.next(self.source)) |event| switch (event) {
             .make_copy => try self.makeCopy(),
+            .writer => return error.UnexpectedMessage,
         };
         try self.master.pump(self.source, self.now);
         if (self.master.state != .sending_copy) if (self.master_copy) |file| {
