@@ -127,7 +127,9 @@ pub const Replication = struct {
     threaded: Io.Threaded,
     clock: SystemClock,
     tcp: Tcp,
-    /// The store the application writes and reads with.
+    /// The store replication started on. The shares of it made after start
+    /// (the sessions of other threads) take its commit listener and its
+    /// refusal of writes; replication starts no transaction on it.
     store: *KeyValueStore,
     /// Replication's own store on the database: the server or follower
     /// starts from it, on whichever thread takes over.
@@ -316,15 +318,16 @@ pub const Replication = struct {
         return server.address(buffer);
     }
 
-    /// How replication goes now; a master's replicas go in `buffer`, at
+    /// How replication goes now, read through `store` (the calling
+    /// thread's, on this database); a master's replicas go in `buffer`, at
     /// most its length of them.
-    pub fn status(self: *Replication, buffer: []ReplicaState) !Status {
+    pub fn status(self: *Replication, store: *KeyValueStore, buffer: []ReplicaState) !Status {
         switch (self.role) {
             .master => {
                 const server = self.server.load(.acquire);
                 return .{ .master = .{
                     .standby = server == null,
-                    .last_lsn = try lastLsn(self.store),
+                    .last_lsn = try lastLsn(store),
                     .replicas = if (server) |running| running.replicaStates(buffer) else buffer[0..0],
                     .now = self.clock.clock().now(),
                 } };
@@ -338,7 +341,7 @@ pub const Replication = struct {
                     .phase = if (follower) |running| running.phase() else .connecting,
                     .last_heard = if (follower) |running| running.lastHeard() else null,
                     .now = self.clock.clock().now(),
-                    .applied_lsn = try self.store.appliedLsn() orelse 0,
+                    .applied_lsn = try store.appliedLsn() orelse 0,
                     .master_lsn = if (follower) |running| running.masterLsn() else 0,
                     .last_refusal = if (follower) |running| running.lastRefusal() else null,
                     .halted = if (follower) |running| running.halted() else null,
@@ -353,19 +356,19 @@ pub const Replication = struct {
     /// replica's {"role", "standby", "name", "master_address", "phase",
     /// "last_contact_ms" (ago, or null), "applied_lsn", "master_lsn", "lag",
     /// "last_refusal", "halted"} (a refusal's name, or null).
-    pub fn statusJson(self: *Replication, allocator: Allocator) ![]u8 {
+    pub fn statusJson(self: *Replication, store: *KeyValueStore, allocator: Allocator) ![]u8 {
         var out: Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
-        self.writeStatusJson(&out.writer) catch |err| switch (err) {
+        self.writeStatusJson(store, &out.writer) catch |err| switch (err) {
             error.WriteFailed => return error.OutOfMemory,
             else => |other| return other,
         };
         return out.toOwnedSlice();
     }
 
-    fn writeStatusJson(self: *Replication, json: *Io.Writer) !void {
+    fn writeStatusJson(self: *Replication, store: *KeyValueStore, json: *Io.Writer) !void {
         var buffer: [max_replicas]ReplicaState = undefined;
-        switch (try self.status(&buffer)) {
+        switch (try self.status(store, &buffer)) {
             .master => |master| {
                 var address_buffer: [network.max_address_bytes]u8 = undefined;
                 const listening = self.address(&address_buffer) orelse self.role_address;
@@ -452,8 +455,9 @@ pub const Replication = struct {
 
     /// Waits until change set `lsn` of the master is applied here, at most
     /// `timeout_ns`; whether it is. A master has every change set it made.
-    pub fn waitFor(self: *Replication, lsn: u64, timeout_ns: u64) bool {
-        return self.waitForFollowing(lsn, timeout_ns) orelse waitApplied(self.store, lsn, timeout_ns) catch false;
+    /// A process standing by looks through `store` (the calling thread's).
+    pub fn waitFor(self: *Replication, store: *KeyValueStore, lsn: u64, timeout_ns: u64) bool {
+        return self.waitForFollowing(lsn, timeout_ns) orelse waitApplied(store, lsn, timeout_ns) catch false;
     }
 
     /// As `waitFor`, in a process that follows the master; null in one

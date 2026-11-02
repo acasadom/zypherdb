@@ -47,26 +47,38 @@ const EntitySnapshot = @FieldType(Executor, "entities");
 
 const allocator = std.heap.c_allocator;
 
-/// An open database: what the capsule holds.
-const Database = struct {
+/// What the sessions of one open database share.
+const Shared = struct {
+    /// The store that owns the open database; sessions use shares of it.
     store: KeyValueStore,
-    graph: Graph,
-    diagnostic: Diagnostic,
     /// Return temporal values as their ISO 8601 text, not `datetime` objects.
     iso_temporals: bool,
     /// Procedures defined by `define_procedure` (the TCK's test procedures),
-    /// with their values in `procedure_arena`.
+    /// with their values in `procedure_arena`; defined before other threads
+    /// run queries.
     table_procedures: std.ArrayList(zypherdb.procedures.TableProcedure) = .empty,
     procedure_arena: std.heap.ArenaAllocator,
-    /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off.
+    /// The directory LOAD CSV reads from (owned); null: LOAD CSV is off. Set
+    /// before other threads run queries.
     import_directory: ?[]u8 = null,
+    /// Replication, on a database opened with a role.
+    replication: ?*Replication = null,
+    /// The sessions open on the database; the last one closed closes it.
+    sessions: std.atomic.Value(usize) = .init(0),
+};
+
+/// A session on an open database, used by one thread at a time: what the
+/// capsule holds.
+const Database = struct {
+    shared: *Shared,
+    store: KeyValueStore,
+    graph: Graph,
+    diagnostic: Diagnostic,
     /// The statements `query` prepared, by text.
     statements: zypherdb.StatementCache,
     /// The memory a query runs in, kept from one query to the next (up to
     /// `retained_scratch` bytes) instead of asked for again each time.
     scratch: std.heap.ArenaAllocator,
-    /// Replication, on a database opened with a role.
-    replication: ?*Replication = null,
 };
 
 const retained_scratch = 1 << 20;
@@ -81,15 +93,42 @@ fn doneWith(scratch: *std.heap.ArenaAllocator) void {
     _ = scratch.reset(.{ .retain_with_limit = retained_scratch });
 }
 
-/// Frees what an open database holds, and the database.
+/// Frees what a session holds, and the session; the last one closes the
+/// database.
 fn release(database: *Database) void {
-    if (database.replication) |replication| replication.stop();
+    const shared = database.shared;
     database.statements.deinit();
     database.scratch.deinit();
     database.store.deinit();
-    database.procedure_arena.deinit();
-    if (database.import_directory) |directory| allocator.free(directory);
     allocator.destroy(database);
+    if (shared.sessions.fetchSub(1, .acq_rel) == 1) releaseShared(shared);
+}
+
+fn releaseShared(shared: *Shared) void {
+    if (shared.replication) |replication| replication.stop();
+    shared.store.deinit();
+    shared.procedure_arena.deinit();
+    if (shared.import_directory) |directory| allocator.free(directory);
+    allocator.destroy(shared);
+}
+
+/// A new session on `shared`, counted in its sessions.
+fn openSession(shared: *Shared) ?*Database {
+    const database = allocator.create(Database) catch return null;
+    database.* = .{
+        .shared = shared,
+        .store = shared.store.share() catch {
+            allocator.destroy(database);
+            return null;
+        },
+        .graph = undefined,
+        .diagnostic = Diagnostic.init(),
+        .statements = zypherdb.StatementCache.init(allocator),
+        .scratch = std.heap.ArenaAllocator.init(allocator),
+    };
+    database.graph = Graph.init(&database.store, allocator);
+    _ = shared.sessions.fetchAdd(1, .monotonic);
+    return database;
 }
 
 /// `set_import_directory(db, path or None)`: where LOAD CSV reads files.
@@ -100,8 +139,8 @@ fn setImportDirectory(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.P
     if (parseTuple(args, "Oz#", &capsule, &path_pointer, &path_length) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     const directory: ?[]u8 = if (path_pointer == null) null else allocator.dupe(u8, path_pointer[0..@intCast(path_length)]) catch return py.PyErr_NoMemory();
-    if (database.import_directory) |old| allocator.free(old);
-    database.import_directory = directory;
+    if (database.shared.import_directory) |old| allocator.free(old);
+    database.shared.import_directory = directory;
     return none();
 }
 
@@ -463,7 +502,7 @@ fn defineProcedure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyOb
     var rows_object: ?*py.PyObject = null;
     if (parseTuple(args, "OUO!O!O!", &capsule, &name_object, &py.PyList_Type, &arguments_object, &py.PyList_Type, &columns_object, &py.PyList_Type, &rows_object) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
-    const arena = database.procedure_arena.allocator();
+    const arena = database.shared.procedure_arena.allocator();
 
     const arguments = arena.alloc(zypherdb.procedures.Argument, @intCast(py.PyList_Size(arguments_object))) catch return py.PyErr_NoMemory();
     for (arguments, 0..) |*argument, i| {
@@ -490,7 +529,7 @@ fn defineProcedure(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyOb
         row.* = values;
     }
     const name = stringOf(name_object.?, arena) orelse return null;
-    database.table_procedures.append(arena, .{
+    database.shared.table_procedures.append(arena, .{
         .signature = .{ .name = name, .min_arguments = arguments.len, .max_arguments = arguments.len, .columns = columns, .arguments = arguments },
         .rows = rows,
     }) catch return py.PyErr_NoMemory();
@@ -528,31 +567,42 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
         2 => .deferred,
         else => return raise(py.PyExc_ValueError, "unknown durability {d}", .{durability}),
     };
-    const database = allocator.create(Database) catch return py.PyErr_NoMemory();
-    database.store = KeyValueStore.openWithOptions(allocator, path_pointer[0..@intCast(path_length)], .{ .durability = mode }) catch {
-        allocator.destroy(database);
-        return raise(classes.storage_error, "could not open the database at {s}", .{path_pointer[0..@intCast(path_length)]});
+    const path = path_pointer[0..@intCast(path_length)];
+    const shared = allocator.create(Shared) catch return py.PyErr_NoMemory();
+    shared.* = .{
+        .store = KeyValueStore.openWithOptions(allocator, path, .{ .durability = mode }) catch {
+            allocator.destroy(shared);
+            return raise(classes.storage_error, "could not open the database at {s}", .{path});
+        },
+        .iso_temporals = iso_temporals != 0,
+        .procedure_arena = std.heap.ArenaAllocator.init(allocator),
     };
-    database.graph = Graph.init(&database.store, allocator);
-    database.graph.checkFormat() catch |err| {
-        database.store.deinit();
-        allocator.destroy(database);
-        const path = path_pointer[0..@intCast(path_length)];
+    var graph = Graph.init(&shared.store, allocator);
+    graph.checkFormat() catch |err| {
+        releaseShared(shared);
         if (err == error.IncompatibleFormat) return raise(classes.storage_error, "the database at {s} was written in another storage format", .{path});
         return raise(classes.storage_error, "could not open the database at {s}", .{path});
     };
-    database.diagnostic = Diagnostic.init();
-    database.iso_temporals = iso_temporals != 0;
-    database.table_procedures = .empty;
-    database.procedure_arena = std.heap.ArenaAllocator.init(allocator);
-    database.import_directory = null;
-    database.statements = zypherdb.StatementCache.init(allocator);
-    database.scratch = std.heap.ArenaAllocator.init(allocator);
-    database.replication = null;
+    const database = openSession(shared) orelse {
+        releaseShared(shared);
+        return py.PyErr_NoMemory();
+    };
+    return capsuleOf(database);
+}
+
+fn capsuleOf(database: *Database) ?*py.PyObject {
     return py.PyCapsule_New(database, capsule_name, destroyCapsule) orelse {
         release(database);
         return null;
     };
+}
+
+/// `open_session(db)`: another session on the database of `db`, for another
+/// thread; the database closes with its last session.
+fn openSessionOf(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    const database = parseDatabase(args) orelse return null;
+    const session = openSession(database.shared) orelse return py.PyErr_NoMemory();
+    return capsuleOf(session);
 }
 
 fn close(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
@@ -608,7 +658,7 @@ fn parametersOf(parameters_object: ?*py.PyObject, arena: std.mem.Allocator) ?Exe
 
 /// The environment a database's statements are prepared in.
 fn environmentOf(database: *Database) Statement.Environment {
-    return .{ .graph = &database.graph, .diagnostic = &database.diagnostic, .table_procedures = database.table_procedures.items };
+    return .{ .graph = &database.graph, .diagnostic = &database.diagnostic, .table_procedures = database.shared.table_procedures.items };
 }
 
 /// A statement's rows; not `visible` when a write forwarded to the master
@@ -636,9 +686,9 @@ const PendingForward = struct {
     done: ?zypherdb.replication_forwarding.Done = null,
 
     fn create(database: *Database, statement: *const Statement, executor: *const Executor) !*PendingForward {
-        const replication = database.replication.?;
+        const replication = database.shared.replication.?;
         const pending = try allocator.create(PendingForward);
-        pending.* = .{ .arena = .init(allocator), .replication = replication, .since = replication.now(), .iso_temporals = database.iso_temporals };
+        pending.* = .{ .arena = .init(allocator), .replication = replication, .since = replication.now(), .iso_temporals = database.shared.iso_temporals };
         errdefer pending.destroy();
         pending.request = try replica_writes.encodeRequest(statement, executor.parameters, pending.arena.allocator(), &database.diagnostic);
         return pending;
@@ -721,12 +771,12 @@ fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?Ra
     database.diagnostic.clear();
     executor.diagnostic = &database.diagnostic;
     executor.parameters = call.parameters;
-    executor.table_procedures = database.table_procedures.items;
-    executor.import_directory = database.import_directory;
+    executor.table_procedures = database.shared.table_procedures.items;
+    executor.import_directory = database.shared.import_directory;
     const thread_state = py.PyEval_SaveThread();
     defer py.PyEval_RestoreThread(thread_state);
     if (forwardsWrites(database)) {
-        const route = replica_writes.route(statement, database.table_procedures.items, &database.diagnostic) catch return null;
+        const route = replica_writes.route(statement, database.shared.table_procedures.items, &database.diagnostic) catch return null;
         if (route == .forward) {
             const pending = PendingForward.create(database, statement, executor) catch |err| {
                 noteFailure(&database.diagnostic, err);
@@ -744,7 +794,7 @@ fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?Ra
 
 /// Whether the database is a replica that forwards writes to its master.
 fn forwardsWrites(database: *Database) bool {
-    const replication = database.replication orelse return false;
+    const replication = database.shared.replication orelse return false;
     return replication.forwardsWrites();
 }
 
@@ -929,7 +979,7 @@ fn resultObject(ran: Ran, output: Output) ?*py.PyObject {
 
 /// How the rows `executor` made on `database` become Python objects.
 fn outputOf(executor: *const Executor, database: *const Database) Output {
-    return .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals };
+    return .{ .entities = &executor.entities, .iso_temporals = database.shared.iso_temporals };
 }
 
 /// `rows` as a list of lists of Python values.
@@ -989,13 +1039,21 @@ fn beginWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject 
         replica_writes.refuseWriteBlock(&database.diagnostic);
         return raiseQueryError(database);
     }
-    database.graph.beginWrite() catch return storageFailure();
+    // Without the GIL: another thread's write may hold the writer, and needs
+    // the GIL to finish.
+    const thread_state = py.PyEval_SaveThread();
+    const begun = database.graph.beginWrite();
+    py.PyEval_RestoreThread(thread_state);
+    begun catch return storageFailure();
     return none();
 }
 
 fn commitWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = parseDatabase(args) orelse return null;
-    database.graph.commitWrite() catch return storageFailure();
+    const thread_state = py.PyEval_SaveThread();
+    const committed = database.graph.commitWrite();
+    py.PyEval_RestoreThread(thread_state);
+    committed catch return storageFailure();
     return none();
 }
 
@@ -1011,7 +1069,7 @@ fn abortWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject 
 /// request_timeout_ms)`: role 0 serves replicas at `address`, role 1
 /// follows the master at `address` calling itself `name` (None: the host's
 /// name), forwarding the statements that write if `forward_writes`, each
-/// in at most `request_timeout_ms`.
+/// in at most `request_timeout_ms`. Before `open_session` opens others.
 fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var capsule: ?*py.PyObject = null;
     var path_pointer: [*c]const u8 = undefined;
@@ -1040,12 +1098,16 @@ fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyO
         } },
         else => return raise(py.PyExc_ValueError, "unknown role {d}", .{role}),
     };
-    database.replication = Replication.start(allocator, &database.store, path_pointer[0..@intCast(path_length)], replication_role) catch |err| return switch (err) {
+    const shared = database.shared;
+    shared.replication = Replication.start(allocator, &shared.store, path_pointer[0..@intCast(path_length)], replication_role) catch |err| return switch (err) {
         error.MasterDatabase => raise(classes.storage_error, "the database is a master: a replica must start from an empty database or a replica", .{}),
         error.ReadOnlyReplica => raise(classes.storage_error, "the database is a replica: it cannot serve replicas", .{}),
         error.NameTooLong => raise(py.PyExc_ValueError, "a replica's name is at most {d} bytes", .{zypherdb.replication_protocol.max_name_bytes}),
         else => raise(classes.storage_error, "replication could not start at {s}: {t}", .{ address, err }),
     };
+    // The session that started it, opened before: the others share its store after.
+    database.store.commit_listener = shared.store.commit_listener;
+    database.store.follows_master = shared.store.follows_master;
     return none();
 }
 
@@ -1068,8 +1130,8 @@ fn waitFor(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = databaseOf(capsule) orelse return null;
     const timeout_ns = timeout_ms *| std.time.ns_per_ms;
     const thread_state = py.PyEval_SaveThread();
-    const applied = if (database.replication) |replication|
-        replication.waitFor(lsn, timeout_ns)
+    const applied = if (database.shared.replication) |replication|
+        replication.waitFor(&database.store, lsn, timeout_ns)
     else
         zypherdb.replication.waitApplied(&database.store, lsn, timeout_ns) catch false;
     py.PyEval_RestoreThread(thread_state);
@@ -1080,8 +1142,8 @@ fn waitFor(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 /// without replication.
 fn replicationStatus(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     const database = parseDatabase(args) orelse return null;
-    const replication = database.replication orelse return none();
-    const json = replication.statusJson(allocator) catch return storageFailure();
+    const replication = database.shared.replication orelse return none();
+    const json = replication.statusJson(&database.store, allocator) catch return storageFailure();
     defer allocator.free(json);
     return string(json);
 }
@@ -1092,9 +1154,12 @@ fn sync(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     return none();
 }
 
-/// Runs `operation` in the open write transaction, or in one of its own.
+/// Runs `operation` in the open write transaction, or in one of its own
+/// without the GIL (another thread's write may hold the writer).
 fn writing(database: *Database, comptime operation: anytype, arguments: anytype) anyerror!void {
     if (database.graph.inWriteTransaction()) return @call(.auto, operation, arguments);
+    const thread_state = py.PyEval_SaveThread();
+    defer py.PyEval_RestoreThread(thread_state);
     try database.graph.beginWrite();
     errdefer database.graph.abortWrite();
     try @call(.auto, operation, arguments);
@@ -1223,7 +1288,7 @@ fn exportGraph(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     const own_transaction = !graph.inWriteTransaction();
     if (own_transaction) graph.beginRead() catch return storageFailure();
     defer if (own_transaction) graph.commitRead();
-    return exportIn(graph, database.iso_temporals) catch |err| switch (err) {
+    return exportIn(graph, database.shared.iso_temporals) catch |err| switch (err) {
         error.PythonError => null,
         else => storageFailure(),
     };
@@ -1327,6 +1392,7 @@ var methods = [_]py.PyMethodDef{
     method("export_graph", exportGraph),
     method("check", check),
     method("define_procedure", defineProcedure),
+    method("open_session", openSessionOf),
     method("set_import_directory", setImportDirectory),
     method("duration_text", durationText),
     .{ .ml_name = null, .ml_meth = null, .ml_flags = 0, .ml_doc = null },

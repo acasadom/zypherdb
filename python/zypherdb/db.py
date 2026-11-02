@@ -7,6 +7,7 @@ import json
 import os
 import threading
 import time
+import weakref
 
 from ._engine import native
 from .errors import ZypherDBError, ClosedError
@@ -46,28 +47,103 @@ def _plan_tree(lines: list[list], parents: list) -> dict:
     return root
 
 
+class _Session:
+    """A thread's native session on the database."""
+
+    __slots__ = ("handle", "in_write", "depth", "__weakref__")
+
+    def __init__(self, handle):
+        self.handle = handle
+        self.in_write = False
+        self.depth = 0  # calls under way, one within another (a write block's)
+
+
+class _Calls:
+    """The calls under way into a database, each through its thread's
+    session: ``with calls as session:``. `close` waits for them; the lock is
+    held only to count them, never during a call."""
+
+    def __init__(self, handle):
+        self._handle = handle  # the opening thread's session: it holds the database open
+        self._local = threading.local()
+        self._local.session = _Session(handle)
+        self._sessions = weakref.WeakSet([self._local.session])
+        self._count = 0
+        self._ended = threading.Condition(threading.Lock())
+        self._closed = False
+
+    def __enter__(self) -> _Session:
+        session = getattr(self._local, "session", None)
+        with self._ended:
+            # A call within one under way goes on while closing: close waits for both.
+            if self._closed and (session is None or not session.depth):
+                raise ClosedError("database is closed")
+            self._count += 1
+        if session is None:
+            try:
+                session = _Session(native.open_session(self._handle))
+            except BaseException:
+                self._end()
+                raise
+            self._local.session = session
+            with self._ended:
+                self._sessions.add(session)
+        session.depth += 1
+        return session
+
+    def __exit__(self, *exc) -> None:
+        self._local.session.depth -= 1
+        self._end()
+
+    def _end(self) -> None:
+        with self._ended:
+            self._count -= 1
+            if not self._count:
+                self._ended.notify_all()
+
+    def close(self) -> None:
+        session = getattr(self._local, "session", None)
+        if session is not None and session.in_write:
+            raise ZypherDBError("close() cannot run inside a write() block")
+        with self._ended:
+            if self._closed:
+                return
+            self._closed = True
+            while self._count:
+                self._ended.wait()
+            sessions = list(self._sessions)
+        # Each thread's session; a thread gone took its own along.
+        for session in sessions:
+            if session.handle is not self._handle:
+                native.close(session.handle)
+        native.close(self._handle)
+
+
 class PreparedQuery:
     """A query prepared by :meth:`Database.prepare`: run it with :meth:`query`."""
 
     def __init__(self, database: "Database", text: str):
         self._database = database
         self.text = text
-        with database._lock:
-            self._statement, self.parameters, self.columns = native.prepare(database._handle(), text)
+        # A statement per thread: running one replans it when the graph changed.
+        self._statements = threading.local()
+        with database._calls as session:
+            self._statements.statement, self.parameters, self.columns = native.prepare(session.handle, text)
 
     def query(self, parameters: dict | None = None, /, **named) -> Rows:
         """Run the query with these parameters; the rows are as :meth:`Database.query` returns them."""
         values = {**parameters, **named} if parameters else named
         database = self._database
-        with database._lock:
-            db = database._handle()
-            if database._in_write:
+        with database._calls as session:
+            if session.in_write:
                 raise ZypherDBError("query() cannot run inside a write() block")
-            result = native.statement_query(db, self._statement, values)
+            statement = getattr(self._statements, "statement", None)
+            if statement is None:
+                statement = self._statements.statement = native.prepare(session.handle, self.text)[0]
+            result = native.statement_query(session.handle, statement, values)
             if type(result) is Rows:
                 return result
-            database._forwarding += 1
-        return database._forward(result)
+            return database._forward(session, result)
 
     def __repr__(self) -> str:
         return f"PreparedQuery({self.text!r})"
@@ -160,21 +236,15 @@ class Database:
                 native.close(self._db)
                 raise ValueError(f"import_directory {import_directory!r} is not a directory")
             native.set_import_directory(self._db, os.path.abspath(import_directory))
-        # The native context holds per-handle transaction state, so every call
-        # into it is serialized. Reentrant, so a `write()` block can call the
-        # mutators that themselves take the lock.
-        self._lock = threading.RLock()
-        self._in_write = False
-        # Writes forwarded to the master and not back yet: they hold no lock
-        # meanwhile (only the thread that wrote waits), and `close` waits
-        # for them.
-        self._forwarding = 0
-        self._forwarded = threading.Condition(self._lock)
+        # A native session holds its thread's transaction state: each thread
+        # calls through a session of its own, so threads hold up no one but
+        # a write waits for the write under way.
+        self._calls = _Calls(self._db)
 
     def sync(self) -> None:
         """Writes every commit so far to disk (for "deferred" durability)."""
-        with self._lock:
-            native.sync(self._handle())
+        with self._calls as session:
+            native.sync(session.handle)
 
     # --- Replication ---------------------------------------------------------
 
@@ -187,8 +257,8 @@ class Database:
         the last change applied. Also in a process that opened the database
         without a role; 0 on a database that is neither.
         """
-        with self._lock:
-            return native.last_lsn(self._handle())
+        with self._calls as session:
+            return native.last_lsn(session.handle)
 
     def wait_for(self, lsn: int, timeout: float = 5.0) -> bool:
         """Waits until the master's change `lsn` is applied here, at most
@@ -202,8 +272,8 @@ class Database:
         """
         if lsn < 0 or timeout < 0:
             raise ValueError("lsn and timeout must not be negative")
-        with self._lock:
-            return native.wait_for(self._handle(), lsn, int(timeout * 1000))
+        with self._calls as session:
+            return native.wait_for(session.handle, lsn, int(timeout * 1000))
 
     def replication_status(self) -> dict | None:
         """How replication goes, for monitoring; None without replication.
@@ -235,23 +305,14 @@ class Database:
         "token": the master refused its token); `last_refusal` why the master
         last turned it away.
         """
-        with self._lock:
-            text = native.replication_status(self._handle())
+        with self._calls as session:
+            text = native.replication_status(session.handle)
         return None if text is None else json.loads(text)
 
     def close(self) -> None:
-        with self._lock:
-            while self._forwarding:
-                self._forwarded.wait()
-            if self._db is not None:
-                native.close(self._db)
-                self._db = None
-
-    def _handle(self):
-        """The native database; raises instead of using a closed one."""
-        if self._db is None:
-            raise ClosedError("database is closed")
-        return self._db
+        """Closes the database once the calls of other threads under way end;
+        later calls raise :class:`ClosedError`."""
+        self._calls.close()
 
     def __enter__(self) -> "Database":
         return self
@@ -282,37 +343,29 @@ class Database:
         released, so other threads go on meanwhile.
         """
         values = {**parameters, **named} if parameters else named
-        with self._lock:
-            db = self._handle()
-            if self._in_write:
+        with self._calls as session:
+            if session.in_write:
                 raise ZypherDBError("query() cannot run inside a write() block")
-            result = native.query(db, text, values)
+            result = native.query(session.handle, text, values)
             if type(result) is Rows:
                 return result
-            self._forwarding += 1
-        return self._forward(result)
+            return self._forward(session, result)
 
-    def _forward(self, pending) -> Rows:
+    def _forward(self, session: "_Session", pending) -> Rows:
         """Sends a write to the master and returns its rows once this replica
-        has it, without holding the lock: the other threads go on reading."""
-        try:
-            lsn, visible, left_ms = native.forward_send(pending)
-            if visible is None:  # standing by: no follower to wait on here
-                visible = self._applied(lsn, left_ms / 1000)
-            return native.forward_rows(pending, visible)
-        finally:
-            with self._lock:
-                self._forwarding -= 1
-                self._forwarded.notify_all()
+        has it: only the thread that wrote waits."""
+        lsn, visible, left_ms = native.forward_send(pending)
+        if visible is None:  # standing by: no follower to wait on here
+            visible = self._applied(session, lsn, left_ms / 1000)
+        return native.forward_rows(pending, visible)
 
-    def _applied(self, lsn: int, timeout: float) -> bool:
+    def _applied(self, session: "_Session", lsn: int, timeout: float) -> bool:
         """Whether this replica applies change `lsn` within `timeout` seconds,
-        looking every millisecond, with the lock only while looking."""
+        looking every millisecond."""
         deadline = time.monotonic() + timeout
         while True:
-            with self._lock:
-                if native.last_lsn(self._handle()) >= lsn:
-                    return True
+            if native.last_lsn(session.handle) >= lsn:
+                return True
             if time.monotonic() >= deadline:
                 return False
             time.sleep(0.001)
@@ -353,11 +406,10 @@ class Database:
         The same plan as rows comes from ``db.query("EXPLAIN " + text)``.
         """
         values = {**parameters, **named} if parameters else named
-        with self._lock:
-            db = self._handle()
-            if self._in_write:
+        with self._calls as session:
+            if session.in_write:
                 raise ZypherDBError("explain() cannot run inside a write() block")
-            _, lines, parents = native.plan(db, "EXPLAIN " + text, values)
+            _, lines, parents = native.plan(session.handle, "EXPLAIN " + text, values)
         return _plan_tree(lines, parents)
 
     def profile(self, text: str, parameters: dict | None = None, /, **named) -> tuple[list[list], dict]:
@@ -370,11 +422,10 @@ class Database:
         text)`` gives the plan as rows, without the query's own.
         """
         values = {**parameters, **named} if parameters else named
-        with self._lock:
-            db = self._handle()
-            if self._in_write:
+        with self._calls as session:
+            if session.in_write:
                 raise ZypherDBError("profile() cannot run inside a write() block")
-            rows, lines, parents = native.plan(db, "PROFILE " + text, values)
+            rows, lines, parents = native.plan(session.handle, "PROFILE " + text, values)
         return rows, _plan_tree(lines, parents)
 
     def export_graph(self) -> dict:
@@ -386,8 +437,8 @@ class Database:
 
         Nodes come in id order. Reads one consistent snapshot; O(size of the graph).
         """
-        with self._lock:
-            return native.export_graph(self._handle())
+        with self._calls as session:
+            return native.export_graph(session.handle)
 
     def check(self) -> dict:
         """Check that every index and counter agrees with the stored records.
@@ -403,8 +454,8 @@ class Database:
 
         ``problems`` describes the first 32 problems found.
         """
-        with self._lock:
-            return native.check(self._handle())
+        with self._calls as session:
+            return native.check(session.handle)
 
     def _define_procedure(self, name: str, arguments: list, columns: list, rows: list) -> None:
         """For the openCypher TCK: a procedure, for this open database only,
@@ -412,8 +463,8 @@ class Database:
         type)`` pairs (``("in", "INTEGER?")``); each row has a value per
         argument, then per column. A call emits the rows whose arguments
         equal its own."""
-        with self._lock:
-            native.define_procedure(self._handle(), name, list(arguments), list(columns), [list(row) for row in rows])
+        with self._calls as session:
+            native.define_procedure(session.handle, name, list(arguments), list(columns), [list(row) for row in rows])
 
     # --- Writes --------------------------------------------------------------
 
@@ -433,31 +484,30 @@ class Database:
         This is the bulk-ingestion path (one sync instead of one per write). Do
         not run `query()` inside the block — reads use their own transaction.
         """
-        with self._lock:
-            db = self._handle()
-            if self._in_write:
+        with self._calls as session:
+            if session.in_write:
                 raise ZypherDBError("write() blocks cannot be nested")
-            native.begin_write(db)
-            self._in_write = True
+            native.begin_write(session.handle)
+            session.in_write = True
             try:
                 yield self
             except BaseException:
-                native.abort_write(db)
+                native.abort_write(session.handle)
                 raise
             else:
-                native.commit_write(db)
+                native.commit_write(session.handle)
             finally:
-                self._in_write = False
+                session.in_write = False
 
     def allocate_node_id(self) -> int:
         """Allocate a fresh, never-used node id."""
-        with self._lock:
-            return native.allocate_node_id(self._handle())
+        with self._calls as session:
+            return native.allocate_node_id(session.handle)
 
     def add_node(self, id: int, label: str = "") -> None:
         _check_node_id(id)
-        with self._lock:
-            native.add_node(self._handle(), id, label)
+        with self._calls as session:
+            native.add_node(session.handle, id, label)
 
     def add_edge(self, src: int, dst: int, type: str) -> int:
         """Add a directed relationship and return its id; both endpoints must
@@ -465,13 +515,13 @@ class Database:
         by a relationship of that type."""
         _check_node_id(src)
         _check_node_id(dst)
-        with self._lock:
-            return native.add_edge(self._handle(), src, dst, type)
+        with self._calls as session:
+            return native.add_edge(session.handle, src, dst, type)
 
     def set_property(self, id: int, name: str, value) -> None:
         """Set a property on an existing node: any value a query can store
         (numbers, `str`, `bool`, temporal values, lists of one type, and dicts
         as documents). `None` removes the property."""
         _check_node_id(id)
-        with self._lock:
-            native.set_property(self._handle(), id, name, value)
+        with self._calls as session:
+            native.set_property(session.handle, id, name, value)

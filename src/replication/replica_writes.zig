@@ -110,7 +110,7 @@ pub fn forward(replication: *Replication, statement: *const Statement, executor:
     const done = try send(replication, request, scratch, diagnostic);
     const rows = try rowsOf(done, scratch);
     executor.entities = done.entities;
-    return .{ .rows = rows, .visible = replication.waitFor(done.lsn, timeLeft(replication, since)) };
+    return .{ .rows = rows, .visible = replication.waitFor(executor.graph.store, done.lsn, timeLeft(replication, since)) };
 }
 
 /// The request that forwards `statement` with `parameters`, in `allocator`;

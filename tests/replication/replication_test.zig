@@ -73,13 +73,13 @@ test "a replica opened with its role refuses writes, follows the master and wait
     try master.commitWrite();
     const lsn = master.last_committed_lsn.?;
 
-    try testing.expect(following.waitFor(lsn, patience));
+    try testing.expect(following.waitFor(&replica, lsn, patience));
     const value = (try replica.get("key")).?;
     defer testing.allocator.free(value);
     try testing.expectEqualStrings("value", value);
-    try testing.expect(serving.waitFor(lsn, 0));
+    try testing.expect(serving.waitFor(&master, lsn, 0));
 
-    const replica_status = (try following.status(&.{})).replica;
+    const replica_status = (try following.status(&replica, &.{})).replica;
     try testing.expectEqual(lsn, replica_status.applied_lsn);
     try testing.expectEqual(null, replica_status.halted);
     try testing.expectEqualStrings(name, replica_status.name);
@@ -89,10 +89,10 @@ test "a replica opened with its role refuses writes, follows the master and wait
     var buffer: [4]ReplicaState = undefined;
     const deadline = std.Io.Clock.awake.now(testing.io).nanoseconds + patience;
     while (true) : (try testing.io.sleep(.fromMilliseconds(5), .awake)) {
-        const master_status = (try serving.status(&buffer)).master;
+        const master_status = (try serving.status(&master, &buffer)).master;
         try testing.expectEqual(lsn, master_status.last_lsn);
         // Applied before its node tells it streams.
-        if (master_status.replicas.len == 1 and master_status.replicas[0].acked_lsn == lsn and (try following.status(&.{})).replica.phase == .streaming) {
+        if (master_status.replicas.len == 1 and master_status.replicas[0].acked_lsn == lsn and (try following.status(&replica, &.{})).replica.phase == .streaming) {
             const served = &master_status.replicas[0];
             try testing.expectEqualStrings(name, served.name());
             try testing.expect(std.mem.startsWith(u8, served.address(), "127.0.0.1:"));
@@ -103,7 +103,7 @@ test "a replica opened with its role refuses writes, follows the master and wait
     }
 
     // The same as JSON, the name escaped.
-    const master_json = try serving.statusJson(testing.allocator);
+    const master_json = try serving.statusJson(&master, testing.allocator);
     defer testing.allocator.free(master_json);
     const told = try std.json.parseFromSlice(std.json.Value, testing.allocator, master_json, .{});
     defer told.deinit();
@@ -112,7 +112,7 @@ test "a replica opened with its role refuses writes, follows the master and wait
     try testing.expectEqualStrings("streaming", served.get("phase").?.string);
     try testing.expectEqual(0, served.get("lag").?.integer);
     try testing.expect(served.get("connected_ms").?.integer >= 0);
-    const replica_json = try following.statusJson(testing.allocator);
+    const replica_json = try following.statusJson(&replica, testing.allocator);
     defer testing.allocator.free(replica_json);
     const following_told = try std.json.parseFromSlice(std.json.Value, testing.allocator, replica_json, .{});
     defer following_told.deinit();
@@ -142,10 +142,10 @@ test "a replica's name is its host's unless given, and no longer than a hello ca
         .token = token,
     } });
     defer following.stop();
-    const status = (try following.status(&.{})).replica;
+    const status = (try following.status(&replica, &.{})).replica;
     try testing.expect(status.name.len > 0);
     try testing.expectEqual(null, status.last_heard);
-    const json = try following.statusJson(testing.allocator);
+    const json = try following.statusJson(&replica, testing.allocator);
     defer testing.allocator.free(json);
     try testing.expect(std.mem.indexOf(u8, json, "\"last_contact_ms\":null") != null);
 }
@@ -169,16 +169,16 @@ test "a replica told the wrong token halts, and says why" {
     } });
     defer following.stop();
 
-    try testing.expect(!following.waitFor(1, patience));
-    const status = (try following.status(&.{})).replica;
+    try testing.expect(!following.waitFor(&replica, 1, patience));
+    const status = (try following.status(&replica, &.{})).replica;
     try testing.expectEqual(.token, status.halted.?);
     try testing.expectEqual(.halted, status.phase);
 }
 
-/// Waits until `replication` runs replication (no longer stands by).
-fn expectTakesOver(replication: *Replication) !void {
+/// Waits until `replication`, on `store`, runs replication (no longer stands by).
+fn expectTakesOver(replication: *Replication, store: *KeyValueStore) !void {
     const deadline = std.Io.Clock.awake.now(testing.io).nanoseconds + patience;
-    while (switch (try replication.status(&.{})) {
+    while (switch (try replication.status(store, &.{})) {
         inline else => |either| either.standby,
     }) : (try testing.io.sleep(.fromMilliseconds(5), .awake)) {
         if (std.Io.Clock.awake.now(testing.io).nanoseconds > deadline) return error.TestTimedOut;
@@ -215,7 +215,7 @@ test "a process standing by takes over a master's replication when the one runni
     second_role.address = address;
     const second = try Replication.start(testing.allocator, &other, pathOf(&master_path), .{ .master = second_role });
     defer second.stop();
-    try testing.expect((try second.status(&.{})).master.standby);
+    try testing.expect((try second.status(&other, &.{})).master.standby);
     try testing.expectEqual(null, second.address(&address_buffer));
 
     const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
@@ -224,12 +224,12 @@ test "a process standing by takes over a master's replication when the one runni
         .timeout_ns = 500 * std.time.ns_per_ms,
     } });
     defer following.stop();
-    try testing.expect(following.waitFor(try commit(&master, "first"), patience));
+    try testing.expect(following.waitFor(&replica, try commit(&master, "first"), patience));
 
     first.stop();
     first_stopped = true;
-    try expectTakesOver(second);
-    try testing.expect(following.waitFor(try commit(&other, "second"), patience));
+    try expectTakesOver(second, &other);
+    try testing.expect(following.waitFor(&replica, try commit(&other, "second"), patience));
 }
 
 test "a process standing by takes over a replica's replication when the one running it stops" {
@@ -253,17 +253,17 @@ test "a process standing by takes over a replica's replication when the one runn
     defer if (!first_stopped) first.stop();
     const second = try Replication.start(testing.allocator, &other, pathOf(&replica_path), role);
     defer second.stop();
-    try testing.expect((try second.status(&.{})).replica.standby);
+    try testing.expect((try second.status(&other, &.{})).replica.standby);
     try testing.expectError(error.ReadOnlyReplica, other.beginWrite());
 
     const lsn = try commit(&master, "first");
-    try testing.expect(first.waitFor(lsn, patience));
+    try testing.expect(first.waitFor(&replica, lsn, patience));
     // Standing by, it waits by looking at the database.
-    try testing.expect(second.waitFor(lsn, patience));
+    try testing.expect(second.waitFor(&other, lsn, patience));
 
     first.stop();
     first_stopped = true;
-    try expectTakesOver(second);
-    try testing.expect(second.waitFor(try commit(&master, "second"), patience));
-    try testing.expectEqual(null, (try second.status(&.{})).replica.halted);
+    try expectTakesOver(second, &other);
+    try testing.expect(second.waitFor(&other, try commit(&master, "second"), patience));
+    try testing.expectEqual(null, (try second.status(&other, &.{})).replica.halted);
 }
