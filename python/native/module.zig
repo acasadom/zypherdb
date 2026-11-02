@@ -786,12 +786,23 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
 /// A query's result: its rows as a `Rows` (a list of lists of Python
 /// values), `visible` set to False only when not.
 fn resultObject(ran: Ran, executor: *Executor, database: *Database) ?*py.PyObject {
-    const rows = rowsObject(ran.rows, executor, database) orelse return null;
-    defer py.Py_DecRef(rows);
-    const result = py.PyObject_CallObject(classes.rows, null) orelse return null;
-    if (py.PyList_SetSlice(result, 0, 0, rows) != 0) {
-        py.Py_DecRef(result);
-        return null;
+    // As in `rowsObject`, the cycle collector is paused while the rows are made.
+    const collector_was_enabled = py.PyGC_Disable() != 0;
+    defer if (collector_was_enabled) {
+        _ = py.PyGC_Enable();
+    };
+    // An empty `Rows`, without the cost of calling the class.
+    const result = py.PyType_GenericAlloc(@ptrCast(@alignCast(classes.rows)), 0) orelse return null;
+    for (ran.rows) |row| {
+        const cells = rowObject(row, executor, database) orelse {
+            py.Py_DecRef(result);
+            return null;
+        };
+        defer py.Py_DecRef(cells);
+        if (py.PyList_Append(result, cells) != 0) {
+            py.Py_DecRef(result);
+            return null;
+        }
     }
     if (!ran.visible) {
         const not_visible = py.PyBool_FromLong(0) orelse {
@@ -818,20 +829,26 @@ fn rowsObject(rows: []const zypherdb.Row, executor: *Executor, database: *Databa
     };
     const result = py.PyList_New(@intCast(rows.len)) orelse return null;
     for (rows, 0..) |row, i| {
-        const cells = py.PyList_New(@intCast(row.items.len)) orelse {
+        const cells = rowObject(row, executor, database) orelse {
             py.Py_DecRef(result);
             return null;
         };
         _ = py.PyList_SetItem(result, @intCast(i), cells);
-        for (row.items, 0..) |cell, j| {
-            const object = objectOf(cell, .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals }) orelse {
-                py.Py_DecRef(result);
-                return null;
-            };
-            _ = py.PyList_SetItem(cells, @intCast(j), object);
-        }
     }
     return result;
+}
+
+/// One row as a list of Python values.
+fn rowObject(row: zypherdb.Row, executor: *Executor, database: *Database) ?*py.PyObject {
+    const cells = py.PyList_New(@intCast(row.items.len)) orelse return null;
+    for (row.items, 0..) |cell, j| {
+        const object = objectOf(cell, .{ .entities = &executor.entities, .iso_temporals = database.iso_temporals }) orelse {
+            py.Py_DecRef(cells);
+            return null;
+        };
+        _ = py.PyList_SetItem(cells, @intCast(j), object);
+    }
+    return cells;
 }
 
 // --- Writes ------------------------------------------------------------------------

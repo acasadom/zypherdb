@@ -251,3 +251,24 @@ The same benchmark (`python bench/python_overhead.py`) after the package moved t
 What Python adds now: about 1.4 µs per query, and about 35 ns per returned cell; a whole node
 about 1 µs (its labels tuple and properties dict). The cycle collector is paused while a result is
 built, and entities are built without running their `__init__`.
+
+## Writes forwarded by a replica (November 2026)
+
+`python bench/forwarded_write.py` on an Apple M5 laptop: a master and a replica in one process,
+over the loopback interface, 500 single-node `CREATE`s each. Medians:
+
+| Write | `durability="full"` | `durability="deferred"` |
+| --- | ---: | ---: |
+| on the master | 15.0 ms | 18.5 µs |
+| on the master, then `wait_for` on the replica | 15.9 ms | 58.2 µs |
+| forwarded by the replica (`forward_writes=True`) | 15.0 ms | 69.9 µs |
+
+With `"full"` the master's commit to disk is nearly all of it. Without it, a forwarded write
+costs about 50 µs more than a local one: the round trip to the master, and the change coming
+back to the replica; about 12 µs more than writing on the master and waiting by hand. A real
+network adds its round trip.
+
+The read path does not change: an A/B of the engine benchmark against the code before write
+forwarding is within noise, and so is the Python one (`bench/python_overhead.py`) once `Rows` is
+built in place, without copying the rows into it (a first version that copied them cost 13% on
+results of 100k rows).
