@@ -49,6 +49,9 @@ typedef struct zypherdb_statement zypherdb_statement;
 #define ZYPHERDB_ERROR_ARITHMETIC 9
 #define ZYPHERDB_ERROR_CONSTRAINT_VIOLATION 10
 #define ZYPHERDB_ERROR_EXTERNAL_RESOURCE 11 /* LOAD CSV could not read its file */
+#define ZYPHERDB_ERROR_WRITE_NOT_FORWARDED 12 /* a replica cannot forward this write */
+#define ZYPHERDB_ERROR_MASTER_UNREACHABLE 13  /* a forwarded write did not run */
+#define ZYPHERDB_ERROR_OUTCOME_UNKNOWN 14     /* a forwarded write may have run or not */
 
 /* Cell types reported by zypherdb_result_type and zypherdb_result_list_item_type. */
 #define ZYPHERDB_TYPE_INT64 0

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from zypherdb import Database
-from zypherdb.errors import StorageError, ZypherDBError
+from zypherdb import Database, Rows
+from zypherdb.errors import MasterUnreachableError, StorageError, WriteNotForwardedError, ZypherDBError
 
 TOKEN = "the master's token"
 
@@ -187,7 +187,9 @@ def forwarding_replica(master, tmp_path, name="replica", **options):
 
 def test_a_replica_that_forwards_writes_sends_them_to_its_master(master, tmp_path):
     with forwarding_replica(master, tmp_path) as replica:
-        [[ada]] = replica.query("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"})
+        created = replica.query("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"})
+        assert isinstance(created, Rows) and created.visible
+        [[ada]] = created
         assert ada.labels == ("Person",)
         assert ada.properties == {"name": "Ada"}
         # Read-your-writes, and the master has it.
@@ -202,16 +204,18 @@ def test_a_replica_that_forwards_writes_sends_them_to_its_master(master, tmp_pat
 def test_a_replica_refuses_what_it_cannot_forward(master, tmp_path):
     with forwarding_replica(master, tmp_path) as replica:
         replica._define_procedure("test.names", [], [("name", "STRING?")], [["Ada"]])
-        with pytest.raises(ZypherDBError, match="defined in this process"):
+        with pytest.raises(WriteNotForwardedError, match="defined in this process"):
             replica.query("CALL test.names() YIELD name CREATE (:Person {name: name})")
         assert replica.query("CALL test.names() YIELD name RETURN name") == [["Ada"]]
-        with pytest.raises(ZypherDBError, match="LOAD CSV"):
+        with pytest.raises(WriteNotForwardedError, match="LOAD CSV"):
             replica.query("LOAD CSV FROM 'file:///people.csv' AS row CREATE (:Person)")
         with pytest.raises(ZypherDBError, match="PROFILE"):
             replica.profile("CREATE (:Person)")
-        with pytest.raises(ZypherDBError, match="write blocks"):
+        with pytest.raises(WriteNotForwardedError, match="write blocks"):
             with replica.write():
                 pass
+        with pytest.raises(StorageError):
+            replica.add_node(replica.allocate_node_id(), "Person")
         assert master.query("MATCH (p:Person) RETURN count(p)") == [[0]]
 
 
@@ -222,7 +226,7 @@ def test_a_forwarded_write_to_a_master_gone_did_not_run(tmp_path):
     finally:
         master.close()
     with replica:
-        with pytest.raises(ZypherDBError, match="did not run"):
+        with pytest.raises(MasterUnreachableError, match="did not run"):
             replica.query("CREATE (:Person)")
 
 

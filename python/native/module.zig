@@ -117,6 +117,8 @@ const Classes = struct {
     node: ?*py.PyObject = null,
     relationship: ?*py.PyObject = null,
     path: ?*py.PyObject = null,
+    /// `rows()`: a query's result, a list subclass with a `visible` flag.
+    rows: ?*py.PyObject = null,
     /// `query_error(code, message) -> exception`.
     query_error: ?*py.PyObject = null,
     storage_error: ?*py.PyObject = null,
@@ -599,10 +601,17 @@ fn environmentOf(database: *Database) Statement.Environment {
     return .{ .graph = &database.graph, .diagnostic = &database.diagnostic, .table_procedures = database.table_procedures.items };
 }
 
+/// A statement's rows; not `visible` when a write forwarded to the master
+/// has not come back to this replica yet.
+const Ran = struct {
+    rows: []const zypherdb.Row,
+    visible: bool = true,
+};
+
 /// Runs `statement` with the call's parameters, with the GIL released
 /// (other Python threads go on meanwhile); null on failure, with the
 /// diagnostic set. `executor` is the statement's, allocating in the call's arena.
-fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]const zypherdb.Row {
+fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?Ran {
     const database = call.database;
     database.diagnostic.clear();
     executor.diagnostic = &database.diagnostic;
@@ -618,13 +627,14 @@ fn runStatement(call: QueryCall, statement: *Statement, executor: *Executor) ?[]
                 noteFailure(&database.diagnostic, err);
                 return null;
             };
-            return forwarded.rows;
+            return .{ .rows = forwarded.rows, .visible = forwarded.visible };
         }
     }
-    return statement.run(executor) catch |err| {
+    const rows = statement.run(executor) catch |err| {
         noteFailure(&database.diagnostic, err);
         return null;
     };
+    return .{ .rows = rows };
 }
 
 /// Whether the database is a replica that forwards writes to its master.
@@ -665,8 +675,8 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     defer if (owned) |statement| statement.destroy();
     const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
     var executor = statement.executorFor(&call.database.graph, arena);
-    const rows = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
-    return rowsObject(rows, &executor, call.database);
+    const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
+    return resultObject(ran, &executor, call.database);
 }
 
 /// `prepare(db, text)`: `(statement, parameters, columns)`: a prepared
@@ -717,8 +727,8 @@ fn statementQuery(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
     const parameters = parametersOf(parameters_object, arena) orelse return null;
     const call = QueryCall{ .database = database, .text = statement.text, .parameters = parameters };
     var executor = statement.executorFor(&database.graph, arena);
-    const rows = runStatement(call, statement, &executor) orelse return raiseQueryError(database);
-    return rowsObject(rows, &executor, database);
+    const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(database);
+    return resultObject(ran, &executor, database);
 }
 
 const statement_capsule_name = "zypherdb.Statement";
@@ -754,7 +764,7 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     defer if (owned) |statement| statement.destroy();
     const statement = statementFor(call, &owned) orelse return raiseQueryError(call.database);
     var executor = statement.executorFor(&call.database.graph, arena);
-    const lines = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
+    const lines = (runStatement(call, statement, &executor) orelse return raiseQueryError(call.database)).rows;
 
     const rows = rowsObject(executor.profiled_rows, &executor, call.database) orelse return null;
     const plan_lines = rowsObject(lines, &executor, call.database) orelse {
@@ -771,6 +781,30 @@ fn plan(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
         _ = py.PyList_SetItem(parents, @intCast(position), object);
     }
     return py.Py_BuildValue("(NNN)", rows, plan_lines, parents);
+}
+
+/// A query's result: its rows as a `Rows` (a list of lists of Python
+/// values), `visible` set to False only when not.
+fn resultObject(ran: Ran, executor: *Executor, database: *Database) ?*py.PyObject {
+    const rows = rowsObject(ran.rows, executor, database) orelse return null;
+    defer py.Py_DecRef(rows);
+    const result = py.PyObject_CallObject(classes.rows, null) orelse return null;
+    if (py.PyList_SetSlice(result, 0, 0, rows) != 0) {
+        py.Py_DecRef(result);
+        return null;
+    }
+    if (!ran.visible) {
+        const not_visible = py.PyBool_FromLong(0) orelse {
+            py.Py_DecRef(result);
+            return null;
+        };
+        defer py.Py_DecRef(not_visible);
+        if (py.PyObject_SetAttrString(result, "visible", not_visible) != 0) {
+            py.Py_DecRef(result);
+            return null;
+        }
+    }
+    return result;
 }
 
 /// `rows` as a list of lists of Python values.

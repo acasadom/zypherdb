@@ -108,6 +108,9 @@ message stays valid until the next call on the context.
 | 9 | `ZYPHERDB_ERROR_ARITHMETIC` | integer overflow or division by zero |
 | 10 | `ZYPHERDB_ERROR_CONSTRAINT_VIOLATION` | a write would break a uniqueness constraint |
 | 11 | `ZYPHERDB_ERROR_EXTERNAL_RESOURCE` | `LOAD CSV` could not read its file |
+| 12 | `ZYPHERDB_ERROR_WRITE_NOT_FORWARDED` | a replica that forwards writes cannot forward this one ([replication](replication.md#writing-on-a-replica)) |
+| 13 | `ZYPHERDB_ERROR_MASTER_UNREACHABLE` | a forwarded write did not run: the master could not be reached, or turned it away |
+| 14 | `ZYPHERDB_ERROR_OUTCOME_UNKNOWN` | a forwarded write was sent, then the connection was lost or the time ran out: it may have run or not |
 
 Code 3 is reserved: it was once "missing property", and a missing property now reads as `null`.
 

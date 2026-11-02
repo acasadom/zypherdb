@@ -20,7 +20,7 @@ import zypherdb, tempfile
 db = zypherdb.Database(tempfile.mkdtemp())
 ```
 
-### `Database(path, durability="full", temporals="python", import_directory=None, serve=None, replicate_from=None, token=None, name=None)`
+### `Database(path, durability="full", temporals="python", import_directory=None, serve=None, replicate_from=None, token=None, name=None, forward_writes=False, forward_timeout=30.0)`
 
 Opens the database in directory `path`, creating the directory and the database if they do not
 exist. A database is used as a context manager (`with Database(path) as db:`), which closes it on
@@ -48,11 +48,19 @@ exit, or closed with `close()`.
   encrypted: run it only on a trusted network.
 - `name` — what a replica calls itself in its master's status (at most 255 bytes in UTF-8); by
   default the name of its host. Given to a database that is not a replica, `ValueError`.
+- `forward_writes`, `forward_timeout` — a replica with `forward_writes=True` sends the queries
+  that write to its master instead of refusing them, and returns their rows once the change is
+  applied here, each taking at most `forward_timeout` seconds (see
+  [replication](replication.md#writing-on-a-replica)). Given to a database that is not a replica,
+  `ValueError`.
 
-### `query(text, parameters=None, /, **named) -> list[list]`
+### `query(text, parameters=None, /, **named) -> Rows`
 
 Runs one openCypher query ([reference](cypher)) and returns its rows: a list with one list per
-row, one value per `RETURN` item. A query without `RETURN` returns `[]`. Parameters (`$name` in the
+row, one value per `RETURN` item. A query without `RETURN` returns `[]`. The list is a `Rows`, a
+`list` subclass whose `visible` attribute is `True` but for a write a replica forwarded to its
+master and had not applied yet when `forward_timeout` ran out
+([replication](replication.md#writing-on-a-replica)). Parameters (`$name` in the
 query) come from a dict, keyword arguments, or both:
 
 ```python
@@ -296,6 +304,9 @@ Every exception is a `zypherdb.ZypherDBError`. A failed query raises a `QueryErr
 | `ExternalResourceError` | 11 | `LOAD CSV` could not read its file (off, outside the import directory, missing, or not CSV) |
 | `ParameterMissingError` | 8 | a `$parameter` was not passed |
 | `ArithmeticQueryError` | 9 | integer overflow or division by zero (also an `ArithmeticError`) |
+| `WriteNotForwardedError` | 12 | a replica that forwards writes cannot forward this one ([replication](replication.md#writing-on-a-replica)) |
+| `MasterUnreachableError` | 13 | a forwarded write did not run: the master could not be reached, or turned it away |
+| `OutcomeUnknownError` | 14 | a forwarded write was sent, then the connection was lost or the time ran out: it may have run or not |
 
 and outside queries:
 

@@ -9,6 +9,7 @@ import threading
 
 from ._engine import native
 from .errors import ZypherDBError, ClosedError
+from .rows import Rows
 
 _U64_MAX = 2**64 - 1
 
@@ -53,7 +54,7 @@ class PreparedQuery:
         with database._lock:
             self._statement, self.parameters, self.columns = native.prepare(database._handle(), text)
 
-    def query(self, parameters: dict | None = None, /, **named) -> list[list]:
+    def query(self, parameters: dict | None = None, /, **named) -> Rows:
         """Run the query with these parameters; the rows are as :meth:`Database.query` returns them."""
         values = {**parameters, **named} if parameters else named
         database = self._database
@@ -248,7 +249,7 @@ class Database:
 
     # --- Querying ------------------------------------------------------------
 
-    def query(self, text: str, parameters: dict | None = None, /, **named) -> list[list]:
+    def query(self, text: str, parameters: dict | None = None, /, **named) -> Rows:
         """Run one openCypher query and return the rows as Python values.
 
         Query parameters (`$name` in the query) come as a dict, as keyword
@@ -263,7 +264,8 @@ class Database:
 
         Cells become `int`, `float`, `str`, `bool`, `None` (null), a `list`, a
         `dict`, a whole :class:`Node` / :class:`Relationship` / :class:`Path`,
-        or a temporal value; rows are lists of cells. Raises a typed
+        or a temporal value; rows are lists of cells, in a :class:`Rows` (a
+        list; on a replica that forwards writes, see its `visible`). Raises a typed
         :class:`QueryError` subclass on failure. The query runs with the GIL
         released, so other threads go on meanwhile.
         """

@@ -34,7 +34,7 @@ restarts, it reconnects and goes on from where it was; if it fell too far behind
 copy. Closing the database stops replication.
 
 A replica refuses writes (`StorageError`, "the database is a replica"): every write goes to the
-master. A database that has been a master cannot become a replica (a replica starts from an empty
+master, or the replica forwards it there ([writing on a replica](#writing-on-a-replica)). A database that has been a master cannot become a replica (a replica starts from an empty
 directory or is one already), and a replica cannot serve other replicas.
 
 ## Reading your own writes
@@ -113,7 +113,55 @@ older copy), or a version, format or engine the two do not share. A halted repli
 reads with what it has; fix the cause and open it again (or start it from an empty directory).
 `last_refusal` names why the master last turned it away, when that was not for good.
 
+## Writing on a replica
+
+An application that mostly reads, close to its users, and writes now and then, can write through
+the replica: opened with `forward_writes=True`, a replica sends each query that writes to its
+master, which runs it as its own; the replica waits until that change has come back to it and
+returns the query's rows, so a read on the replica right after sees the write:
+
 ```python
+edge = zypherdb.Database(tempfile.mkdtemp(), replicate_from=address, token="a long random secret",
+                         name="edge-1", forward_writes=True, forward_timeout=30.0)
+edge.wait_for(master.last_lsn)  # its first copy
+
+rows = edge.query("CREATE (p:Person {name: $name}) RETURN p.name", name="Grace")
+print(rows, rows.visible)
+print(edge.query("MATCH (p:Person {name: 'Grace'}) RETURN count(p)"))
+```
+
+```text
+[['Grace']] True
+[[1]]
+```
+
+A forwarded write costs a round trip to the master, its run there, and the time the change takes
+to come back; reads run on the replica as ever, at no extra cost. The replica opens one connection
+to its master for writes, apart from replication's, the first time it forwards one; queries from
+several threads share it, one at a time. A process that opened the replica with a role and stands
+by forwards writes too.
+
+Each forwarded write takes at most `forward_timeout` seconds, and how it ended is told apart:
+
+- **Its rows come back**: the master committed it. If the change had not reached the replica
+  when the time ran out, the rows still come back, with `rows.visible` `False`: a read on the
+  replica may not show the write yet, until replication catches up.
+- **`MasterUnreachableError`**: the write did not run, because the master could not be reached
+  (or turned it away). It is safe to try again.
+- **`OutcomeUnknownError`**: the write was sent, then the connection was lost or the time ran
+  out; the master may have committed it or not. Check before trying again, or make the write
+  safe to repeat (`MERGE`).
+- A query that fails on the master raises as it would there (a `ConstraintViolationError`, a
+  `TypeMismatchError`...).
+
+Some writes are not forwarded and raise `WriteNotForwardedError`: `LOAD CSV` (the file is on the
+replica's machine), queries that call a procedure defined in this process, `PROFILE` of a
+query that writes, and `write()` blocks. Only queries are forwarded: the mutators (`add_node`,
+`set_property`...) still raise `StorageError` on a replica. Schema statements (`CREATE INDEX`,
+`CREATE CONSTRAINT`) are forwarded; `EXPLAIN` and `SHOW` run on the replica.
+
+```python
+edge.close()
 replica.close()
 master.close()
 ```
