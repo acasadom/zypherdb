@@ -35,6 +35,7 @@ const ErrorCode = @import("diagnostics.zig").ErrorCode;
 const parser = @import("query/parser.zig");
 const Statement = @import("statement/Statement.zig");
 const StatementCache = @import("statement/Cache.zig");
+const batch = @import("statement/batch.zig");
 
 /// What the sessions of one open database share.
 const Shared = struct {
@@ -71,12 +72,15 @@ pub const Context = struct {
     /// The memory a query runs in, kept from one query to the next (up to
     /// `retained_scratch` bytes) instead of asked for again each time.
     scratch: std.heap.ArenaAllocator,
+    /// The statement of the last `zypherdb_write_many` that failed, if one
+    /// did (`zypherdb_error_statement`).
+    failed_statement: ?usize = null,
 };
 
 /// How much of a query's memory the next one reuses.
 pub const retained_scratch = 1 << 20;
 
-const Result = struct {
+pub const Result = struct {
     arena: std.heap.ArenaAllocator,
     rows: []Row,
     json: []u8, // the whole result serialized to JSON (for the bulk reader)
@@ -309,6 +313,13 @@ pub export fn zypherdb_error_code(context: *Context) c_int {
     return @intCast(@backingInt(context.diagnostic.code));
 }
 
+/// The index of the statement that failed in the last `zypherdb_write_many`
+/// that failed; `SIZE_MAX` if the failure was in no statement (the commit,
+/// the master not reached) or the last call was not a `zypherdb_write_many`.
+pub export fn zypherdb_error_statement(context: *Context) usize {
+    return context.failed_statement orelse std.math.maxInt(usize);
+}
+
 /// Begins an explicit write transaction. Until `zypherdb_commit_write` (or
 /// `zypherdb_abort_write`), every mutator runs inside it and commits atomically at
 /// the end — one fsync for the whole batch. Returns 0 on success.
@@ -483,6 +494,11 @@ fn runStatement(context: *Context, statement: *Statement, parameters_json: ?[]co
         };
     };
 
+    return resultOf(context, rows, &executor.entities, visible);
+}
+
+/// A self-contained result of `rows`, which refer to `entities`.
+fn resultOf(context: *Context, rows: []const Row, entities: *const EntitySnapshot, visible: bool) ?*Result {
     const result = context.allocator.create(Result) catch return null;
     result.arena = std.heap.ArenaAllocator.init(context.allocator);
     result.rows = copyRows(&result.arena, rows) catch {
@@ -490,13 +506,88 @@ fn runStatement(context: *Context, statement: *Statement, parameters_json: ?[]co
         context.allocator.destroy(result);
         return null;
     };
-    result.json = rowsToJson(&result.arena, result.rows, &executor.entities) catch {
+    result.json = rowsToJson(&result.arena, result.rows, entities) catch {
         result.arena.deinit();
         context.allocator.destroy(result);
         return null;
     };
     result.visible = visible;
     return result;
+}
+
+/// Runs `count` queries in one transaction, in order: each sees what the
+/// ones before it wrote, and they commit together or, if one fails, none
+/// does. Query `i` is `queries[i]` (`query_lens[i]` bytes) with the
+/// parameters `parameters_json[i]` (`parameters_lens[i]` bytes; NULL or
+/// `parameters_json` NULL: none). On success fills `out_results[0..count]`
+/// (free each) and returns 0; on failure returns 1, fills nothing, and
+/// `zypherdb_error_statement` tells which query failed. A batch holds no
+/// schema command, EXPLAIN, PROFILE, LOAD CSV or procedure defined in the
+/// process. On a replica that forwards writes, a batch that writes goes to
+/// the master as one request.
+pub export fn zypherdb_write_many(context: *Context, count: usize, queries: [*]const [*]const u8, query_lens: [*]const usize, parameters_json: ?[*]const ?[*]const u8, parameters_lens: ?[*]const usize, out_results: [*]*Result) c_int {
+    context.diagnostic.clear();
+    context.failed_statement = null;
+    if (count == 0) return RETURN_OK;
+    const scratch = context.scratch.allocator();
+    defer _ = context.scratch.reset(.{ .retain_with_limit = retained_scratch });
+    const statements = scratch.alloc(*Statement, count) catch return outOfMemory(context);
+    const executors = scratch.alloc(Executor, count) catch return outOfMemory(context);
+    for (statements, executors, 0..) |*statement, *executor, index| {
+        context.failed_statement = index;
+        statement.* = cachedStatement(context, queries[index][0..query_lens[index]]) orelse return 1;
+        batch.check(statement.*, &.{}, &context.diagnostic) catch return 1;
+        executor.* = statement.*.executorFor(&context.graph, scratch);
+        executor.diagnostic = &context.diagnostic;
+        executor.import_directory = context.import_directory;
+        const json: ?[*]const u8 = if (parameters_json) |all| all[index] else null;
+        if (json) |bytes| executor.parameters = parseParameters(scratch, bytes[0..parameters_lens.?[index]], &context.diagnostic) catch return 1;
+    }
+    context.failed_statement = null;
+    const rows = scratch.alloc([]const Row, count) catch return outOfMemory(context);
+    var visible = true;
+    if (forwardsWrites(context) and batch.writes(statements)) {
+        visible = replica_writes.forwardBatch(context.replication.?, statements, executors, rows, &context.failed_statement) catch |err| {
+            noteFailure(&context.diagnostic, err);
+            return 1;
+        };
+    } else {
+        batch.run(&context.graph, statements, executors, rows, &context.failed_statement) catch |err| {
+            noteFailure(&context.diagnostic, err);
+            return 1;
+        };
+    }
+    for (0..count) |index| {
+        out_results[index] = resultOf(context, rows[index], &executors[index].entities, visible) orelse {
+            for (out_results[0..index]) |made| zypherdb_result_free(made);
+            context.diagnostic.set(.storage, 0, "out of memory", .{});
+            return 1;
+        };
+    }
+    return RETURN_OK;
+}
+
+fn outOfMemory(context: *Context) c_int {
+    context.diagnostic.set(.storage, 0, "out of memory", .{});
+    return 1;
+}
+
+/// The statement `zypherdb_query` keeps for `query`, prepared now if it has
+/// none; a statement that keeps no plan is not kept, and refused (a batch
+/// holds none). Null on failure, with the context's error set.
+fn cachedStatement(context: *Context, query: []const u8) ?*Statement {
+    if (context.statements.get(query)) |statement| return statement;
+    const statement = Statement.prepare(allocator, query, .{ .graph = &context.graph, .diagnostic = &context.diagnostic }) catch |err| {
+        noteFailure(&context.diagnostic, err);
+        return null;
+    };
+    if (!statement.is_query) {
+        defer statement.destroy();
+        batch.check(statement, &.{}, &context.diagnostic) catch {};
+        return null;
+    }
+    context.statements.put(statement);
+    return statement;
 }
 
 /// Whether this context is a replica that forwards writes to its master.
@@ -1120,4 +1211,6 @@ comptime {
     _ = zypherdb_statement_column_name;
     _ = zypherdb_statement_parameter_count;
     _ = zypherdb_statement_parameter_name;
+    _ = zypherdb_write_many;
+    _ = zypherdb_error_statement;
 }

@@ -18,7 +18,11 @@ class NodeNotFoundError(ZypherDBError):
 
 
 class QueryError(ZypherDBError):
-    """A query failed to run. Carries the error code and message."""
+    """A query failed to run. Carries the error code and message, and in a
+    `write_many` the index of the query that failed (`statement`; None when
+    none did)."""
+
+    statement: int | None = None
 
     def __init__(self, code: int, message: str):
         self.code = code

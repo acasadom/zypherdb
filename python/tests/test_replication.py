@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from zypherdb import Database, Rows
-from zypherdb.errors import MasterUnreachableError, StorageError, WriteNotForwardedError, ZypherDBError
+from zypherdb.errors import InvalidExpressionError, MasterUnreachableError, StorageError, WriteNotForwardedError, ZypherDBError
 
 TOKEN = "the master's token"
 
@@ -273,3 +273,30 @@ with Database(path, replicate_from=address, token="the master's token", forward_
     print(db.replication_status()["standby"])
     print(db.query("CREATE (p:Person {name: 'Grace'}) RETURN p.name"))
 """
+
+
+def test_a_replica_forwards_a_write_many_whole(master, tmp_path):
+    with forwarding_replica(master, tmp_path) as replica:
+        before = master.last_lsn
+        created, counted = replica.write_many([
+            ("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"}),
+            "MATCH (p:Person) RETURN count(p)",
+        ])
+        assert master.last_lsn == before + 1
+        assert created.visible and counted.visible
+        [[ada]] = created
+        assert ada.properties == {"name": "Ada"}
+        assert counted == [[1]]
+        assert replica.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+        # One the master fails commits nothing and says which query failed.
+        with pytest.raises(ZypherDBError) as failure:
+            replica.write_many(["CREATE (:Person)", "RETURN 1 / 0"])
+        assert failure.value.statement == 1
+        assert master.last_lsn == before + 1
+        # One that only reads runs here.
+        assert replica.write_many(["MATCH (p:Person) RETURN p.name"]) == [[["Ada"]]]
+        # What cannot go in a batch is refused here, wherever it would run.
+        replica._define_procedure("test.names", [], [("name", "STRING?")], [["Bob"]])
+        with pytest.raises(InvalidExpressionError, match="defined in this process") as refused:
+            replica.write_many(["CREATE (:Person)", "CALL test.names() YIELD name CREATE (:Person {name: name})"])
+        assert refused.value.statement == 1

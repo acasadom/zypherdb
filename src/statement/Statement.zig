@@ -147,6 +147,15 @@ pub fn runOpen(self: *Statement, executor: *Executor) ExecutionError![]const Row
     const graph = executor.graph;
     if (self.writes) try graph.beginWrite() else try graph.beginRead();
     errdefer self.abort(graph);
+    return self.runIn(executor);
+}
+
+/// Runs a query (`is_query`) in the transaction the caller holds open on
+/// the executor's graph (a write transaction if the query writes): it sees
+/// what the transaction wrote before, and the caller commits or aborts it.
+pub fn runIn(self: *Statement, executor: *Executor) ExecutionError![]const Row {
+    std.debug.assert(self.is_query);
+    const graph = executor.graph;
     if (self.plan == null or stale(self.plan.?, graph)) try self.replan(graph);
     return executor.execute(&self.plan.?, self.root);
 }

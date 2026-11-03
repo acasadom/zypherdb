@@ -4,7 +4,8 @@
 //! the entities they refer to. The replica then waits until it has applied
 //! what the write committed, so a read after it sees it; if that takes
 //! longer than the request's time, the rows still come back, marked as
-//! not visible here yet. Reads, EXPLAIN and SHOW run here as ever.
+//! not visible here yet. Reads, EXPLAIN and SHOW run here as ever. A batch
+//! (statement/batch.zig) that writes goes whole, as one request.
 //!
 //! Some statements need what only the replica's process has, and are
 //! refused instead: a write that reads a CSV file (LOAD CSV reads the
@@ -101,42 +102,77 @@ pub const Forwarded = struct {
 /// waits for its rows; the entities they refer to go in
 /// `executor.entities`, as a local run leaves them. On an error,
 /// `executor.diagnostic` tells why.
-pub fn forward(replication: *Replication, statement: *const Statement, executor: *Executor) Error!Forwarded {
-    const scratch = executor.allocator;
+pub fn forward(replication: *Replication, statement: *Statement, executor: *Executor) Error!Forwarded {
+    var rows: [1][]const Row = undefined;
+    var failed: ?usize = null;
+    const visible = try forwardBatch(replication, &.{statement}, executor[0..1], &rows, &failed);
+    return .{ .rows = rows[0], .visible = visible };
+}
+
+/// Forwards the batch `statements`, each with the parameters of its
+/// executor (as `forward`), as one request; the rows of each go in
+/// `results`, the entities they refer to in its executor. Returns whether
+/// the replica has applied what the batch committed (`Forwarded.visible`).
+/// On an error the first executor's diagnostic tells why, and `failed` is
+/// the index of the statement that failed on the master, if one did.
+pub fn forwardBatch(replication: *Replication, statements: []const *Statement, executors: []Executor, results: [][]const Row, failed: *?usize) Error!bool {
+    std.debug.assert(statements.len == executors.len and statements.len == results.len);
+    failed.* = null;
+    const scratch = executors[0].allocator;
     var unused: Diagnostic = .init();
-    const diagnostic = executor.diagnostic orelse &unused;
+    const diagnostic = executors[0].diagnostic orelse &unused;
     const since = replication.now();
-    const request = try encodeRequest(statement, executor.parameters, scratch, diagnostic);
-    const done = try send(replication, request, scratch, diagnostic);
-    const rows = try rowsOf(done, scratch);
-    executor.entities = done.entities;
-    return .{ .rows = rows, .visible = replication.waitFor(executor.graph.store, done.lsn, timeLeft(replication, since)) };
+    const parameters = try scratch.alloc(Executor.Parameters, executors.len);
+    for (parameters, executors) |*statement_parameters, executor| statement_parameters.* = executor.parameters;
+    const request = try encodeRequests(statements, parameters, scratch, diagnostic);
+    const done = try send(replication, request, scratch, diagnostic, failed);
+    if (done.results.len != statements.len) {
+        return fail(diagnostic, .outcome_unknown, error.OutcomeUnknown, "the master's answer to the write does not match it: it may have committed or not", .{});
+    }
+    for (results, done.results, executors) |*rows, result, *executor| {
+        rows.* = try rowsOf(result, scratch);
+        executor.entities = result.entities;
+    }
+    return replication.waitFor(executors[0].graph.store, done.lsn, timeLeft(replication, since));
 }
 
 /// The request that forwards `statement` with `parameters`, in `allocator`;
 /// `error.WriteNotForwarded`, with `diagnostic` telling why, if it cannot go.
 pub fn encodeRequest(statement: *const Statement, parameters: Executor.Parameters, allocator: Allocator, diagnostic: *Diagnostic) Error![]const u8 {
-    const sorted = try allocator.alloc(MapEntry, parameters.count());
-    var entries = parameters.iterator();
-    for (sorted) |*parameter| {
-        const entry = entries.next().?;
-        parameter.* = .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+    return encodeRequests(&.{statement}, &.{parameters}, allocator, diagnostic);
+}
+
+/// The request that forwards the batch `statements`, each with its
+/// `parameters`, as `encodeRequest`.
+pub fn encodeRequests(statements: []const *const Statement, parameters: []const Executor.Parameters, allocator: Allocator, diagnostic: *Diagnostic) Error![]const u8 {
+    const requests = try allocator.alloc(forwarding.Request, statements.len);
+    for (requests, statements, parameters) |*request, statement, statement_parameters| {
+        const sorted = try allocator.alloc(MapEntry, statement_parameters.count());
+        var entries = statement_parameters.iterator();
+        for (sorted) |*parameter| {
+            const entry = entries.next().?;
+            parameter.* = .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
+        }
+        std.mem.sort(MapEntry, sorted, {}, keyLessThan);
+        request.* = .{ .text = statement.text, .parameters = sorted };
     }
-    std.mem.sort(MapEntry, sorted, {}, keyLessThan);
     var request: std.ArrayList(u8) = .empty;
-    forwarding.encodeRequest(&request, allocator, .{ .text = statement.text, .parameters = sorted }) catch |err| return switch (err) {
+    forwarding.encodeRequests(&request, allocator, requests) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
-        error.TooLarge => fail(diagnostic, .invalid_expression, error.WriteNotForwarded, "the statement and its parameters are too large to forward to the master (more than {d} MiB)", .{forwarding.max_request_bytes >> 20}),
+        error.TooLarge => fail(diagnostic, .invalid_expression, error.WriteNotForwarded, "the statements and their parameters are too large to forward to the master (more than {d} MiB)", .{forwarding.max_request_bytes >> 20}),
         error.ValueTooDeep => fail(diagnostic, .invalid_expression, error.WriteNotForwarded, "a parameter is nested too deep to forward to the master", .{}),
     };
     return request.items;
 }
 
 /// Sends `request` to the master of `replication` and waits for its answer,
-/// decoded in `allocator` (the values view into bytes kept there). Touches
-/// nothing of the database but replication's forwarder: any thread may call
-/// it while others use the database.
-pub fn send(replication: *Replication, request: []const u8, allocator: Allocator, diagnostic: *Diagnostic) Error!forwarding.Done {
+/// decoded in `allocator` (the values view into bytes kept there); on
+/// `error.ForwardedWriteFailed`, `failed` is the index of the statement
+/// that failed, if one did. Touches nothing of the database but
+/// replication's forwarder: any thread may call it while others use the
+/// database.
+pub fn send(replication: *Replication, request: []const u8, allocator: Allocator, diagnostic: *Diagnostic, failed: *?usize) Error!forwarding.Done {
+    failed.* = null;
     const outcome = replication.forward(request) catch |err| {
         return fail(diagnostic, .master_unreachable, error.MasterUnreachable, "the write could not be forwarded to the master: {t}; it did not run", .{err});
     };
@@ -166,15 +202,17 @@ pub fn send(replication: *Replication, request: []const u8, allocator: Allocator
         .failed => |failure| {
             const code = std.enums.fromInt(ErrorCode, failure.code) orelse .storage;
             diagnostic.set(code, failure.position, "{s}", .{failure.message});
+            if (failure.statement != forwarding.no_statement) failed.* = failure.statement;
             return error.ForwardedWriteFailed;
         },
     };
 }
 
-/// The rows of a forwarded write's answer, in `allocator`.
-pub fn rowsOf(done: forwarding.Done, allocator: Allocator) Allocator.Error![]const Row {
-    const rows = try allocator.alloc(Row, done.rows.len);
-    for (rows, done.rows) |*row, values| {
+/// The rows of one statement's result in a forwarded write's answer, in
+/// `allocator`.
+pub fn rowsOf(result: forwarding.Result, allocator: Allocator) Allocator.Error![]const Row {
+    const rows = try allocator.alloc(Row, result.rows.len);
+    for (rows, result.rows) |*row, values| {
         row.* = try .initCapacity(allocator, values.len);
         row.appendSliceAssumeCapacity(values);
     }
