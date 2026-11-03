@@ -3,7 +3,8 @@
 //! own, the other side of writer_session.zig. The conversation opens with
 //! the `writer_hello` waiting in the outbox; once the master is `ready`,
 //! `request` hands over a request's bytes, `pump` sends them in parts and
-//! `next` joins the answer's. One write at a time.
+//! `next` joins each answer's. Up to `protocol.max_writes_in_flight`
+//! requests wait for their answers at once, sent one after the other.
 //!
 //! The master sends a `heartbeat` each interval while it sends no answer;
 //! the replica acks each one. A master that says nothing for `timeout_ns`,
@@ -11,7 +12,8 @@
 //!
 //! Whether a request may be sent again on a new connection is `delivered`:
 //! the master runs a request only once its final part is in, so until the
-//! last byte of that part is sent it has not run it.
+//! last byte of that part is sent it has not run it. One none of which is
+//! in the outbox yet may be taken back (`withdraw`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -25,9 +27,14 @@ pub const Event = union(enum) {
     ready,
     /// The master turned the replica away: close the connection.
     refused: protocol.Refusal,
-    /// The answer to the request (forwarding.zig), whole; its bytes are
-    /// the caller's to free.
-    answer: []u8,
+    /// The answer to a request, whole.
+    answer: Answer,
+};
+
+pub const Answer = struct {
+    id: u64,
+    /// Its bytes (forwarding.zig), the caller's to free.
+    bytes: []u8,
 };
 
 pub const Error = protocol.DecodeError || forwarding.Assembly.Error || error{UnexpectedMessage};
@@ -43,27 +50,34 @@ pub const ForwardingSession = struct {
     last_sent: Instant,
     /// An ack is owed (sent once the outbox has room).
     ack_due: bool = false,
-    /// The request being sent or answered: its id, its bytes (the
-    /// caller's, kept until its answer or the end of the conversation) and
-    /// how much of them went into the outbox.
-    request_id: u64 = 0,
-    request_bytes: []const u8 = &.{},
-    request_offset: usize = 0,
-    /// Bytes of the outbox to send before the request's final part is out
-    /// whole; null before that part is in the outbox.
-    final_unsent: ?usize = null,
+    /// The requests handed over and not answered, the first `count`, in
+    /// the order they are sent.
+    requests: [protocol.max_writes_in_flight]Request = undefined,
+    count: usize = 0,
+    /// The requests before this one are in the outbox whole.
+    putting: usize = 0,
+    /// The bytes of the outbox sent so far.
+    sent_total: u64 = 0,
     /// The parts of the answer coming.
     assembly: forwarding.Assembly = .{ .limit = forwarding.max_answer_bytes },
+
+    const Request = struct {
+        id: u64,
+        /// The caller's, kept until its answer or the end of the
+        /// conversation.
+        bytes: []const u8,
+        /// How much of them went into the outbox.
+        offset: usize = 0,
+        /// What `sent_total` reaches once its final part is out whole;
+        /// null before that part is in the outbox.
+        delivered_at: ?u64 = null,
+    };
 
     pub const State = enum {
         /// Waiting for `writer_ready`.
         introducing,
-        /// No request: `request` may hand one over.
+        /// `request` may hand requests over.
         ready,
-        /// Its parts are sent.
-        requesting,
-        /// It is sent whole: its answer comes next.
-        waiting,
         /// The master turned the replica away.
         refused,
     };
@@ -95,32 +109,39 @@ pub const ForwardingSession = struct {
     /// The first `count` bytes of `outbox.unsent()` were sent.
     pub fn sent(self: *ForwardingSession, count: usize, now: Instant) void {
         self.outbox.sent(count);
+        self.sent_total += count;
         if (count > 0) self.last_sent = now;
-        const unsent = self.final_unsent orelse return;
-        self.final_unsent = unsent -| count;
-        if (self.final_unsent == 0) self.state = .waiting;
     }
 
-    /// Hands over the request `bytes` (forwarding.zig), under `id`; they
-    /// stay the caller's, untouched until its answer or the end of the
-    /// conversation. `pump` sends them.
+    /// Whether `max_writes_in_flight` requests wait for their answers.
+    pub fn full(self: *const ForwardingSession) bool {
+        return self.count == self.requests.len;
+    }
+
+    /// Hands over the request `bytes` (forwarding.zig), under `id`, once
+    /// the master is ready and the session is not `full`; they stay the
+    /// caller's, untouched until its answer or the end of the
+    /// conversation. `pump` sends them, after the ones handed before.
     pub fn request(self: *ForwardingSession, id: u64, bytes: []const u8) void {
-        std.debug.assert(self.state == .ready);
-        self.state = .requesting;
-        self.request_id = id;
-        self.request_bytes = bytes;
-        self.request_offset = 0;
-        self.final_unsent = null;
+        std.debug.assert(self.state == .ready and !self.full());
+        self.requests[self.count] = .{ .id = id, .bytes = bytes };
+        self.count += 1;
     }
 
-    /// Whether the master may have run the request handed over: its final
-    /// part was sent whole. Until then it may be sent again on a new
-    /// connection.
-    pub fn delivered(self: *const ForwardingSession) bool {
-        return switch (self.state) {
-            .waiting => true,
-            .introducing, .ready, .requesting, .refused => false,
-        };
+    /// Takes back request `id` if none of it went into the outbox yet:
+    /// the master will not run it. Returns whether it did.
+    pub fn withdraw(self: *ForwardingSession, id: u64) bool {
+        const index = self.indexOf(id) orelse return false;
+        if (index < self.putting or self.requests[index].offset > 0) return false;
+        self.remove(index);
+        return true;
+    }
+
+    /// Whether the master may have run request `id`: its final part was
+    /// sent whole. Until then it may be sent again on a new connection.
+    pub fn delivered(self: *const ForwardingSession, id: u64) bool {
+        const index = self.indexOf(id) orelse return false;
+        return self.isDelivered(self.requests[index]);
     }
 
     /// What the replica must know of the messages received, or null until
@@ -140,17 +161,17 @@ pub const ForwardingSession = struct {
                     },
                     else => return error.UnexpectedMessage,
                 },
-                .ready, .requesting, .waiting => switch (message) {
+                .ready => switch (message) {
                     // Acked by the next `pump`.
                     .heartbeat => self.ack_due = true,
                     .answer_part => |part| {
-                        // The master answers once the request is in whole.
-                        if (self.state != .waiting or part.id != self.request_id) return error.UnexpectedMessage;
+                        // The master answers a request once it is in whole.
+                        const index = self.indexOf(part.id) orelse return error.UnexpectedMessage;
+                        if (!self.isDelivered(self.requests[index])) return error.UnexpectedMessage;
                         if (try self.assembly.add(allocator, part.id, part.final, part.bytes) == null) continue;
-                        self.state = .ready;
-                        self.request_bytes = &.{};
-                        self.final_unsent = null;
-                        return .{ .answer = try self.assembly.bytes.toOwnedSlice(allocator) };
+                        const bytes = try self.assembly.bytes.toOwnedSlice(allocator);
+                        self.remove(index);
+                        return .{ .answer = .{ .id = part.id, .bytes = bytes } };
                     },
                     else => return error.UnexpectedMessage,
                 },
@@ -161,8 +182,8 @@ pub const ForwardingSession = struct {
     }
 
     /// Fills the outbox with what is to be sent at `now`: an owed ack, then
-    /// the request's parts while they fit. Call after `next` and `request`,
-    /// and again once some of the outbox is sent.
+    /// the requests' parts, in order, while they fit. Call after `next` and
+    /// `request`, and again once some of the outbox is sent.
     pub fn pump(self: *ForwardingSession, now: Instant) void {
         if (self.outbox.isEmpty()) self.last_sent = now;
         if (self.ack_due) {
@@ -172,14 +193,17 @@ pub const ForwardingSession = struct {
             self.outbox.put(ack);
             self.ack_due = false;
         }
-        while (self.state == .requesting and self.final_unsent == null) {
-            const length = @min(self.request_bytes.len - self.request_offset, protocol.part_bytes);
-            const final = self.request_offset + length == self.request_bytes.len;
-            const message: protocol.Message = .{ .request_part = .{ .id = self.request_id, .final = final, .bytes = self.request_bytes[self.request_offset..][0..length] } };
+        while (self.putting < self.count) {
+            const request_in_hand = &self.requests[self.putting];
+            const length = @min(request_in_hand.bytes.len - request_in_hand.offset, protocol.part_bytes);
+            const final = request_in_hand.offset + length == request_in_hand.bytes.len;
+            const message: protocol.Message = .{ .request_part = .{ .id = request_in_hand.id, .final = final, .bytes = request_in_hand.bytes[request_in_hand.offset..][0..length] } };
             if (!self.outbox.fits(message)) return;
             self.outbox.put(message);
-            self.request_offset += length;
-            if (final) self.final_unsent = self.outbox.unsent().len;
+            request_in_hand.offset += length;
+            if (!final) continue;
+            request_in_hand.delivered_at = self.sent_total + self.outbox.unsent().len;
+            self.putting += 1;
         }
     }
 
@@ -189,5 +213,23 @@ pub const ForwardingSession = struct {
         const read_expiry = self.last_heard + self.timeout_ns;
         if (self.outbox.isEmpty()) return read_expiry;
         return @min(read_expiry, self.last_sent + self.timeout_ns);
+    }
+
+    fn indexOf(self: *const ForwardingSession, id: u64) ?usize {
+        for (self.requests[0..self.count], 0..) |request_in_hand, index| {
+            if (request_in_hand.id == id) return index;
+        }
+        return null;
+    }
+
+    fn isDelivered(self: *const ForwardingSession, request_in_hand: Request) bool {
+        const at = request_in_hand.delivered_at orelse return false;
+        return self.sent_total >= at;
+    }
+
+    fn remove(self: *ForwardingSession, index: usize) void {
+        std.mem.copyForwards(Request, self.requests[index .. self.count - 1], self.requests[index + 1 .. self.count]);
+        self.count -= 1;
+        if (index < self.putting) self.putting -= 1;
     }
 };

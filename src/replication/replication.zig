@@ -424,8 +424,8 @@ pub const Replication = struct {
     /// Sends the request `bytes` (forwarding.zig) to the master and waits
     /// for how it ended; the first one starts the forwarder. Only on a
     /// replica that `forwardsWrites`. An answer's bytes are the caller's,
-    /// to free with the replication's allocator. Any thread, one request
-    /// at a time.
+    /// to free with the replication's allocator. Any thread; requests of
+    /// several threads are under way at once.
     pub fn forward(self: *Replication, bytes: []const u8) !Outcome {
         std.debug.assert(self.forwardsWrites());
         return (try self.startedForwarder()).forward(bytes);
