@@ -162,6 +162,9 @@ pub const Replication = struct {
     /// started; a replica's store refuses writes from now on. While
     /// another process runs replication on the database this one stands
     /// by, and takes over (within `takeover_interval_ns`) when it stops.
+    /// Stores shared from `store` from now on tell replication of their
+    /// commits (a master's) or refuse writes (a replica's), as `store`
+    /// does: deinit them before `stop`, which lets `store` go on alone.
     pub fn start(allocator: Allocator, store: *KeyValueStore, path: []const u8, role: Role) !*Replication {
         const self = try allocator.create(Replication);
         errdefer allocator.destroy(self);

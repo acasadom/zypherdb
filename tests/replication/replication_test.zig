@@ -1,7 +1,8 @@
 //! Replication as a database opened with a role runs it
 //! (replication/replication.zig): a replica refuses writes from the start,
 //! gets the master's database, waits to see a write committed on the
-//! master, and both tell how replication goes.
+//! master, and both tell how replication goes. Once replication stops,
+//! a master's store writes on alone.
 
 const std = @import("std");
 const testing = std.testing;
@@ -121,6 +122,38 @@ test "a replica opened with its role refuses writes, follows the master and wait
     try testing.expectEqualStrings(address, replica_told.get("master_address").?.string);
     try testing.expectEqualStrings("streaming", replica_told.get("phase").?.string);
     try testing.expect(replica_told.get("last_contact_ms").?.integer >= 0);
+}
+
+test "a master's store, and stores shared from it, tell replication of commits until it stops" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path = std.mem.zeroes([256]u8);
+    var master = try open(&tmp, "master", &master_path);
+    defer master.deinit();
+    const serving = try Replication.start(testing.allocator, &master, pathOf(&master_path), .{ .master = .{
+        .address = "127.0.0.1:0",
+        .token = token,
+    } });
+    var stopped = false;
+    defer if (!stopped) serving.stop();
+
+    var session = try master.share();
+    try testing.expect(session.commit_listener != null);
+    try session.beginWrite();
+    try session.put("key", "value");
+    try session.commitWrite();
+    session.deinit();
+    serving.stop();
+    stopped = true;
+
+    // Nothing left points at the replication that stopped.
+    try testing.expectEqual(null, master.commit_listener);
+    try master.beginWrite();
+    try master.put("key", "other value");
+    try master.commitWrite();
+    var later = try master.share();
+    defer later.deinit();
+    try testing.expectEqual(null, later.commit_listener);
 }
 
 test "a replica's name is its host's unless given, and no longer than a hello carries" {

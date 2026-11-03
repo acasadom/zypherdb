@@ -26,6 +26,7 @@ const max_address_bytes = zypherdb.replication_network.max_address_bytes;
 const protocol = zypherdb.replication_protocol;
 const forwarding = zypherdb.replication_forwarding;
 const Value = zypherdb.Value;
+const Graph = zypherdb.Graph;
 
 const support = @import("../support.zig");
 const testPath = support.testPath;
@@ -44,6 +45,8 @@ const Setup = struct {
     tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator },
     master: KeyValueStore = undefined,
     replica: KeyValueStore = undefined,
+    /// The master's: a replica that reads or says nothing this long is let go.
+    timeout_ns: u64 = 500 * millisecond,
 
     fn init(self: *Setup) !void {
         self.* = .{ .tmp = testing.tmpDir(.{}) };
@@ -80,7 +83,7 @@ const Setup = struct {
             .token = token,
             .copies_directory = try self.path("master-copies", copies),
             .heartbeat_ns = 50 * millisecond,
-            .timeout_ns = 500 * millisecond,
+            .timeout_ns = self.timeout_ns,
             .max_replicas = max_replicas,
         });
         self.master.commit_listener = server.commitListener();
@@ -364,6 +367,58 @@ test "a silent replica is let go and frees its place" {
     var buffer: [16]u8 = undefined;
     try testing.expectEqual(@as(?usize, null), try setup.receive(silent, &buffer));
     try testing.expectEqual(@as(?usize, null), try setup.receive(also_silent, &buffer));
+}
+
+test "a replica that stops reading holds up neither its master nor the others, and is let go" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    const first = try setup.write(0, 3);
+    // Long enough for the other replica to catch up while the stuck one
+    // is still served.
+    setup.timeout_ns = 5 * std.time.ns_per_s;
+    var copies: [2][256]u8 = undefined;
+    const server = try setup.startServer("127.0.0.1:0", &copies[0]);
+    defer server.stop();
+    var address: [max_address_bytes]u8 = undefined;
+    // Up to date, it says hello, then reads nothing.
+    const stuck = try setup.tcp.network().connect(server.address(&address));
+    defer stuck.close();
+    try setup.send(stuck, .{ .hello = .{
+        .storage_format = Graph.format_version,
+        .storage_engine = zypherdb.storage_engine,
+        .database_id = try setup.master.databaseId(),
+        .applied_lsn = first,
+        .token = token,
+    } });
+    try setup.expectStates(server, 1, first);
+    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    defer follower.stop();
+
+    // More than the loopback's socket buffers hold, so sends to the stuck
+    // one stop moving.
+    const value = try testing.allocator.alloc(u8, 512 << 10);
+    defer testing.allocator.free(value);
+    @memset(value, 'v');
+    const count = 64;
+    for (0..count) |index| {
+        var key: [32]u8 = undefined;
+        try setup.master.beginWrite();
+        try setup.master.put(try std.fmt.bufPrint(&key, "large {d}", .{index}), value);
+        try setup.master.commitWrite();
+    }
+    const last = (try setup.master.changeLogState()).?.next_lsn - 1;
+    try setup.expectCaughtUp(follower, last);
+    var states: [4]ReplicaState = undefined;
+    try testing.expectEqual(@as(usize, 2), server.replicaStates(&states).len);
+
+    // It is let go, having been sent less than was committed: what it did
+    // not read waited in the master's log, not in memory.
+    try setup.expectStates(server, 1, null);
+    var buffer: [64 << 10]u8 = undefined;
+    var received: usize = 0;
+    while (try setup.receive(stuck, &buffer)) |piece| received += piece;
+    try testing.expect(received < count * value.len);
 }
 
 test "a replica leaves a silent master and connects again" {
