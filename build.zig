@@ -147,6 +147,20 @@ pub fn build(b: *std.Build) void {
     const run_bench = b.addRunArtifact(bench);
     run_bench.addPassthruArgs();
     b.step("bench", "Run the access-control benchmark").dependOn(&run_bench.step);
+
+    // Benchmark: `zig build bench-change-log -Doptimize=ReleaseFast`.
+    const change_log_bench = b.addExecutable(.{
+        .name = "bench-change-log",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/change_log_cost.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "zypherdb", .module = zypherdb }},
+        }),
+    });
+    const run_change_log_bench = b.addRunArtifact(change_log_bench);
+    run_change_log_bench.addPassthruArgs();
+    b.step("bench-change-log", "Run the change log benchmark").dependOn(&run_change_log_bench.step);
 }
 
 /// The ZypherDB library over `storage_engine` (its C sources compiled in),
