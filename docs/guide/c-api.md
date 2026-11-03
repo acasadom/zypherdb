@@ -391,9 +391,25 @@ The text belongs to the context, and stays valid until the next status or `zyphe
 
 ## Threads and processes
 
-A context is not thread-safe, so serialize the calls on one context. Each process opens the
-database itself: reads run in parallel across processes, and writes take turns, one write
-transaction at a time. Do not open the same directory twice in one process.
+A context is a session: one thread uses it at a time. For another thread, open another session on
+the same database with `zypherdb_open_session(context)`; it takes the context's import directory,
+and its replication role, if any. Sessions run at once: reads in parallel, never waiting for a
+write; writes take turns, one write transaction at a time (a `zypherdb_begin_write` holds the
+writer until its commit or abort). A session reads its own writes, and waits for no other
+session unless it writes too. Close each session with `zypherdb_close`: the database closes with
+the last one, whichever it is.
+
+```c
+zypherdb_context *db = zypherdb_open(path, strlen(path));
+zypherdb_context *worker = zypherdb_open_session(db); /* hand it to another thread */
+/* ... */
+zypherdb_close(worker);
+zypherdb_close(db);
+```
+
+Each process opens the database itself: reads run in parallel across processes, and writes take
+turns as they do between sessions. Do not open the same directory twice in one process: open
+sessions instead.
 
 ## Why this way — and the alternatives
 

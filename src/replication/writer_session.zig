@@ -4,10 +4,12 @@
 //! `MasterSession.next` tells it is a writer's, its inbox and outbox move
 //! here and `introduced` answers the `writer_hello`. Then `next` joins each
 //! request's parts and hands the request over to be run, `answered` takes
-//! its answer and `pump` sends it in parts. One write at a time.
+//! its answer and `pump` sends the answers in parts, each whole before the
+//! next. Up to `protocol.max_writes_in_flight` requests wait for their
+//! answers at once; a replica that sends more is let go.
 //!
 //! While no answer is sent the master sends a `heartbeat` each
-//! `heartbeat_ns`, a write running or not, and the replica acks each one:
+//! `heartbeat_ns`, writes running or not, and the replica acks each one:
 //! a replica that says nothing for `timeout_ns`, or reads nothing sent, is
 //! let go. Heartbeats tell a waiting replica its master is alive.
 
@@ -48,22 +50,28 @@ pub const WriterSession = struct {
     heartbeat_due: Instant,
     /// The parts of the request coming.
     assembly: forwarding.Assembly = .{ .limit = forwarding.max_request_bytes },
-    /// The id of the request running or answered.
-    request_id: u64 = 0,
-    /// The answer being sent and how much of it is.
-    answer: ?[]u8 = null,
+    /// The requests handed over by `next` and not answered yet.
+    running: usize = 0,
+    /// The answers to send, the first `answers_count`, in order; the
+    /// first one's first `answer_offset` bytes are in the outbox.
+    answers: [protocol.max_writes_in_flight]Answer = undefined,
+    answers_count: usize = 0,
     answer_offset: usize = 0,
 
     pub const State = enum {
-        /// Waiting for a request, or for the rest of one.
+        /// Requests come, and answers go.
         ready,
-        /// A request is run: `answered` comes next.
-        running,
-        /// Its answer is sent.
-        answering,
         /// The replica was refused: close once the refusal is sent.
         refused,
     };
+
+    pub const Request = struct {
+        id: u64,
+        /// The caller's to free.
+        bytes: []u8,
+    };
+
+    const Answer = struct { id: u64, bytes: []u8 };
 
     /// Goes on with the inbox and outbox of the connection's
     /// `MasterSession`, whose `writer_hello` came last.
@@ -81,7 +89,7 @@ pub const WriterSession = struct {
 
     pub fn deinit(self: *WriterSession) void {
         self.assembly.deinit(self.allocator);
-        if (self.answer) |bytes| self.allocator.free(bytes);
+        for (self.answers[0..self.answers_count]) |answer| self.allocator.free(answer.bytes);
     }
 
     /// Answers `hello` (read from the inbox, before anything else) for the
@@ -108,23 +116,22 @@ pub const WriterSession = struct {
         if (count > 0) self.last_sent = now;
     }
 
-    /// Handles the messages received; returns a request once it is whole,
-    /// its bytes the caller's to free: run it, then `answered`. Null until
-    /// one is. A message the replica would not send now (a request while
-    /// one runs) fails with `UnexpectedMessage`; the connection is then of
-    /// no further use.
-    pub fn next(self: *WriterSession) Error!?[]u8 {
+    /// Handles the messages received; returns a request once it is whole:
+    /// run it, then `answered`. Null until one is. A message the replica
+    /// would not send now (a request past `max_writes_in_flight`) fails
+    /// with `UnexpectedMessage`; the connection is then of no further use.
+    pub fn next(self: *WriterSession) Error!?Request {
         while (try self.inbox.next()) |message| {
             if (self.state == .refused) return error.UnexpectedMessage;
             switch (message) {
                 // Of a heartbeat: the replica is alive.
                 .ack => {},
                 .request_part => |part| {
-                    if (self.state != .ready) return error.UnexpectedMessage;
                     _ = try self.assembly.add(self.allocator, part.id, part.final, part.bytes) orelse continue;
-                    self.request_id = part.id;
-                    self.state = .running;
-                    return try self.assembly.bytes.toOwnedSlice(self.allocator);
+                    if (self.running + self.answers_count == protocol.max_writes_in_flight) return error.UnexpectedMessage;
+                    const bytes = try self.assembly.bytes.toOwnedSlice(self.allocator);
+                    self.running += 1;
+                    return .{ .id = part.id, .bytes = bytes };
                 },
                 else => return error.UnexpectedMessage,
             }
@@ -132,29 +139,28 @@ pub const WriterSession = struct {
         return null;
     }
 
-    /// The request `next` returned ran: `answer` (forwarding.zig), allocated
-    /// with the session's allocator, is the session's to send and free.
-    pub fn answered(self: *WriterSession, answer: []u8) void {
-        std.debug.assert(self.state == .running);
-        self.state = .answering;
-        self.answer = answer;
-        self.answer_offset = 0;
+    /// Request `id`, which `next` returned, ran: `answer` (forwarding.zig),
+    /// allocated with the session's allocator, is the session's to send
+    /// and free, after the answers before it.
+    pub fn answered(self: *WriterSession, id: u64, answer: []u8) void {
+        std.debug.assert(self.running > 0);
+        self.running -= 1;
+        self.answers[self.answers_count] = .{ .id = id, .bytes = answer };
+        self.answers_count += 1;
     }
 
     /// Fills the outbox with what is to be sent at `now`: the answer, or a
     /// heartbeat when one is due.
     pub fn pump(self: *WriterSession, store: *KeyValueStore, now: Instant) Error!void {
         if (self.outbox.isEmpty()) self.last_sent = now;
-        if (self.state == .answering) self.pumpAnswer(now);
-        switch (self.state) {
-            .ready, .running => if (now >= self.heartbeat_due) {
-                const state = try store.changeLogState() orelse return error.NotMaster;
-                const heartbeat: protocol.Message = .{ .heartbeat = state.next_lsn - 1 };
-                if (!self.outbox.fits(heartbeat)) return;
-                self.outbox.put(heartbeat);
-                self.heartbeat_due = now + self.settings.heartbeat_ns;
-            },
-            .answering, .refused => {},
+        if (self.state == .refused) return;
+        if (self.answers_count > 0) return self.pumpAnswers(now);
+        if (now >= self.heartbeat_due) {
+            const state = try store.changeLogState() orelse return error.NotMaster;
+            const heartbeat: protocol.Message = .{ .heartbeat = state.next_lsn - 1 };
+            if (!self.outbox.fits(heartbeat)) return;
+            self.outbox.put(heartbeat);
+            self.heartbeat_due = now + self.settings.heartbeat_ns;
         }
     }
 
@@ -162,7 +168,7 @@ pub const WriterSession = struct {
     /// nothing comes before.
     pub fn deadline(self: *const WriterSession) Instant {
         var at = self.expiry() orelse std.math.maxInt(Instant);
-        if (self.state == .ready or self.state == .running) at = @min(at, self.heartbeat_due);
+        if (self.state == .ready and self.answers_count == 0) at = @min(at, self.heartbeat_due);
         return at;
     }
 
@@ -179,32 +185,29 @@ pub const WriterSession = struct {
 
     fn expiry(self: *const WriterSession) ?Instant {
         const write_expiry: ?Instant = if (self.outbox.isEmpty()) null else self.last_sent + self.settings.timeout_ns;
-        const read_expiry: ?Instant = switch (self.state) {
-            .ready, .running => self.last_heard + self.settings.timeout_ns,
-            // The replica reads, silent.
-            .answering, .refused => null,
-        };
+        // The replica reads answers, or a refusal, silent.
+        const read_expiry: ?Instant = if (self.state == .ready and self.answers_count == 0) self.last_heard + self.settings.timeout_ns else null;
         if (write_expiry) |write| return if (read_expiry) |read| @min(write, read) else write;
         return read_expiry;
     }
 
-    fn pumpAnswer(self: *WriterSession, now: Instant) void {
-        const bytes = self.answer.?;
-        while (true) {
-            const length = @min(bytes.len - self.answer_offset, protocol.part_bytes);
-            const final = self.answer_offset + length == bytes.len;
-            const message: protocol.Message = .{ .answer_part = .{ .id = self.request_id, .final = final, .bytes = bytes[self.answer_offset..][0..length] } };
+    fn pumpAnswers(self: *WriterSession, now: Instant) void {
+        while (self.answers_count > 0) {
+            const answer = self.answers[0];
+            const length = @min(answer.bytes.len - self.answer_offset, protocol.part_bytes);
+            const final = self.answer_offset + length == answer.bytes.len;
+            const message: protocol.Message = .{ .answer_part = .{ .id = answer.id, .final = final, .bytes = answer.bytes[self.answer_offset..][0..length] } };
             if (!self.outbox.fits(message)) return;
             self.outbox.put(message);
             self.heartbeat_due = now + self.settings.heartbeat_ns;
             self.answer_offset += length;
             if (!final) continue;
-            self.allocator.free(bytes);
-            self.answer = null;
-            self.state = .ready;
-            // Silent while it received the answer.
+            self.allocator.free(answer.bytes);
+            std.mem.copyForwards(Answer, self.answers[0 .. self.answers_count - 1], self.answers[1..self.answers_count]);
+            self.answers_count -= 1;
+            self.answer_offset = 0;
+            // Silent while it received the answers.
             self.last_heard = now;
-            return;
         }
     }
 };

@@ -3,7 +3,7 @@
 //! (master_session.zig) over connections that never block, and asks a
 //! `Copier` for the copies replicas need. A replica's connection for
 //! forwarded writes (writer_session.zig) is held here too, and a `Runner`
-//! runs the writes, one at a time. Whoever runs it waits on what
+//! runs the writes, one at a time, in the order they came. Whoever runs it waits on what
 //! `watch` tells until `deadline`, hands back what was `ready`, then calls
 //! `step`: server.zig on a thread of its own, or a simulation that decides
 //! when time passes, when copies are made and when writes run.
@@ -124,13 +124,17 @@ pub const Runner = struct {
     vtable: *const VTable,
 
     pub const Asked = struct {
-        number: u64,
+        /// The number of the connection it came on.
+        writer: u64,
+        /// The id the request gave.
+        id: u64,
         /// The request's bytes, allocated with the node's allocator.
         request: []u8,
     };
 
     pub const Ran = struct {
-        number: u64,
+        writer: u64,
+        id: u64,
         /// The answer's bytes, allocated with the node's allocator; null
         /// if not even an answer could be made: the replica is let go.
         answer: ?[]u8,
@@ -161,7 +165,7 @@ pub fn runWrite(allocator: Allocator, store: *KeyValueStore, asked: Runner.Asked
         log.warn("running a forwarded write failed: {t}", .{err});
         break :blk null;
     };
-    return .{ .number = asked.number, .answer = answer };
+    return .{ .writer = asked.writer, .id = asked.id, .answer = answer };
 }
 
 /// A runner with no thread: writes run when its owner calls `runNext`, on
@@ -290,8 +294,8 @@ pub const MasterNode = struct {
     woken: bool = false,
     /// The copies asked for so far: each one's directory is numbered.
     copies_asked: u64 = 0,
-    /// The writes run so far: each is numbered.
-    writes_asked: u64 = 0,
+    /// The connections accepted so far: each is numbered.
+    peers_accepted: u64 = 0,
     /// What `replicaStates` tells: the first `states_count`, published by
     /// each step under `states_mutex` (other threads read them).
     states: []ReplicaState,
@@ -319,8 +323,8 @@ pub const MasterNode = struct {
         copy_file: ?Io.File = null,
         copy_reader: Io.File.Reader = undefined,
         copy_buffer: [64 << 10]u8 = undefined,
-        /// The write run for this writer, until it is answered.
-        write_number: ?u64 = null,
+        /// Tells its writes' answers from those of a connection gone.
+        number: u64,
     };
 
     /// Listens for replicas of the master `store`. Set the owner's
@@ -566,10 +570,7 @@ pub const MasterNode = struct {
             },
             .writer => |*session| {
                 const request = try session.next() orelse return;
-                const number = self.writes_asked;
-                self.writes_asked += 1;
-                peer.write_number = number;
-                try self.runner.run(.{ .number = number, .request = request });
+                try self.runner.run(.{ .writer = peer.number, .id = request.id, .request = request.bytes });
             },
         };
     }
@@ -650,13 +651,15 @@ pub const MasterNode = struct {
             }, now) },
             .buffers = buffers,
             .connected_at = now,
+            .number = self.peers_accepted,
         };
+        self.peers_accepted += 1;
         peer.address_length = @intCast(connection.peer(&peer.address_buffer).len);
         return peer;
     }
 
-    /// Closes `peer`'s connection and frees it and its copy. A write
-    /// running for it is answered to no one.
+    /// Closes `peer`'s connection and frees it and its copy. Writes
+    /// running for it are answered to no one.
     fn release(self: *MasterNode, slot: *?*Peer, peer: *Peer) void {
         self.closeCopy(peer);
         peer.connection.close();
@@ -708,19 +711,18 @@ pub const MasterNode = struct {
         for (ran.items) |write| {
             const peer = for (self.peers) |slot| {
                 const peer = slot orelse continue;
-                if (peer.write_number == write.number) break peer;
+                if (peer.number == write.writer) break peer;
             } else {
                 // Its writer is gone.
                 if (write.answer) |answer| self.allocator.free(answer);
                 continue;
             };
-            peer.write_number = null;
             const answer = write.answer orelse {
                 log.warn("a forwarded write could not be answered", .{});
                 self.release(self.slotOf(peer), peer);
                 continue;
             };
-            peer.conversation.writer.answered(answer);
+            peer.conversation.writer.answered(write.id, answer);
         }
     }
 

@@ -394,6 +394,66 @@ test "C ABI: a prepared statement runs again with new parameters" {
     try testing.expect(c_api.zypherdb_prepare(context, broken.ptr, broken.len) == null);
 }
 
+/// The nodes thread `thread` made, as its session reads them.
+fn countOwn(session: *c_api.Context, thread: usize) !i64 {
+    var text_buffer: [64]u8 = undefined;
+    const text = try std.fmt.bufPrint(&text_buffer, "MATCH (n:T {{thread: {d}}}) RETURN count(n)", .{thread});
+    const result = zypherdb_query(session, text.ptr, text.len) orelse return error.QueryFailed;
+    defer zypherdb_result_free(result);
+    return zypherdb_result_int(result, 0, 0);
+}
+
+/// Writes and reads back, in a session of its own, while other threads do.
+fn writeAndReadBack(context: *c_api.Context, thread: usize, writes: usize, failed: *std.atomic.Value(bool)) void {
+    const session = c_api.zypherdb_open_session(context) orelse return failed.store(true, .release);
+    defer zypherdb_close(session);
+    var text_buffer: [64]u8 = undefined;
+    for (0..writes) |written| {
+        const text = std.fmt.bufPrint(&text_buffer, "CREATE (:T {{thread: {d}}})", .{thread}) catch unreachable;
+        const result = zypherdb_query(session, text.ptr, text.len) orelse return failed.store(true, .release);
+        zypherdb_result_free(result);
+        // Its own write, at once: no other thread's write held it up.
+        const own = countOwn(session, thread) catch return failed.store(true, .release);
+        if (own != @as(i64, @intCast(written + 1))) return failed.store(true, .release);
+    }
+}
+
+test "C ABI: sessions of several threads write and read at once, each reading its own writes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = zypherdb_open(path.ptr, path.len).?;
+    const import_directory = "imports";
+    try testing.expectEqual(RETURN_OK, c_api.zypherdb_set_import_directory(context, import_directory.ptr, import_directory.len));
+
+    const thread_count = 8;
+    const writes = 50;
+    var failed: std.atomic.Value(bool) = .init(false);
+    var threads: [thread_count]std.Thread = undefined;
+    for (&threads, 0..) |*thread, index| thread.* = try std.Thread.spawn(.{}, writeAndReadBack, .{ context, index, writes, &failed });
+    for (threads) |thread| thread.join();
+    try testing.expect(!failed.load(.acquire));
+
+    // A write block of one session holds up no read of another.
+    const reader = c_api.zypherdb_open_session(context).?;
+    try testing.expectEqualStrings(import_directory, reader.import_directory.?);
+    try testing.expectEqual(RETURN_OK, zypherdb_begin_write(context));
+    try testing.expectEqual(RETURN_OK, zypherdb_add_node(context, 1_000_000, "T".ptr, "T".len));
+    const all = "MATCH (n:T) RETURN count(n)";
+    const before = zypherdb_query(reader, all.ptr, all.len).?;
+    try testing.expectEqual(@as(i64, thread_count * writes), zypherdb_result_int(before, 0, 0));
+    zypherdb_result_free(before);
+    try testing.expectEqual(RETURN_OK, zypherdb_commit_write(context));
+
+    // The database stays open while a session is.
+    zypherdb_close(context);
+    const after = zypherdb_query(reader, all.ptr, all.len).?;
+    try testing.expectEqual(@as(i64, thread_count * writes + 1), zypherdb_result_int(after, 0, 0));
+    zypherdb_result_free(after);
+    zypherdb_close(reader);
+}
+
 test "C ABI: a replica opened with its role follows its master and waits to see its writes" {
     var master_tmp = testing.tmpDir(.{});
     defer master_tmp.cleanup();
@@ -431,6 +491,18 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     defer zypherdb_result_free(result);
     try testing.expectEqual(@as(i64, 1), zypherdb_result_int(result, 0, 0));
     try testing.expectEqual(null, zypherdb_query(replica, create.ptr, create.len));
+
+    // Sessions of other threads take the database's role.
+    const master_session = c_api.zypherdb_open_session(master).?;
+    defer zypherdb_close(master_session);
+    const replica_session = c_api.zypherdb_open_session(replica).?;
+    defer zypherdb_close(replica_session);
+    zypherdb_result_free(zypherdb_query(master_session, create.ptr, create.len).?);
+    try testing.expect(c_api.zypherdb_wait_for(replica_session, c_api.zypherdb_last_lsn(master_session), 20_000));
+    const both = zypherdb_query(replica_session, count.ptr, count.len).?;
+    defer zypherdb_result_free(both);
+    try testing.expectEqual(@as(i64, 2), zypherdb_result_int(both, 0, 0));
+    try testing.expectEqual(null, zypherdb_query(replica_session, create.ptr, create.len));
 
     const replica_status = c_api.zypherdb_replication_status(replica, &length).?[0..length];
     try testing.expect(std.mem.startsWith(u8, replica_status, "{\"role\":\"replica\",\"standby\":false,\"name\":\"replica-1\",\"master_address\":\""));

@@ -16,6 +16,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const forwarding = @import("forwarding.zig");
+const Instant = @import("clock.zig").Instant;
 const Replication = @import("replication.zig").Replication;
 const Statement = @import("../statement/Statement.zig");
 const Executor = @import("../execution/Executor.zig");
@@ -105,22 +106,38 @@ pub fn forward(replication: *Replication, statement: *const Statement, executor:
     var unused: Diagnostic = .init();
     const diagnostic = executor.diagnostic orelse &unused;
     const since = replication.now();
+    const request = try encodeRequest(statement, executor.parameters, scratch, diagnostic);
+    const done = try send(replication, request, scratch, diagnostic);
+    const rows = try rowsOf(done, scratch);
+    executor.entities = done.entities;
+    return .{ .rows = rows, .visible = replication.waitFor(executor.graph.store, done.lsn, timeLeft(replication, since)) };
+}
 
-    const parameters = try scratch.alloc(MapEntry, executor.parameters.count());
-    var entries = executor.parameters.iterator();
-    for (parameters) |*parameter| {
+/// The request that forwards `statement` with `parameters`, in `allocator`;
+/// `error.WriteNotForwarded`, with `diagnostic` telling why, if it cannot go.
+pub fn encodeRequest(statement: *const Statement, parameters: Executor.Parameters, allocator: Allocator, diagnostic: *Diagnostic) Error![]const u8 {
+    const sorted = try allocator.alloc(MapEntry, parameters.count());
+    var entries = parameters.iterator();
+    for (sorted) |*parameter| {
         const entry = entries.next().?;
         parameter.* = .{ .key = entry.key_ptr.*, .value = entry.value_ptr.* };
     }
-    std.mem.sort(MapEntry, parameters, {}, keyLessThan);
+    std.mem.sort(MapEntry, sorted, {}, keyLessThan);
     var request: std.ArrayList(u8) = .empty;
-    forwarding.encodeRequest(&request, scratch, .{ .text = statement.text, .parameters = parameters }) catch |err| return switch (err) {
+    forwarding.encodeRequest(&request, allocator, .{ .text = statement.text, .parameters = sorted }) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.TooLarge => fail(diagnostic, .invalid_expression, error.WriteNotForwarded, "the statement and its parameters are too large to forward to the master (more than {d} MiB)", .{forwarding.max_request_bytes >> 20}),
         error.ValueTooDeep => fail(diagnostic, .invalid_expression, error.WriteNotForwarded, "a parameter is nested too deep to forward to the master", .{}),
     };
+    return request.items;
+}
 
-    const outcome = replication.forward(request.items) catch |err| {
+/// Sends `request` to the master of `replication` and waits for its answer,
+/// decoded in `allocator` (the values view into bytes kept there). Touches
+/// nothing of the database but replication's forwarder: any thread may call
+/// it while others use the database.
+pub fn send(replication: *Replication, request: []const u8, allocator: Allocator, diagnostic: *Diagnostic) Error!forwarding.Done {
+    const outcome = replication.forward(request) catch |err| {
         return fail(diagnostic, .master_unreachable, error.MasterUnreachable, "the write could not be forwarded to the master: {t}; it did not run", .{err});
     };
     const answer_bytes = switch (outcome) {
@@ -134,17 +151,17 @@ pub fn forward(replication: *Replication, statement: *const Statement, executor:
             else => fail(diagnostic, .master_unreachable, error.MasterUnreachable, "the write could not be forwarded to the master: {t}; it did not run", .{err}),
         },
     };
-    // The decoded answer holds views into its bytes: they live in the scratch.
-    const bytes = scratch.dupe(u8, answer_bytes) catch |err| {
+    // The decoded answer holds views into its bytes: they live in `allocator`.
+    const bytes = allocator.dupe(u8, answer_bytes) catch |err| {
         replication.freeAnswer(answer_bytes);
         return err;
     };
     replication.freeAnswer(answer_bytes);
-    const answer = forwarding.decodeAnswer(bytes, scratch) catch |err| return switch (err) {
+    const answer = forwarding.decodeAnswer(bytes, allocator) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         else => fail(diagnostic, .outcome_unknown, error.OutcomeUnknown, "the master's answer to the write is malformed: it may have committed or not", .{}),
     };
-    const done = switch (answer) {
+    return switch (answer) {
         .done => |done| done,
         .failed => |failure| {
             const code = std.enums.fromInt(ErrorCode, failure.code) orelse .storage;
@@ -152,15 +169,21 @@ pub fn forward(replication: *Replication, statement: *const Statement, executor:
             return error.ForwardedWriteFailed;
         },
     };
+}
 
-    const rows = try scratch.alloc(Row, done.rows.len);
+/// The rows of a forwarded write's answer, in `allocator`.
+pub fn rowsOf(done: forwarding.Done, allocator: Allocator) Allocator.Error![]const Row {
+    const rows = try allocator.alloc(Row, done.rows.len);
     for (rows, done.rows) |*row, values| {
-        row.* = try .initCapacity(scratch, values.len);
+        row.* = try .initCapacity(allocator, values.len);
         row.appendSliceAssumeCapacity(values);
     }
-    executor.entities = done.entities;
-    const timeout_ns = replication.requestTimeout() -| (replication.now() -| since);
-    return .{ .rows = rows, .visible = replication.waitFor(done.lsn, timeout_ns) };
+    return rows;
+}
+
+/// What is left of the request's time, begun `since`.
+pub fn timeLeft(replication: *Replication, since: Instant) u64 {
+    return replication.requestTimeout() -| (replication.now() -| since);
 }
 
 /// Whether query or UNION `root` writes.

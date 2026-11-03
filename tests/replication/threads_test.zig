@@ -504,7 +504,7 @@ test "a master holds a writer per replica at most" {
     try testing.expectError(error.EndOfStream, second.receive(&setup));
 }
 
-test "a forwarder sends writes to the master from several threads, one at a time, and returns each answer" {
+test "a forwarder sends writes to the master from more threads than its window, and returns each answer" {
     var setup: Setup = undefined;
     try setup.init();
     defer setup.deinit();
@@ -520,6 +520,7 @@ test "a forwarder sends writes to the master from several threads, one at a time
     });
     defer sender.stop();
 
+    const writes_per_thread = 3;
     const Sending = struct {
         fn run(forwarding_sender: *Forwarder, first: usize, failures: *std.atomic.Value(u32)) void {
             send(forwarding_sender, first) catch {
@@ -531,7 +532,7 @@ test "a forwarder sends writes to the master from several threads, one at a time
             var arena: std.heap.ArenaAllocator = .init(testing.allocator);
             defer arena.deinit();
             const a = arena.allocator();
-            for (first..first + 5) |number| {
+            for (first..first + writes_per_thread) |number| {
                 var request: std.ArrayList(u8) = .empty;
                 try forwarding.encodeRequest(&request, a, .{ .text = "CREATE (d:Door {number: $number}) RETURN d.number AS number", .parameters = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }} });
                 const outcome = forwarding_sender.forward(request.items);
@@ -543,11 +544,12 @@ test "a forwarder sends writes to the master from several threads, one at a time
         }
     };
     var failures: std.atomic.Value(u32) = .init(0);
-    var threads: [3]std.Thread = undefined;
-    for (&threads, 0..) |*thread, index| thread.* = try std.Thread.spawn(.{}, Sending.run, .{ sender, index * 5, &failures });
+    // Some wait for room.
+    var threads: [protocol.max_writes_in_flight + 6]std.Thread = undefined;
+    for (&threads, 0..) |*thread, index| thread.* = try std.Thread.spawn(.{}, Sending.run, .{ sender, index * writes_per_thread, &failures });
     for (threads) |thread| thread.join();
     try testing.expectEqual(0, failures.load(.monotonic));
-    try testing.expectEqual(15, (try setup.master.changeLogState()).?.next_lsn - 1);
+    try testing.expectEqual(threads.len * writes_per_thread, (try setup.master.changeLogState()).?.next_lsn - 1);
 
     // A replica that holds no copy of a master yet forwards nothing.
     const empty = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{

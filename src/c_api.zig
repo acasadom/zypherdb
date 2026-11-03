@@ -36,7 +36,22 @@ const parser = @import("query/parser.zig");
 const Statement = @import("statement/Statement.zig");
 const StatementCache = @import("statement/Cache.zig");
 
+/// What the sessions of one open database share.
+const Shared = struct {
+    /// The store that owns the open database; sessions use shares of it,
+    /// so it runs no transaction once they exist.
+    store: KeyValueStore,
+    /// Replication, on a database opened with a role.
+    replication: ?*Replication = null,
+    /// The sessions open on the database; the last one closed closes it.
+    sessions: std.atomic.Value(usize) = .init(0),
+};
+
+/// A session on an open database: one thread uses it at a time. Several
+/// threads use the database at once through sessions of their own
+/// (`zypherdb_open_session`).
 pub const Context = struct {
+    shared: *Shared,
     store: KeyValueStore,
     graph: Graph,
     allocator: Allocator,
@@ -110,34 +125,79 @@ pub export fn zypherdb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
 /// written by the operating system or `zypherdb_sync`; a power failure can
 /// lose the recent ones). NULL on an unknown mode.
 pub export fn zypherdb_open_with_durability(path_ptr: [*]const u8, path_len: usize, durability: c_int) ?*Context {
-    const mode: KeyValueStore.Durability = switch (durability) {
+    const mode = durabilityOf(durability) orelse return null;
+    const shared = openShared(path_ptr[0..path_len], mode) orelse return null;
+    return openSession(shared) orelse {
+        closeShared(shared);
+        return null;
+    };
+}
+
+fn durabilityOf(durability: c_int) ?KeyValueStore.Durability {
+    return switch (durability) {
         DURABILITY_FULL => .full,
         DURABILITY_RELAXED => .relaxed,
         DURABILITY_DEFERRED => .deferred,
-        else => return null,
+        else => null,
     };
-    const path = path_ptr[0..path_len];
-    const context = allocator.create(Context) catch return null;
-    context.store = KeyValueStore.openWithOptions(allocator, path, .{ .durability = mode }) catch {
-        allocator.destroy(context);
+}
+
+fn openShared(path: []const u8, durability: KeyValueStore.Durability) ?*Shared {
+    const shared = allocator.create(Shared) catch return null;
+    shared.* = .{ .store = KeyValueStore.openWithOptions(allocator, path, .{ .durability = durability }) catch {
+        allocator.destroy(shared);
         return null;
+    } };
+    var graph = Graph.init(&shared.store, allocator);
+    graph.checkFormat() catch {
+        closeShared(shared);
+        return null;
+    };
+    return shared;
+}
+
+fn closeShared(shared: *Shared) void {
+    if (shared.replication) |replication| replication.stop();
+    shared.store.deinit();
+    allocator.destroy(shared);
+}
+
+/// A new session on `shared`, counted in its sessions.
+fn openSession(shared: *Shared) ?*Context {
+    const context = allocator.create(Context) catch return null;
+    context.* = .{
+        .shared = shared,
+        .store = shared.store.share() catch {
+            allocator.destroy(context);
+            return null;
+        },
+        .graph = undefined,
+        .allocator = allocator,
+        .diagnostic = Diagnostic.init(),
+        .replication = shared.replication,
+        .statements = StatementCache.init(allocator),
+        .scratch = std.heap.ArenaAllocator.init(allocator),
     };
     context.graph = Graph.init(&context.store, allocator);
-    context.graph.checkFormat() catch {
-        context.store.deinit();
-        allocator.destroy(context);
-        return null;
-    };
-    context.allocator = allocator;
-    context.diagnostic = Diagnostic.init();
-    context.export_json = &.{};
-    context.check_json = &.{};
-    context.status_json = &.{};
-    context.replication = null;
-    context.import_directory = null;
-    context.statements = StatementCache.init(allocator);
-    context.scratch = std.heap.ArenaAllocator.init(allocator);
+    _ = shared.sessions.fetchAdd(1, .monotonic);
     return context;
+}
+
+/// Another session on the database of `context`, for another thread: each
+/// session is used by one thread at a time, and sessions run at once
+/// (reads in parallel; writes one at a time, a write waiting for the one
+/// under way). A session reads its own writes. It starts with the import
+/// directory `context` has. Close each with `zypherdb_close`: the database
+/// closes with its last session. NULL when out of memory.
+pub export fn zypherdb_open_session(context: *Context) ?*Context {
+    const session = openSession(context.shared) orelse return null;
+    if (context.import_directory) |directory| {
+        session.import_directory = allocator.dupe(u8, directory) catch {
+            zypherdb_close(session);
+            return null;
+        };
+    }
+    return session;
 }
 
 /// Writes every commit so far to disk. RETURN_OK or RETURN_STORAGE_ERROR.
@@ -169,12 +229,18 @@ pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, d
         } },
         else => return null,
     };
-    const context = zypherdb_open_with_durability(path_ptr, path_len, durability) orelse return null;
-    context.replication = Replication.start(allocator, &context.store, path_ptr[0..path_len], replication_role) catch {
-        zypherdb_close(context);
+    const mode = durabilityOf(durability) orelse return null;
+    const shared = openShared(path_ptr[0..path_len], mode) orelse return null;
+    // Before the first session: its store takes replication's commit
+    // listener or refusal of writes.
+    shared.replication = Replication.start(allocator, &shared.store, path_ptr[0..path_len], replication_role) catch {
+        closeShared(shared);
         return null;
     };
-    return context;
+    return openSession(shared) orelse {
+        closeShared(shared);
+        return null;
+    };
 }
 
 /// The LSN of the last change set this database has: on a master the last
@@ -192,22 +258,23 @@ pub export fn zypherdb_last_lsn(context: *Context) u64 {
 pub export fn zypherdb_wait_for(context: *Context, lsn: u64, timeout_ms: u64) bool {
     const timeout_ns = timeout_ms *| std.time.ns_per_ms;
     const replication = context.replication orelse return replication_module.waitApplied(&context.store, lsn, timeout_ns) catch false;
-    return replication.waitFor(lsn, timeout_ns);
+    return replication.waitFor(&context.store, lsn, timeout_ns);
 }
 
 /// How replication goes, as JSON (see docs/guide/c-api.md); the buffer
 /// belongs to the context. NULL without replication or out of memory.
 pub export fn zypherdb_replication_status(context: *Context, out_len: *usize) ?[*]const u8 {
     const replication = context.replication orelse return null;
-    const json = replication.statusJson(allocator) catch return null;
+    const json = replication.statusJson(&context.store, allocator) catch return null;
     allocator.free(context.status_json);
     context.status_json = json;
     out_len.* = json.len;
     return json.ptr;
 }
 
+/// Closes a session; closing the last one closes the database.
 pub export fn zypherdb_close(context: *Context) void {
-    if (context.replication) |replication| replication.stop();
+    const shared = context.shared;
     allocator.free(context.status_json);
     context.statements.deinit();
     context.scratch.deinit();
@@ -216,6 +283,7 @@ pub export fn zypherdb_close(context: *Context) void {
     if (context.import_directory) |directory| allocator.free(directory);
     context.store.deinit();
     allocator.destroy(context);
+    if (shared.sessions.fetchSub(1, .acq_rel) == 1) closeShared(shared);
 }
 
 /// Sets the directory LOAD CSV reads files from (`path_len` 0: none, which

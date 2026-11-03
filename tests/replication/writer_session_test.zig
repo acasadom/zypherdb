@@ -2,8 +2,9 @@
 //! writes (replication/writer_session.zig), with no network: frames go
 //! into its inbox and come out of its outbox, on a clock of the test's
 //! own. Only a replica of the master is served; a request is handed over
-//! once whole and answered in parts under its id, one at a time; heartbeats
-//! go on while a write runs and a silent replica is let go.
+//! once whole and answered in parts under its id, each answer whole before
+//! the next; a replica past the window is let go; heartbeats go on while a
+//! write runs and a silent replica is let go.
 
 const std = @import("std");
 const testing = std.testing;
@@ -133,9 +134,9 @@ test "a request is handed over once whole, and its answer goes back in parts und
         try testing.expectEqual(null, try setup.session.next());
         setup.send(.{ .request_part = .{ .id = id, .final = true, .bytes = "RETURN n" } });
         const request = (try setup.session.next()).?;
-        defer testing.allocator.free(request);
-        try testing.expectEqualStrings("MATCH (n) RETURN n", request);
-        try testing.expectEqual(WriterSession.State.running, setup.session.state);
+        defer testing.allocator.free(request.bytes);
+        try testing.expectEqual(id, request.id);
+        try testing.expectEqualStrings("MATCH (n) RETURN n", request.bytes);
 
         // Larger than a part: sent in three.
         const answer = try testing.allocator.alloc(u8, 2 * protocol.part_bytes + 10);
@@ -143,7 +144,7 @@ test "a request is handed over once whole, and its answer goes back in parts und
         var expected: std.ArrayList(u8) = .empty;
         defer expected.deinit(testing.allocator);
         try expected.appendSlice(testing.allocator, answer);
-        setup.session.answered(answer);
+        setup.session.answered(id, answer);
         var joined: std.ArrayList(u8) = .empty;
         defer joined.deinit(testing.allocator);
         var parts: usize = 0;
@@ -157,19 +158,41 @@ test "a request is handed over once whole, and its answer goes back in parts und
         }
         try testing.expectEqual(3, parts);
         try testing.expectEqualSlices(u8, expected.items, joined.items);
-        try testing.expectEqual(WriterSession.State.ready, setup.session.state);
+        try testing.expectEqual(0, setup.session.answers_count);
     }
 }
 
-test "one write at a time: a request while one runs ends the conversation" {
+test "requests come while others run; answers go whole, in the order given; past the window the replica is let go" {
     var setup: Setup = undefined;
     try setup.init();
     defer setup.deinit();
     try setup.open(.{ .database_id = try setup.databaseId(), .token = token });
     defer setup.session.deinit();
-    setup.send(.{ .request_part = .{ .id = 1, .final = true, .bytes = "CREATE ()" } });
-    testing.allocator.free((try setup.session.next()).?);
-    setup.send(.{ .request_part = .{ .id = 2, .final = true, .bytes = "CREATE ()" } });
+    _ = try setup.receive();
+    for (0..protocol.max_writes_in_flight) |id| {
+        setup.send(.{ .request_part = .{ .id = id, .final = true, .bytes = "CREATE ()" } });
+        const request = (try setup.session.next()).?;
+        testing.allocator.free(request.bytes);
+        try testing.expectEqual(id, request.id);
+    }
+    // Two answers, the first larger than a part: its parts all go first.
+    const large = try testing.allocator.alloc(u8, protocol.part_bytes + 1);
+    @memset(large, 'a');
+    setup.session.answered(5, large);
+    setup.session.answered(2, try testing.allocator.dupe(u8, "two"));
+    var ids: std.ArrayList(u64) = .empty;
+    defer ids.deinit(testing.allocator);
+    while (ids.items.len < 3) {
+        try setup.pass(0);
+        while (try setup.receive()) |message| try ids.append(testing.allocator, message.answer_part.id);
+    }
+    try testing.expectEqualSlices(u64, &.{ 5, 5, 2 }, ids.items);
+    // Two answered: two more may come, not a third.
+    for (100..102) |id| {
+        setup.send(.{ .request_part = .{ .id = id, .final = true, .bytes = "CREATE ()" } });
+        testing.allocator.free((try setup.session.next()).?.bytes);
+    }
+    setup.send(.{ .request_part = .{ .id = 102, .final = true, .bytes = "CREATE ()" } });
     try testing.expectError(error.UnexpectedMessage, setup.session.next());
 }
 
@@ -205,7 +228,7 @@ test "heartbeats go on while a write runs; a replica that acks stays, a silent o
     defer setup.session.deinit();
     _ = try setup.receive();
     setup.send(.{ .request_part = .{ .id = 1, .final = true, .bytes = "CREATE ()" } });
-    testing.allocator.free((try setup.session.next()).?);
+    testing.allocator.free((try setup.session.next()).?.bytes);
     const last_lsn = (try setup.store.changeLogState()).?.next_lsn - 1;
     // The replica acks each heartbeat: kept, however long the write runs.
     for (0..20) |_| {

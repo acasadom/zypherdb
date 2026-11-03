@@ -368,11 +368,19 @@ pub const KeyValueStore = struct {
     }
 
     /// Another store on this open database, for another thread (a store is
-    /// used by one thread at a time); deinit it before this one.
+    /// used by one thread at a time); deinit it before this one. It tells
+    /// the same commit listener and refuses writes as this one does.
     pub fn share(self: *KeyValueStore) StorageError!KeyValueStore {
         const records = self.allocator.create(RecordCache) catch return error.OutOfMemory;
         records.* = .{};
-        return .{ .environment = self.environment.share(), .allocator = self.allocator, .records = records, .change_log_limit = self.change_log_limit };
+        return .{
+            .environment = self.environment.share(),
+            .allocator = self.allocator,
+            .records = records,
+            .change_log_limit = self.change_log_limit,
+            .commit_listener = self.commit_listener,
+            .follows_master = self.follows_master,
+        };
     }
 
     /// The id of the master this database is or was copied from, null if

@@ -137,9 +137,10 @@ print(edge.query("MATCH (p:Person {name: 'Grace'}) RETURN count(p)"))
 
 A forwarded write costs a round trip to the master, its run there, and the time the change takes
 to come back; reads run on the replica as ever, at no extra cost. The replica opens one connection
-to its master for writes, apart from replication's, the first time it forwards one; queries from
-several threads share it, one at a time. A process that opened the replica with a role and stands
-by forwards writes too.
+to its master for writes, apart from replication's, the first time it forwards one. Threads
+share it: up to 64 writes are on their way at once, so one thread's write does not wait for
+another's round trip (the master still runs them one after another, in the order they came). A
+process that opened the replica with a role and stands by forwards writes too.
 
 Each forwarded write takes at most `forward_timeout` seconds, and how it ended is told apart:
 
