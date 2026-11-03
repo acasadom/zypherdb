@@ -264,21 +264,24 @@ replication) are within noise.
 
 **Reads** cost the same everywhere: on a database without replication, on a master (with or
 without replicas), on a replica, and on a replica opened with `forward_writes=True` that forwards
-nothing: about 1.7 µs for a point lookup, 3.5 µs for one hop, 5.5 ms for a scan of 100k nodes.
+nothing: about 2 µs for a point lookup, 3.5-4 µs for one hop, 5.2 ms for a scan of 100k nodes.
 
 **Writes**, `durability="deferred"` (no wait for the disk, so what replication adds shows):
 
 | Write | Median | Writes/s (one thread) |
 | --- | ---: | ---: |
-| no replication | 24 µs | 40,000 |
-| master, no replica | 30 µs | 32,000 |
-| master, one replica | 31-38 µs | 25,000-31,000 |
-| forwarded by a replica | 92-100 µs | 10,000 |
+| no replication | 21-26 µs | 35,000-44,000 |
+| master, no replica | 26-28 µs | 33,000-36,000 |
+| master, one replica | 28-31 µs | 31,000-33,000 |
+| forwarded by a replica | 93-95 µs | 10,000 |
 
-A master writes each change to its change log too, replicas or not (+6 µs). A forwarded write
-costs about 60 µs more than one on the master: the round trip and the change coming back to the
-replica. From 4 threads a replica forwards about 11,000 writes a second: it sends one at a time.
-A replica has a write on the master about 50-250 µs later (median; p95 up to 2 ms).
+A master writes each change to its change log too, replicas or not (about +4.5 µs; `zig build
+bench-change-log -Doptimize=ReleaseFast` measures it without Python: 10.2 µs a write without the
+log, 14.4 µs with it, 13.7 µs with it full). A forwarded write costs about 65 µs more than one on
+the master: the round trip and the change coming back to the replica. A replica keeps several
+forwarded writes on their way at once: from 4 threads it forwards about 26,000 writes a second,
+nearly as many as 4 threads on the master (24,000-30,000). A replica has a write on the master
+about 45-50 µs later (median; p95 about 70 µs).
 
 **Writes**, `durability="full"`: a commit waits for the disk (8 ms on this laptop), and that is
 nearly all of it: without replication or on a master with no replica, 8 ms; a forwarded write
