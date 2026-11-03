@@ -48,9 +48,10 @@ const std = @import("std");
 const Writer = std.Io.Writer;
 const Crc32 = std.hash.Crc32;
 
-/// Bumped on every change to the messages: a master and a replica of
-/// different versions do not talk.
-pub const version: u16 = 3;
+/// Bumped on every change to the messages once a release carries them (none
+/// has yet: 1 until then): a master and a replica of different versions do
+/// not talk.
+pub const version: u16 = 1;
 
 /// The first bytes of a `hello`, so a master that is sent something else
 /// (another protocol, a stray connection) refuses it at once.
