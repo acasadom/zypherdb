@@ -31,7 +31,7 @@ const Wakeup = network.Wakeup;
 const Watched = network.Watched;
 const replica_session = @import("replica_session.zig");
 const ReplicaSession = replica_session.ReplicaSession;
-const ChangeSet = replica_session.ChangeSet;
+const ChangeSetPart = replica_session.ChangeSetPart;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 
 const log = std.log.scoped(.replication);
@@ -72,7 +72,10 @@ pub const Phase = enum(u8) {
 
 /// What an applier is given, in order.
 pub const Work = union(enum) {
-    change_set: ChangeSet,
+    /// The parts of a change set come in order, each after the one before
+    /// is given; the applier keeps the change set's write transaction open
+    /// from the first to the final one.
+    change_set_part: ChangeSetPart,
     /// The number of a copy to load, deleted once loaded.
     load_copy: u64,
 };
@@ -108,26 +111,28 @@ pub const Applier = struct {
         return self.vtable.take(self.context);
     }
 
-    /// Drops the work not started, waits for the one in hand, and forgets
-    /// what was done: the conversation it was for is over.
+    /// Drops the work not started, waits for the one in hand, abandons the
+    /// change set partly applied, and forgets what was done: the
+    /// conversation it was for is over.
     pub fn drop(self: Applier) void {
         self.vtable.drop(self.context);
     }
 
-    /// The bytes of the change sets given and not yet applied.
+    /// The bytes of the change set parts given and not yet applied.
     pub fn unappliedBytes(self: Applier) usize {
         return self.vtable.unappliedBytes(self.context);
     }
 };
 
-/// Applies `work` to `store` and raises `applied`; returns the LSN applied,
-/// or the copy's. Frees nothing.
-pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, copies_directory: []const u8, work: Work) !u64 {
+/// Applies `work` to `store` and raises `applied`; returns the LSN applied
+/// (null until a change set's final part), or the copy's. Frees nothing.
+/// A failure leaves no change set partly applied.
+pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, copies_directory: []const u8, work: Work) !?u64 {
     switch (work) {
-        .change_set => |change_set| {
-            _ = try store.applyChangeSet(change_set.lsn, change_set.bytes);
-            clock.raise(applied, change_set.lsn);
-            return change_set.lsn;
+        .change_set_part => |part| {
+            _ = try store.applyChangeSetPart(part.lsn, part.bytes, part.final) orelse return null;
+            clock.raise(applied, part.lsn);
+            return part.lsn;
         },
         .load_copy => |number| {
             var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
@@ -138,10 +143,18 @@ pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, copies_dire
     }
 }
 
+/// The bytes of change set `work` holds.
+pub fn workBytes(work: Work) usize {
+    return switch (work) {
+        .change_set_part => |part| part.bytes.len,
+        .load_copy => 0,
+    };
+}
+
 /// Frees `work`'s bytes, or deletes its copy.
 pub fn dropWork(allocator: Allocator, io: Io, copies_directory: []const u8, work: Work) void {
     switch (work) {
-        .change_set => |change_set| allocator.free(change_set.bytes),
+        .change_set_part => |part| allocator.free(part.bytes),
         .load_copy => |number| copies.delete(io, copies_directory, number),
     }
 }
@@ -179,10 +192,12 @@ pub const InlineApplier = struct {
         if (self.work.items.len == 0) return;
         const work = self.work.orderedRemove(0);
         defer dropWork(self.allocator, self.io, self.copies_directory, work);
-        if (work == .change_set) self.unapplied_bytes -= work.change_set.bytes.len;
-        if (doWork(self.clock, self.applied, &self.store, self.copies_directory, work)) |lsn| switch (work) {
-            .change_set => self.done.applied = lsn,
-            .load_copy => self.done.copy_loaded = lsn,
+        self.unapplied_bytes -= workBytes(work);
+        if (doWork(self.clock, self.applied, &self.store, self.copies_directory, work)) |done| {
+            if (done) |lsn| switch (work) {
+                .change_set_part => self.done.applied = lsn,
+                .load_copy => self.done.copy_loaded = lsn,
+            };
         } else |err| {
             log.info("applying what the master sent failed: {t}", .{err});
             self.done.failure = err;
@@ -201,7 +216,7 @@ pub const InlineApplier = struct {
     fn give(context: *anyopaque, work: Work) Allocator.Error!void {
         const self: *InlineApplier = @ptrCast(@alignCast(context));
         try self.work.append(self.allocator, work);
-        if (work == .change_set) self.unapplied_bytes += work.change_set.bytes.len;
+        self.unapplied_bytes += workBytes(work);
     }
 
     fn take(context: *anyopaque) Done {
@@ -214,6 +229,7 @@ pub const InlineApplier = struct {
     fn drop(context: *anyopaque) void {
         const self: *InlineApplier = @ptrCast(@alignCast(context));
         self.dropAll();
+        self.store.abandonChangeSet();
         self.done = .{};
     }
 
@@ -441,7 +457,6 @@ const Conversation = struct {
             file.close(node.io);
             copies.delete(node.io, node.options.copies_directory, self.copy_number.?);
         }
-        self.session.deinit(node.allocator);
         node.allocator.free(self.buffers);
         self.connection.close();
     }
@@ -467,8 +482,8 @@ const Conversation = struct {
                     },
                     .copy_part => |bytes| try self.writeCopyPart(node, bytes),
                     .copy_received => try self.copyReceived(node),
-                    .change_set => |change_set| applier.give(.{ .change_set = change_set }) catch |err| {
-                        node.allocator.free(change_set.bytes);
+                    .change_set_part => |part| applier.give(.{ .change_set_part = part }) catch |err| {
+                        node.allocator.free(part.bytes);
                         return err;
                     },
                     .heartbeat => |last| node.master_lsn.store(last, .release),

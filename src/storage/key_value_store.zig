@@ -32,8 +32,10 @@ pub const StorageError = engine.Error || error{
     /// (`layout.max_labels`).
     TooManyLabels,
     /// A write on a replica, which only applies its master's change sets
-    /// (`KeyValueStore.applyChangeSet`).
+    /// (`KeyValueStore.applyChangeSetPart`).
     ReadOnlyReplica,
+    /// A value longer than `layout.max_value_length`.
+    ValueTooLarge,
 };
 
 /// The node records read in a read transaction, kept as the views the engine
@@ -127,6 +129,9 @@ pub const KeyValueStore = struct {
     /// The LSN of the last change set this store committed, if any: a
     /// replica that applied it sees this store's writes.
     last_committed_lsn: ?u64 = null,
+    /// The change set being applied part by part, in the active write
+    /// transaction (`applyChangeSetPart`).
+    application: ?change_log.Application = null,
 
     pub const CommitListener = struct {
         context: *anyopaque,
@@ -162,6 +167,7 @@ pub const KeyValueStore = struct {
     }
 
     pub fn deinit(self: *KeyValueStore) void {
+        self.abandonChangeSet();
         self.forgetSchemaDefinitions();
         self.stopRecording();
         self.environment.close();
@@ -222,6 +228,11 @@ pub const KeyValueStore = struct {
         if (try change_log.appliedLsn(transaction) != null) return error.ReadOnlyReplica;
     }
 
+    /// Refuses a value no replica would apply (change_log.zig).
+    fn checkLength(value: []const u8) StorageError!void {
+        if (value.len > layout.max_value_length) return error.ValueTooLarge;
+    }
+
     /// Records a write the active write transaction has just made, if the
     /// change log is started.
     fn recordChange(self: *KeyValueStore, transaction: engine.Transaction, change: change_log.Change) StorageError!void {
@@ -252,6 +263,17 @@ pub const KeyValueStore = struct {
         return change_log.readState(transaction);
     }
 
+    /// Puts chunk `chunk` of the change set of transaction `lsn` in `into`
+    /// (allocated with `self.allocator`); returns whether it is the change
+    /// set's last, or null if the log does not hold it. A change set's
+    /// chunks are read one by one, each at most `change_log.chunk_bytes`.
+    pub fn changeSetChunk(self: *KeyValueStore, lsn: u64, chunk: u32, into: *std.ArrayList(u8)) StorageError!?bool {
+        if (self.activeTransaction()) |transaction| return change_log.readChunk(transaction, self.allocator, lsn, chunk, into);
+        const transaction = try self.environment.beginRead();
+        defer self.environment.endRead(transaction);
+        return change_log.readChunk(transaction, self.allocator, lsn, chunk, into);
+    }
+
     /// The change set of transaction `lsn` (owned by the caller: free with
     /// `self.allocator.free`), or null if the log does not hold it.
     pub fn changeSet(self: *KeyValueStore, lsn: u64) StorageError!?[]u8 {
@@ -261,24 +283,56 @@ pub const KeyValueStore = struct {
         return change_log.changeSet(transaction, self.allocator, lsn);
     }
 
-    /// Applies change set `lsn` of this replica's master, `bytes`, in a write
-    /// transaction of its own that also records it as applied (so a crash
-    /// loses it whole or keeps it whole). A change set already applied is
-    /// skipped; one whose predecessor is missing fails with
-    /// `ChangeSetOutOfOrder`. The first one applied makes the database a
-    /// replica, which refuses every other write. A database whose change
-    /// log is started (a master) applies none (`WriteFailed`).
-    pub fn applyChangeSet(self: *KeyValueStore, lsn: u64, bytes: []const u8) (StorageError || error{ MalformedChangeSet, ChangeSetOutOfOrder })!change_log.Applied {
-        if (self.inTransaction()) return error.WriteFailed;
-        const transaction = try self.environment.beginWrite();
-        errdefer transaction.abort();
-        if (try change_log.readState(transaction) != null) return error.WriteFailed;
-        if (try change_log.applyNext(transaction, lsn, bytes) == .already_applied) {
-            transaction.abort();
-            return .already_applied;
+    pub const ApplyError = StorageError || error{ MalformedChangeSet, ChangeSetOutOfOrder };
+
+    /// Applies the next part, `bytes`, of change set `lsn` of this replica's
+    /// master; `final` if it is the last. A change set is applied in one
+    /// write transaction, from its first part to its last, that also
+    /// records it as applied (so a crash loses it whole or keeps it whole);
+    /// returns null until its last part, then whether it was applied. A
+    /// change set already applied is skipped; one whose predecessor is
+    /// missing fails with `ChangeSetOutOfOrder`. A failure abandons it. The
+    /// first one applied makes the database a replica, which refuses every
+    /// other write. A database whose change log is started (a master)
+    /// applies none (`WriteFailed`). The transaction belongs to the thread
+    /// that gave the first part: it gives the others, or abandons it.
+    pub fn applyChangeSetPart(self: *KeyValueStore, lsn: u64, bytes: []const u8, final: bool) ApplyError!?change_log.Applied {
+        errdefer self.abandonChangeSet();
+        if (self.application) |application| {
+            if (lsn != application.lsn) return error.ChangeSetOutOfOrder;
+        } else {
+            if (self.inTransaction()) return error.WriteFailed;
+            const transaction = try self.environment.beginWrite();
+            errdefer transaction.abort();
+            if (try change_log.readState(transaction) != null) return error.WriteFailed;
+            self.application = try change_log.Application.begin(transaction, lsn);
+            self.active_write_transaction = transaction;
         }
-        try transaction.commit();
-        return .applied;
+        const transaction = self.active_write_transaction.?;
+        const application = &self.application.?;
+        try application.add(self.allocator, transaction, bytes);
+        if (!final) return null;
+        const applied = try application.finish(transaction);
+        application.deinit(self.allocator);
+        self.application = null;
+        self.active_write_transaction = null;
+        if (applied == .already_applied) transaction.abort() else try transaction.commit();
+        return applied;
+    }
+
+    /// Drops the change set being applied, if any: none of it is.
+    pub fn abandonChangeSet(self: *KeyValueStore) void {
+        var application = self.application orelse return;
+        application.deinit(self.allocator);
+        self.application = null;
+        self.active_write_transaction.?.abort();
+        self.active_write_transaction = null;
+    }
+
+    /// Applies change set `lsn` whole, `bytes` (see `applyChangeSetPart`).
+    pub fn applyChangeSet(self: *KeyValueStore, lsn: u64, bytes: []const u8) ApplyError!change_log.Applied {
+        if (self.application != null) return error.WriteFailed;
+        return (try self.applyChangeSetPart(lsn, bytes, true)).?;
     }
 
     /// The one file of a copy (`copyDatabase`), in its directory.
@@ -480,6 +534,7 @@ pub const KeyValueStore = struct {
     /// transaction is active (which keeps its snapshot).
     pub fn put(self: *KeyValueStore, key: []const u8, value: []const u8) StorageError!void {
         const transaction = self.writer() orelse return self.commitAlone(put, .{ self, key, value });
+        try checkLength(value);
         try transaction.put(.main, key, value);
         try self.recordChange(transaction, .{ .operation = .put, .table = .main, .key = key, .value = value });
     }
@@ -589,6 +644,7 @@ pub const KeyValueStore = struct {
     pub fn putNode(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
         layout.assertRecord(record);
         const transaction = self.writer() orelse return self.autocommit(putNode, .{ self, id, record });
+        try checkLength(record);
         try transaction.put(.nodes, std.mem.asBytes(&id), record);
         try self.recordChange(transaction, .{ .operation = .put, .table = .nodes, .key = std.mem.asBytes(&id), .value = record });
     }
@@ -628,6 +684,7 @@ pub const KeyValueStore = struct {
     pub fn putRelationship(self: *KeyValueStore, id: u64, record: []const u8) StorageError!void {
         layout.assertRelationshipRecord(record);
         const transaction = self.writer() orelse return self.autocommit(putRelationship, .{ self, id, record });
+        try checkLength(record);
         try transaction.put(.relationships, std.mem.asBytes(&id), record);
         try self.recordChange(transaction, .{ .operation = .put, .table = .relationships, .key = std.mem.asBytes(&id), .value = record });
     }

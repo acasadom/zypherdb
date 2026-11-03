@@ -232,7 +232,7 @@ with an error; none is reached silently.
 | A label, relationship type, property name or index/constraint name | 1024 bytes | names go into keys (label, edge and full-text keys) | `InvalidExpression`; `ZYPHERDB_INVALID_NAME` in C, `ValueError` in Python |
 | A document path in `CREATE INDEX ... ON (n.a.b)` | 1024 bytes in all | stored as one name | `InvalidExpression` |
 | Labels on one node | 65535 | counted in a u16 in the record | `TooManyLabels`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
-| One stored value | 4 GiB (2^32 - 1 bytes) | lengths in records and lists are u32 | `ValueTooLarge`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
+| One stored value: a node with all its properties, or one property of a relationship | 64 MiB | a replica holds each write whole while it applies it | `ValueTooLarge`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
 | Properties of a full-text index | 256 | postings number them with a u8 | `InvalidExpression` |
 | Labels or types, properties of an index or constraint | 65535 | counted in a u16 in the definition | `InvalidExpression` |
 

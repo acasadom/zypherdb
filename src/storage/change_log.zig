@@ -28,10 +28,13 @@
 //!     put:    0x01 | table (u8) | key length (u32) | key | value length (u32) | value
 //!     delete: 0x02 | table (u8) | key length (u32) | key
 //!
-//! A replica applies the master's change sets in LSN order
-//! (`KeyValueStore.applyChangeSet`), each in a write transaction that also
-//! stores its LSN, so after a crash it resumes where it stopped, applying
-//! none twice and skipping none. A replica writes nothing else. It starts
+//! A master sends a change set chunk by chunk (`readChunk`), never whole. A
+//! replica applies the master's change sets in LSN order, part by part as
+//! they come (`KeyValueStore.applyChangeSetPart`), each in one write
+//! transaction that also stores its LSN, so after a crash it resumes where
+//! it stopped, applying none twice and skipping none. It holds in memory a
+//! part and the start of a write the part cut; no write is longer than
+//! `layout.max_value_length` (its key neither), so neither is that. A replica writes nothing else. It starts
 //! as a copy of its master (`KeyValueStore.copyDatabase`) made a replica
 //! (`becomeReplica`): the copy holds the master's log, whose state says
 //! which change sets it already has.
@@ -40,6 +43,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const engine = @import("engine.zig");
+const layout = @import("layout.zig");
 pub const Table = engine.Table;
 const Transaction = engine.Transaction;
 
@@ -159,6 +163,16 @@ pub fn changeSet(transaction: Transaction, allocator: Allocator, lsn: u64) (engi
     return try joined.toOwnedSlice(allocator);
 }
 
+/// Puts chunk `chunk` of the change set of transaction `lsn` in `into`
+/// (replacing what it held); returns whether it is the change set's last,
+/// or null if the log does not hold it (never did, or dropped it).
+pub fn readChunk(transaction: Transaction, allocator: Allocator, lsn: u64, chunk: u32, into: *std.ArrayList(u8)) (engine.Error || Allocator.Error)!?bool {
+    const part = try transaction.get(.changes, &chunkKey(lsn, chunk)) orelse return null;
+    into.clearRetainingCapacity();
+    try into.appendSlice(allocator, part);
+    return try transaction.get(.changes, &chunkKey(lsn, chunk + 1)) == null;
+}
+
 /// Records the writes of one write transaction and, when it commits, adds
 /// them to the log as its change set.
 pub const Recorder = struct {
@@ -230,15 +244,36 @@ fn appendBytes(list: *std.ArrayList(u8), allocator: Allocator, bytes: []const u8
     try list.appendSlice(allocator, bytes);
 }
 
-/// The writes of a change set, in order.
+/// The writes of a change set, or of a part of one, in order.
 pub const Iterator = struct {
     bytes: []const u8,
     position: usize = 0,
+    /// Whether `bytes` may end inside a write (a part of a change set):
+    /// `next` then stops before it, at `position`.
+    partial: bool = false,
 
-    /// The next write, null at the end, or an error if the bytes are not a
-    /// change set.
+    /// The next write, null at the end (or before a write cut by it), or an
+    /// error if the bytes are not a change set.
     pub fn next(self: *Iterator) error{MalformedChangeSet}!?Change {
         if (self.position == self.bytes.len) return null;
+        const write_start = self.position;
+        const change = self.read() catch |err| switch (err) {
+            error.Cut => {
+                if (!self.partial) return error.MalformedChangeSet;
+                self.position = write_start;
+                return null;
+            },
+            error.MalformedChangeSet => return error.MalformedChangeSet,
+        };
+        return change;
+    }
+
+    /// The bytes after the last write `next` returned.
+    pub fn rest(self: *const Iterator) []const u8 {
+        return self.bytes[self.position..];
+    }
+
+    fn read(self: *Iterator) error{ MalformedChangeSet, Cut }!Change {
         const operation = std.enums.fromInt(Operation, try self.byte()) orelse return error.MalformedChangeSet;
         const table = std.enums.fromInt(Table, try self.byte()) orelse return error.MalformedChangeSet;
         if (table == .changes) return error.MalformedChangeSet; // the log never logs itself
@@ -247,17 +282,19 @@ pub const Iterator = struct {
         return .{ .operation = operation, .table = table, .key = key, .value = value };
     }
 
-    fn byte(self: *Iterator) error{MalformedChangeSet}!u8 {
-        if (self.position >= self.bytes.len) return error.MalformedChangeSet;
+    fn byte(self: *Iterator) error{Cut}!u8 {
+        if (self.position >= self.bytes.len) return error.Cut;
         self.position += 1;
         return self.bytes[self.position - 1];
     }
 
-    fn sized(self: *Iterator) error{MalformedChangeSet}![]const u8 {
-        if (self.bytes.len - self.position < 4) return error.MalformedChangeSet;
+    fn sized(self: *Iterator) error{ MalformedChangeSet, Cut }![]const u8 {
+        if (self.bytes.len - self.position < 4) return error.Cut;
         const length = std.mem.readInt(u32, self.bytes[self.position..][0..4], .big);
+        // No master writes one longer: memory to hold it is not asked for.
+        if (length > layout.max_value_length) return error.MalformedChangeSet;
         self.position += 4;
-        if (self.bytes.len - self.position < length) return error.MalformedChangeSet;
+        if (self.bytes.len - self.position < length) return error.Cut;
         self.position += length;
         return self.bytes[self.position - length .. self.position];
     }
@@ -273,24 +310,66 @@ pub fn appliedLsn(transaction: Transaction) engine.Error!?u64 {
 
 pub const Applied = enum { applied, already_applied };
 
-/// Makes the database of write transaction `transaction` a replica that has
-/// applied change set `lsn`, `bytes`, unless it has already (a master sends
-/// a change set again when a replica reconnects). Fails with
-/// `ChangeSetOutOfOrder` if a change set before it is missing.
-pub fn applyNext(transaction: Transaction, lsn: u64, bytes: []const u8) (engine.Error || error{ MalformedChangeSet, ChangeSetOutOfOrder })!Applied {
-    const applied = try appliedLsn(transaction) orelse 0;
-    if (lsn <= applied) return .already_applied;
-    if (lsn != applied + 1) return error.ChangeSetOutOfOrder;
-    try apply(transaction, bytes);
-    var encoded: [8]u8 = undefined;
-    std.mem.writeInt(u64, &encoded, lsn, .big);
-    try transaction.put(.changes, replica_key, &encoded);
-    return .applied;
-}
+pub const ApplyError = engine.Error || Allocator.Error || error{ MalformedChangeSet, ChangeSetOutOfOrder };
 
-/// Makes the writes of change set `bytes` in write transaction `transaction`.
-pub fn apply(transaction: Transaction, bytes: []const u8) (engine.Error || error{MalformedChangeSet})!void {
-    var changes = Iterator{ .bytes = bytes };
+/// A change set applied part by part in one write transaction, which makes
+/// its database a replica that has applied it: `begin`, `add` each part,
+/// `finish`. A change set already applied (a master sends one again when a
+/// replica reconnects) is skipped whole.
+pub const Application = struct {
+    lsn: u64,
+    skipping: bool,
+    /// The start of a write the last part cut.
+    leftover: std.ArrayList(u8) = .empty,
+
+    /// Fails with `ChangeSetOutOfOrder` if a change set before `lsn` is
+    /// missing.
+    pub fn begin(transaction: Transaction, lsn: u64) ApplyError!Application {
+        const applied = try appliedLsn(transaction) orelse 0;
+        if (lsn <= applied) return .{ .lsn = lsn, .skipping = true };
+        if (lsn != applied + 1) return error.ChangeSetOutOfOrder;
+        return .{ .lsn = lsn, .skipping = false };
+    }
+
+    pub fn deinit(self: *Application, allocator: Allocator) void {
+        self.leftover.deinit(allocator);
+    }
+
+    /// Makes the writes of the next part, `bytes`, in `transaction`.
+    pub fn add(self: *Application, allocator: Allocator, transaction: Transaction, bytes: []const u8) ApplyError!void {
+        if (self.skipping) return;
+        if (self.leftover.items.len == 0) {
+            const rest = try applyWhole(transaction, bytes);
+            try self.leftover.appendSlice(allocator, rest);
+            return;
+        }
+        try self.leftover.appendSlice(allocator, bytes);
+        const rest = try applyWhole(transaction, self.leftover.items);
+        std.mem.copyForwards(u8, self.leftover.items[0..rest.len], rest);
+        self.leftover.shrinkRetainingCapacity(rest.len);
+    }
+
+    /// After the last part: records the change set as applied in
+    /// `transaction`; returns whether it was.
+    pub fn finish(self: *Application, transaction: Transaction) ApplyError!Applied {
+        if (self.skipping) return .already_applied;
+        if (self.leftover.items.len > 0) return error.MalformedChangeSet;
+        var encoded: [8]u8 = undefined;
+        std.mem.writeInt(u64, &encoded, self.lsn, .big);
+        try transaction.put(.changes, replica_key, &encoded);
+        return .applied;
+    }
+
+    /// Makes the whole writes of `bytes`; returns the bytes of the one
+    /// they cut, if any.
+    fn applyWhole(transaction: Transaction, bytes: []const u8) ApplyError![]const u8 {
+        var changes = Iterator{ .bytes = bytes, .partial = true };
+        try applyEach(transaction, &changes);
+        return changes.rest();
+    }
+};
+
+fn applyEach(transaction: Transaction, changes: *Iterator) (engine.Error || error{MalformedChangeSet})!void {
     while (try changes.next()) |change| {
         // An integer key goes to the engine aligned, as a u64 (it is not,
         // inside the change set).

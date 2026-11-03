@@ -7,7 +7,8 @@
 //! caller's (server.zig, or a simulation).
 //!
 //! `outbox` holds a frame or two, so a replica that reads slowly is sent
-//! slowly: the change sets wait in the master's log, not in memory. One
+//! slowly: the change sets wait in the master's log, not in memory, and
+//! are read a chunk at a time, each one part. One
 //! that reads nothing, or says nothing, for `timeout_ns` is let go.
 
 const std = @import("std");
@@ -18,6 +19,7 @@ const protocol = @import("protocol.zig");
 const master = @import("master.zig");
 const Instant = @import("clock.zig").Instant;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
+const change_log = @import("../storage/change_log.zig");
 const StorageError = @import("../storage/key_value_store.zig").StorageError;
 
 pub const Settings = struct {
@@ -41,6 +43,10 @@ pub const Event = union(enum) {
     writer: protocol.WriterHello,
 };
 
+comptime {
+    std.debug.assert(change_log.chunk_bytes == protocol.part_bytes);
+}
+
 pub const Error = protocol.DecodeError || StorageError || error{ UnexpectedMessage, NotMaster, ChangeSetDropped, CopyOutdated, ReadFailed };
 
 pub const MasterSession = struct {
@@ -59,9 +65,11 @@ pub const MasterSession = struct {
     acked_lsn: u64 = 0,
     /// The LSN of the next change set to send.
     next_lsn: u64 = 0,
-    /// The change set being sent and how much of it is.
-    sending: ?[]u8 = null,
-    sending_offset: usize = 0,
+    /// The chunk of change set `next_lsn` to send next.
+    chunk: u32 = 0,
+    /// That chunk once read and until sent, and whether it is the last.
+    part: std.ArrayList(u8) = .empty,
+    part_final: ?bool = null,
     /// The copy being sent and its bytes sent so far.
     copy: ?*Reader = null,
     copy_size: u64 = 0,
@@ -92,7 +100,7 @@ pub const MasterSession = struct {
 
     /// `allocator` is the master store's.
     pub fn deinit(self: *MasterSession, allocator: Allocator) void {
-        if (self.sending) |bytes| allocator.free(bytes);
+        self.part.deinit(allocator);
     }
 
     /// What the replica calls itself ("" until its hello came).
@@ -260,29 +268,27 @@ pub const MasterSession = struct {
     }
 
     /// Fails with `ChangeSetDropped` if the log no longer holds the next
-    /// change set (the replica starts again from a copy).
+    /// change set, or the rest of the one being sent (the replica starts
+    /// again from a copy).
     fn pumpChangeSets(self: *MasterSession, store: *KeyValueStore, now: Instant) Error!void {
         while (true) {
-            if (self.sending == null) {
-                const state = try store.changeLogState() orelse return error.NotMaster;
-                if (self.next_lsn >= state.next_lsn) return;
-                self.sending = try store.changeSet(self.next_lsn) orelse return error.ChangeSetDropped;
-                self.sending_offset = 0;
+            if (self.part_final == null) {
+                if (self.chunk == 0) {
+                    const state = try store.changeLogState() orelse return error.NotMaster;
+                    if (self.next_lsn >= state.next_lsn) return;
+                }
+                self.part_final = try store.changeSetChunk(self.next_lsn, self.chunk, &self.part) orelse return error.ChangeSetDropped;
             }
-            const bytes = self.sending.?;
-            const length = @min(bytes.len - self.sending_offset, protocol.part_bytes);
-            const final = self.sending_offset + length == bytes.len;
-            const message: protocol.Message = .{ .change_set_part = .{ .lsn = self.next_lsn, .final = final, .bytes = bytes[self.sending_offset..][0..length] } };
+            const final = self.part_final.?;
+            const message: protocol.Message = .{ .change_set_part = .{ .lsn = self.next_lsn, .final = final, .bytes = self.part.items } };
             if (!self.outbox.fits(message)) return;
             self.outbox.put(message);
             self.heartbeat_due = now + self.settings.heartbeat_ns;
-            if (!final) {
-                self.sending_offset += length;
-                continue;
-            }
-            store.allocator.free(bytes);
-            self.sending = null;
-            self.next_lsn += 1;
+            self.part_final = null;
+            if (final) {
+                self.chunk = 0;
+                self.next_lsn += 1;
+            } else self.chunk += 1;
         }
     }
 };

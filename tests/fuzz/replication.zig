@@ -515,10 +515,12 @@ const Simulation = struct {
     fn move(self: *Simulation, faults: bool) !void {
         const chosen = self.chooseMove(faults);
         switch (chosen) {
-            .commit => try self.commit(self.random().intRangeAtMost(usize, 1, 8)),
+            .commit => try self.commit(self.random().intRangeAtMost(usize, 1, 8), 0),
             .large_commit => {
                 self.statistics.large_commits += 1;
-                try self.commit(self.random().intRangeAtMost(usize, 200, 1000));
+                // Its change set several parts long, a write cut by their
+                // ends.
+                try self.commit(self.random().intRangeAtMost(usize, 200, 1000), self.random().intRangeAtMost(usize, 1 << 20, 3 << 20));
             },
             .pass_time => self.passTime(),
             .make_copy => if (self.master.copier.waiting() > 0) {
@@ -584,9 +586,10 @@ const Simulation = struct {
         unreachable;
     }
 
-    /// A write transaction of `operations` writes on the master, kept or
-    /// (now and then) aborted.
-    fn commit(self: *Simulation, operations: usize) !void {
+    /// A write transaction of `operations` writes on the master, and a node
+    /// with a string of `large_value_bytes` if not 0, kept or (now and then)
+    /// aborted.
+    fn commit(self: *Simulation, operations: usize, large_value_bytes: usize) !void {
         const master = &self.master;
         const graph = &master.graph;
         try graph.beginWrite();
@@ -615,6 +618,15 @@ const Simulation = struct {
                 },
                 else => unreachable,
             }
+        }
+        if (large_value_bytes > 0) {
+            const text = try self.allocator.alloc(u8, large_value_bytes);
+            defer self.allocator.free(text);
+            @memset(text, 'a' + self.random().uintLessThan(u8, 26));
+            const id = try graph.allocateNodeId();
+            try graph.addNode(id, "Person");
+            try graph.setProperty(id, "bio", .{ .string = text });
+            try created.append(self.allocator, id);
         }
         if (self.random().uintLessThan(u32, 10) == 0) {
             graph.abortWrite();

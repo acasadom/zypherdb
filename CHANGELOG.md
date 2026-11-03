@@ -9,6 +9,11 @@
   which query failed. On a replica that forwards writes, a batch that writes goes to the master
   as one request.
 
+### Changed
+
+- **A stored value is at most 64 MiB** (was 4 GiB): a node with all its properties, or one
+  property of a relationship. A replica holds each write whole while it applies it.
+
 ## 0.1.0 — 2026-10-28
 
 The first release.

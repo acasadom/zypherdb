@@ -368,7 +368,7 @@ pub export fn zypherdb_add_node(context: *Context, id: u64, label_ptr: [*]const 
 /// Mutator return codes: success, storage failure, a missing node, a write
 /// a uniqueness constraint refused (its message in zypherdb_last_error), a
 /// label, type or property name that is empty, longer than 1024 bytes or
-/// holds a 0x00 byte, and a write past a size limit (a value over 4 GiB
+/// holds a 0x00 byte, and a write past a size limit (a value over 64 MiB
 /// stored, a node's 65536th label).
 pub const RETURN_OK: c_int = 0;
 pub const RETURN_STORAGE_ERROR: c_int = 1;

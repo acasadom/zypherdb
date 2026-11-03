@@ -24,15 +24,17 @@ pub const Event = union(enum) {
     copy_part: []const u8,
     /// The copy is whole: load it, then `copyLoaded`.
     copy_received,
-    /// The change set after the last one given: apply it, then `applied`.
-    /// Its bytes are the caller's to free.
-    change_set: ChangeSet,
+    /// The next part of the change set being received: apply it, then,
+    /// after the final part, `applied`. Its bytes are the caller's to free.
+    change_set_part: ChangeSetPart,
     /// The master's last LSN.
     heartbeat: u64,
 };
 
-pub const ChangeSet = struct {
+pub const ChangeSetPart = struct {
     lsn: u64,
+    /// Whether it is the change set's last.
+    final: bool,
     bytes: []u8,
 };
 
@@ -53,8 +55,6 @@ pub const ReplicaSession = struct {
     next_lsn: u64,
     /// The copy's bytes received so far.
     copy_size: u64 = 0,
-    /// The parts of change set `next_lsn` received so far.
-    gathered: std.ArrayList(u8) = .empty,
     /// An ack is owed (sent once the outbox has room).
     ack_due: bool = false,
 
@@ -73,10 +73,6 @@ pub const ReplicaSession = struct {
         };
         self.outbox.put(.{ .hello = hello });
         return self;
-    }
-
-    pub fn deinit(self: *ReplicaSession, allocator: Allocator) void {
-        self.gathered.deinit(allocator);
     }
 
     /// `count` bytes from the master went into `inbox.unfilled()`.
@@ -131,10 +127,9 @@ pub const ReplicaSession = struct {
                 .streaming => switch (message) {
                     .change_set_part => |part| {
                         if (part.lsn != self.next_lsn) return error.UnexpectedMessage;
-                        try self.gathered.appendSlice(allocator, part.bytes);
-                        if (!part.final) continue;
-                        self.next_lsn += 1;
-                        return .{ .change_set = .{ .lsn = part.lsn, .bytes = try self.gathered.toOwnedSlice(allocator) } };
+                        const bytes = try allocator.dupe(u8, part.bytes);
+                        if (part.final) self.next_lsn += 1;
+                        return .{ .change_set_part = .{ .lsn = part.lsn, .final = part.final, .bytes = bytes } };
                     },
                     .heartbeat => |last| {
                         self.ack_due = true;

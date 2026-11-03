@@ -102,6 +102,116 @@ test "a large transaction's change set is cut into chunks" {
     try testing.expectEqual(try contents(&source), try contents(&target));
 }
 
+/// The replica `target` applies change set `lsn` of `source` chunk by
+/// chunk, as a master sends it, up to (not including) chunk `stop` if given;
+/// returns the chunks applied.
+fn replayChunks(source: *KeyValueStore, target: *KeyValueStore, lsn: u64, stop: ?u32) !u32 {
+    var chunk: std.ArrayList(u8) = .empty;
+    defer chunk.deinit(testing.allocator);
+    var number: u32 = 0;
+    while (stop == null or number < stop.?) : (number += 1) {
+        const final = (try source.changeSetChunk(lsn, number, &chunk)) orelse return error.MissingChangeSet;
+        try testing.expect(chunk.items.len <= change_log.chunk_bytes);
+        const applied = try target.applyChangeSetPart(lsn, chunk.items, final);
+        try testing.expectEqual(final, applied != null);
+        if (final) return number + 1;
+    }
+    return number;
+}
+
+test "a change set is applied chunk by chunk, writes cut between chunks included, or not at all" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var source_path: [256]u8 = undefined;
+    var source = try openAt(&tmp, "source", &source_path);
+    defer source.deinit();
+    var target_path: [256]u8 = undefined;
+    var target = try openAt(&tmp, "target", &target_path);
+    defer target.deinit();
+
+    try source.startChangeLog();
+    try source.put("before", "1");
+    try replay(&source, &target, 1, 2);
+    // Values longer than a chunk and odd sizes: most writes are cut.
+    const value = try testing.allocator.alloc(u8, change_log.chunk_bytes + change_log.chunk_bytes / 3);
+    defer testing.allocator.free(value);
+    try source.beginWrite();
+    for (0..5) |i| {
+        @memset(value, @intCast('a' + i));
+        try source.put(&.{ 'k', @intCast('0' + i) }, value[0 .. value.len - i * 1000]);
+        try source.put(&.{ 's', @intCast('0' + i) }, "small");
+    }
+    try source.commitWrite();
+
+    // Abandoned halfway (a conversation ends), none of it is applied.
+    try testing.expectEqual(@as(u32, 3), try replayChunks(&source, &target, 2, 3));
+    target.abandonChangeSet();
+    try testing.expectEqual(@as(?u64, 1), try target.appliedLsn());
+    try testing.expect(!try target.exists("k0"));
+    // A part of another change set before the last of this one fails, and
+    // abandons it.
+    try testing.expectEqual(@as(u32, 1), try replayChunks(&source, &target, 2, 1));
+    try testing.expectError(error.ChangeSetOutOfOrder, target.applyChangeSetPart(3, "", true));
+    try testing.expectEqual(@as(?u64, 1), try target.appliedLsn());
+
+    // Applied whole from its start, it makes the same database.
+    try testing.expect(try replayChunks(&source, &target, 2, null) > 6);
+    try testing.expectEqual(@as(?u64, 2), try target.appliedLsn());
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    // Sent again (a replica reconnects), it is skipped part by part.
+    _ = try target.applyChangeSetPart(2, "not even a change set", false);
+    try testing.expectEqual(@as(?change_log.Applied, .already_applied), try target.applyChangeSetPart(2, "", true));
+}
+
+test "a chunk tells whether it is its change set's last; a dropped one is gone" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [128]u8 = undefined;
+    var store = try KeyValueStore.open(testing.allocator, testPath(&tmp, &path_buffer));
+    defer store.deinit();
+    try store.startChangeLog();
+    const value = try testing.allocator.alloc(u8, change_log.chunk_bytes);
+    defer testing.allocator.free(value);
+    @memset(value, 'v');
+    try store.put("big", value);
+    try store.put("small", "v");
+    var chunk: std.ArrayList(u8) = .empty;
+    defer chunk.deinit(testing.allocator);
+    try testing.expectEqual(@as(?bool, false), try store.changeSetChunk(1, 0, &chunk));
+    try testing.expectEqual(change_log.chunk_bytes, chunk.items.len);
+    try testing.expectEqual(@as(?bool, true), try store.changeSetChunk(1, 1, &chunk));
+    try testing.expectEqual(@as(?bool, null), try store.changeSetChunk(1, 2, &chunk));
+    try testing.expectEqual(@as(?bool, true), try store.changeSetChunk(2, 0, &chunk));
+    store.change_log_limit = 100;
+    try store.put("next", "v");
+    try testing.expectEqual(@as(?bool, null), try store.changeSetChunk(1, 1, &chunk));
+}
+
+test "no value longer than the limit is stored, nor applied from a change set" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [128]u8 = undefined;
+    var store = try KeyValueStore.open(testing.allocator, testPath(&tmp, &path_buffer));
+    defer store.deinit();
+    const value = try testing.allocator.alloc(u8, zypherdb.layout.max_value_length + 1);
+    defer testing.allocator.free(value);
+    @memset(value, 'v');
+    try testing.expectError(error.ValueTooLarge, store.put("k", value));
+    try store.put("k", value[1..]);
+    try testing.expect(try store.exists("k"));
+
+    // A replica waits for the rest of a write cut by a part's end, unless
+    // it says it is longer than any master writes.
+    var header: [11]u8 = .{ 0x01, @backingInt(change_log.Table.main), 0, 0, 0, 1, 'k', 0, 0, 0, 0 };
+    std.mem.writeInt(u32, header[7..11], @intCast(zypherdb.layout.max_value_length), .big);
+    var cut = change_log.Iterator{ .bytes = &header, .partial = true };
+    try testing.expect(try cut.next() == null);
+    try testing.expectEqual(header.len, cut.rest().len);
+    std.mem.writeInt(u32, header[7..11], @intCast(zypherdb.layout.max_value_length + 1), .big);
+    var too_long = change_log.Iterator{ .bytes = &header, .partial = true };
+    try testing.expectError(error.MalformedChangeSet, too_long.next());
+}
+
 test "the log keeps at most its limit, dropping the oldest change sets" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

@@ -87,8 +87,9 @@ const Conversation = struct {
     fn deinit(self: *Conversation) void {
         if (self.master_copy) |file| file.close(testing.io);
         if (self.replica_copy) |file| file.close(testing.io);
+        // As a replica's node does when a conversation ends.
+        self.target.abandonChangeSet();
         self.master.deinit(testing.allocator);
-        self.replica.deinit(testing.allocator);
         for (self.buffers) |buffer| testing.allocator.free(buffer);
     }
 
@@ -111,10 +112,9 @@ const Conversation = struct {
             .refused => |reason| self.refusal = reason,
             .copy_part => |bytes| try self.writeCopyPart(bytes),
             .copy_received => try self.loadCopy(),
-            .change_set => |change_set| {
-                defer testing.allocator.free(change_set.bytes);
-                _ = try self.target.applyChangeSet(change_set.lsn, change_set.bytes);
-                self.replica.applied(change_set.lsn);
+            .change_set_part => |part| {
+                defer testing.allocator.free(part.bytes);
+                if (try self.target.applyChangeSetPart(part.lsn, part.bytes, part.final) != null) self.replica.applied(part.lsn);
             },
             .heartbeat => |last| {
                 self.master_lsn = last;
@@ -351,12 +351,84 @@ test "a replica whose next change set the log dropped is let go, to start again 
     try testing.expectError(error.ChangeSetDropped, conversation.step());
 }
 
+test "a conversation cut inside a change set applies none of it; the next applies it whole" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var source = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "master", &master_path));
+    defer source.deinit();
+    try source.startChangeLog();
+    try putKeys(&source, 0, 2, 10);
+    var replica_path: [256]u8 = undefined;
+    var target = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "replica", &replica_path));
+    defer target.deinit();
+    {
+        var conversation: Conversation = undefined;
+        try conversation.init(&tmp, &source, &target, 5);
+        defer conversation.deinit();
+        try conversation.stepUntil(Conversation.caughtUp);
+        try source.beginWrite();
+        try putKeys(&source, 10, 4, protocol.part_bytes / 2 + 3);
+        try source.commitWrite();
+        try conversation.stepUntil(applying);
+    }
+    const before = (try source.changeLogState()).?.next_lsn - 2;
+    try testing.expectEqual(@as(?u64, before), try target.appliedLsn());
+    try testing.expect(!try target.exists(&.{ 'k', 10 }));
+
+    var conversation: Conversation = undefined;
+    try conversation.init(&tmp, &source, &target, 6);
+    defer conversation.deinit();
+    try conversation.stepUntil(Conversation.caughtUp);
+    try testing.expectEqual(@as(usize, 0), conversation.copies_made);
+    try testing.expectEqual(try contents(&source), try contents(&target));
+}
+
+/// Whether the replica applied a part of a change set and not its last.
+fn applying(conversation: *Conversation) !bool {
+    return conversation.target.application != null;
+}
+
+test "a replica whose change set the log drops while it is sent is let go" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var source = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "master", &master_path));
+    defer source.deinit();
+    try source.startChangeLog();
+    try putKeys(&source, 0, 2, 10);
+    var replica_path: [256]u8 = undefined;
+    var target = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "replica", &replica_path));
+    defer target.deinit();
+    var conversation: Conversation = undefined;
+    try conversation.init(&tmp, &source, &target, 7);
+    defer conversation.deinit();
+    try conversation.stepUntil(Conversation.caughtUp);
+
+    // Six parts long; dropped once the first is sent.
+    try source.beginWrite();
+    try putKeys(&source, 10, 6, protocol.part_bytes);
+    try source.commitWrite();
+    try conversation.stepUntil(sendingChangeSet);
+    source.change_log_limit = 300;
+    try putKeys(&source, 20, 1, 10);
+    for (0..10_000) |_| conversation.step() catch |err| {
+        try testing.expectEqual(error.ChangeSetDropped, err);
+        return;
+    };
+    return error.TestTimedOut;
+}
+
+/// Whether the master sent a part of a change set and not its last.
+fn sendingChangeSet(conversation: *Conversation) !bool {
+    return conversation.master.chunk > 0;
+}
+
 test "a replica waits for its master's answer as long as asked, then a few of its heartbeats" {
     var buffers: [2][protocol.max_frame_bytes]u8 = undefined;
     const answer_timeout_ns = 7 * settings.timeout_ns;
     const hello: protocol.Hello = .{ .storage_format = 1, .storage_engine = "lmdb", .database_id = null, .applied_lsn = 0, .token = token };
     var session: ReplicaSession = .init(&buffers[0], &buffers[1], hello, answer_timeout_ns, 0);
-    defer session.deinit(testing.allocator);
     try testing.expectEqual(answer_timeout_ns, session.deadline().?);
     try deliver(&session, .{ .welcome = 3 * ms });
     try testing.expect(try session.next(testing.allocator) == null);
@@ -393,14 +465,12 @@ test "a message out of turn ends a conversation" {
     // A stream before the welcome, or a welcome with no heartbeat.
     for ([_]protocol.Message{ .{ .stream = 1 }, .{ .welcome = 0 } }) |message| {
         var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
-        defer session.deinit(testing.allocator);
         try deliver(&session, message);
         try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
     }
     // A stream from elsewhere than after the replica's last change set.
     {
         var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
-        defer session.deinit(testing.allocator);
         try deliver(&session, .{ .welcome = settings.heartbeat_ns });
         try deliver(&session, .{ .stream = 2 });
         try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
@@ -408,18 +478,16 @@ test "a message out of turn ends a conversation" {
     // A part of the next change set before the last part of this one.
     {
         var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
-        defer session.deinit(testing.allocator);
         try deliver(&session, .{ .welcome = settings.heartbeat_ns });
         try deliver(&session, .{ .stream = 1 });
         try deliver(&session, .{ .change_set_part = .{ .lsn = 1, .final = false, .bytes = "half" } });
-        try testing.expect(try session.next(testing.allocator) == null);
+        testing.allocator.free((try session.next(testing.allocator)).?.change_set_part.bytes);
         try deliver(&session, .{ .change_set_part = .{ .lsn = 2, .final = true, .bytes = "" } });
         try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
     }
     // A copy of another size than the master tells at its end.
     {
         var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
-        defer session.deinit(testing.allocator);
         try deliver(&session, .{ .welcome = settings.heartbeat_ns });
         try deliver(&session, .{ .snapshot_part = "copy" });
         try deliver(&session, .{ .snapshot_end = 5 });

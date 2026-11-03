@@ -151,9 +151,12 @@ const Applier = struct {
     condition: Io.Condition = .init,
     /// Under `mutex`.
     work: std.ArrayList(Work) = .empty,
-    /// The bytes of the change sets in `work` and in hand.
+    /// The bytes of the change set parts in `work` and in hand.
     unapplied_bytes: usize = 0,
     busy: bool = false,
+    /// The change set partly applied is to be abandoned, on this thread
+    /// (its write transaction is the thread's).
+    abandoning: bool = false,
     done: Done = .{},
     stopping: bool = false,
 
@@ -187,7 +190,7 @@ const Applier = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         try self.work.append(self.allocator, work);
-        if (work == .change_set) self.unapplied_bytes += work.change_set.bytes.len;
+        self.unapplied_bytes += replica_node.workBytes(work);
         self.condition.broadcast(self.io);
     }
 
@@ -213,12 +216,15 @@ const Applier = struct {
         defer self.mutex.unlock(self.io);
         self.dropWork();
         while (self.busy) self.condition.waitUncancelable(self.io, &self.mutex);
+        self.abandoning = true;
+        self.condition.broadcast(self.io);
+        while (self.abandoning and self.thread != null) self.condition.waitUncancelable(self.io, &self.mutex);
         self.done = .{};
     }
 
     fn dropWork(self: *Applier) void {
         for (self.work.items) |work| {
-            if (work == .change_set) self.unapplied_bytes -= work.change_set.bytes.len;
+            self.unapplied_bytes -= replica_node.workBytes(work);
             replica_node.dropWork(self.allocator, self.io, self.copies_directory, work);
         }
         self.work.clearRetainingCapacity();
@@ -228,8 +234,14 @@ const Applier = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         while (true) {
-            while (!self.stopping and self.work.items.len == 0) self.condition.waitUncancelable(self.io, &self.mutex);
-            if (self.stopping) return;
+            while (!self.stopping and !self.abandoning and self.work.items.len == 0) self.condition.waitUncancelable(self.io, &self.mutex);
+            if (self.stopping or self.abandoning) {
+                self.store.abandonChangeSet();
+                self.abandoning = false;
+                self.condition.broadcast(self.io);
+                if (self.stopping) return;
+                continue;
+            }
             const work = self.work.orderedRemove(0);
             self.busy = true;
             self.mutex.unlock(self.io);
@@ -237,10 +249,12 @@ const Applier = struct {
             replica_node.dropWork(self.allocator, self.io, self.copies_directory, work);
             self.mutex.lockUncancelable(self.io);
             self.busy = false;
-            if (work == .change_set) self.unapplied_bytes -= work.change_set.bytes.len;
-            if (result) |lsn| switch (work) {
-                .change_set => self.done.applied = lsn,
-                .load_copy => self.done.copy_loaded = lsn,
+            self.unapplied_bytes -= replica_node.workBytes(work);
+            if (result) |done| {
+                if (done) |lsn| switch (work) {
+                    .change_set_part => self.done.applied = lsn,
+                    .load_copy => self.done.copy_loaded = lsn,
+                };
             } else |err| {
                 log.info("applying what the master sent failed: {t}", .{err});
                 self.done.failure = err;

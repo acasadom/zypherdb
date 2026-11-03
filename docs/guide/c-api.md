@@ -301,7 +301,7 @@ Each function returns `ZYPHERDB_OK`, `ZYPHERDB_STORAGE_ERROR`, `ZYPHERDB_CONSTRA
 uniqueness constraint refuses the write (`zypherdb_last_error` says which), `ZYPHERDB_INVALID_NAME`
 when a label, relationship type or property name is empty, longer than 1024 bytes or contains a 0x00
 byte (an empty label in `zypherdb_add_node` means none), `ZYPHERDB_TOO_LARGE` when a value is over
-4 GiB stored or a node would have more than 65535 labels, or `ZYPHERDB_NODE_NOT_FOUND` when a node it
+64 MiB stored (a node with all its properties) or a node would have more than 65535 labels, or `ZYPHERDB_NODE_NOT_FOUND` when a node it
 names does not exist.
 
 On its own, each call is a transaction that waits for the disk. Between `zypherdb_begin_write` and
