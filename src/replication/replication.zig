@@ -59,7 +59,10 @@ pub const Role = union(enum) {
         address: []const u8,
         /// What a replica must send to be served.
         token: []const u8,
+        /// How often replicas hear from the master when it has nothing
+        /// else to send; they derive from it when to leave a silent master.
         heartbeat_ns: u64 = std.time.ns_per_s,
+        /// A replica silent this long is let go (longer than `heartbeat_ns`).
         timeout_ns: u64 = 5 * std.time.ns_per_s,
     };
 
@@ -67,7 +70,6 @@ pub const Role = union(enum) {
         /// The master's address, "host:port".
         master_address: []const u8,
         token: []const u8,
-        timeout_ns: u64 = 5 * std.time.ns_per_s,
         /// What the replica calls itself in its master's status, at most
         /// `protocol.max_name_bytes`; null: this host's name.
         name: ?[]const u8 = null,
@@ -277,7 +279,6 @@ pub const Replication = struct {
                     .master_address = replica.master_address,
                     .token = replica.token,
                     .copies_directory = self.copies_directory,
-                    .timeout_ns = replica.timeout_ns,
                     .name = self.role_name,
                 }), .release);
             },
@@ -443,7 +444,6 @@ pub const Replication = struct {
         const forwarder = try Forwarder.start(self.allocator, io, self.clock.clock(), self.tcp.network(), self.store, .{
             .master_address = replica.master_address,
             .token = replica.token,
-            .timeout_ns = replica.timeout_ns,
             .request_timeout_ns = replica.request_timeout_ns,
             .name = self.role_name,
         });

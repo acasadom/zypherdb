@@ -351,6 +351,18 @@ test "a replica whose next change set the log dropped is let go, to start again 
     try testing.expectError(error.ChangeSetDropped, conversation.step());
 }
 
+test "a replica waits for its master's answer as long as asked, then a few of its heartbeats" {
+    var buffers: [2][protocol.max_frame_bytes]u8 = undefined;
+    const answer_timeout_ns = 7 * settings.timeout_ns;
+    const hello: protocol.Hello = .{ .storage_format = 1, .storage_engine = "lmdb", .database_id = null, .applied_lsn = 0, .token = token };
+    var session: ReplicaSession = .init(&buffers[0], &buffers[1], hello, answer_timeout_ns, 0);
+    defer session.deinit(testing.allocator);
+    try testing.expectEqual(answer_timeout_ns, session.deadline().?);
+    try deliver(&session, .{ .welcome = 3 * ms });
+    try testing.expect(try session.next(testing.allocator) == null);
+    try testing.expectEqual(protocol.timeoutFor(3 * ms), session.deadline().?);
+}
+
 /// Puts `message`'s frame in `session`'s inbox, as if received at 0.
 fn deliver(session: anytype, message: protocol.Message) !void {
     var frame: [64]u8 = undefined;
@@ -378,10 +390,18 @@ test "a message out of turn ends a conversation" {
     try testing.expectError(error.UnexpectedMessage, master.next(&source));
 
     const hello = try replica.hello(null, token);
+    // A stream before the welcome, or a welcome with no heartbeat.
+    for ([_]protocol.Message{ .{ .stream = 1 }, .{ .welcome = 0 } }) |message| {
+        var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
+        defer session.deinit(testing.allocator);
+        try deliver(&session, message);
+        try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
+    }
     // A stream from elsewhere than after the replica's last change set.
     {
         var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
         defer session.deinit(testing.allocator);
+        try deliver(&session, .{ .welcome = settings.heartbeat_ns });
         try deliver(&session, .{ .stream = 2 });
         try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
     }
@@ -389,6 +409,7 @@ test "a message out of turn ends a conversation" {
     {
         var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
         defer session.deinit(testing.allocator);
+        try deliver(&session, .{ .welcome = settings.heartbeat_ns });
         try deliver(&session, .{ .stream = 1 });
         try deliver(&session, .{ .change_set_part = .{ .lsn = 1, .final = false, .bytes = "half" } });
         try testing.expect(try session.next(testing.allocator) == null);
@@ -399,6 +420,7 @@ test "a message out of turn ends a conversation" {
     {
         var session: ReplicaSession = .init(buffers[2], buffers[3], hello, settings.timeout_ns, 0);
         defer session.deinit(testing.allocator);
+        try deliver(&session, .{ .welcome = settings.heartbeat_ns });
         try deliver(&session, .{ .snapshot_part = "copy" });
         try deliver(&session, .{ .snapshot_end = 5 });
         try testing.expectEqualStrings("copy", (try session.next(testing.allocator)).?.copy_part);

@@ -97,7 +97,6 @@ const Setup = struct {
             .copies_directory = try self.path("replica-copies", copies),
             .first_retry_ns = 10 * millisecond,
             .longest_retry_ns = 100 * millisecond,
-            .timeout_ns = 500 * millisecond,
         });
     }
 
@@ -421,6 +420,19 @@ test "a replica that stops reading holds up neither its master nor the others, a
     try testing.expect(received < count * value.len);
 }
 
+test "a master whose replicas would be let go before a heartbeat does not start" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    var copies: [256]u8 = undefined;
+    setup.timeout_ns = 50 * millisecond;
+    try testing.expectError(error.TimeoutNotAboveHeartbeat, setup.startServer("127.0.0.1:0", &copies));
+    // Once it is longer, it starts.
+    setup.timeout_ns += 1;
+    const server = try setup.startServer("127.0.0.1:0", &copies);
+    server.stop();
+}
+
 test "a replica leaves a silent master and connects again" {
     var setup: Setup = undefined;
     try setup.init();
@@ -435,7 +447,7 @@ test "a replica leaves a silent master and connects again" {
         .token = token,
         .copies_directory = try setup.path("replica-copies", &copies),
         .first_retry_ns = 10 * millisecond,
-        .timeout_ns = 100 * millisecond,
+        .answer_timeout_ns = 100 * millisecond,
     });
     defer follower.stop();
     const buffer = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
@@ -448,6 +460,14 @@ test "a replica leaves a silent master and connects again" {
     const second = try setup.accept(listener);
     defer second.close();
     try testing.expectEqual(.hello, std.meta.activeTag(try setup.receiveMessage(second, buffer)));
+    // Once it welcomes the replica, the master is left after a few of the
+    // heartbeats it told, however long the replica waits for an answer.
+    try setup.send(second, .{ .welcome = 10 * millisecond });
+    const welcomed = setup.clock.clock().now();
+    try testing.expectEqual(@as(?usize, null), try setup.receive(second, buffer));
+    const left = setup.clock.clock().now() - welcomed;
+    try testing.expect(left >= protocol.timeoutFor(10 * millisecond));
+    try testing.expect(left < 100 * millisecond);
 }
 
 /// A replica's connection for forwarded writes, by hand.
@@ -571,7 +591,6 @@ test "a forwarder sends writes to the master from more threads than its window, 
     const sender = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.master, .{
         .master_address = server.address(&address),
         .token = token,
-        .timeout_ns = 500 * millisecond,
     });
     defer sender.stop();
 

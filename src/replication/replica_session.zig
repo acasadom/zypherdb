@@ -6,7 +6,9 @@
 //! keeping time are the caller's (follower.zig, or a simulation).
 //!
 //! The replica acks each heartbeat with the last change set it applied, so
-//! the master learns its lag and that it is alive.
+//! the master learns its lag and that it is alive. A master silent for
+//! `protocol.heartbeats_per_timeout` of the intervals its `welcome` told
+//! is left.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -39,7 +41,9 @@ pub const Error = protocol.DecodeError || Allocator.Error || error{ UnexpectedMe
 pub const ReplicaSession = struct {
     inbox: protocol.Inbox,
     outbox: protocol.Outbox,
-    state: State = .awaiting_answer,
+    state: State = .awaiting_welcome,
+    /// Until `welcome`, how long the master may take to answer; then
+    /// derived from its heartbeat.
     timeout_ns: u64,
     /// When the master was last heard from.
     last_heard: Instant,
@@ -54,15 +58,15 @@ pub const ReplicaSession = struct {
     /// An ack is owed (sent once the outbox has room).
     ack_due: bool = false,
 
-    pub const State = enum { awaiting_answer, receiving_copy, loading_copy, streaming };
+    pub const State = enum { awaiting_welcome, awaiting_answer, receiving_copy, loading_copy, streaming };
 
     /// A conversation opened with `hello`, which waits in the outbox. A
-    /// master silent for `timeout_ns` (longer than its heartbeat) ends it.
-    pub fn init(inbox_buffer: []u8, outbox_buffer: []u8, hello: protocol.Hello, timeout_ns: u64, now: Instant) ReplicaSession {
+    /// master that does not answer within `answer_timeout_ns` ends it.
+    pub fn init(inbox_buffer: []u8, outbox_buffer: []u8, hello: protocol.Hello, answer_timeout_ns: u64, now: Instant) ReplicaSession {
         var self: ReplicaSession = .{
             .inbox = .init(inbox_buffer),
             .outbox = .init(outbox_buffer),
-            .timeout_ns = timeout_ns,
+            .timeout_ns = answer_timeout_ns,
             .last_heard = now,
             .applied_lsn = hello.applied_lsn,
             .next_lsn = hello.applied_lsn + 1,
@@ -87,8 +91,16 @@ pub const ReplicaSession = struct {
     pub fn next(self: *ReplicaSession, allocator: Allocator) Error!?Event {
         while (try self.inbox.next()) |message| {
             switch (self.state) {
-                .awaiting_answer => switch (message) {
+                .awaiting_welcome => switch (message) {
                     .refused => |reason| return .{ .refused = reason },
+                    .welcome => |heartbeat_ns| {
+                        if (heartbeat_ns == 0) return error.UnexpectedMessage;
+                        self.timeout_ns = protocol.timeoutFor(heartbeat_ns);
+                        self.state = .awaiting_answer;
+                    },
+                    else => return error.UnexpectedMessage,
+                },
+                .awaiting_answer => switch (message) {
                     .stream => |first| {
                         if (first != self.next_lsn) return error.UnexpectedMessage;
                         self.state = .streaming;

@@ -130,10 +130,12 @@ pub const MasterSession = struct {
                     .hello => |hello| switch (try self.introduced(store, hello)) {
                         .refused => |reason| self.refuse(reason),
                         .stream => |first| {
+                            self.outbox.put(.{ .welcome = self.settings.heartbeat_ns });
                             self.outbox.put(.{ .stream = first });
                             self.startStreaming(first);
                         },
                         .snapshot => {
+                            self.outbox.put(.{ .welcome = self.settings.heartbeat_ns });
                             self.state = .making_copy;
                             return .make_copy;
                         },

@@ -184,7 +184,7 @@ const create_door = "CREATE (d:Door {name: $name}) RETURN d.name AS name";
 
 test "a forwarded write runs on the master and is answered; the connection stays for the next" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -203,7 +203,7 @@ test "a forwarded write runs on the master and is answered; the connection stays
 
 test "several writes are on their way at once on one connection, each answered under its id" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -235,7 +235,7 @@ test "several writes are on their way at once on one connection, each answered u
 
 test "a lost connection: what reached the master ends unknown, what did not is sent again" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -261,7 +261,7 @@ test "a lost connection: what reached the master ends unknown, what did not is s
 
 test "a request lost before it reached the master whole is sent once more" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -277,7 +277,7 @@ test "a request lost before it reached the master whole is sent once more" {
 
 test "a request lost halfway to the master is sent whole once more" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -303,7 +303,7 @@ test "a request lost halfway to the master is sent whole once more" {
 
 test "a request lost once it reached the master whole ends unknown; the next connects again" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -325,7 +325,7 @@ test "a request lost once it reached the master whole ends unknown; the next con
 
 test "a master nobody listens for is not reached, twice" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = "elsewhere:7000", .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = "elsewhere:7000", .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     bench.request(1, "not even sent");
     try bench.settle();
@@ -335,7 +335,7 @@ test "a master nobody listens for is not reached, twice" {
 
 test "a master that reads nothing is given up on, twice" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = "silent:7000", .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = "silent:7000", .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     // It listens and never accepts.
     var silent = try bench.net.network().listen("silent:7000");
@@ -351,7 +351,7 @@ test "a master that reads nothing is given up on, twice" {
 
 test "out of time: unknown once the master has the request, unreachable before" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns, .request_timeout_ns = 2 * timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns, .request_timeout_ns = 2 * timeout_ns });
     defer bench.deinit();
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
@@ -381,7 +381,7 @@ test "out of time: unknown once the master has the request, unreachable before" 
 
 test "turned away: once if asking again cannot help, twice if it may" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = "not the master's", .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = "not the master's", .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     bench.request(1, "not even sent");
     try bench.settle();
@@ -410,7 +410,7 @@ test "turned away: once if asking again cannot help, twice if it may" {
 
 test "a replica with no copy of a master forwards nothing" {
     var bench: Bench = undefined;
-    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    try bench.init(.{ .master_address = master_address, .token = token, .answer_timeout_ns = timeout_ns });
     defer bench.deinit();
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

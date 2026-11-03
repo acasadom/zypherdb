@@ -39,10 +39,10 @@ pub const Options = struct {
     /// The master's address, "host:port".
     master_address: []const u8,
     token: []const u8,
-    /// A master that sends nothing, or reads nothing sent, for this long
-    /// is given up on (longer than its heartbeat); so is one not reached
-    /// in this long.
-    timeout_ns: u64 = 5 * std.time.ns_per_s,
+    /// A master not reached, or that does not answer the writer hello,
+    /// within this long is given up on; once it answers, one silent for
+    /// `protocol.heartbeats_per_timeout` of its heartbeat intervals.
+    answer_timeout_ns: u64 = 5 * std.time.ns_per_s,
     /// The longest a request may take, however alive the master is.
     request_timeout_ns: u64 = 30 * std.time.ns_per_s,
     /// What the replica calls itself in its hello, at most
@@ -387,7 +387,7 @@ pub const ForwardingNode = struct {
                 .database_id = database_id,
                 .token = self.options.token,
                 .name = self.options.name,
-            }, self.options.timeout_ns, now),
+            }, self.options.answer_timeout_ns, now),
         };
         return conversation;
     }

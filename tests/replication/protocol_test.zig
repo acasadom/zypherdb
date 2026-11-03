@@ -55,7 +55,8 @@ test "every message reads back as written" {
     try expectRoundTrip(.{ .ack = 99 });
     try expectRoundTrip(.{ .writer_hello = .{ .database_id = @splat(0xcd), .token = "secret", .name = "edge-3" } });
     try expectRoundTrip(.{ .writer_hello = .{ .protocol_version = 2, .database_id = @splat(0), .token = "" } });
-    try expectRoundTrip(.writer_ready);
+    try expectRoundTrip(.{ .writer_ready = std.time.ns_per_s });
+    try expectRoundTrip(.{ .welcome = 50 * std.time.ns_per_ms });
     try expectRoundTrip(.{ .request_part = .{ .id = 1, .final = false, .bytes = "CREATE" } });
     try expectRoundTrip(.{ .request_part = .{ .id = std.math.maxInt(u64), .final = true, .bytes = "" } });
     try expectRoundTrip(.{ .answer_part = .{ .id = 7, .final = true, .bytes = "\x00" } });
@@ -111,8 +112,9 @@ fn expectMalformed(kind: u8, payload: []const u8) !void {
 
 test "a frame with a right checksum but a wrong payload is malformed" {
     try expectMalformed(0, "");
-    try expectMalformed(13, "");
+    try expectMalformed(14, "");
     try expectMalformed(@backingInt(protocol.Kind.writer_ready), "\x00");
+    try expectMalformed(@backingInt(protocol.Kind.welcome), "");
     try expectMalformed(@backingInt(protocol.Kind.request_part), "\x00\x00\x00\x00\x00\x00\x00\x01\x02");
     try expectMalformed(@backingInt(protocol.Kind.answer_part), "\x00\x00\x00\x00\x00\x00\x00\x01");
     try expectMalformed(@backingInt(protocol.Kind.writer_hello), "ZYPQ");
@@ -150,6 +152,7 @@ fn encodeSequence(buffer: []u8) ![]u8 {
 const sequence = [_]Message{
     .{ .hello = .{ .storage_format = 1, .storage_engine = "lmdb", .database_id = @splat(0xab), .applied_lsn = 42, .token = "secret", .name = "host" } },
     .{ .refused = .ahead },
+    .{ .welcome = std.time.ns_per_s },
     .{ .stream = 43 },
     .{ .snapshot_part = "the bytes of a copy" },
     .{ .snapshot_end = 1 << 40 },
@@ -158,7 +161,7 @@ const sequence = [_]Message{
     .{ .heartbeat = 100 },
     .{ .ack = 99 },
     .{ .writer_hello = .{ .database_id = @splat(0xcd), .token = "secret", .name = "edge-3" } },
-    .writer_ready,
+    .{ .writer_ready = std.time.ns_per_s },
     .{ .request_part = .{ .id = 3, .final = false, .bytes = "MERGE" } },
     .{ .request_part = .{ .id = 3, .final = true, .bytes = "" } },
     .{ .answer_part = .{ .id = 3, .final = true, .bytes = "\x01" } },

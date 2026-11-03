@@ -7,8 +7,9 @@
 //! requests wait for their answers at once, sent one after the other.
 //!
 //! The master sends a `heartbeat` each interval while it sends no answer;
-//! the replica acks each one. A master that says nothing for `timeout_ns`,
-//! or reads nothing sent, is given up on.
+//! the replica acks each one. A master that says nothing, or reads nothing
+//! sent, for `protocol.heartbeats_per_timeout` of the intervals its
+//! `writer_ready` told is given up on.
 //!
 //! Whether a request may be sent again on a new connection is `delivered`:
 //! the master runs a request only once its final part is in, so until the
@@ -43,6 +44,8 @@ pub const ForwardingSession = struct {
     inbox: protocol.Inbox,
     outbox: protocol.Outbox,
     state: State = .introducing,
+    /// Until `writer_ready`, how long the master may take to answer; then
+    /// derived from its heartbeat.
     timeout_ns: u64,
     /// When the master was last heard from.
     last_heard: Instant,
@@ -83,12 +86,12 @@ pub const ForwardingSession = struct {
     };
 
     /// A conversation opened with `hello`, which waits in the outbox. A
-    /// master silent for `timeout_ns` (longer than its heartbeat) ends it.
-    pub fn init(inbox_buffer: []u8, outbox_buffer: []u8, hello: protocol.WriterHello, timeout_ns: u64, now: Instant) ForwardingSession {
+    /// master that does not answer within `answer_timeout_ns` ends it.
+    pub fn init(inbox_buffer: []u8, outbox_buffer: []u8, hello: protocol.WriterHello, answer_timeout_ns: u64, now: Instant) ForwardingSession {
         var self: ForwardingSession = .{
             .inbox = .init(inbox_buffer),
             .outbox = .init(outbox_buffer),
-            .timeout_ns = timeout_ns,
+            .timeout_ns = answer_timeout_ns,
             .last_heard = now,
             .last_sent = now,
         };
@@ -151,7 +154,9 @@ pub const ForwardingSession = struct {
         while (try self.inbox.next()) |message| {
             switch (self.state) {
                 .introducing => switch (message) {
-                    .writer_ready => {
+                    .writer_ready => |heartbeat_ns| {
+                        if (heartbeat_ns == 0) return error.UnexpectedMessage;
+                        self.timeout_ns = protocol.timeoutFor(heartbeat_ns);
                         self.state = .ready;
                         return .ready;
                     },
@@ -208,7 +213,7 @@ pub const ForwardingSession = struct {
     }
 
     /// When the master is given up on, if nothing comes before: it read
-    /// nothing sent, or said nothing, for `timeout_ns`.
+    /// nothing sent, or said nothing, for too long.
     pub fn deadline(self: *const ForwardingSession) Instant {
         const read_expiry = self.last_heard + self.timeout_ns;
         if (self.outbox.isEmpty()) return read_expiry;

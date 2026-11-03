@@ -101,7 +101,7 @@ pub const WriterSession = struct {
             self.outbox.put(.{ .refused = reason });
             return;
         }
-        self.outbox.put(.writer_ready);
+        self.outbox.put(.{ .writer_ready = self.settings.heartbeat_ns });
     }
 
     /// `count` bytes from the replica went into `inbox.unfilled()`.

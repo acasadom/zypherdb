@@ -287,20 +287,22 @@ test "refused: the conversation is over" {
 
 test "an answer the replica did not ask for ends the conversation" {
     var buffers: [2 * protocol.max_frame_bytes]u8 = undefined;
-    const cases = [_]struct { request: bool, message: protocol.Message }{
+    const cases = [_]struct { ready: bool, request: bool, message: protocol.Message }{
         // Before `writer_ready`.
-        .{ .request = false, .message = .{ .heartbeat = 1 } },
+        .{ .ready = false, .request = false, .message = .{ .heartbeat = 1 } },
+        // With no heartbeat to go by.
+        .{ .ready = false, .request = false, .message = .{ .writer_ready = 0 } },
         // With no request sent.
-        .{ .request = false, .message = .{ .answer_part = .{ .id = 0, .final = true, .bytes = "x" } } },
+        .{ .ready = true, .request = false, .message = .{ .answer_part = .{ .id = 0, .final = true, .bytes = "x" } } },
         // Under another id.
-        .{ .request = true, .message = .{ .answer_part = .{ .id = 6, .final = true, .bytes = "x" } } },
-        .{ .request = true, .message = .{ .writer_ready = {} } },
+        .{ .ready = true, .request = true, .message = .{ .answer_part = .{ .id = 6, .final = true, .bytes = "x" } } },
+        .{ .ready = true, .request = true, .message = .{ .writer_ready = heartbeat_ns } },
     };
-    for (cases, 0..) |case, index| {
+    for (cases) |case| {
         var session = ForwardingSession.init(buffers[0..protocol.max_frame_bytes], buffers[protocol.max_frame_bytes..], .{ .database_id = @splat(1), .token = token }, timeout_ns, 0);
         defer session.deinit(testing.allocator);
-        if (index > 0) {
-            put(&session.inbox, .writer_ready);
+        if (case.ready) {
+            put(&session.inbox, .{ .writer_ready = heartbeat_ns });
             try testing.expect((try session.next(testing.allocator)).? == .ready);
         }
         if (case.request) {
@@ -312,4 +314,16 @@ test "an answer the replica did not ask for ends the conversation" {
         put(&session.inbox, case.message);
         try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));
     }
+}
+
+test "the master is waited for as long as asked until ready, then a few of its heartbeats" {
+    var buffers: [2 * protocol.max_frame_bytes]u8 = undefined;
+    const answer_timeout_ns = 7 * timeout_ns;
+    var session = ForwardingSession.init(buffers[0..protocol.max_frame_bytes], buffers[protocol.max_frame_bytes..], .{ .database_id = @splat(1), .token = token }, answer_timeout_ns, 0);
+    defer session.deinit(testing.allocator);
+    session.sent(session.outbox.unsent().len, 0);
+    try testing.expectEqual(answer_timeout_ns, session.deadline());
+    put(&session.inbox, .{ .writer_ready = 3 * ms });
+    try testing.expect((try session.next(testing.allocator)).? == .ready);
+    try testing.expectEqual(protocol.timeoutFor(3 * ms), session.deadline());
 }

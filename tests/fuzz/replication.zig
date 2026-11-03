@@ -447,7 +447,7 @@ const Simulation = struct {
             .copies_directory = replica.copies_path,
             .first_retry_ns = 10 * ms,
             .longest_retry_ns = 200 * ms,
-            .timeout_ns = timeout_ns,
+            .answer_timeout_ns = timeout_ns,
             .max_unapplied_bytes = self.swarm.max_unapplied_bytes,
             .name = replica_names[self.indexOf(replica)],
         });
@@ -465,7 +465,7 @@ const Simulation = struct {
             .node = try .init(self.allocator, self.network.network(), store, wakeup, .{
                 .master_address = master_address,
                 .token = token,
-                .timeout_ns = timeout_ns,
+                .answer_timeout_ns = timeout_ns,
                 .request_timeout_ns = self.swarm.request_timeout_ns,
                 .name = name,
             }),

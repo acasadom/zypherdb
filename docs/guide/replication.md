@@ -103,8 +103,9 @@ replica False eu-1 1 None
 
 `phase` is `"connecting"` (also while waiting to connect again, or standing by), `"copying"`,
 `"streaming"` or `"halted"`; `master_address` is the master it follows, and `last_contact_ms` how
-long ago it last heard from it (`None` if never): a master silent for a few seconds is left, and
-the replica connects again. `master_lsn` is the master's last change as its last heartbeat told,
+long ago it last heard from it (`None` if never): a master silent for five of its heartbeats (the
+master tells the replica how often it sends them; five seconds) is left, and the replica connects
+again. `master_lsn` is the master's last change as its last heartbeat told,
 and `lag` the difference.
 `halted` is set when the replica stopped following for good, because asking again cannot help: it
 names the reason — `"token"` (the master refused the token), `"database_id"` (it is a replica of

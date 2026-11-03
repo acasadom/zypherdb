@@ -3,8 +3,8 @@
 //! (replica_session.zig) over a connection that never blocks, handing
 //! what it receives to an `Applier`. When the conversation ends for any
 //! reason it connects again after a while (a deadline, not a sleep). A
-//! master silent for too long (`timeout_ns`, a few heartbeats) ends it
-//! too. A refusal that asking again cannot help (a wrong token, another
+//! master silent for `protocol.heartbeats_per_timeout` of its heartbeat
+//! intervals ends it too. A refusal that asking again cannot help (a wrong token, another
 //! version, another master) stops it for good: `halted` tells why.
 //! Whoever runs it waits on what `watch` tells until `deadline`, hands
 //! back what was `ready`, then calls `step`: follower.zig on a thread of
@@ -47,9 +47,10 @@ pub const Options = struct {
     /// the longest.
     first_retry_ns: u64 = 100 * std.time.ns_per_ms,
     longest_retry_ns: u64 = 5 * std.time.ns_per_s,
-    /// A master that sends nothing for this long is left (longer than its
-    /// heartbeat).
-    timeout_ns: u64 = 5 * std.time.ns_per_s,
+    /// A master that does not answer the hello within this long is left;
+    /// once it answers, one silent for `protocol.heartbeats_per_timeout`
+    /// of its heartbeat intervals.
+    answer_timeout_ns: u64 = 5 * std.time.ns_per_s,
     /// The bytes of change sets received and not yet applied past which
     /// the node stops reading until the applier catches up.
     max_unapplied_bytes: usize = 64 << 20,
@@ -320,7 +321,7 @@ pub const ReplicaNode = struct {
     pub fn step(self: *ReplicaNode, now: Instant) void {
         self.advance(now);
         const phase_now: Phase = if (self.halted() != null) .halted else if (self.conversation) |conversation| switch (conversation.session.state) {
-            .awaiting_answer => .connecting,
+            .awaiting_welcome, .awaiting_answer => .connecting,
             .receiving_copy, .loading_copy => .copying,
             .streaming => .streaming,
         } else .connecting;
@@ -399,7 +400,7 @@ pub const ReplicaNode = struct {
         conversation.* = .{
             .connection = connection,
             .buffers = buffers,
-            .session = .init(buffers[0..protocol.max_frame_bytes], buffers[protocol.max_frame_bytes..], hello, self.options.timeout_ns, now),
+            .session = .init(buffers[0..protocol.max_frame_bytes], buffers[protocol.max_frame_bytes..], hello, self.options.answer_timeout_ns, now),
         };
         return conversation;
     }

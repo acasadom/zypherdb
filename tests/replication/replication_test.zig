@@ -60,7 +60,6 @@ test "a replica opened with its role refuses writes, follows the master and wait
     const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
         .master_address = callers_address[0..address.len],
         .token = &callers_token,
-        .timeout_ns = 500 * std.time.ns_per_ms,
         .name = &callers_name,
     } });
     defer following.stop();
@@ -254,7 +253,6 @@ test "a process standing by takes over a master's replication when the one runni
     const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
         .master_address = address,
         .token = token,
-        .timeout_ns = 500 * std.time.ns_per_ms,
     } });
     defer following.stop();
     try testing.expect(following.waitFor(&replica, try commit(&master, "first"), patience));
@@ -280,7 +278,7 @@ test "a process standing by takes over a replica's replication when the one runn
     const serving = try Replication.start(testing.allocator, &master, pathOf(&master_path), .{ .master = .{ .address = "127.0.0.1:0", .token = token, .heartbeat_ns = 50 * std.time.ns_per_ms } });
     defer serving.stop();
     var address_buffer: [max_address_bytes]u8 = undefined;
-    const role: zypherdb.replication.Role = .{ .replica = .{ .master_address = serving.address(&address_buffer).?, .token = token, .timeout_ns = 500 * std.time.ns_per_ms } };
+    const role: zypherdb.replication.Role = .{ .replica = .{ .master_address = serving.address(&address_buffer).?, .token = token } };
     const first = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), role);
     var first_stopped = false;
     defer if (!first_stopped) first.stop();

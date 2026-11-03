@@ -5,7 +5,9 @@
 //! A replica opens the conversation with `hello`: who it is (protocol
 //! version, storage format and engine, the id of the master it copies, the
 //! last change set it applied) and the token the master expects. The master
-//! answers with `refused` and closes, or with one of:
+//! answers with `refused` and closes, or with `welcome` (its heartbeat
+//! interval: a replica that hears nothing for `heartbeats_per_timeout` of
+//! them leaves) and then one of:
 //!
 //!     stream          the replica can resume: change sets follow, from
 //!                     the one after the replica's last
@@ -25,7 +27,7 @@
 //! A replica that forwards writes opens a connection of its own for them,
 //! with `writer_hello` (protocol version, the id of the master it copies,
 //! the token, its name). The master answers `refused` and closes, or
-//! `writer_ready`; then each write is a `request_part`* the master runs and
+//! `writer_ready` (its heartbeat interval, as in `welcome`); then each write is a `request_part`* the master runs and
 //! answers with `answer_part`*, under the id the request gave. Up to
 //! `max_writes_in_flight` requests may wait for their answers; each is sent
 //! whole before the next, each answer too, and the master runs them in the
@@ -48,7 +50,7 @@ const Crc32 = std.hash.Crc32;
 
 /// Bumped on every change to the messages: a master and a replica of
 /// different versions do not talk.
-pub const version: u16 = 2;
+pub const version: u16 = 3;
 
 /// The first bytes of a `hello`, so a master that is sent something else
 /// (another protocol, a stray connection) refuses it at once.
@@ -56,6 +58,15 @@ pub const magic = "ZYPR".*;
 
 /// The largest part of a snapshot or a change set in one frame.
 pub const part_bytes: usize = 1 << 20;
+
+/// A replica leaves a master it heard nothing from for this many of the
+/// master's heartbeat intervals (`welcome`, `writer_ready`).
+pub const heartbeats_per_timeout: u64 = 5;
+
+/// How long a replica waits for its master with `heartbeat_ns` intervals.
+pub fn timeoutFor(heartbeat_ns: u64) u64 {
+    return heartbeats_per_timeout *| heartbeat_ns;
+}
 
 /// The most requests a replica's connection for forwarded writes may have
 /// sent and not seen answered; a replica that sends more is let go.
@@ -100,6 +111,7 @@ pub const Kind = enum(u8) {
     writer_ready = 10,
     request_part = 11,
     answer_part = 12,
+    welcome = 13,
 };
 
 /// A replica introduces itself.
@@ -185,9 +197,12 @@ pub const Message = union(Kind) {
     /// The replica's last applied LSN.
     ack: u64,
     writer_hello: WriterHello,
-    writer_ready: void,
+    /// The master's heartbeat interval, in nanoseconds.
+    writer_ready: u64,
     request_part: WritePart,
     answer_part: WritePart,
+    /// The master's heartbeat interval, in nanoseconds.
+    welcome: u64,
 };
 
 pub const DecodeError = error{ MalformedFrame, ChecksumMismatch };
@@ -414,7 +429,7 @@ fn encodePayload(sink: anytype, message: Message) !void {
             try sink.writeAll(hello.name);
         },
         .refused => |reason| try sink.writeByte(@backingInt(reason)),
-        .stream, .snapshot_end, .heartbeat, .ack => |lsn_or_size| try sink.writeInt(u64, lsn_or_size, .big),
+        .stream, .snapshot_end, .heartbeat, .ack, .writer_ready, .welcome => |number| try sink.writeInt(u64, number, .big),
         .snapshot_part => |bytes| {
             std.debug.assert(bytes.len <= part_bytes);
             try sink.writeAll(bytes);
@@ -436,7 +451,6 @@ fn encodePayload(sink: anytype, message: Message) !void {
             try sink.writeByte(@intCast(hello.name.len));
             try sink.writeAll(hello.name);
         },
-        .writer_ready => {},
         .request_part, .answer_part => |part| {
             std.debug.assert(part.bytes.len <= part_bytes);
             try sink.writeInt(u64, part.id, .big);
@@ -491,7 +505,8 @@ fn decodePayload(kind: Kind, payload: []const u8) ?Message {
             if (token.len > max_token_bytes) return null;
             break :hello .{ .writer_hello = .{ .protocol_version = protocol_version, .database_id = database_id, .token = token, .name = name } };
         },
-        .writer_ready => .writer_ready,
+        .writer_ready => .{ .writer_ready = cursor.int(u64) orelse return null },
+        .welcome => .{ .welcome = cursor.int(u64) orelse return null },
         .request_part, .answer_part => part: {
             const id = cursor.int(u64) orelse return null;
             const final = cursor.int(u8) orelse return null;

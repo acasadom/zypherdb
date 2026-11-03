@@ -38,6 +38,9 @@ pub const Options = struct {
     /// A directory for the copies sent to replicas, each in a directory of
     /// its own, deleted once sent.
     copies_directory: []const u8,
+    /// How often replicas hear from the master when it has nothing else
+    /// to send; they leave one silent for `protocol.heartbeats_per_timeout`
+    /// of these.
     heartbeat_ns: u64 = std.time.ns_per_s,
     /// A replica that reads nothing sent, or sends nothing awaited, for
     /// this long is let go (longer than `heartbeat_ns`).
@@ -328,9 +331,12 @@ pub const MasterNode = struct {
     };
 
     /// Listens for replicas of the master `store`. Set the owner's
-    /// `commitListener` on the store that writes to the master.
+    /// `commitListener` on the store that writes to the master. Fails with
+    /// `TimeoutNotAboveHeartbeat` unless `timeout_ns` is longer than a
+    /// (nonzero) `heartbeat_ns`: replicas ack each heartbeat.
     pub fn init(allocator: Allocator, io: Io, net: Network, store: *KeyValueStore, wakeup: Wakeup, copier: Copier, runner: Runner, options: Options) !MasterNode {
         std.debug.assert(2 * options.max_replicas + 2 <= network.max_watched);
+        if (options.heartbeat_ns == 0 or options.timeout_ns <= options.heartbeat_ns) return error.TimeoutNotAboveHeartbeat;
         if (try store.changeLogState() == null) return error.NotMaster;
         const peers = try allocator.alloc(?*Peer, 2 * options.max_replicas);
         errdefer allocator.free(peers);
