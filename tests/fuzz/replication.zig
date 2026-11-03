@@ -50,6 +50,7 @@ const ReplicaNode = replica_node.ReplicaNode;
 const forwarder = zypherdb.replication_forwarder;
 const ForwardingNode = forwarder.ForwardingNode;
 const forwarding = zypherdb.replication_forwarding;
+const MapEntry = zypherdb.value.MapEntry;
 
 pub const Options = struct {
     seed: u64,
@@ -93,6 +94,9 @@ const heartbeat_ns = 100 * ms;
 const timeout_ns = 500 * ms;
 /// What each forwarded write does: a node of its own, by its number.
 const forwarded_write = "CREATE (n:Forwarded {number: $number}) RETURN n.number AS number";
+/// What the second statement of a forwarded batch does: on the node the
+/// first made, in the same transaction.
+const batched_write = "MATCH (n:Forwarded {number: $number}) SET n.batched = true RETURN n.number AS number";
 const max_replicas = 3;
 /// What each replica calls itself: its index in `Simulation.replicas`.
 const replica_names = [max_replicas][]const u8{ "replica-0", "replica-1", "replica-2" };
@@ -296,6 +300,8 @@ const Forwarding = struct {
 const ForwardedWrite = struct {
     /// The LSN its commit reached, once the master ran it.
     ran_at: ?u64 = null,
+    /// 2 for a batch (`forwarded_write`, then `batched_write`).
+    statements: usize = 1,
     told: enum { pending, answered, unknown, not_reached, not_sent } = .pending,
 };
 
@@ -645,8 +651,14 @@ const Simulation = struct {
         const number = self.last_number;
         var request: std.ArrayList(u8) = .empty;
         defer request.deinit(self.allocator);
-        try forwarding.encodeRequest(&request, self.allocator, .{ .text = forwarded_write, .parameters = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }} });
-        try self.forwarded_writes.put(self.allocator, number, .{});
+        const parameters: []const MapEntry = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }};
+        const statements: usize = if (self.random().uintLessThan(u8, 4) == 0) 2 else 1;
+        const requests = [_]forwarding.Request{
+            .{ .text = forwarded_write, .parameters = parameters },
+            .{ .text = batched_write, .parameters = parameters },
+        };
+        try forwarding.encodeRequests(&request, self.allocator, requests[0..statements]);
+        try self.forwarded_writes.put(self.allocator, number, .{ .statements = statements });
         process.in_flight[process.in_flight_count] = number;
         process.in_flight_count += 1;
         process.node.request(number, request.items, self.clock.time);
@@ -667,8 +679,9 @@ const Simulation = struct {
             .done => |done| done,
             .failed => |failure| return self.fail("a forwarded write failed on the master: {s}", .{failure.message}),
         };
-        const number: u64 = @intCast(done.rows[0][0].int);
+        const number: u64 = @intCast(done.results[0].rows[0][0].int);
         const write = self.forwarded_writes.getPtr(number) orelse return self.fail("the master ran write {d}, never forwarded", .{number});
+        if (done.results.len != write.statements) return self.fail("write {d} of {d} statements answered {d} results", .{ number, write.statements, done.results.len });
         if (write.ran_at != null) return self.fail("the master ran write {d} twice", .{number});
         if (write.told == .not_reached or write.told == .not_sent) return self.fail("the master ran write {d}, told {t}", .{ number, write.told });
         if (done.lsn != try self.lastLsn()) return self.fail("write {d} answered LSN {d}, not the master's last", .{ number, done.lsn });
@@ -695,7 +708,10 @@ const Simulation = struct {
                     .done => |done| done,
                     .failed => |failure| return self.fail("write {d} failed: {s}", .{ number, failure.message }),
                 };
-                if (done.rows.len != 1 or done.rows[0][0].int != number) return self.fail("write {d} answered another's rows", .{number});
+                if (done.results.len != write.statements) return self.fail("write {d} answered {d} results", .{ number, done.results.len });
+                for (done.results) |result| {
+                    if (result.rows.len != 1 or result.rows[0][0].int != number) return self.fail("write {d} answered another's rows", .{number});
+                }
                 if (write.ran_at != done.lsn) return self.fail("write {d} answered LSN {d}, ran at {?d}", .{ number, done.lsn, write.ran_at });
                 write.told = .answered;
                 self.statistics.forwards_answered += 1;

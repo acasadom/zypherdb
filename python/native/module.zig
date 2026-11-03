@@ -216,6 +216,13 @@ fn raiseQueryError(database: *Database) ?*py.PyObject {
 
 /// Raises the exception for the error `diagnostic` tells.
 fn raiseDiagnostic(diagnostic: *const Diagnostic) ?*py.PyObject {
+    return raiseStatementDiagnostic(diagnostic, null);
+}
+
+/// Raises the exception for the error `diagnostic` tells, made by the
+/// statement of a batch at index `statement`, if one did (the exception's
+/// `statement`).
+fn raiseStatementDiagnostic(diagnostic: *const Diagnostic, statement: ?usize) ?*py.PyObject {
     const message = diagnostic.message();
     const text = py.PyUnicode_FromStringAndSize(message.ptr, @intCast(message.len)) orelse return null;
     defer py.Py_DecRef(text);
@@ -223,6 +230,11 @@ fn raiseDiagnostic(diagnostic: *const Diagnostic) ?*py.PyObject {
     defer py.Py_DecRef(code);
     const exception = py.PyObject_CallFunctionObjArgs(classes.query_error, code, text, @as(?*py.PyObject, null)) orelse return null;
     defer py.Py_DecRef(exception);
+    if (statement) |index| {
+        const number = py.PyLong_FromSize_t(index) orelse return null;
+        defer py.Py_DecRef(number);
+        if (py.PyObject_SetAttrString(exception, "statement", number) != 0) return null;
+    }
     const exception_type = py.PyObject_Type(exception) orelse return null;
     defer py.Py_DecRef(exception_type);
     py.PyErr_SetObject(exception_type, exception);
@@ -684,13 +696,35 @@ const PendingForward = struct {
     iso_temporals: bool,
     diagnostic: Diagnostic = .init(),
     done: ?zypherdb.replication_forwarding.Done = null,
+    /// A batch's (`write_many`), of `statements`; else one query's.
+    batch: bool = false,
+    statements: usize = 1,
+    /// The statement of the batch that failed on the master, if one did.
+    failed: ?usize = null,
 
     fn create(database: *Database, statement: *const Statement, executor: *const Executor) !*PendingForward {
+        const pending = try begin(database);
+        errdefer pending.destroy();
+        pending.request = try replica_writes.encodeRequest(statement, executor.parameters, pending.arena.allocator(), &database.diagnostic);
+        return pending;
+    }
+
+    fn createBatch(database: *Database, statements: []const *Statement, executors: []const Executor) !*PendingForward {
+        const pending = try begin(database);
+        errdefer pending.destroy();
+        pending.batch = true;
+        pending.statements = statements.len;
+        const arena = pending.arena.allocator();
+        const parameters = try arena.alloc(Executor.Parameters, executors.len);
+        for (parameters, executors) |*statement_parameters, executor| statement_parameters.* = executor.parameters;
+        pending.request = try replica_writes.encodeRequests(statements, parameters, arena, &database.diagnostic);
+        return pending;
+    }
+
+    fn begin(database: *Database) !*PendingForward {
         const replication = database.shared.replication.?;
         const pending = try allocator.create(PendingForward);
         pending.* = .{ .arena = .init(allocator), .replication = replication, .since = replication.now(), .iso_temporals = database.shared.iso_temporals };
-        errdefer pending.destroy();
-        pending.request = try replica_writes.encodeRequest(statement, executor.parameters, pending.arena.allocator(), &database.diagnostic);
         return pending;
     }
 
@@ -737,7 +771,7 @@ fn forwardSend(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     var visible: ?bool = null;
     var left_ns: u64 = 0;
     const thread_state = py.PyEval_SaveThread();
-    const sent = replica_writes.send(replication, pending.request, pending.arena.allocator(), &pending.diagnostic);
+    const sent = replica_writes.send(replication, pending.request, pending.arena.allocator(), &pending.diagnostic, &pending.failed);
     if (sent) |done| {
         visible = replication.waitForFollowing(done.lsn, replica_writes.timeLeft(replication, pending.since));
         left_ns = replica_writes.timeLeft(replication, pending.since);
@@ -745,8 +779,12 @@ fn forwardSend(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     py.PyEval_RestoreThread(thread_state);
     const done = sent catch |err| {
         noteFailure(&pending.diagnostic, err);
-        return raiseDiagnostic(&pending.diagnostic);
+        return raiseStatementDiagnostic(&pending.diagnostic, if (pending.batch) pending.failed else null);
     };
+    if (done.results.len != pending.statements) {
+        pending.diagnostic.set(.outcome_unknown, 0, "the master's answer to the write does not match it: it may have committed or not", .{});
+        return raiseDiagnostic(&pending.diagnostic);
+    }
     pending.done = done;
     const visible_object = if (visible) |seen| py.PyBool_FromLong(@intFromBool(seen)) else none();
     return py.Py_BuildValue("(KNK)", @as(c_ulonglong, done.lsn), visible_object, @as(c_ulonglong, left_ns / std.time.ns_per_ms));
@@ -759,8 +797,31 @@ fn forwardRows(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject
     if (parseTuple(args, "Op", &capsule, &visible) == 0) return null;
     const pending = pendingOf(capsule) orelse return null;
     const done = pending.done orelse return raise(py.PyExc_ValueError, "this write was not sent", .{});
-    const rows = replica_writes.rowsOf(done, pending.arena.allocator()) catch return py.PyErr_NoMemory();
-    return resultObject(.{ .rows = rows, .visible = visible != 0 }, .{ .entities = &pending.done.?.entities, .iso_temporals = pending.iso_temporals });
+    return resultOfForwarded(pending, done.results[0], visible != 0);
+}
+
+/// `forward_results(pending, visible) -> list[Rows]`: the rows of each
+/// statement of a batch sent.
+fn forwardResults(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    var capsule: ?*py.PyObject = null;
+    var visible: c_int = 1;
+    if (parseTuple(args, "Op", &capsule, &visible) == 0) return null;
+    const pending = pendingOf(capsule) orelse return null;
+    const done = pending.done orelse return raise(py.PyExc_ValueError, "this write was not sent", .{});
+    const list = py.PyList_New(@intCast(done.results.len)) orelse return null;
+    for (done.results, 0..) |result, index| {
+        const rows = resultOfForwarded(pending, result, visible != 0) orelse {
+            py.Py_DecRef(list);
+            return null;
+        };
+        _ = py.PyList_SetItem(list, @intCast(index), rows);
+    }
+    return list;
+}
+
+fn resultOfForwarded(pending: *PendingForward, result: zypherdb.replication_forwarding.Result, visible: bool) ?*py.PyObject {
+    const rows = replica_writes.rowsOf(result, pending.arena.allocator()) catch return py.PyErr_NoMemory();
+    return resultObject(.{ .rows = rows, .visible = visible }, .{ .entities = &result.entities, .iso_temporals = pending.iso_temporals });
 }
 
 /// Runs `statement` with the call's parameters, with the GIL released
@@ -832,6 +893,74 @@ fn query(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     var executor = statement.executorFor(&call.database.graph, arena);
     const ran = runStatement(call, statement, &executor) orelse return raiseQueryError(call.database);
     return resultOrPending(ran, &executor, call.database);
+}
+
+/// `write_many(db, statements) -> list[Rows]`, or the batch to forward:
+/// the `(text, parameters)` pairs of `statements` run in one transaction
+/// (statement/batch.zig); on an error the exception's `statement` is the
+/// index of the one that failed, if one did.
+fn writeMany(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
+    const scratch = scratchOf(args) orelse return null;
+    defer doneWith(scratch);
+    const arena = scratch.allocator();
+    var capsule: ?*py.PyObject = null;
+    var list: ?*py.PyObject = null;
+    if (parseTuple(args, "OO!", &capsule, &py.PyList_Type, &list) == 0) return null;
+    const database = databaseOf(capsule) orelse return null;
+    database.diagnostic.clear();
+    const count: usize = @intCast(py.PyList_Size(list));
+    const statements = arena.alloc(*Statement, count) catch return py.PyErr_NoMemory();
+    const executors = arena.alloc(Executor, count) catch return py.PyErr_NoMemory();
+    var owned: ?*Statement = null;
+    defer if (owned) |statement| statement.destroy();
+    for (statements, executors, 0..) |*statement, *executor, index| {
+        const pair = py.PyList_GetItem(list, @intCast(index)) orelse return null;
+        if (typeOf(pair) != &py.PyTuple_Type or py.PyTuple_Size(pair) != 2) return raise(py.PyExc_TypeError, "write_many takes (text, parameters) pairs", .{});
+        const text_object = py.PyTuple_GetItem(pair, 0) orelse return null;
+        if (typeOf(text_object) != &py.PyUnicode_Type) return raise(py.PyExc_TypeError, "a statement's text must be a str", .{});
+        const call: QueryCall = .{
+            .database = database,
+            .text = stringOf(text_object, arena) orelse return null,
+            .parameters = parametersOf(py.PyTuple_GetItem(pair, 1), arena) orelse return null,
+        };
+        statement.* = statementFor(call, &owned) orelse return raiseStatementDiagnostic(&database.diagnostic, index);
+        zypherdb.batch.check(statement.*, database.shared.table_procedures.items, &database.diagnostic) catch return raiseStatementDiagnostic(&database.diagnostic, index);
+        executor.* = statement.*.executorFor(&database.graph, arena);
+        executor.diagnostic = &database.diagnostic;
+        executor.parameters = call.parameters;
+        executor.table_procedures = database.shared.table_procedures.items;
+        executor.import_directory = database.shared.import_directory;
+    }
+    const rows = arena.alloc([]const zypherdb.Row, count) catch return py.PyErr_NoMemory();
+    var failed: ?usize = null;
+    const thread_state = py.PyEval_SaveThread();
+    const outcome: anyerror!?*PendingForward = run: {
+        if (forwardsWrites(database) and zypherdb.batch.writes(statements)) {
+            break :run PendingForward.createBatch(database, statements, executors);
+        }
+        zypherdb.batch.run(&database.graph, statements, executors, rows, &failed) catch |err| break :run err;
+        break :run null;
+    };
+    py.PyEval_RestoreThread(thread_state);
+    const forward = outcome catch |err| {
+        noteFailure(&database.diagnostic, err);
+        return raiseStatementDiagnostic(&database.diagnostic, failed);
+    };
+    if (forward) |pending| {
+        return py.PyCapsule_New(pending, pending_capsule_name, destroyPendingCapsule) orelse {
+            pending.destroy();
+            return null;
+        };
+    }
+    const results = py.PyList_New(@intCast(count)) orelse return null;
+    for (rows, executors, 0..) |statement_rows, *executor, index| {
+        const result = resultObject(.{ .rows = statement_rows }, outputOf(executor, database)) orelse {
+            py.Py_DecRef(results);
+            return null;
+        };
+        _ = py.PyList_SetItem(results, @intCast(index), result);
+    }
+    return results;
 }
 
 /// `prepare(db, text)`: `(statement, parameters, columns)`: a prepared
@@ -1382,6 +1511,8 @@ var methods = [_]py.PyMethodDef{
     method("statement_query", statementQuery),
     method("forward_send", forwardSend),
     method("forward_rows", forwardRows),
+    method("forward_results", forwardResults),
+    method("write_many", writeMany),
     method("begin_write", beginWrite),
     method("commit_write", commitWrite),
     method("abort_write", abortWrite),

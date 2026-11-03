@@ -4,28 +4,34 @@
 //! values in them are written as values.zig writes them. Integers are
 //! big-endian.
 //!
-//! A request is the statement and its parameters:
+//! A request is one statement or a batch of them (statement/batch.zig),
+//! each its text and parameters:
 //!
-//!     text length (u32) | text | parameters (a map value)
+//!     statement count (u32) | per statement: text length (u32) | text
+//!                                            | parameters (a map value)
 //!
 //! An answer is one of:
 //!
-//!     0x00 | lsn (u64) | column count (u32) | per column its name length (u32) and name
+//!     0x00 | lsn (u64) | result count (u32) | per statement its result:
+//!            column count (u32) | per column its name length (u32) and name
 //!          | row count (u32) | per row its values, one per column
 //!          | node count (u32) | per node its id (u64), label count (u32), per
 //!            label its length (u32) and name, then its properties
 //!          | relationship count (u32) | per relationship its value (values.zig),
 //!            then its properties
-//!     0x01 | error code (u32) | position (u32) | message length (u32) | message
+//!     0x01 | statement (u32) | error code (u32) | position (u32)
+//!          | message length (u32) | message
 //!
-//! The first: the statement ran and, if it changed anything, committed;
-//! `lsn` is the master's last LSN once it is done, so a replica that has
-//! applied it reads what the statement wrote (or read). The second: it
-//! failed, with the `Diagnostic` the master's run left (nothing committed).
-//! The nodes and relationships after the rows are those the rows refer to,
-//! as the statement left them (execution/entities.zig): a replica shows
-//! them whole even before it has applied the write. Properties are a count
-//! (u32), then per property its name length (u32), name and value.
+//! The first: the statements ran and, if they changed anything, committed
+//! together; `lsn` is the master's last LSN once they are done, so a
+//! replica that has applied it reads what they wrote (or read). The second:
+//! they failed (nothing committed), with the index of the statement that
+//! did (`no_statement` if none did: the commit failed) and the `Diagnostic`
+//! the master's run left. The nodes and relationships after a result's
+//! rows are those the rows refer to, as its statement left them
+//! (execution/entities.zig): a replica shows them whole even before it has
+//! applied the write. Properties are a count (u32), then per property its
+//! name length (u32), name and value.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -37,13 +43,14 @@ const entities_module = @import("../execution/entities.zig");
 const EntitySnapshot = entities_module.EntitySnapshot;
 const Property = entities_module.Property;
 
-/// The largest request a master takes (statement text and parameters).
+/// The largest request a master takes (statements' text and parameters).
 pub const max_request_bytes: usize = 16 << 20;
 
-/// The largest answer a master sends: a statement whose rows take more
-/// fails instead.
+/// The largest answer a master sends: statements whose rows take more
+/// fail instead.
 pub const max_answer_bytes: usize = 64 << 20;
 
+/// One statement of a request.
 pub const Request = struct {
     text: []const u8,
     /// Sorted by name, names unique (`Value.map`'s entries).
@@ -57,6 +64,12 @@ pub const Answer = union(enum) {
 
 pub const Done = struct {
     lsn: u64,
+    /// One per statement, in order.
+    results: []const Result,
+};
+
+/// What one statement of a request gave.
+pub const Result = struct {
     columns: []const []const u8,
     /// Each as long as `columns`; none without columns.
     rows: []const []const Value,
@@ -65,7 +78,12 @@ pub const Done = struct {
     entities: EntitySnapshot = .{},
 };
 
+/// The `Failure.statement` of a failure no statement made.
+pub const no_statement = std.math.maxInt(u32);
+
 pub const Failure = struct {
+    /// The index of the statement that failed, or `no_statement`.
+    statement: u32 = no_statement,
     /// A `diagnostics.ErrorCode`, as a number: a code this version does not
     /// know still reaches the application.
     code: u32,
@@ -76,12 +94,22 @@ pub const Failure = struct {
 
 pub const EncodeError = values.EncodeError || error{TooLarge};
 
-/// Appends the bytes of `request`; `error.TooLarge` past `max_request_bytes`.
+/// Appends the bytes of a request of one statement, `request`;
+/// `error.TooLarge` past `max_request_bytes`.
 pub fn encodeRequest(list: *std.ArrayList(u8), allocator: Allocator, request: Request) EncodeError!void {
+    return encodeRequests(list, allocator, &.{request});
+}
+
+/// Appends the bytes of a request of the statements `requests`, in order;
+/// `error.TooLarge` past `max_request_bytes`.
+pub fn encodeRequests(list: *std.ArrayList(u8), allocator: Allocator, requests: []const Request) EncodeError!void {
     const start = list.items.len;
-    try appendBytes(list, allocator, request.text);
-    try values.encode(list, allocator, .{ .map = request.parameters });
-    if (list.items.len - start > max_request_bytes) return error.TooLarge;
+    try appendInt(list, allocator, u32, @intCast(requests.len));
+    for (requests) |request| {
+        try appendBytes(list, allocator, request.text);
+        try values.encode(list, allocator, .{ .map = request.parameters });
+        if (list.items.len - start > max_request_bytes) return error.TooLarge;
+    }
 }
 
 /// Appends the bytes of `answer`; `error.TooLarge` past `max_answer_bytes`
@@ -90,38 +118,14 @@ pub fn encodeAnswer(list: *std.ArrayList(u8), allocator: Allocator, answer: Answ
     const start = list.items.len;
     switch (answer) {
         .done => |done| {
-            std.debug.assert(done.columns.len != 0 or done.rows.len == 0);
             try list.append(allocator, 0x00);
             try appendInt(list, allocator, u64, done.lsn);
-            try appendInt(list, allocator, u32, @intCast(done.columns.len));
-            for (done.columns) |column| try appendBytes(list, allocator, column);
-            try appendInt(list, allocator, u32, @intCast(done.rows.len));
-            for (done.rows) |row| {
-                std.debug.assert(row.len == done.columns.len);
-                for (row) |value| {
-                    try values.encode(list, allocator, value);
-                    if (list.items.len - start > max_answer_bytes) return error.TooLarge;
-                }
-            }
-            try appendInt(list, allocator, u32, done.entities.nodes.count());
-            var nodes = done.entities.nodes.iterator();
-            while (nodes.next()) |node| {
-                try appendInt(list, allocator, u64, node.key_ptr.*);
-                try appendInt(list, allocator, u32, @intCast(node.value_ptr.labels.len));
-                for (node.value_ptr.labels) |label| try appendBytes(list, allocator, label);
-                try appendProperties(list, allocator, node.value_ptr.properties);
-                if (list.items.len - start > max_answer_bytes) return error.TooLarge;
-            }
-            try appendInt(list, allocator, u32, done.entities.relationships.count());
-            var relationships = done.entities.relationships.iterator();
-            while (relationships.next()) |relationship| {
-                try values.encode(list, allocator, .{ .relationship = relationship.key_ptr.* });
-                try appendProperties(list, allocator, relationship.value_ptr.*);
-                if (list.items.len - start > max_answer_bytes) return error.TooLarge;
-            }
+            try appendInt(list, allocator, u32, @intCast(done.results.len));
+            for (done.results) |result| try appendResult(list, allocator, result, start);
         },
         .failed => |failure| {
             try list.append(allocator, 0x01);
+            try appendInt(list, allocator, u32, failure.statement);
             try appendInt(list, allocator, u32, failure.code);
             try appendInt(list, allocator, u32, failure.position);
             try appendBytes(list, allocator, failure.message);
@@ -136,6 +140,36 @@ pub fn encodeAnswer(list: *std.ArrayList(u8), allocator: Allocator, answer: Answ
 pub fn setAnswerLsn(bytes: []u8, lsn: u64) void {
     std.debug.assert(bytes[0] == 0x00);
     std.mem.writeInt(u64, bytes[1..9], lsn, .big);
+}
+
+fn appendResult(list: *std.ArrayList(u8), allocator: Allocator, result: Result, start: usize) EncodeError!void {
+    std.debug.assert(result.columns.len != 0 or result.rows.len == 0);
+    try appendInt(list, allocator, u32, @intCast(result.columns.len));
+    for (result.columns) |column| try appendBytes(list, allocator, column);
+    try appendInt(list, allocator, u32, @intCast(result.rows.len));
+    for (result.rows) |row| {
+        std.debug.assert(row.len == result.columns.len);
+        for (row) |value| {
+            try values.encode(list, allocator, value);
+            if (list.items.len - start > max_answer_bytes) return error.TooLarge;
+        }
+    }
+    try appendInt(list, allocator, u32, result.entities.nodes.count());
+    var nodes = result.entities.nodes.iterator();
+    while (nodes.next()) |node| {
+        try appendInt(list, allocator, u64, node.key_ptr.*);
+        try appendInt(list, allocator, u32, @intCast(node.value_ptr.labels.len));
+        for (node.value_ptr.labels) |label| try appendBytes(list, allocator, label);
+        try appendProperties(list, allocator, node.value_ptr.properties);
+        if (list.items.len - start > max_answer_bytes) return error.TooLarge;
+    }
+    try appendInt(list, allocator, u32, result.entities.relationships.count());
+    var relationships = result.entities.relationships.iterator();
+    while (relationships.next()) |relationship| {
+        try values.encode(list, allocator, .{ .relationship = relationship.key_ptr.* });
+        try appendProperties(list, allocator, relationship.value_ptr.*);
+        if (list.items.len - start > max_answer_bytes) return error.TooLarge;
+    }
 }
 
 fn appendInt(list: *std.ArrayList(u8), allocator: Allocator, comptime T: type, n: T) Allocator.Error!void {
@@ -159,18 +193,30 @@ fn appendProperties(list: *std.ArrayList(u8), allocator: Allocator, properties: 
 
 pub const DecodeError = values.DecodeError || error{MalformedMessage};
 
-/// The request `bytes` holds, whole. Its text is a view into `bytes`; the
-/// parameters are allocated with `allocator` (an arena suits).
-pub fn decodeRequest(bytes: []const u8, allocator: Allocator) DecodeError!Request {
+/// The statements of the request `bytes` holds, whole, at least one. Their
+/// text is a view into `bytes`; the statements and their parameters are
+/// allocated with `allocator` (an arena suits).
+pub fn decodeRequests(bytes: []const u8, allocator: Allocator) DecodeError![]const Request {
     if (bytes.len > max_request_bytes) return error.MalformedMessage;
     var cursor: Cursor = .{ .bytes = bytes };
-    const text = try cursor.take(try cursor.int(u32));
-    const parameters = values.decodeWhole(cursor.bytes, allocator) catch |err| return switch (err) {
-        error.MalformedValue => error.MalformedMessage,
-        else => |other| other,
-    };
-    if (parameters != .map) return error.MalformedMessage;
-    return .{ .text = text, .parameters = parameters.map };
+    // A text length and a parameter map's tag and count at least.
+    const requests = try allocator.alloc(Request, try cursor.count(9));
+    if (requests.len == 0) return error.MalformedMessage;
+    for (requests) |*request| {
+        const text = try cursor.take(try cursor.int(u32));
+        const parameters = try cursor.value(allocator);
+        if (parameters != .map) return error.MalformedMessage;
+        request.* = .{ .text = text, .parameters = parameters.map };
+    }
+    if (cursor.bytes.len != 0) return error.MalformedMessage;
+    return requests;
+}
+
+/// The statement of the request of one `bytes` holds, as `decodeRequests`.
+pub fn decodeRequest(bytes: []const u8, allocator: Allocator) DecodeError!Request {
+    const requests = try decodeRequests(bytes, allocator);
+    if (requests.len != 1) return error.MalformedMessage;
+    return requests[0];
 }
 
 /// The answer `bytes` holds, whole. Its names, labels and message are views
@@ -182,38 +228,13 @@ pub fn decodeAnswer(bytes: []const u8, allocator: Allocator) DecodeError!Answer 
     const answer: Answer = switch ((try cursor.take(1))[0]) {
         0x00 => done: {
             const lsn = try cursor.int(u64);
-            const columns = try allocator.alloc([]const u8, try cursor.count(4));
-            for (columns) |*column| column.* = try cursor.take(try cursor.int(u32));
-            // Each value takes a byte at least; without columns, no rows.
-            const row_count = try cursor.int(u32);
-            if (if (columns.len == 0) row_count != 0 else row_count > cursor.bytes.len / columns.len) return error.MalformedMessage;
-            const rows = try allocator.alloc([]const Value, row_count);
-            for (rows) |*row| {
-                const row_values = try allocator.alloc(Value, columns.len);
-                for (row_values) |*value| value.* = try cursor.value(allocator);
-                row.* = row_values;
-            }
-            var entities: EntitySnapshot = .{};
-            // An id, a label count and a property count at least.
-            for (0..try cursor.count(16)) |_| {
-                const id = try cursor.int(u64);
-                const labels = try allocator.alloc([]const u8, try cursor.count(4));
-                for (labels) |*label| label.* = try cursor.take(try cursor.int(u32));
-                const entry = try entities.nodes.getOrPut(allocator, id);
-                if (entry.found_existing) return error.MalformedMessage;
-                entry.value_ptr.* = .{ .labels = labels, .properties = try cursor.properties(allocator) };
-            }
-            // A relationship's tag, ids, type length and property count.
-            for (0..try cursor.count(33)) |_| {
-                const relationship = try cursor.value(allocator);
-                if (relationship != .relationship) return error.MalformedMessage;
-                const entry = try entities.relationships.getOrPutContext(allocator, relationship.relationship, .{});
-                if (entry.found_existing) return error.MalformedMessage;
-                entry.value_ptr.* = try cursor.properties(allocator);
-            }
-            break :done .{ .done = .{ .lsn = lsn, .columns = columns, .rows = rows, .entities = entities } };
+            // A column count, a row count and two entity counts at least.
+            const results = try allocator.alloc(Result, try cursor.count(16));
+            for (results) |*result| result.* = try cursor.result(allocator);
+            break :done .{ .done = .{ .lsn = lsn, .results = results } };
         },
         0x01 => .{ .failed = .{
+            .statement = try cursor.int(u32),
             .code = try cursor.int(u32),
             .position = try cursor.int(u32),
             .message = try cursor.take(try cursor.int(u32)),
@@ -227,6 +248,39 @@ pub fn decodeAnswer(bytes: []const u8, allocator: Allocator) DecodeError!Answer 
 /// Reads from the front of a request's or an answer's bytes.
 const Cursor = struct {
     bytes: []const u8,
+
+    fn result(self: *Cursor, allocator: Allocator) DecodeError!Result {
+        const columns = try allocator.alloc([]const u8, try self.count(4));
+        for (columns) |*column| column.* = try self.take(try self.int(u32));
+        // Each value takes a byte at least; without columns, no rows.
+        const row_count = try self.int(u32);
+        if (if (columns.len == 0) row_count != 0 else row_count > self.bytes.len / columns.len) return error.MalformedMessage;
+        const rows = try allocator.alloc([]const Value, row_count);
+        for (rows) |*row| {
+            const row_values = try allocator.alloc(Value, columns.len);
+            for (row_values) |*row_value| row_value.* = try self.value(allocator);
+            row.* = row_values;
+        }
+        var entities: EntitySnapshot = .{};
+        // An id, a label count and a property count at least.
+        for (0..try self.count(16)) |_| {
+            const id = try self.int(u64);
+            const labels = try allocator.alloc([]const u8, try self.count(4));
+            for (labels) |*label| label.* = try self.take(try self.int(u32));
+            const entry = try entities.nodes.getOrPut(allocator, id);
+            if (entry.found_existing) return error.MalformedMessage;
+            entry.value_ptr.* = .{ .labels = labels, .properties = try self.properties(allocator) };
+        }
+        // A relationship's tag, ids, type length and property count.
+        for (0..try self.count(33)) |_| {
+            const relationship = try self.value(allocator);
+            if (relationship != .relationship) return error.MalformedMessage;
+            const entry = try entities.relationships.getOrPutContext(allocator, relationship.relationship, .{});
+            if (entry.found_existing) return error.MalformedMessage;
+            entry.value_ptr.* = try self.properties(allocator);
+        }
+        return .{ .columns = columns, .rows = rows, .entities = entities };
+    }
 
     fn take(self: *Cursor, length: usize) error{MalformedMessage}![]const u8 {
         if (self.bytes.len < length) return error.MalformedMessage;

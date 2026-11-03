@@ -69,6 +69,18 @@ test "a request reads back as written" {
         try testing.expectEqualStrings(request.text, decoded.text);
         try testing.expect(Value.eql(.{ .map = request.parameters }, .{ .map = decoded.parameters }));
     }
+
+    // A batch, in order; a request of one is not a batch of another length.
+    var bytes = std.ArrayList(u8).empty;
+    try forwarding.encodeRequests(&bytes, a, &requests);
+    const decoded = try forwarding.decodeRequests(bytes.items, a);
+    try testing.expectEqual(requests.len, decoded.len);
+    for (requests, decoded) |request, statement| {
+        try testing.expectEqualStrings(request.text, statement.text);
+        try testing.expect(Value.eql(.{ .map = request.parameters }, .{ .map = statement.parameters }));
+    }
+    try testing.expectError(error.MalformedMessage, forwarding.decodeRequest(bytes.items, a));
+    try testing.expectError(error.MalformedMessage, forwarding.decodeRequests("\x00\x00\x00\x00", a));
 }
 
 test "an answer reads back as written" {
@@ -76,14 +88,19 @@ test "an answer reads back as written" {
     defer arena.deinit();
     const a = arena.allocator();
     const answers = [_]forwarding.Answer{
-        .{ .done = .{ .lsn = 42, .columns = &.{ "n", "r" }, .rows = &.{
+        .{ .done = .{ .lsn = 42, .results = &.{.{ .columns = &.{ "n", "r" }, .rows = &.{
             &.{ .{ .node = 1 }, .{ .relationship = knows } },
             &.{ .null, .{ .list = &.{ .{ .int = 1 }, .{ .string = "a" } } } },
             &.{ .{ .node = 2 }, .null },
-        }, .entities = try snapshot(a) } },
-        .{ .done = .{ .lsn = 0, .columns = &.{}, .rows = &.{} } },
-        .{ .done = .{ .lsn = 1, .columns = &.{"count"}, .rows = &.{} } },
-        .{ .failed = .{ .code = 10, .position = 0, .message = "Node(3) already exists with label `Door` and property `name` = 'B7'" } },
+        }, .entities = try snapshot(a) }} } },
+        .{ .done = .{ .lsn = 0, .results = &.{.{ .columns = &.{}, .rows = &.{} }} } },
+        // A batch's: a result per statement.
+        .{ .done = .{ .lsn = 1, .results = &.{
+            .{ .columns = &.{"count"}, .rows = &.{} },
+            .{ .columns = &.{}, .rows = &.{} },
+            .{ .columns = &.{"n"}, .rows = &.{&.{.{ .node = 1 }}}, .entities = try snapshot(a) },
+        } } },
+        .{ .failed = .{ .statement = 2, .code = 10, .position = 0, .message = "Node(3) already exists with label `Door` and property `name` = 'B7'" } },
         .{ .failed = .{ .code = 999, .position = 12, .message = "" } },
     };
     for (answers) |answer| {
@@ -93,13 +110,17 @@ test "an answer reads back as written" {
         switch (answer) {
             .done => |done| {
                 try testing.expectEqual(done.lsn, decoded.done.lsn);
-                try testing.expectEqual(done.columns.len, decoded.done.columns.len);
-                for (done.columns, decoded.done.columns) |x, y| try testing.expectEqualStrings(x, y);
-                try testing.expectEqual(done.rows.len, decoded.done.rows.len);
-                for (done.rows, decoded.done.rows) |x, y| try testing.expect(Value.eql(.{ .list = x }, .{ .list = y }));
-                try expectSameEntities(done.entities, decoded.done.entities);
+                try testing.expectEqual(done.results.len, decoded.done.results.len);
+                for (done.results, decoded.done.results) |result, decoded_result| {
+                    try testing.expectEqual(result.columns.len, decoded_result.columns.len);
+                    for (result.columns, decoded_result.columns) |x, y| try testing.expectEqualStrings(x, y);
+                    try testing.expectEqual(result.rows.len, decoded_result.rows.len);
+                    for (result.rows, decoded_result.rows) |x, y| try testing.expect(Value.eql(.{ .list = x }, .{ .list = y }));
+                    try expectSameEntities(result.entities, decoded_result.entities);
+                }
             },
             .failed => |failure| {
+                try testing.expectEqual(failure.statement, decoded.failed.statement);
                 try testing.expectEqual(failure.code, decoded.failed.code);
                 try testing.expectEqual(failure.position, decoded.failed.position);
                 try testing.expectEqualStrings(failure.message, decoded.failed.message);
@@ -116,26 +137,27 @@ test "malformed requests and answers are refused" {
     defer arena.deinit();
     const a = arena.allocator();
     const requests = [_][]const u8{
-        "", // no text length
-        "\x00\x00\x00\x05abc", // a text shorter than its length
-        "\x00\x00\x00\x00", // no parameters
-        "\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01", // parameters that are no map
-        "\x00\x00\x00\x00\x06\x00\x00\x00\x00\x00", // something after the parameters
+        "", // no statement count
+        "\x00\x00\x00\x01", // no text length
+        "\x00\x00\x00\x01" ++ "\x00\x00\x00\x05abc", // a text shorter than its length
+        "\x00\x00\x00\x01" ++ "\x00\x00\x00\x00", // no parameters
+        "\x00\x00\x00\x01" ++ "\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01", // parameters that are no map
+        "\x00\x00\x00\x01" ++ "\x00\x00\x00\x00\x06\x00\x00\x00\x00\x00", // something after the parameters
     };
     for (requests) |bytes| try testing.expectError(error.MalformedMessage, forwarding.decodeRequest(bytes, a));
     const answers = [_][]const u8{
         "", // no kind
         "\x02", // an unknown kind
-        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x01", // a row with no columns
-        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x00\x01n" ++ "\xff\xff\xff\xff", // more rows than bytes
-        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\xff\xff\xff\xff", // more columns than bytes
-        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00", // no entities
-        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x02" ++
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x01", // a row with no columns
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x00\x01n" ++ "\xff\xff\xff\xff", // more rows than bytes
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\xff\xff\xff\xff", // more columns than bytes
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00", // no entities
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x02" ++
             node_seven ++ node_seven ++ "\x00\x00\x00\x00", // a node given twice
-        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x01" ++
+        "\x00\x00\x00\x00\x00\x00\x00\x00\x01" ++ "\x00\x00\x00\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x01" ++
             "\x07\x00\x00\x00\x00\x00\x00\x00\x07" ++ node_seven ++ "\x00\x00\x00\x00\x00\x00\x00\x00", // a relationship that is a node
-        "\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x09oops", // a message shorter than its length
-        "\x01\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00", // something after the message
+        "\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x09oops", // a message shorter than its length
+        "\x01" ++ "\x00\x00\x00\x00" ++ "\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00", // something after the message
     };
     for (answers) |bytes| try testing.expectError(error.MalformedMessage, forwarding.decodeAnswer(bytes, a));
 }
@@ -148,7 +170,7 @@ test "every request and answer cut short is refused" {
     try forwarding.encodeRequest(&request, a, .{ .text = "CREATE (n)", .parameters = &.{.{ .key = "x", .value = .{ .int = 1 } }} });
     for (0..request.items.len) |length| try testing.expectError(error.MalformedMessage, forwarding.decodeRequest(request.items[0..length], a));
     var answer = std.ArrayList(u8).empty;
-    try forwarding.encodeAnswer(&answer, a, .{ .done = .{ .lsn = 5, .columns = &.{ "n", "r" }, .rows = &.{&.{ .{ .node = 1 }, .{ .relationship = knows } }}, .entities = try snapshot(a) } });
+    try forwarding.encodeAnswer(&answer, a, .{ .done = .{ .lsn = 5, .results = &.{.{ .columns = &.{ "n", "r" }, .rows = &.{&.{ .{ .node = 1 }, .{ .relationship = knows } }}, .entities = try snapshot(a) }} } });
     for (0..answer.items.len) |length| try testing.expectError(error.MalformedMessage, forwarding.decodeAnswer(answer.items[0..length], a));
 }
 
@@ -165,7 +187,7 @@ test "a request or an answer past its limit is refused when written" {
     const rows = try a.alloc([]const Value, forwarding.max_answer_bytes / (1 << 20) + 1);
     @memset(rows, row);
     var answer = std.ArrayList(u8).empty;
-    try testing.expectError(error.TooLarge, forwarding.encodeAnswer(&answer, a, .{ .done = .{ .lsn = 1, .columns = &.{"s"}, .rows = rows } }));
+    try testing.expectError(error.TooLarge, forwarding.encodeAnswer(&answer, a, .{ .done = .{ .lsn = 1, .results = &.{.{ .columns = &.{"s"}, .rows = rows }} } }));
 }
 
 test "parts join in order, one id at a time, within the limit" {

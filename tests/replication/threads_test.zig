@@ -452,7 +452,7 @@ test "a write a replica forwards runs on the master and is answered" {
         try testing.expect(part.final);
         const done = (try forwarding.decodeAnswer(try a.dupe(u8, part.bytes), a)).done;
         try testing.expectEqual((try setup.master.changeLogState()).?.next_lsn - 1, done.lsn);
-        try testing.expect(Value.eql(.{ .string = name }, done.rows[0][0]));
+        try testing.expect(Value.eql(.{ .string = name }, done.results[0].rows[0][0]));
     }
     // A replica of another master is refused.
     var other_id = (try setup.master.databaseId()).?;
@@ -539,7 +539,7 @@ test "a forwarder sends writes to the master from more threads than its window, 
                 if (outcome != .answer) return error.NotAnswered;
                 defer testing.allocator.free(outcome.answer);
                 const done = (try forwarding.decodeAnswer(try a.dupe(u8, outcome.answer), a)).done;
-                if (!Value.eql(.{ .int = @intCast(number) }, done.rows[0][0])) return error.WrongAnswer;
+                if (!Value.eql(.{ .int = @intCast(number) }, done.results[0].rows[0][0])) return error.WrongAnswer;
             }
         }
     };

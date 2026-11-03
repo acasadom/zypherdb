@@ -161,6 +161,22 @@ query that writes, and `write()` blocks. Only queries are forwarded: the mutator
 `set_property`...) still raise `StorageError` on a replica. Schema statements (`CREATE INDEX`,
 `CREATE CONSTRAINT`) are forwarded; `EXPLAIN` and `SHOW` run on the replica.
 
+Several writes that belong together go as one `write_many` (see the [Python
+reference](python.md)): one request, one transaction on the
+master, one round trip, and one wait for the change to come back:
+
+```python
+card, door = edge.write_many([
+    ("CREATE (c:Card {number: $number}) RETURN c.number", {"number": 77}),
+    ("MATCH (c:Card {number: $number}) CREATE (c)-[:OPENS]->(d:Door {name: 'B7'}) RETURN d.name", {"number": 77}),
+])
+print(card, door, door.visible)
+```
+
+```text
+[[77]] [['B7']] True
+```
+
 ```python
 edge.close()
 replica.close()

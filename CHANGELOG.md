@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **`write_many`** (Python) and `zypherdb_write_many` (C): several queries in one transaction,
+  each seeing what the ones before it wrote, committed together or not at all; the error tells
+  which query failed. On a replica that forwards writes, a batch that writes goes to the master
+  as one request.
+
 ## 0.1.0 — 2026-10-28
 
 The first release.

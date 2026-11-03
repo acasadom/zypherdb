@@ -117,6 +117,8 @@ pub const PlanOptions = @import("planning/builder.zig").Options;
 /// Prepared statements, and the cache of those `query` calls prepare.
 pub const Statement = @import("statement/Statement.zig");
 pub const StatementCache = @import("statement/Cache.zig");
+/// Several statements run in one transaction (`write_many`).
+pub const batch = @import("statement/batch.zig");
 
 pub const diagnostics = @import("diagnostics.zig");
 

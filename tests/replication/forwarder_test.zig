@@ -177,7 +177,7 @@ fn expectAnswered(bench: *Bench, arena: std.mem.Allocator, outcome: Outcome, nam
     defer testing.allocator.free(bytes);
     const done = (try forwarding.decodeAnswer(try arena.dupe(u8, bytes), arena)).done;
     try testing.expectEqual(try bench.lastLsn(), done.lsn);
-    try testing.expect(Value.eql(.{ .string = name }, done.rows[0][0]));
+    try testing.expect(Value.eql(.{ .string = name }, done.results[0].rows[0][0]));
 }
 
 const create_door = "CREATE (d:Door {name: $name}) RETURN d.name AS name";

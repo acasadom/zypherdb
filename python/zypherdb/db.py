@@ -351,13 +351,48 @@ class Database:
                 return result
             return self._forward(session, result)
 
-    def _forward(self, session: "_Session", pending) -> Rows:
-        """Sends a write to the master and returns its rows once this replica
-        has it: only the thread that wrote waits."""
+    def write_many(self, statements) -> list[Rows]:
+        """Run several queries in one transaction and return the rows of each.
+
+        Each item is a query's text, or its text and parameters::
+
+            doors, counted = db.write_many([
+                ("CREATE (d:Door {name: $name}) RETURN d", {"name": "B7"}),
+                "MATCH (d:Door) RETURN count(d)",
+            ])
+
+        They run in order, each seeing what the ones before it wrote, and
+        commit together: if one fails, none does, and the :class:`QueryError`
+        raised has its index in ``statement`` (None when no query failed: the
+        commit did). On a replica that forwards writes, a batch that writes
+        goes to the master as one request. A batch holds no schema command,
+        EXPLAIN, PROFILE, LOAD CSV or procedure from `define_procedure`.
+        """
+        pairs = []
+        for statement in statements:
+            if isinstance(statement, str):
+                pairs.append((statement, None))
+            else:
+                text, parameters = statement
+                pairs.append((text, parameters))
+        if not pairs:
+            return []
+        with self._calls as session:
+            if session.in_write:
+                raise ZypherDBError("write_many() cannot run inside a write() block")
+            results = native.write_many(session.handle, pairs)
+            if type(results) is list:
+                return results
+            return self._forward(session, results, native.forward_results)
+
+    def _forward(self, session: "_Session", pending, results=native.forward_rows):
+        """Sends a write (or a batch, `results` then `native.forward_results`)
+        to the master and returns its rows once this replica has it: only the
+        thread that wrote waits."""
         lsn, visible, left_ms = native.forward_send(pending)
         if visible is None:  # standing by: no follower to wait on here
             visible = self._applied(session, lsn, left_ms / 1000)
-        return native.forward_rows(pending, visible)
+        return results(pending, visible)
 
     def _applied(self, session: "_Session", lsn: int, timeout: float) -> bool:
         """Whether this replica applies change `lsn` within `timeout` seconds,

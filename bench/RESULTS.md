@@ -280,7 +280,9 @@ bench-change-log -Doptimize=ReleaseFast` measures it without Python: 10.2 µs a 
 log, 14.4 µs with it, 13.7 µs with it full). A forwarded write costs about 65 µs more than one on
 the master: the round trip and the change coming back to the replica. A replica keeps several
 forwarded writes on their way at once: from 4 threads it forwards about 26,000 writes a second,
-nearly as many as 4 threads on the master (24,000-30,000). A replica has a write on the master
+nearly as many as 4 threads on the master (24,000-30,000). Writes that go together are cheaper as one
+`write_many`: 10 single-node writes in one call take about 57 µs on the master (160,000 writes a
+second) and 140 µs forwarded (70,000 a second, one round trip for the ten). A replica has a write on the master
 about 45-50 µs later (median; p95 about 70 µs).
 
 **Writes**, `durability="full"`: a commit waits for the disk (8 ms on this laptop), and that is
