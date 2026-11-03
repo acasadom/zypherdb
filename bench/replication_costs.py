@@ -9,7 +9,8 @@ write).
    there (its lag).
 3. Reads on a replica that forwards writes (`forward_writes=True`), when it
    forwards none: what being able to forward costs.
-4. Writes forwarded by a replica, one thread and several.
+4. Writes forwarded by a replica, one thread and several, and batches
+   (`write_many`) of them.
 
     zig build python -Doptimize=ReleaseFast -Dpython-include=...
     python bench/replication_costs.py --durability deferred
@@ -38,6 +39,8 @@ READS = [
     ("scan + filter", "MATCH (p:Person) WHERE p.age > 60 RETURN count(*)"),
 ]
 WRITE = "CREATE (:Event {id: $id})"
+# The writes of a `write_many` measured.
+BATCH = 10
 
 
 # --- The process that holds a database ------------------------------------------
@@ -130,19 +133,24 @@ def reads(db: Database, people: int, runs: int) -> dict[str, list[int]]:
     return samples
 
 
-def writes(db: Database, runs: int, threads: int, first_id: int) -> dict:
-    """`runs` single-node writes from `threads` threads: each one's latency,
-    the commit times on this side (lsn, monotonic ns), and the wall time."""
+def writes(db: Database, runs: int, threads: int, first_id: int, batch: int = 1) -> dict:
+    """`runs` single-node writes from `threads` threads, `batch` to a
+    transaction (`write_many` past one): each call's latency, the commit
+    times on this side (lsn, monotonic ns), and the wall time."""
     latencies: list[int] = []
     commits: list[tuple[int, int]] = []
     lock = threading.Lock()
-    per_thread = runs // threads
+    per_thread = runs // threads // batch * batch
 
     def work(offset: int) -> None:
         mine, stamps = [], []
-        for i in range(per_thread):
+        for i in range(0, per_thread, batch):
+            first = first_id + offset * per_thread + i
             start = time.perf_counter_ns()
-            db.query(WRITE, id=first_id + offset * per_thread + i)
+            if batch == 1:
+                db.query(WRITE, id=first)
+            else:
+                db.write_many([(WRITE, {"id": first + j}) for j in range(batch)])
             end = time.perf_counter_ns()
             mine.append(end - start)
             if threads == 1:
@@ -281,7 +289,9 @@ def main() -> None:
         print_writes([("on the master (one replica)", write_rows[2][1]),
                       ("forwarded", forwarding.call("writes", runs, 1, next(next_id))),
                       (f"on the master, {args.threads} threads", write_rows[4][1]),
-                      (f"forwarded, {args.threads} threads", forwarding.call("writes", runs, args.threads, next(next_id)))])
+                      (f"forwarded, {args.threads} threads", forwarding.call("writes", runs, args.threads, next(next_id))),
+                      (f"on the master, write_many of {BATCH} (a call)", master.call("writes", runs, 1, next(next_id), BATCH)),
+                      (f"forwarded, write_many of {BATCH} (a call)", forwarding.call("writes", runs, 1, next(next_id), BATCH))])
 
         forwarding.stop()
         master.stop()

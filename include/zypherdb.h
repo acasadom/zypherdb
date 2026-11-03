@@ -90,6 +90,10 @@ bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout
 const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_len);
 /* The directory LOAD CSV reads from; path_len 0 turns LOAD CSV off (as after opening). */
 int zypherdb_set_import_directory(zypherdb_context *context, const char *path, size_t path_len);
+/* Another session on the database of context, for another thread (with the context's import
+ * directory); a context is used by one thread at a time. NULL when out of memory. */
+zypherdb_context *zypherdb_open_session(zypherdb_context *context);
+/* Closes a context; closing the last session of a database closes the database. */
 void zypherdb_close(zypherdb_context *context);
 const char *zypherdb_last_error(zypherdb_context *context, size_t *out_len);
 int zypherdb_error_code(zypherdb_context *context);
@@ -111,6 +115,17 @@ zypherdb_result *zypherdb_query(zypherdb_context *context, const char *query, si
 zypherdb_result *zypherdb_query_with_parameters(zypherdb_context *context, const char *query, size_t query_len,
                                             const char *parameters_json, size_t parameters_len);
 void zypherdb_result_free(zypherdb_result *result);
+/* Several queries in one transaction, in order: each sees what the ones before
+ * it wrote; they commit together or, if one fails, none does. parameters_json
+ * (or any of its entries) may be NULL: no parameters. Returns 0 and fills
+ * out_results[0..count] (free each), or 1 and fills nothing:
+ * zypherdb_error_statement then gives the index of the query that failed
+ * (SIZE_MAX: none did, e.g. the commit). No schema command, EXPLAIN, PROFILE,
+ * LOAD CSV or defined procedure in a batch. */
+int zypherdb_write_many(zypherdb_context *context, size_t count, const char *const *queries,
+                        const size_t *query_lens, const char *const *parameters_json,
+                        const size_t *parameters_lens, zypherdb_result **out_results);
+size_t zypherdb_error_statement(zypherdb_context *context);
 /* False for a write forwarded to the master that the replica had not applied in time. */
 bool zypherdb_result_visible(const zypherdb_result *result);
 

@@ -5,14 +5,16 @@
 //! `ForwardingNode` holds that connection on one thread, with no thread
 //! of its own, like replica_node.zig: it connects when the first request
 //! comes, keeps the connection while the master heartbeats (acking each),
-//! and connects again for the next request once it is lost. One request at
-//! a time: `request` hands it over, `take` tells how it ended. A request
-//! that did not reach the master whole (the connection lost, or a master
-//! that may be starting turned it away) is sent once more on a new
-//! connection; one lost once delivered ends `unknown`: the master may have
-//! run it. Whoever runs it waits on what `watch` tells until `deadline`,
-//! hands back what was `ready`, then calls `step`: a `Forwarder` on a
-//! thread of its own, or a simulation.
+//! and connects again for the next request once it is lost. Requests go one
+//! after the other on that connection, up to `protocol.max_writes_in_flight`
+//! waiting for their answers: `request` hands one over while there is
+//! `room`, `take` tells how each ended. A request that did not reach the
+//! master whole (the connection lost, or a master that may be starting
+//! turned it away) is sent once more on a new connection; one lost once
+//! delivered ends `unknown`: the master may have run it. Whoever runs it
+//! waits on what `watch` tells until `deadline`, hands back what was
+//! `ready`, then calls `step`: a `Forwarder` on a thread of its own, or a
+//! simulation.
 
 const std = @import("std");
 const Io = std.Io;
@@ -82,19 +84,25 @@ pub const ForwardingNode = struct {
     wakeup_ready: bool = false,
     /// The connection to the master, if one is held.
     conversation: ?*Conversation = null,
-    /// The request in hand, until it ends.
-    pending: ?Pending = null,
-    /// How the last request ended, until taken.
-    finished: ?Finished = null,
+    /// The requests handed over, in order, until they end; and those that
+    /// ended out of time while the connection still holds them.
+    pending: std.ArrayList(Pending),
+    /// How requests ended, in order, until taken.
+    finished: std.ArrayList(Finished),
 
     const Pending = struct {
         id: u64,
-        /// The caller's, untouched until the request ends.
-        bytes: []const u8,
+        /// A copy of the caller's, the node's.
+        bytes: []u8,
         /// When it was handed over: it ends by `request_timeout_ns` after.
         since: Instant,
-        /// The connections it was sent on.
+        /// The connections it was sent on, failed to open, or turned away.
         attempts: u8 = 0,
+        /// Handed to the session of the connection held.
+        handed: bool = false,
+        /// Ended out of time, its caller told; kept until its answer comes
+        /// or the connection ends, so the session may still send it.
+        ended: bool = false,
     };
 
     /// The most connections a request is sent on.
@@ -103,21 +111,30 @@ pub const ForwardingNode = struct {
     /// Forwards for the database of `store`, a replica's or a standby's;
     /// each hello tells its database id.
     pub fn init(allocator: Allocator, net: Network, store: *KeyValueStore, wakeup: Wakeup, options: Options) !ForwardingNode {
+        var pending: std.ArrayList(Pending) = try .initCapacity(allocator, 2 * protocol.max_writes_in_flight);
+        errdefer pending.deinit(allocator);
+        var finished: std.ArrayList(Finished) = try .initCapacity(allocator, protocol.max_writes_in_flight);
+        errdefer finished.deinit(allocator);
         return .{
             .allocator = allocator,
             .network = net,
             .options = options,
             .store = try store.share(),
             .wakeup = wakeup,
+            .pending = pending,
+            .finished = finished,
         };
     }
 
-    /// Closes the connection, if one is held; a request in hand ends with
-    /// it, untold, and an outcome not taken is freed. The wakeup stays the
+    /// Closes the connection, if one is held; requests in hand end with
+    /// it, untold, and outcomes not taken are freed. The wakeup stays the
     /// owner's.
     pub fn deinit(self: *ForwardingNode) void {
         if (self.conversation) |conversation| self.forget(conversation);
-        if (self.finished) |finished| self.free(finished.outcome);
+        for (self.pending.items) |pending| self.allocator.free(pending.bytes);
+        self.pending.deinit(self.allocator);
+        for (self.finished.items) |finished| self.free(finished.outcome);
+        self.finished.deinit(self.allocator);
         self.store.deinit();
     }
 
@@ -126,40 +143,49 @@ pub const ForwardingNode = struct {
         if (outcome == .answer) self.allocator.free(outcome.answer);
     }
 
-    /// Hands over the request `bytes` (forwarding.zig) under `id`, at `now`,
-    /// once the last one ended and was taken; they stay the caller's,
-    /// untouched until it ends. `step` sends it.
-    pub fn request(self: *ForwardingNode, id: u64, bytes: []const u8, now: Instant) void {
-        std.debug.assert(self.pending == null and self.finished == null);
-        self.pending = .{ .id = id, .bytes = bytes, .since = now };
+    /// Whether `request` may hand one more over: fewer than
+    /// `protocol.max_writes_in_flight` are in hand or ended and not taken.
+    pub fn room(self: *const ForwardingNode) bool {
+        var in_hand: usize = 0;
+        for (self.pending.items) |pending| {
+            if (!pending.ended) in_hand += 1;
+        }
+        return in_hand + self.finished.items.len < protocol.max_writes_in_flight;
     }
 
-    /// How the request handed over ended, once it did.
+    /// Hands over the request `bytes` (forwarding.zig) under `id`, handed
+    /// to the node's owner at `since`, while there is `room`; the node
+    /// copies them. `step` sends it, after those handed before.
+    pub fn request(self: *ForwardingNode, id: u64, bytes: []const u8, since: Instant) void {
+        std.debug.assert(self.room());
+        const copy = self.allocator.dupe(u8, bytes) catch |err| {
+            self.finished.appendAssumeCapacity(.{ .id = id, .outcome = .{ .failed = err } });
+            return;
+        };
+        self.pending.appendAssumeCapacity(.{ .id = id, .bytes = copy, .since = since });
+    }
+
+    /// How the oldest request ended of those that did and were not taken.
     pub fn take(self: *ForwardingNode) ?Finished {
-        defer self.finished = null;
-        return self.finished;
+        if (self.finished.items.len == 0) return null;
+        return self.finished.orderedRemove(0);
     }
 
-    /// Moves the request on at `now`, with what was `ready`: connects when
-    /// one waits and no connection is held, receives, sends; ends the
-    /// conversation on any failure, and the request with it once it may
-    /// not be sent again.
+    /// Moves the requests on at `now`, with what was `ready`: connects
+    /// when some wait and no connection is held, receives, sends; ends the
+    /// conversation on any failure, and each request with it that may not
+    /// be sent again.
     pub fn step(self: *ForwardingNode, now: Instant) void {
         self.clearWakeup();
-        if (self.pending) |pending| if (now >= pending.since + self.options.request_timeout_ns) {
-            log.info("a forwarded write took too long", .{});
-            self.end(if (self.delivered()) .unknown else .master_unreachable);
-            if (self.conversation) |conversation| self.forget(conversation);
-        };
+        self.endOutOfTime(now);
         while (true) {
             if (self.conversation == null) {
-                const pending = &(self.pending orelse return);
-                pending.attempts += 1;
+                if (!self.anyWaiting()) return;
                 self.conversation = self.connect(now) catch |err| {
                     log.info("connecting to the master to forward a write failed: {t}", .{err});
                     switch (err) {
-                        error.NoCopy, error.OutOfMemory => self.end(.{ .failed = err }),
-                        else => self.lost(false),
+                        error.NoCopy, error.OutOfMemory => self.endWaiting(.{ .failed = err }),
+                        else => self.turnedAway(null),
                     }
                     continue;
                 };
@@ -170,9 +196,7 @@ pub const ForwardingNode = struct {
             } else |err| {
                 log.info("the connection for forwarded writes ended: {t}", .{err});
             }
-            const was_delivered = self.delivered();
-            self.forget(conversation);
-            if (self.pending != null) self.lost(was_delivered);
+            self.lost(conversation);
         }
     }
 
@@ -200,7 +224,8 @@ pub const ForwardingNode = struct {
     pub fn deadline(self: *const ForwardingNode) ?Instant {
         var earliest: ?Instant = null;
         if (self.conversation) |conversation| earliest = conversation.session.deadline();
-        if (self.pending) |pending| {
+        for (self.pending.items) |pending| {
+            if (pending.ended) continue;
             const expiry = pending.since + self.options.request_timeout_ns;
             earliest = if (earliest) |known| @min(known, expiry) else expiry;
         }
@@ -214,23 +239,138 @@ pub const ForwardingNode = struct {
         if (watched.len > 1) self.conversation.?.readable = watched[1].ready.readable;
     }
 
-    /// Whether the master may have the request in hand.
-    fn delivered(self: *const ForwardingNode) bool {
-        const conversation = self.conversation orelse return false;
-        return self.pending != null and conversation.session.delivered();
+    /// Whether a request waits for a connection.
+    fn anyWaiting(self: *const ForwardingNode) bool {
+        for (self.pending.items) |pending| {
+            if (!pending.ended and !pending.handed) return true;
+        }
+        return false;
     }
 
-    /// The request's connection was lost, once it reached the master
-    /// (`delivered`) or before: sent again unless it may have run or was
-    /// sent on its last.
-    fn lost(self: *ForwardingNode, was_delivered: bool) void {
-        if (was_delivered) return self.end(.unknown);
-        if (self.pending.?.attempts >= max_attempts) self.end(.master_unreachable);
+    /// Ends each request that took too long: `unknown` if the session may
+    /// send it yet, or sent it.
+    fn endOutOfTime(self: *ForwardingNode, now: Instant) void {
+        var index: usize = 0;
+        while (index < self.pending.items.len) {
+            const pending = &self.pending.items[index];
+            if (pending.ended or now < pending.since + self.options.request_timeout_ns) {
+                index += 1;
+                continue;
+            }
+            log.info("a forwarded write took too long", .{});
+            const kept = pending.handed and !self.conversation.?.session.withdraw(pending.id);
+            if (!kept) {
+                self.end(index, .master_unreachable);
+                continue;
+            }
+            self.finished.appendAssumeCapacity(.{ .id = pending.id, .outcome = .unknown });
+            pending.ended = true;
+            index += 1;
+        }
     }
 
-    fn end(self: *ForwardingNode, outcome: Outcome) void {
-        self.finished = .{ .id = self.pending.?.id, .outcome = outcome };
-        self.pending = null;
+    /// The answer to request `id` came: its bytes are the node's.
+    fn answered(self: *ForwardingNode, id: u64, bytes: []u8) void {
+        const index = self.indexOf(id) orelse unreachable;
+        if (!self.pending.items[index].ended) return self.end(index, .{ .answer = bytes });
+        self.allocator.free(bytes);
+        self.remove(index);
+    }
+
+    /// The connection is lost: each request handed to it that reached the
+    /// master ends `unknown`; the others, and those waiting for it, wait
+    /// for the next unless it was their last.
+    fn lost(self: *ForwardingNode, conversation: *Conversation) void {
+        // Before those handed to it are told from those waiting; a refusal
+        // counted already.
+        if (conversation.session.state != .refused) self.turnedAway(null);
+        var index: usize = 0;
+        while (index < self.pending.items.len) {
+            const pending = &self.pending.items[index];
+            if (pending.ended) {
+                self.remove(index);
+                continue;
+            }
+            if (!pending.handed) {
+                index += 1;
+                continue;
+            }
+            if (conversation.session.delivered(pending.id)) {
+                self.end(index, .unknown);
+                continue;
+            }
+            if (pending.attempts >= max_attempts) {
+                self.end(index, .master_unreachable);
+                continue;
+            }
+            pending.handed = false;
+            index += 1;
+        }
+        self.forget(conversation);
+    }
+
+    /// A connection failed to open, was lost, or the master turned it
+    /// away (`refusal`): each request waiting, not handed to it, ends
+    /// unless it may be tried once more.
+    fn turnedAway(self: *ForwardingNode, refusal: ?protocol.Refusal) void {
+        var index: usize = 0;
+        while (index < self.pending.items.len) {
+            const pending = &self.pending.items[index];
+            if (pending.ended or pending.handed) {
+                index += 1;
+                continue;
+            }
+            pending.attempts += 1;
+            if (refusal) |reason| if (reason.permanent() or pending.attempts >= max_attempts) {
+                self.end(index, .{ .refused = reason });
+                continue;
+            };
+            if (pending.attempts >= max_attempts) {
+                self.end(index, .master_unreachable);
+                continue;
+            }
+            index += 1;
+        }
+    }
+
+    fn endWaiting(self: *ForwardingNode, outcome: Outcome) void {
+        var index: usize = 0;
+        while (index < self.pending.items.len) {
+            const pending = self.pending.items[index];
+            if (pending.ended or pending.handed) {
+                index += 1;
+                continue;
+            }
+            self.end(index, outcome);
+        }
+    }
+
+    /// Hands the session every request waiting, in order, while it takes
+    /// more.
+    fn hand(self: *ForwardingNode, session: *ForwardingSession) void {
+        for (self.pending.items) |*pending| {
+            if (session.full()) return;
+            if (pending.ended or pending.handed) continue;
+            session.request(pending.id, pending.bytes);
+            pending.handed = true;
+            pending.attempts += 1;
+        }
+    }
+
+    fn end(self: *ForwardingNode, index: usize, outcome: Outcome) void {
+        self.finished.appendAssumeCapacity(.{ .id = self.pending.items[index].id, .outcome = outcome });
+        self.remove(index);
+    }
+
+    fn remove(self: *ForwardingNode, index: usize) void {
+        self.allocator.free(self.pending.orderedRemove(index).bytes);
+    }
+
+    fn indexOf(self: *const ForwardingNode, id: u64) ?usize {
+        for (self.pending.items, 0..) |pending, index| {
+            if (pending.id == id) return index;
+        }
+        return null;
     }
 
     fn connect(self: *ForwardingNode, now: Instant) !*Conversation {
@@ -288,17 +428,15 @@ const Conversation = struct {
                     .refused => |reason| {
                         log.info("the master turned a forwarded write away: {t}", .{reason});
                         // Asked again on a new connection if it may pass.
-                        const pending = node.pending orelse return false;
-                        if (reason.permanent() or pending.attempts >= ForwardingNode.max_attempts) node.end(.{ .refused = reason });
+                        node.turnedAway(reason);
                         return false;
                     },
-                    .answer => |bytes| node.end(.{ .answer = bytes }),
+                    .answer => |answer| node.answered(answer.id, answer.bytes),
                 };
             }
         }
         self.readable = false;
-        // Ready: the request in hand, if any, is not sent yet.
-        if (node.pending) |pending| if (session.state == .ready) session.request(pending.id, pending.bytes);
+        if (session.state == .ready) node.hand(session);
         session.pump(now);
         while (session.outbox.unsent().len > 0) {
             const count = self.connection.send(session.outbox.unsent()) catch |err| switch (err) {
@@ -324,25 +462,35 @@ pub const Forwarder = struct {
     wakeup: Wakeup,
     stopping: std.atomic.Value(bool) = .init(false),
     loop_thread: ?std.Thread = null,
-    /// Held by a `forward` from start to end: one at a time.
-    forwarding: Io.Mutex = .init,
-    /// Guards `handed` and `finished`.
+    /// Guards what follows, up to `node`.
     mutex: Io.Mutex = .init,
-    handed: ?Handed = null,
-    finished: ?Outcome = null,
-    /// The id of the last request ended, raised as each does.
-    ended: Signal = .{},
+    /// The requests `forward` handed over and the node has not yet, in
+    /// order.
+    handed: std.ArrayList(Handed),
+    /// How requests ended, until their `forward` takes them.
+    finished: std.ArrayList(Finished),
+    /// The `forward`s under way: at most `protocol.max_writes_in_flight`,
+    /// the others wait.
+    in_flight: usize = 0,
     /// The id of the last request handed over.
     last_id: u64 = 0,
+    /// Grows as requests end and as `forward`s return; `changed` is
+    /// raised to it.
+    changes: u64 = 0,
+    changed: Signal = .{},
     /// The loop's alone.
     node: ForwardingNode,
 
-    const Handed = struct { id: u64, bytes: []const u8 };
+    const Handed = struct { id: u64, bytes: []const u8, since: Instant };
 
     /// Starts the loop; the first request forwarded connects to the master.
     pub fn start(allocator: Allocator, io: Io, clock: Clock, net: Network, store: *KeyValueStore, options: Options) !*Forwarder {
         const self = try allocator.create(Forwarder);
         errdefer allocator.destroy(self);
+        var handed: std.ArrayList(Handed) = try .initCapacity(allocator, protocol.max_writes_in_flight);
+        errdefer handed.deinit(allocator);
+        var finished: std.ArrayList(Finished) = try .initCapacity(allocator, protocol.max_writes_in_flight);
+        errdefer finished.deinit(allocator);
         const wakeup = try net.wakeup();
         errdefer wakeup.close();
         self.* = .{
@@ -351,6 +499,8 @@ pub const Forwarder = struct {
             .clock = clock,
             .network = net,
             .wakeup = wakeup,
+            .handed = handed,
+            .finished = finished,
             .node = try .init(allocator, net, store, wakeup, options),
         };
         errdefer self.node.deinit();
@@ -364,7 +514,9 @@ pub const Forwarder = struct {
         self.stopping.store(true, .release);
         self.wakeup.raise();
         if (self.loop_thread) |thread| thread.join();
-        if (self.finished) |outcome| self.node.free(outcome);
+        for (self.finished.items) |finished| self.node.free(finished.outcome);
+        self.finished.deinit(self.allocator);
+        self.handed.deinit(self.allocator);
         self.node.deinit();
         self.wakeup.close();
         self.allocator.destroy(self);
@@ -372,25 +524,39 @@ pub const Forwarder = struct {
 
     /// Sends the request `bytes` (forwarding.zig) to the master and waits
     /// for how it ended. An answer's bytes are allocated with the
-    /// forwarder's allocator: the caller's to free. Any thread; one at a
-    /// time, the others wait.
+    /// forwarder's allocator: the caller's to free. Any thread; up to
+    /// `protocol.max_writes_in_flight` at once, the others wait.
     pub fn forward(self: *Forwarder, bytes: []const u8) Outcome {
-        self.forwarding.lockUncancelable(self.io);
-        defer self.forwarding.unlock(self.io);
+        self.mutex.lockUncancelable(self.io);
+        while (self.in_flight == protocol.max_writes_in_flight) self.waitForChange();
+        self.in_flight += 1;
         self.last_id += 1;
         const id = self.last_id;
-        {
-            self.mutex.lockUncancelable(self.io);
-            defer self.mutex.unlock(self.io);
-            self.handed = .{ .id = id, .bytes = bytes };
-        }
+        self.handed.appendAssumeCapacity(.{ .id = id, .bytes = bytes, .since = self.clock.now() });
+        self.mutex.unlock(self.io);
         self.wakeup.raise();
-        // The node ends every request in time.
-        _ = self.clock.wait(&self.ended, id - 1, std.math.maxInt(Instant));
         self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        defer self.finished = null;
-        return self.finished.?;
+        // The node ends every request in time.
+        const outcome = taken: while (true) {
+            for (self.finished.items, 0..) |finished, index| {
+                if (finished.id == id) break :taken self.finished.swapRemove(index).outcome;
+            }
+            self.waitForChange();
+        };
+        self.in_flight -= 1;
+        self.changes += 1;
+        const changes = self.changes;
+        self.mutex.unlock(self.io);
+        self.clock.raise(&self.changed, changes);
+        return outcome;
+    }
+
+    /// Waits, with the mutex held, for the next change.
+    fn waitForChange(self: *Forwarder) void {
+        const seen = self.changes;
+        self.mutex.unlock(self.io);
+        defer self.mutex.lockUncancelable(self.io);
+        _ = self.clock.wait(&self.changed, seen, std.math.maxInt(Instant));
     }
 
     fn run(self: *Forwarder) void {
@@ -400,16 +566,9 @@ pub const Forwarder = struct {
             self.node.clearWakeup();
             if (self.stopping.load(.acquire)) return;
             const now = self.clock.now();
-            if (self.takeHanded()) |handed| self.node.request(handed.id, handed.bytes, now);
+            self.handOver();
             self.node.step(now);
-            if (self.node.take()) |finished| {
-                {
-                    self.mutex.lockUncancelable(self.io);
-                    defer self.mutex.unlock(self.io);
-                    self.finished = finished.outcome;
-                }
-                self.clock.raise(&self.ended, finished.id);
-            }
+            self.collect();
             const watched = self.node.watch(&watched_buffer);
             const timeout: ?u64 = if (self.node.deadline()) |deadline| deadline -| now else null;
             self.network.wait(watched, timeout) catch |err| {
@@ -420,10 +579,34 @@ pub const Forwarder = struct {
         }
     }
 
-    fn takeHanded(self: *Forwarder) ?Handed {
+    /// Hands the node the requests `forward` handed over, while it has
+    /// room.
+    fn handOver(self: *Forwarder) void {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
-        defer self.handed = null;
-        return self.handed;
+        var count: usize = 0;
+        while (count < self.handed.items.len and self.node.room()) : (count += 1) {
+            const handed = self.handed.items[count];
+            self.node.request(handed.id, handed.bytes, handed.since);
+        }
+        std.mem.copyForwards(Handed, self.handed.items[0 .. self.handed.items.len - count], self.handed.items[count..]);
+        self.handed.shrinkRetainingCapacity(self.handed.items.len - count);
+    }
+
+    /// Tells each `forward` waiting how its request ended.
+    fn collect(self: *Forwarder) void {
+        const changes = blk: {
+            self.mutex.lockUncancelable(self.io);
+            defer self.mutex.unlock(self.io);
+            var any = false;
+            while (self.node.take()) |finished| {
+                self.finished.appendAssumeCapacity(finished);
+                any = true;
+            }
+            if (!any) return;
+            self.changes += 1;
+            break :blk self.changes;
+        };
+        self.clock.raise(&self.changed, changes);
     }
 };

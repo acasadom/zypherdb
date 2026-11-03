@@ -133,6 +133,31 @@ test "the log keeps at most its limit, dropping the oldest change sets" {
     try testing.expectEqual(after.next_lsn - 1, after.oldest_lsn);
 }
 
+test "a full log drops several change sets at once, not one at each commit" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [128]u8 = undefined;
+    var store = try KeyValueStore.open(testing.allocator, testPath(&tmp, &path_buffer));
+    defer store.deinit();
+
+    try store.startChangeLog();
+    store.change_log_limit = 16 << 10; // drops 1 KiB under it: about 10 change sets
+    var value: [90]u8 = @splat('v');
+    var drops: usize = 0;
+    var oldest: u64 = 1;
+    for (0..400) |i| {
+        value[0] = @intCast(i % 256);
+        try store.put("key", &value);
+        const state = (try store.changeLogState()).?;
+        try testing.expect(state.bytes <= store.change_log_limit);
+        if (state.oldest_lsn != oldest) drops += 1;
+        oldest = state.oldest_lsn;
+    }
+    // Full after about 160 commits: the other 240 drop in about 24 goes.
+    try testing.expect(oldest > 1);
+    try testing.expect(drops <= 40);
+}
+
 test "without the change log nothing is logged" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

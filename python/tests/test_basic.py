@@ -120,6 +120,36 @@ def test_batched_write(db):
     assert db.query("MATCH (n:Person) RETURN count(n)") == [[100]]
 
 
+def test_write_many_runs_in_one_transaction(db):
+    created, counted, opened = db.write_many([
+        ("CREATE (d:Door {name: $name}) RETURN d", {"name": "B7"}),
+        "MATCH (d:Door) RETURN count(d)",
+        ("MATCH (d:Door {name: $name}) SET d.open = true RETURN d.open", {"name": "B7"}),
+    ])
+    [[door]] = created
+    assert door.labels == ("Door",) and door.properties == {"name": "B7"}
+    assert counted == [[1]] and opened == [[True]]
+    assert db.write_many([]) == []
+
+
+def test_write_many_commits_nothing_when_one_fails(db):
+    with pytest.raises(ArithmeticQueryError) as failure:
+        db.write_many(["CREATE (:Door)", "RETURN 1 / 0"])
+    assert failure.value.statement == 1
+    with pytest.raises(ParseError) as failure:
+        db.write_many(["CREATE (", "CREATE (:Door)"])
+    assert failure.value.statement == 0
+    for refused in ("CREATE INDEX door_name FOR (d:Door) ON (d.name)", "EXPLAIN MATCH (d) RETURN d",
+                    "LOAD CSV FROM 'doors.csv' AS row CREATE (:Door)"):
+        with pytest.raises(InvalidExpressionError, match="batch") as failure:
+            db.write_many(["CREATE (:Door)", refused])
+        assert failure.value.statement == 1
+    assert db.query("MATCH (d:Door) RETURN count(d)") == [[0]]
+    with pytest.raises(ZypherDBError, match="inside a write"):
+        with db.write():
+            db.write_many(["CREATE (:Door)"])
+
+
 def test_write_abort(db):
     with pytest.raises(RuntimeError):
         with db.write():

@@ -26,8 +26,10 @@
 //! with `writer_hello` (protocol version, the id of the master it copies,
 //! the token, its name). The master answers `refused` and closes, or
 //! `writer_ready`; then each write is a `request_part`* the master runs and
-//! answers with `answer_part`*, under the id the request gave, one write
-//! at a time. A request or an answer is cut into parts of at most
+//! answers with `answer_part`*, under the id the request gave. Up to
+//! `max_writes_in_flight` requests may wait for their answers; each is sent
+//! whole before the next, each answer too, and the master runs them in the
+//! order they came. A request or an answer is cut into parts of at most
 //! `part_bytes`, the last one marked final; forwarding.zig tells what their
 //! bytes hold. While it sends no answer, a write running or not, the master
 //! sends a `heartbeat` each interval and the replica `ack`s each one, so
@@ -46,7 +48,7 @@ const Crc32 = std.hash.Crc32;
 
 /// Bumped on every change to the messages: a master and a replica of
 /// different versions do not talk.
-pub const version: u16 = 1;
+pub const version: u16 = 2;
 
 /// The first bytes of a `hello`, so a master that is sent something else
 /// (another protocol, a stray connection) refuses it at once.
@@ -54,6 +56,10 @@ pub const magic = "ZYPR".*;
 
 /// The largest part of a snapshot or a change set in one frame.
 pub const part_bytes: usize = 1 << 20;
+
+/// The most requests a replica's connection for forwarded writes may have
+/// sent and not seen answered; a replica that sends more is let go.
+pub const max_writes_in_flight: usize = 64;
 
 /// The largest token a replica may send.
 pub const max_token_bytes: usize = 1024;

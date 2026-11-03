@@ -137,9 +137,10 @@ print(edge.query("MATCH (p:Person {name: 'Grace'}) RETURN count(p)"))
 
 A forwarded write costs a round trip to the master, its run there, and the time the change takes
 to come back; reads run on the replica as ever, at no extra cost. The replica opens one connection
-to its master for writes, apart from replication's, the first time it forwards one; queries from
-several threads share it, one at a time. A process that opened the replica with a role and stands
-by forwards writes too.
+to its master for writes, apart from replication's, the first time it forwards one. Threads
+share it: up to 64 writes are on their way at once, so one thread's write does not wait for
+another's round trip (the master still runs them one after another, in the order they came). A
+process that opened the replica with a role and stands by forwards writes too.
 
 Each forwarded write takes at most `forward_timeout` seconds, and how it ended is told apart:
 
@@ -159,6 +160,22 @@ replica's machine), queries that call a procedure defined in this process, `PROF
 query that writes, and `write()` blocks. Only queries are forwarded: the mutators (`add_node`,
 `set_property`...) still raise `StorageError` on a replica. Schema statements (`CREATE INDEX`,
 `CREATE CONSTRAINT`) are forwarded; `EXPLAIN` and `SHOW` run on the replica.
+
+Several writes that belong together go as one `write_many` (see the [Python
+reference](python.md)): one request, one transaction on the
+master, one round trip, and one wait for the change to come back:
+
+```python
+card, door = edge.write_many([
+    ("CREATE (c:Card {number: $number}) RETURN c.number", {"number": 77}),
+    ("MATCH (c:Card {number: $number}) CREATE (c)-[:OPENS]->(d:Door {name: 'B7'}) RETURN d.name", {"number": 77}),
+])
+print(card, door, door.visible)
+```
+
+```text
+[[77]] [['B7']] True
+```
 
 ```python
 edge.close()

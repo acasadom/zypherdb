@@ -4,12 +4,14 @@ another opened to replicate from it."""
 import os
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from zypherdb import Database, Rows
-from zypherdb.errors import MasterUnreachableError, StorageError, WriteNotForwardedError, ZypherDBError
+from zypherdb.errors import InvalidExpressionError, MasterUnreachableError, StorageError, WriteNotForwardedError, ZypherDBError
 
 TOKEN = "the master's token"
 
@@ -219,6 +221,26 @@ def test_a_replica_refuses_what_it_cannot_forward(master, tmp_path):
         assert master.query("MATCH (p:Person) RETURN count(p)") == [[0]]
 
 
+def test_a_forwarded_write_under_way_holds_up_no_other_thread(master, tmp_path):
+    # Read-your-writes binds only the thread that wrote: while its write is
+    # on its way to the master, other threads read on the replica as ever.
+    with forwarding_replica(master, tmp_path) as replica:
+        outcome = {}
+        writer = threading.Thread(target=lambda: outcome.setdefault("rows", replica.query("CREATE (:Person) RETURN 1")))
+        reader = threading.Thread(target=lambda: outcome.setdefault("read", replica.query("MATCH (p:Person) RETURN count(p)")))
+        with master.write():  # holds the master's writer: the forwarded write waits there
+            writer.start()
+            time.sleep(0.3)
+            reader.start()
+            reader.join(timeout=2)
+            read_while_under_way = not reader.is_alive()
+        writer.join()
+        reader.join()
+        assert read_while_under_way, "a read waited for another thread's forwarded write"
+        assert outcome["read"] == [[0]]
+        assert outcome["rows"] == [[1]]
+
+
 def test_a_forwarded_write_to_a_master_gone_did_not_run(tmp_path):
     master = Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN)
     try:
@@ -251,3 +273,30 @@ with Database(path, replicate_from=address, token="the master's token", forward_
     print(db.replication_status()["standby"])
     print(db.query("CREATE (p:Person {name: 'Grace'}) RETURN p.name"))
 """
+
+
+def test_a_replica_forwards_a_write_many_whole(master, tmp_path):
+    with forwarding_replica(master, tmp_path) as replica:
+        before = master.last_lsn
+        created, counted = replica.write_many([
+            ("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"}),
+            "MATCH (p:Person) RETURN count(p)",
+        ])
+        assert master.last_lsn == before + 1
+        assert created.visible and counted.visible
+        [[ada]] = created
+        assert ada.properties == {"name": "Ada"}
+        assert counted == [[1]]
+        assert replica.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+        # One the master fails commits nothing and says which query failed.
+        with pytest.raises(ZypherDBError) as failure:
+            replica.write_many(["CREATE (:Person)", "RETURN 1 / 0"])
+        assert failure.value.statement == 1
+        assert master.last_lsn == before + 1
+        # One that only reads runs here.
+        assert replica.write_many(["MATCH (p:Person) RETURN p.name"]) == [[["Ada"]]]
+        # What cannot go in a batch is refused here, wherever it would run.
+        replica._define_procedure("test.names", [], [("name", "STRING?")], [["Bob"]])
+        with pytest.raises(InvalidExpressionError, match="defined in this process") as refused:
+            replica.write_many(["CREATE (:Person)", "CALL test.names() YIELD name CREATE (:Person {name: name})"])
+        assert refused.value.statement == 1

@@ -1,10 +1,11 @@
 //! A replica's forwarded writes (replication/forwarder.zig), its node and
 //! a master's node (master_node.zig) stepped on one thread over the
 //! network in memory, on a clock of the test's own; the master runs the
-//! writes when the test says. A request runs on the master and its answer
-//! comes back over a connection kept for the next; one lost before it
-//! reached the master whole is sent once more, one lost after ends
-//! unknown; a master not reached, or out of time, ends it too.
+//! writes when the test says. Requests run on the master and their answers
+//! come back over a connection kept for the next, several on their way at
+//! once; one lost before it reached the master whole is sent once more,
+//! one lost after ends unknown; a master not reached, or out of time, ends
+//! it too.
 
 const std = @import("std");
 const testing = std.testing;
@@ -176,7 +177,7 @@ fn expectAnswered(bench: *Bench, arena: std.mem.Allocator, outcome: Outcome, nam
     defer testing.allocator.free(bytes);
     const done = (try forwarding.decodeAnswer(try arena.dupe(u8, bytes), arena)).done;
     try testing.expectEqual(try bench.lastLsn(), done.lsn);
-    try testing.expect(Value.eql(.{ .string = name }, done.rows[0][0]));
+    try testing.expect(Value.eql(.{ .string = name }, done.results[0].rows[0][0]));
 }
 
 const create_door = "CREATE (d:Door {name: $name}) RETURN d.name AS name";
@@ -198,6 +199,64 @@ test "a forwarded write runs on the master and is answered; the connection stays
     }
     try testing.expectEqual(1, bench.net.connects);
     try testing.expectEqual(1, bench.net.linkCount());
+}
+
+test "several writes are on their way at once on one connection, each answered under its id" {
+    var bench: Bench = undefined;
+    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    defer bench.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const names = [_][]const u8{ "B7", "C1", "D4" };
+    for (names, 1..) |name, id| bench.request(id, try encode(arena.allocator(), create_door, name));
+    try bench.settle();
+    try testing.expectEqual(names.len, bench.runner.waiting());
+    // Run one at a time: each answer comes back as soon as it ran.
+    for (names, 1..) |name, id| {
+        try bench.runner.runNext();
+        try bench.settle();
+        try expectAnswered(&bench, arena.allocator(), try bench.finished(id), name);
+        try testing.expectEqual(null, bench.node.take());
+    }
+    try testing.expectEqual(1, bench.net.connects);
+
+    // The window: a request more only once one ends and is taken.
+    for (0..protocol.max_writes_in_flight) |id| bench.request(100 + id, try encode(arena.allocator(), create_door, "E2"));
+    try testing.expect(!bench.node.room());
+    try bench.settle();
+    try bench.runner.runNext();
+    try bench.settle();
+    try testing.expect(!bench.node.room());
+    testing.allocator.free((try bench.finished(100)).answer);
+    try testing.expect(bench.node.room());
+    try bench.runWrites();
+    for (1..protocol.max_writes_in_flight) |id| testing.allocator.free((try bench.finished(100 + id)).answer);
+}
+
+test "a lost connection: what reached the master ends unknown, what did not is sent again" {
+    var bench: Bench = undefined;
+    try bench.init(.{ .master_address = master_address, .token = token, .timeout_ns = timeout_ns });
+    defer bench.deinit();
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    try bench.settle();
+    // Larger than the network holds: the master reads none of it until
+    // it steps.
+    const name = try arena.allocator().alloc(u8, 2 * bench.net.capacity);
+    @memset(name, 'n');
+    bench.request(1, try encode(arena.allocator(), create_door, "B7"));
+    try bench.settle();
+    try testing.expectEqual(1, bench.runner.waiting());
+    bench.request(2, try encode(arena.allocator(), create_door, name));
+    for (0..3) |_| bench.node.step(bench.now);
+    const session = &bench.node.conversation.?.session;
+    try testing.expect(session.delivered(1) and !session.delivered(2));
+    bench.net.cut(0);
+    try bench.settle();
+    try testing.expectEqual(Outcome.unknown, try bench.finished(1));
+    try bench.runWrites();
+    try expectAnswered(&bench, arena.allocator(), try bench.finished(2), name);
+    try testing.expectEqual(2, bench.net.connects);
 }
 
 test "a request lost before it reached the master whole is sent once more" {
@@ -233,7 +292,8 @@ test "a request lost halfway to the master is sent whole once more" {
     testing.allocator.free((try bench.finished(1)).answer);
     bench.request(2, try encode(arena.allocator(), create_door, name));
     for (0..3) |_| bench.node.step(bench.now);
-    try testing.expectEqual(.requesting, bench.node.conversation.?.session.state);
+    const session = &bench.node.conversation.?.session;
+    try testing.expect(session.requests[0].offset > 0 and !session.delivered(2));
     bench.net.cut(0);
     try bench.settle();
     try bench.runWrites();
@@ -301,7 +361,12 @@ test "out of time: unknown once the master has the request, unreachable before" 
     try testing.expectEqual(null, bench.node.take());
     try bench.pass(heartbeat_ns);
     try testing.expectEqual(Outcome.unknown, try bench.finished(1));
-    try testing.expectEqual(null, bench.node.conversation);
+    // The connection stays for the others; the answer, when it comes, is
+    // dropped.
+    try testing.expect(bench.node.conversation != null);
+    try bench.runWrites();
+    try testing.expectEqual(null, bench.node.take());
+    try testing.expectEqual(0, bench.node.pending.items.len);
 
     // A master that does not answer the hello, sooner than it is given up on.
     bench.master.?.deinit();

@@ -50,6 +50,7 @@ const ReplicaNode = replica_node.ReplicaNode;
 const forwarder = zypherdb.replication_forwarder;
 const ForwardingNode = forwarder.ForwardingNode;
 const forwarding = zypherdb.replication_forwarding;
+const MapEntry = zypherdb.value.MapEntry;
 
 pub const Options = struct {
     seed: u64,
@@ -93,6 +94,9 @@ const heartbeat_ns = 100 * ms;
 const timeout_ns = 500 * ms;
 /// What each forwarded write does: a node of its own, by its number.
 const forwarded_write = "CREATE (n:Forwarded {number: $number}) RETURN n.number AS number";
+/// What the second statement of a forwarded batch does: on the node the
+/// first made, in the same transaction.
+const batched_write = "MATCH (n:Forwarded {number: $number}) SET n.batched = true RETURN n.number AS number";
 const max_replicas = 3;
 /// What each replica calls itself: its index in `Simulation.replicas`.
 const replica_names = [max_replicas][]const u8{ "replica-0", "replica-1", "replica-2" };
@@ -279,20 +283,25 @@ const Forwarding = struct {
     store: *KeyValueStore,
     wakeup: Wakeup,
     node: ForwardingNode,
-    /// The write handed over, until it ends.
-    pending: ?Pending = null,
+    /// The numbers of the writes handed over, the first `in_flight_count`,
+    /// until they end.
+    in_flight: [max_in_flight]u64 = undefined,
+    in_flight_count: usize = 0,
 
-    const Pending = struct {
-        number: u64,
-        /// Its request, the node's to read until it ends.
-        bytes: []u8,
-    };
+    /// Enough to keep several on their way; few, so faults hit each.
+    const max_in_flight = 3;
+
+    fn holds(self: *const Forwarding) bool {
+        return self.in_flight_count > 0;
+    }
 };
 
 /// What became of a forwarded write, by its number.
 const ForwardedWrite = struct {
     /// The LSN its commit reached, once the master ran it.
     ran_at: ?u64 = null,
+    /// 2 for a batch (`forwarded_write`, then `batched_write`).
+    statements: usize = 1,
     told: enum { pending, answered, unknown, not_reached, not_sent } = .pending,
 };
 
@@ -467,10 +476,10 @@ const Simulation = struct {
     fn closeForwarding(self: *Simulation, process: *Forwarding) void {
         process.node.deinit();
         process.wakeup.close();
-        if (process.pending) |pending| {
-            self.forwarded_writes.getPtr(pending.number).?.told = .unknown;
-            self.allocator.free(pending.bytes);
+        for (process.in_flight[0..process.in_flight_count]) |number| {
+            self.forwarded_writes.getPtr(number).?.told = .unknown;
         }
+        process.in_flight_count = 0;
     }
 
     fn indexOf(self: *const Simulation, replica: *const Replica) usize {
@@ -552,7 +561,7 @@ const Simulation = struct {
             .forward => {
                 const which = self.random().uintLessThan(usize, self.swarm.replicas + 1);
                 const process = if (which == self.swarm.replicas) &self.standby else &self.replicas[which].forwarding;
-                if (process.pending == null) try self.forward(process);
+                if (process.in_flight_count < Forwarding.max_in_flight and process.node.room()) try self.forward(process);
             },
             .run_write => try self.runWrite(),
         }
@@ -636,17 +645,23 @@ const Simulation = struct {
         return id;
     }
 
-    /// Hands a write over to `process`, which holds none.
+    /// Hands a write over to `process`, which has room for one.
     fn forward(self: *Simulation, process: *Forwarding) !void {
         self.last_number += 1;
         const number = self.last_number;
         var request: std.ArrayList(u8) = .empty;
         defer request.deinit(self.allocator);
-        try forwarding.encodeRequest(&request, self.allocator, .{ .text = forwarded_write, .parameters = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }} });
-        try self.forwarded_writes.put(self.allocator, number, .{});
-        const bytes = try request.toOwnedSlice(self.allocator);
-        process.pending = .{ .number = number, .bytes = bytes };
-        process.node.request(number, bytes, self.clock.time);
+        const parameters: []const MapEntry = &.{.{ .key = "number", .value = .{ .int = @intCast(number) } }};
+        const statements: usize = if (self.random().uintLessThan(u8, 4) == 0) 2 else 1;
+        const requests = [_]forwarding.Request{
+            .{ .text = forwarded_write, .parameters = parameters },
+            .{ .text = batched_write, .parameters = parameters },
+        };
+        try forwarding.encodeRequests(&request, self.allocator, requests[0..statements]);
+        try self.forwarded_writes.put(self.allocator, number, .{ .statements = statements });
+        process.in_flight[process.in_flight_count] = number;
+        process.in_flight_count += 1;
+        process.node.request(number, request.items, self.clock.time);
         process.wakeup.raise();
         self.statistics.forwards += 1;
         self.note("write {d} is forwarded", .{number});
@@ -664,8 +679,9 @@ const Simulation = struct {
             .done => |done| done,
             .failed => |failure| return self.fail("a forwarded write failed on the master: {s}", .{failure.message}),
         };
-        const number: u64 = @intCast(done.rows[0][0].int);
+        const number: u64 = @intCast(done.results[0].rows[0][0].int);
         const write = self.forwarded_writes.getPtr(number) orelse return self.fail("the master ran write {d}, never forwarded", .{number});
+        if (done.results.len != write.statements) return self.fail("write {d} of {d} statements answered {d} results", .{ number, write.statements, done.results.len });
         if (write.ran_at != null) return self.fail("the master ran write {d} twice", .{number});
         if (write.told == .not_reached or write.told == .not_sent) return self.fail("the master ran write {d}, told {t}", .{ number, write.told });
         if (done.lsn != try self.lastLsn()) return self.fail("write {d} answered LSN {d}, not the master's last", .{ number, done.lsn });
@@ -675,24 +691,28 @@ const Simulation = struct {
         self.note("the master runs write {d}: LSN {d}", .{ number, done.lsn });
     }
 
-    /// The write `process` held ended as `finished` tells.
+    /// A write `process` held ended as `finished` tells.
     fn finish(self: *Simulation, process: *Forwarding, finished: forwarder.Finished) !void {
-        const pending = process.pending.?;
-        process.pending = null;
-        defer self.allocator.free(pending.bytes);
         defer process.node.free(finished.outcome);
-        if (finished.id != pending.number) return self.fail("write {d} ended as write {d}", .{ pending.number, finished.id });
-        const write = self.forwarded_writes.getPtr(pending.number).?;
+        const held = process.in_flight[0..process.in_flight_count];
+        const index = std.mem.indexOfScalar(u64, held, finished.id) orelse return self.fail("write {d} ended, not in hand", .{finished.id});
+        std.mem.copyForwards(u64, held[index .. held.len - 1], held[index + 1 ..]);
+        process.in_flight_count -= 1;
+        const number = finished.id;
+        const write = self.forwarded_writes.getPtr(number).?;
         switch (finished.outcome) {
             .answer => |answer| {
                 var arena: std.heap.ArenaAllocator = .init(self.allocator);
                 defer arena.deinit();
                 const done = switch (try forwarding.decodeAnswer(answer, arena.allocator())) {
                     .done => |done| done,
-                    .failed => |failure| return self.fail("write {d} failed: {s}", .{ pending.number, failure.message }),
+                    .failed => |failure| return self.fail("write {d} failed: {s}", .{ number, failure.message }),
                 };
-                if (done.rows.len != 1 or done.rows[0][0].int != pending.number) return self.fail("write {d} answered another's rows", .{pending.number});
-                if (write.ran_at != done.lsn) return self.fail("write {d} answered LSN {d}, ran at {?d}", .{ pending.number, done.lsn, write.ran_at });
+                if (done.results.len != write.statements) return self.fail("write {d} answered {d} results", .{ number, done.results.len });
+                for (done.results) |result| {
+                    if (result.rows.len != 1 or result.rows[0][0].int != number) return self.fail("write {d} answered another's rows", .{number});
+                }
+                if (write.ran_at != done.lsn) return self.fail("write {d} answered LSN {d}, ran at {?d}", .{ number, done.lsn, write.ran_at });
                 write.told = .answered;
                 self.statistics.forwards_answered += 1;
             },
@@ -701,18 +721,18 @@ const Simulation = struct {
                 self.statistics.forwards_unknown += 1;
             },
             .master_unreachable => {
-                if (write.ran_at != null) return self.fail("write {d} ran, told unreachable", .{pending.number});
+                if (write.ran_at != null) return self.fail("write {d} ran, told unreachable", .{number});
                 write.told = .not_reached;
                 self.statistics.forwards_unreachable += 1;
             },
-            .refused => |reason| return self.fail("write {d} refused: {t}", .{ pending.number, reason }),
+            .refused => |reason| return self.fail("write {d} refused: {t}", .{ number, reason }),
             .failed => |err| {
-                if (err != error.NoCopy or try process.store.databaseId() != null) return self.fail("write {d} failed: {t}", .{ pending.number, err });
+                if (err != error.NoCopy or try process.store.databaseId() != null) return self.fail("write {d} failed: {t}", .{ number, err });
                 write.told = .not_sent;
                 self.statistics.forwards_without_copy += 1;
             },
         }
-        self.note("write {d} ends {t}", .{ pending.number, write.told });
+        self.note("write {d} ends {t}", .{ number, write.told });
     }
 
     /// Time passes: up to the earliest deadline of what waits, or by a
@@ -818,7 +838,7 @@ const Simulation = struct {
         node.ready(watched);
         if (!anyReady(watched) and !due(node.deadline(), now)) return false;
         node.step(now);
-        if (node.take()) |finished| try self.finish(process, finished);
+        while (node.take()) |finished| try self.finish(process, finished);
         return true;
     }
 
@@ -887,8 +907,8 @@ const Simulation = struct {
 
     /// Whether a process holds a write that did not end.
     fn anyForwarding(self: *Simulation) bool {
-        for (self.replicas[0..self.swarm.replicas]) |*replica| if (replica.forwarding.pending != null) return true;
-        return self.standby.pending != null;
+        for (self.replicas[0..self.swarm.replicas]) |*replica| if (replica.forwarding.holds()) return true;
+        return self.standby.holds();
     }
 
     /// The master serves each replica once, by its name, from its

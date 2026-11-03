@@ -35,8 +35,24 @@ const ErrorCode = @import("diagnostics.zig").ErrorCode;
 const parser = @import("query/parser.zig");
 const Statement = @import("statement/Statement.zig");
 const StatementCache = @import("statement/Cache.zig");
+const batch = @import("statement/batch.zig");
 
+/// What the sessions of one open database share.
+const Shared = struct {
+    /// The store that owns the open database; sessions use shares of it,
+    /// so it runs no transaction once they exist.
+    store: KeyValueStore,
+    /// Replication, on a database opened with a role.
+    replication: ?*Replication = null,
+    /// The sessions open on the database; the last one closed closes it.
+    sessions: std.atomic.Value(usize) = .init(0),
+};
+
+/// A session on an open database: one thread uses it at a time. Several
+/// threads use the database at once through sessions of their own
+/// (`zypherdb_open_session`).
 pub const Context = struct {
+    shared: *Shared,
     store: KeyValueStore,
     graph: Graph,
     allocator: Allocator,
@@ -56,12 +72,15 @@ pub const Context = struct {
     /// The memory a query runs in, kept from one query to the next (up to
     /// `retained_scratch` bytes) instead of asked for again each time.
     scratch: std.heap.ArenaAllocator,
+    /// The statement of the last `zypherdb_write_many` that failed, if one
+    /// did (`zypherdb_error_statement`).
+    failed_statement: ?usize = null,
 };
 
 /// How much of a query's memory the next one reuses.
 pub const retained_scratch = 1 << 20;
 
-const Result = struct {
+pub const Result = struct {
     arena: std.heap.ArenaAllocator,
     rows: []Row,
     json: []u8, // the whole result serialized to JSON (for the bulk reader)
@@ -110,34 +129,79 @@ pub export fn zypherdb_open(path_ptr: [*]const u8, path_len: usize) ?*Context {
 /// written by the operating system or `zypherdb_sync`; a power failure can
 /// lose the recent ones). NULL on an unknown mode.
 pub export fn zypherdb_open_with_durability(path_ptr: [*]const u8, path_len: usize, durability: c_int) ?*Context {
-    const mode: KeyValueStore.Durability = switch (durability) {
+    const mode = durabilityOf(durability) orelse return null;
+    const shared = openShared(path_ptr[0..path_len], mode) orelse return null;
+    return openSession(shared) orelse {
+        closeShared(shared);
+        return null;
+    };
+}
+
+fn durabilityOf(durability: c_int) ?KeyValueStore.Durability {
+    return switch (durability) {
         DURABILITY_FULL => .full,
         DURABILITY_RELAXED => .relaxed,
         DURABILITY_DEFERRED => .deferred,
-        else => return null,
+        else => null,
     };
-    const path = path_ptr[0..path_len];
-    const context = allocator.create(Context) catch return null;
-    context.store = KeyValueStore.openWithOptions(allocator, path, .{ .durability = mode }) catch {
-        allocator.destroy(context);
+}
+
+fn openShared(path: []const u8, durability: KeyValueStore.Durability) ?*Shared {
+    const shared = allocator.create(Shared) catch return null;
+    shared.* = .{ .store = KeyValueStore.openWithOptions(allocator, path, .{ .durability = durability }) catch {
+        allocator.destroy(shared);
         return null;
+    } };
+    var graph = Graph.init(&shared.store, allocator);
+    graph.checkFormat() catch {
+        closeShared(shared);
+        return null;
+    };
+    return shared;
+}
+
+fn closeShared(shared: *Shared) void {
+    if (shared.replication) |replication| replication.stop();
+    shared.store.deinit();
+    allocator.destroy(shared);
+}
+
+/// A new session on `shared`, counted in its sessions.
+fn openSession(shared: *Shared) ?*Context {
+    const context = allocator.create(Context) catch return null;
+    context.* = .{
+        .shared = shared,
+        .store = shared.store.share() catch {
+            allocator.destroy(context);
+            return null;
+        },
+        .graph = undefined,
+        .allocator = allocator,
+        .diagnostic = Diagnostic.init(),
+        .replication = shared.replication,
+        .statements = StatementCache.init(allocator),
+        .scratch = std.heap.ArenaAllocator.init(allocator),
     };
     context.graph = Graph.init(&context.store, allocator);
-    context.graph.checkFormat() catch {
-        context.store.deinit();
-        allocator.destroy(context);
-        return null;
-    };
-    context.allocator = allocator;
-    context.diagnostic = Diagnostic.init();
-    context.export_json = &.{};
-    context.check_json = &.{};
-    context.status_json = &.{};
-    context.replication = null;
-    context.import_directory = null;
-    context.statements = StatementCache.init(allocator);
-    context.scratch = std.heap.ArenaAllocator.init(allocator);
+    _ = shared.sessions.fetchAdd(1, .monotonic);
     return context;
+}
+
+/// Another session on the database of `context`, for another thread: each
+/// session is used by one thread at a time, and sessions run at once
+/// (reads in parallel; writes one at a time, a write waiting for the one
+/// under way). A session reads its own writes. It starts with the import
+/// directory `context` has. Close each with `zypherdb_close`: the database
+/// closes with its last session. NULL when out of memory.
+pub export fn zypherdb_open_session(context: *Context) ?*Context {
+    const session = openSession(context.shared) orelse return null;
+    if (context.import_directory) |directory| {
+        session.import_directory = allocator.dupe(u8, directory) catch {
+            zypherdb_close(session);
+            return null;
+        };
+    }
+    return session;
 }
 
 /// Writes every commit so far to disk. RETURN_OK or RETURN_STORAGE_ERROR.
@@ -169,12 +233,18 @@ pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, d
         } },
         else => return null,
     };
-    const context = zypherdb_open_with_durability(path_ptr, path_len, durability) orelse return null;
-    context.replication = Replication.start(allocator, &context.store, path_ptr[0..path_len], replication_role) catch {
-        zypherdb_close(context);
+    const mode = durabilityOf(durability) orelse return null;
+    const shared = openShared(path_ptr[0..path_len], mode) orelse return null;
+    // Before the first session: its store takes replication's commit
+    // listener or refusal of writes.
+    shared.replication = Replication.start(allocator, &shared.store, path_ptr[0..path_len], replication_role) catch {
+        closeShared(shared);
         return null;
     };
-    return context;
+    return openSession(shared) orelse {
+        closeShared(shared);
+        return null;
+    };
 }
 
 /// The LSN of the last change set this database has: on a master the last
@@ -192,22 +262,23 @@ pub export fn zypherdb_last_lsn(context: *Context) u64 {
 pub export fn zypherdb_wait_for(context: *Context, lsn: u64, timeout_ms: u64) bool {
     const timeout_ns = timeout_ms *| std.time.ns_per_ms;
     const replication = context.replication orelse return replication_module.waitApplied(&context.store, lsn, timeout_ns) catch false;
-    return replication.waitFor(lsn, timeout_ns);
+    return replication.waitFor(&context.store, lsn, timeout_ns);
 }
 
 /// How replication goes, as JSON (see docs/guide/c-api.md); the buffer
 /// belongs to the context. NULL without replication or out of memory.
 pub export fn zypherdb_replication_status(context: *Context, out_len: *usize) ?[*]const u8 {
     const replication = context.replication orelse return null;
-    const json = replication.statusJson(allocator) catch return null;
+    const json = replication.statusJson(&context.store, allocator) catch return null;
     allocator.free(context.status_json);
     context.status_json = json;
     out_len.* = json.len;
     return json.ptr;
 }
 
+/// Closes a session; closing the last one closes the database.
 pub export fn zypherdb_close(context: *Context) void {
-    if (context.replication) |replication| replication.stop();
+    const shared = context.shared;
     allocator.free(context.status_json);
     context.statements.deinit();
     context.scratch.deinit();
@@ -216,6 +287,7 @@ pub export fn zypherdb_close(context: *Context) void {
     if (context.import_directory) |directory| allocator.free(directory);
     context.store.deinit();
     allocator.destroy(context);
+    if (shared.sessions.fetchSub(1, .acq_rel) == 1) closeShared(shared);
 }
 
 /// Sets the directory LOAD CSV reads files from (`path_len` 0: none, which
@@ -239,6 +311,13 @@ pub export fn zypherdb_last_error(context: *Context, out_len: *usize) [*]const u
 /// Returns the last error code (see `ErrorCode` in `diagnostics.zig`), 0 if none.
 pub export fn zypherdb_error_code(context: *Context) c_int {
     return @intCast(@backingInt(context.diagnostic.code));
+}
+
+/// The index of the statement that failed in the last `zypherdb_write_many`
+/// that failed; `SIZE_MAX` if the failure was in no statement (the commit,
+/// the master not reached) or the last call was not a `zypherdb_write_many`.
+pub export fn zypherdb_error_statement(context: *Context) usize {
+    return context.failed_statement orelse std.math.maxInt(usize);
 }
 
 /// Begins an explicit write transaction. Until `zypherdb_commit_write` (or
@@ -415,6 +494,11 @@ fn runStatement(context: *Context, statement: *Statement, parameters_json: ?[]co
         };
     };
 
+    return resultOf(context, rows, &executor.entities, visible);
+}
+
+/// A self-contained result of `rows`, which refer to `entities`.
+fn resultOf(context: *Context, rows: []const Row, entities: *const EntitySnapshot, visible: bool) ?*Result {
     const result = context.allocator.create(Result) catch return null;
     result.arena = std.heap.ArenaAllocator.init(context.allocator);
     result.rows = copyRows(&result.arena, rows) catch {
@@ -422,13 +506,88 @@ fn runStatement(context: *Context, statement: *Statement, parameters_json: ?[]co
         context.allocator.destroy(result);
         return null;
     };
-    result.json = rowsToJson(&result.arena, result.rows, &executor.entities) catch {
+    result.json = rowsToJson(&result.arena, result.rows, entities) catch {
         result.arena.deinit();
         context.allocator.destroy(result);
         return null;
     };
     result.visible = visible;
     return result;
+}
+
+/// Runs `count` queries in one transaction, in order: each sees what the
+/// ones before it wrote, and they commit together or, if one fails, none
+/// does. Query `i` is `queries[i]` (`query_lens[i]` bytes) with the
+/// parameters `parameters_json[i]` (`parameters_lens[i]` bytes; NULL or
+/// `parameters_json` NULL: none). On success fills `out_results[0..count]`
+/// (free each) and returns 0; on failure returns 1, fills nothing, and
+/// `zypherdb_error_statement` tells which query failed. A batch holds no
+/// schema command, EXPLAIN, PROFILE, LOAD CSV or procedure defined in the
+/// process. On a replica that forwards writes, a batch that writes goes to
+/// the master as one request.
+pub export fn zypherdb_write_many(context: *Context, count: usize, queries: [*]const [*]const u8, query_lens: [*]const usize, parameters_json: ?[*]const ?[*]const u8, parameters_lens: ?[*]const usize, out_results: [*]*Result) c_int {
+    context.diagnostic.clear();
+    context.failed_statement = null;
+    if (count == 0) return RETURN_OK;
+    const scratch = context.scratch.allocator();
+    defer _ = context.scratch.reset(.{ .retain_with_limit = retained_scratch });
+    const statements = scratch.alloc(*Statement, count) catch return outOfMemory(context);
+    const executors = scratch.alloc(Executor, count) catch return outOfMemory(context);
+    for (statements, executors, 0..) |*statement, *executor, index| {
+        context.failed_statement = index;
+        statement.* = cachedStatement(context, queries[index][0..query_lens[index]]) orelse return 1;
+        batch.check(statement.*, &.{}, &context.diagnostic) catch return 1;
+        executor.* = statement.*.executorFor(&context.graph, scratch);
+        executor.diagnostic = &context.diagnostic;
+        executor.import_directory = context.import_directory;
+        const json: ?[*]const u8 = if (parameters_json) |all| all[index] else null;
+        if (json) |bytes| executor.parameters = parseParameters(scratch, bytes[0..parameters_lens.?[index]], &context.diagnostic) catch return 1;
+    }
+    context.failed_statement = null;
+    const rows = scratch.alloc([]const Row, count) catch return outOfMemory(context);
+    var visible = true;
+    if (forwardsWrites(context) and batch.writes(statements)) {
+        visible = replica_writes.forwardBatch(context.replication.?, statements, executors, rows, &context.failed_statement) catch |err| {
+            noteFailure(&context.diagnostic, err);
+            return 1;
+        };
+    } else {
+        batch.run(&context.graph, statements, executors, rows, &context.failed_statement) catch |err| {
+            noteFailure(&context.diagnostic, err);
+            return 1;
+        };
+    }
+    for (0..count) |index| {
+        out_results[index] = resultOf(context, rows[index], &executors[index].entities, visible) orelse {
+            for (out_results[0..index]) |made| zypherdb_result_free(made);
+            context.diagnostic.set(.storage, 0, "out of memory", .{});
+            return 1;
+        };
+    }
+    return RETURN_OK;
+}
+
+fn outOfMemory(context: *Context) c_int {
+    context.diagnostic.set(.storage, 0, "out of memory", .{});
+    return 1;
+}
+
+/// The statement `zypherdb_query` keeps for `query`, prepared now if it has
+/// none; a statement that keeps no plan is not kept, and refused (a batch
+/// holds none). Null on failure, with the context's error set.
+fn cachedStatement(context: *Context, query: []const u8) ?*Statement {
+    if (context.statements.get(query)) |statement| return statement;
+    const statement = Statement.prepare(allocator, query, .{ .graph = &context.graph, .diagnostic = &context.diagnostic }) catch |err| {
+        noteFailure(&context.diagnostic, err);
+        return null;
+    };
+    if (!statement.is_query) {
+        defer statement.destroy();
+        batch.check(statement, &.{}, &context.diagnostic) catch {};
+        return null;
+    }
+    context.statements.put(statement);
+    return statement;
 }
 
 /// Whether this context is a replica that forwards writes to its master.
@@ -1052,4 +1211,6 @@ comptime {
     _ = zypherdb_statement_column_name;
     _ = zypherdb_statement_parameter_count;
     _ = zypherdb_statement_parameter_name;
+    _ = zypherdb_write_many;
+    _ = zypherdb_error_statement;
 }

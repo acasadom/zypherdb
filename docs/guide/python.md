@@ -168,6 +168,35 @@ print(db.query("MATCH (c:Card) RETURN count(c)"))
 [[4]]
 ```
 
+### `write_many(statements) -> list[Rows]`
+
+Runs several queries in one transaction and returns the rows of each, in order. Each item is a
+query's text, or a `(text, parameters)` pair. Each query sees what the ones before it wrote, and
+they commit together, as one change: if one fails, none does, and the `QueryError` raised has the
+index of the one that failed in `statement` (`None` when none did and the commit failed).
+
+```python
+made, counted = db.write_many([
+    ("CREATE (c:Card {number: $number}) RETURN c.number", {"number": 9}),
+    "MATCH (c:Card) RETURN count(c)",
+])
+print(made, counted)
+try:
+    db.write_many(["CREATE (:Card {number: 10})", "RETURN 1 / 0"])
+except zypherdb.QueryError as error:
+    print(error.statement, db.query("MATCH (c:Card {number: 10}) RETURN count(c)"))
+```
+
+```text
+[[9]] [[5]]
+1 [[0]]
+```
+
+A batch holds queries only: no schema command (`CREATE INDEX`...), `EXPLAIN`, `PROFILE`, `LOAD CSV`
+or procedure from `define_procedure`; one raises `InvalidExpressionError`. On a replica that
+forwards writes, a batch that writes goes to the master as one request (see
+[Replication](replication.md#writing-on-a-replica)); one that only reads runs on the replica.
+
 ### Mutators
 
 Direct writes, each its own transaction unless inside `write()`:
@@ -291,7 +320,7 @@ print(db.query("RETURN duration('P1M2DT3H')"), str(zypherdb.Duration(months=14, 
 ## Exceptions
 
 Every exception is a `zypherdb.ZypherDBError`. A failed query raises a `QueryError`, with `code` and
-`message` attributes:
+`message` attributes (and `statement`, in a `write_many`):
 
 | Exception | Code | Raised when |
 | --- | --- | --- |
@@ -322,9 +351,13 @@ character U+0000 raises `ValueError` (a query with one raises `InvalidExpression
 
 ## Concurrency
 
-- **Threads.** Share one `Database` among threads. Its calls take turns (one query at a time per
-  `Database`), and a query releases the global interpreter lock while it runs, so the rest of the
-  program carries on. A read query sees one consistent snapshot.
+- **Threads.** Share one `Database` among threads. Each thread calls through a session of its own,
+  opened on its first call, so reads run in parallel and never wait for a write; writes take turns,
+  one write transaction at a time (a `write()` block holds the writer until it ends). A thread
+  reads its own writes; no thread waits for another's unless it writes too. Queries and writes
+  release the global interpreter lock while they run or wait. A read query sees one consistent
+  snapshot. A `prepare()`d query may be run by any thread (each plans it once). `close()` waits
+  for the calls under way in other threads, then later calls raise `ClosedError`.
 - **Processes.** Each process opens the database itself. Reads run in parallel across processes;
   writes are serialized, one write transaction at a time. Do not open the same directory twice in
   one process, and do not hand a `Database` to another process.

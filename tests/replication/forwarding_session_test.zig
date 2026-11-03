@@ -1,9 +1,11 @@
 //! A replica's conversation with its master for forwarded writes
 //! (replication/forwarding_session.zig), with no network: its frames go
 //! to a master's writer session (writer_session.zig) and back, or are
-//! made by hand, on a clock of the test's own. A request goes in parts and
-//! its answer comes back joined; heartbeats are acked; a request may be
-//! sent again until its final part is out; a silent master is given up on.
+//! made by hand, on a clock of the test's own. Requests go in parts, one
+//! after the other, and their answers come back joined; heartbeats are
+//! acked; a request may be sent again until its final part is out, and
+//! taken back until any of it is in the outbox; a replica past the window
+//! is let go; a silent master is given up on.
 
 const std = @import("std");
 const testing = std.testing;
@@ -109,43 +111,91 @@ fn put(inbox: *protocol.Inbox, message: protocol.Message) void {
     inbox.filled(writer.end);
 }
 
-test "a request goes to the master in parts and its answer comes back whole, one write at a time" {
+test "requests go to the master in parts, one after the other, and their answers come back whole" {
     var pair: Pair = undefined;
     try pair.init();
     defer pair.deinit();
     try pair.introduce();
-    for (0..2) |round| {
-        const id: u64 = 40 + round;
-        // Larger than a part: sent in three.
-        const request = try testing.allocator.alloc(u8, 2 * protocol.part_bytes + 10);
-        defer testing.allocator.free(request);
-        for (request, 0..) |*byte, i| byte.* = @truncate(i + round);
-        pair.replica.request(id, request);
-        var received: ?[]u8 = null;
-        while (received == null) {
+    // Larger than a part: sent in three each.
+    var requests: [2][]u8 = undefined;
+    for (&requests, 0..) |*request, index| {
+        request.* = try testing.allocator.alloc(u8, 2 * protocol.part_bytes + 10);
+        for (request.*, 0..) |*byte, i| byte.* = @truncate(i + index);
+    }
+    defer for (requests) |request| testing.allocator.free(request);
+    pair.replica.request(40, requests[0]);
+    pair.replica.request(41, requests[1]);
+    for (requests, 40..) |request, id| {
+        const received = while (true) {
             pair.toMaster(std.math.maxInt(usize));
-            received = try pair.master.next();
-        }
-        defer testing.allocator.free(received.?);
-        try testing.expectEqualSlices(u8, request, received.?);
-        try testing.expectEqual(ForwardingSession.State.waiting, pair.replica.state);
-        try testing.expect(pair.replica.delivered());
+            if (try pair.master.next()) |received| break received;
+        };
+        defer testing.allocator.free(received.bytes);
+        try testing.expectEqual(id, received.id);
+        try testing.expectEqualSlices(u8, request, received.bytes);
+        try testing.expect(pair.replica.delivered(id));
+    }
 
+    // Answered the other way round: each comes back under its id.
+    var expected: [2][]u8 = undefined;
+    for (&expected, 0..) |*bytes, index| {
         const answer = try testing.allocator.alloc(u8, protocol.part_bytes + 3);
-        for (answer, 0..) |*byte, i| byte.* = @truncate(i * 7 + round);
-        const expected = try testing.allocator.dupe(u8, answer);
-        defer testing.allocator.free(expected);
-        pair.master.answered(answer);
-        const joined = while (true) {
+        for (answer, 0..) |*byte, i| byte.* = @truncate(i * 7 + index);
+        bytes.* = try testing.allocator.dupe(u8, answer);
+        pair.master.answered(41 - index, answer);
+    }
+    defer for (expected) |bytes| testing.allocator.free(bytes);
+    for (expected, 0..) |bytes, index| {
+        const answer = while (true) {
             try pair.toReplica();
             const event = try pair.replica.next(testing.allocator) orelse continue;
             break event.answer;
         };
-        defer testing.allocator.free(joined);
-        try testing.expectEqualSlices(u8, expected, joined);
-        try testing.expectEqual(ForwardingSession.State.ready, pair.replica.state);
-        try testing.expect(!pair.replica.delivered());
+        defer testing.allocator.free(answer.bytes);
+        try testing.expectEqual(41 - index, answer.id);
+        try testing.expectEqualSlices(u8, bytes, answer.bytes);
+        try testing.expect(!pair.replica.delivered(answer.id));
     }
+    try testing.expectEqual(0, pair.replica.count);
+}
+
+test "a request is taken back only while none of it is in the outbox" {
+    var pair: Pair = undefined;
+    try pair.init();
+    defer pair.deinit();
+    try pair.introduce();
+    const request = try testing.allocator.alloc(u8, protocol.part_bytes + 1);
+    defer testing.allocator.free(request);
+    @memset(request, 'r');
+    pair.replica.request(1, request);
+    pair.replica.request(2, "CREATE ()");
+    pair.replica.request(3, "CREATE ()");
+    pair.replica.pump(pair.now);
+    // The first part of 1 fills the outbox: 2 and 3 wait.
+    try testing.expect(!pair.replica.withdraw(1));
+    try testing.expect(pair.replica.withdraw(2));
+    pair.toMaster(std.math.maxInt(usize));
+    try testing.expectEqual(null, try pair.master.next());
+    pair.toMaster(std.math.maxInt(usize));
+    for ([_]u64{ 1, 3 }) |id| {
+        const received = (try pair.master.next()).?;
+        defer testing.allocator.free(received.bytes);
+        try testing.expectEqual(id, received.id);
+    }
+    try testing.expect(!pair.replica.withdraw(3));
+}
+
+test "a replica that sends more than the window is let go" {
+    var pair: Pair = undefined;
+    try pair.init();
+    defer pair.deinit();
+    try pair.introduce();
+    for (0..protocol.max_writes_in_flight) |id| pair.replica.request(id, "CREATE ()");
+    try testing.expect(pair.replica.full());
+    pair.toMaster(std.math.maxInt(usize));
+    for (0..protocol.max_writes_in_flight) |_| testing.allocator.free((try pair.master.next()).?.bytes);
+    put(&pair.master.inbox, .{ .request_part = .{ .id = 99, .final = true, .bytes = "CREATE ()" } });
+    try testing.expectError(error.UnexpectedMessage, pair.master.next());
 }
 
 test "a request is not delivered until the last byte of its final part is sent" {
@@ -161,16 +211,16 @@ test "a request is not delivered until the last byte of its final part is sent" 
     // replica takes it as delivered.
     while (true) {
         pair.toMaster(1);
-        const received = try pair.master.next();
-        try testing.expectEqual(received != null, pair.replica.delivered());
-        if (received) |bytes| {
-            testing.allocator.free(bytes);
+        const handed = try pair.master.next();
+        try testing.expectEqual(handed != null, pair.replica.delivered(1));
+        if (handed) |whole| {
+            testing.allocator.free(whole.bytes);
             break;
         }
     }
 }
 
-test "heartbeats are acked while ready and while a write runs; the master keeps the replica" {
+test "heartbeats are acked with no write and while one runs; the master keeps the replica" {
     var pair: Pair = undefined;
     try pair.init();
     defer pair.deinit();
@@ -179,7 +229,7 @@ test "heartbeats are acked while ready and while a write runs; the master keeps 
         if (round == 10) {
             pair.replica.request(9, "CREATE ()");
             pair.toMaster(std.math.maxInt(usize));
-            testing.allocator.free((try pair.master.next()).?);
+            testing.allocator.free((try pair.master.next()).?.bytes);
         }
         pair.now += heartbeat_ns;
         try pair.toReplica();
@@ -189,7 +239,7 @@ test "heartbeats are acked while ready and while a write runs; the master keeps 
         try testing.expect(!pair.master.expired(pair.now));
         try testing.expect(pair.now < pair.replica.deadline());
     }
-    try testing.expectEqual(ForwardingSession.State.waiting, pair.replica.state);
+    try testing.expect(pair.replica.delivered(9));
 }
 
 test "a silent master, or one that reads nothing sent, is given up on" {
@@ -220,7 +270,7 @@ test "a silent master, or one that reads nothing sent, is given up on" {
 
     // Sent; then the master says nothing.
     pair.toMaster(std.math.maxInt(usize));
-    testing.allocator.free((try pair.master.next()).?);
+    testing.allocator.free((try pair.master.next()).?.bytes);
     try testing.expectEqual(pair.now + timeout_ns, pair.replica.deadline());
 }
 
@@ -257,7 +307,7 @@ test "an answer the replica did not ask for ends the conversation" {
             session.request(5, "CREATE ()");
             session.pump(0);
             session.sent(session.outbox.unsent().len, 0);
-            try testing.expect(session.delivered());
+            try testing.expect(session.delivered(5));
         }
         put(&session.inbox, case.message);
         try testing.expectError(error.UnexpectedMessage, session.next(testing.allocator));

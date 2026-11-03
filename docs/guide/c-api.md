@@ -158,6 +158,23 @@ counts it was planned on change at least twofold (and by 100 or more). A stateme
 context it was prepared with: free it before closing that context, and use it from one thread at a
 time, as the context.
 
+**Several queries in one transaction.**
+
+```c
+int zypherdb_write_many(zypherdb_context *context, size_t count, const char *const *queries,
+                        const size_t *query_lens, const char *const *parameters_json,
+                        const size_t *parameters_lens, zypherdb_result **out_results);
+size_t zypherdb_error_statement(zypherdb_context *context);
+```
+
+`zypherdb_write_many` runs `count` queries in order, in one transaction: each sees what the ones
+before it wrote, and they commit together or, if one fails, none does. `parameters_json` (or any
+entry of it) may be `NULL`: no parameters. It returns 0 and fills `out_results[0..count]` (free
+each), or 1 and fills nothing; `zypherdb_error_statement` then gives the index of the query that
+failed (`SIZE_MAX`: none did, the commit failed). A batch holds queries only: no schema command,
+`EXPLAIN`, `PROFILE` or `LOAD CSV` (`ZYPHERDB_ERROR_INVALID_EXPRESSION`). On a replica that
+forwards writes, a batch that writes goes to the master as one request.
+
 **Plans.** `EXPLAIN query` and `PROFILE query` are queries too: their result is the plan, one row
 per operator, with the columns `depth`, `operator`, `details`, `estimated_rows`, `rows` and
 `time_ms` (see [EXPLAIN and PROFILE](cypher.md#explain-and-profile)). `PROFILE` runs the query and
@@ -391,9 +408,25 @@ The text belongs to the context, and stays valid until the next status or `zyphe
 
 ## Threads and processes
 
-A context is not thread-safe, so serialize the calls on one context. Each process opens the
-database itself: reads run in parallel across processes, and writes take turns, one write
-transaction at a time. Do not open the same directory twice in one process.
+A context is a session: one thread uses it at a time. For another thread, open another session on
+the same database with `zypherdb_open_session(context)`; it takes the context's import directory,
+and its replication role, if any. Sessions run at once: reads in parallel, never waiting for a
+write; writes take turns, one write transaction at a time (a `zypherdb_begin_write` holds the
+writer until its commit or abort). A session reads its own writes, and waits for no other
+session unless it writes too. Close each session with `zypherdb_close`: the database closes with
+the last one, whichever it is.
+
+```c
+zypherdb_context *db = zypherdb_open(path, strlen(path));
+zypherdb_context *worker = zypherdb_open_session(db); /* hand it to another thread */
+/* ... */
+zypherdb_close(worker);
+zypherdb_close(db);
+```
+
+Each process opens the database itself: reads run in parallel across processes, and writes take
+turns as they do between sessions. Do not open the same directory twice in one process: open
+sessions instead.
 
 ## Why this way — and the alternatives
 
