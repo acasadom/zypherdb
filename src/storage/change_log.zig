@@ -15,7 +15,8 @@
 //! Table `changes` (engine/contract.zig), keys:
 //!
 //!     lsn (u64) | chunk (u32)    a part of the change set of transaction lsn
-//!     12 zero bytes              the log's state (`State`)
+//!     12 0xff bytes              the log's state (`State`), after every part,
+//!                                next to the newest: a commit touches one end
 //!     "replica"                  on a replica, the last LSN applied (u64)
 //!     "database"                 the master's id (`DatabaseId`), on it and
 //!                                on its replicas
@@ -45,6 +46,11 @@ const Transaction = engine.Transaction;
 /// The largest part of a change set kept under one key: a transaction's
 /// changes are written as they come, never all held in memory.
 pub const chunk_bytes: usize = 1 << 20;
+
+/// How far under its limit a full log drops: a few hundred small change
+/// sets at once, not one at each commit (each drop rewrites the pages of the
+/// log's oldest end), and never so many that one commit stalls.
+pub const drop_slack_bytes: u64 = 64 << 10;
 
 pub const Operation = enum(u8) { put = 0x01, delete = 0x02 };
 
@@ -86,7 +92,7 @@ pub const State = struct {
     }
 };
 
-const state_key: [12]u8 = @splat(0);
+const state_key: [12]u8 = @splat(0xff);
 const replica_key = "replica";
 const database_key = "database";
 
@@ -177,16 +183,21 @@ pub const Recorder = struct {
     }
 
     /// Before `transaction` commits: writes the rest of the change set, gives
-    /// it its LSN, and drops the oldest change sets past `limit` bytes (never
-    /// this one). A transaction that changed nothing gets no LSN.
+    /// it its LSN, and, past `limit` bytes, drops the oldest change sets
+    /// (never this one) until `drop_slack_bytes` under it, so that most
+    /// commits of a full log touch only its newest end. A transaction that
+    /// changed nothing gets no LSN.
     pub fn finish(self: *Recorder, transaction: Transaction, limit: u64) engine.Error!void {
         if (self.pending.items.len > 0) try self.writeChunk(transaction, self.pending.items.len);
         if (self.chunks == 0) return;
         self.state.next_lsn += 1;
         self.state.bytes += self.bytes;
-        while (self.state.bytes > limit and self.state.oldest_lsn + 1 < self.state.next_lsn) {
-            self.state.bytes -= try dropChangeSet(transaction, self.state.oldest_lsn);
-            self.state.oldest_lsn += 1;
+        if (self.state.bytes > limit) {
+            const target = limit - @min(limit / 16, drop_slack_bytes);
+            while (self.state.bytes > target and self.state.oldest_lsn + 1 < self.state.next_lsn) {
+                self.state.bytes -= try dropChangeSet(transaction, self.state.oldest_lsn);
+                self.state.oldest_lsn += 1;
+            }
         }
         try transaction.put(.changes, &state_key, &self.state.encode());
     }
