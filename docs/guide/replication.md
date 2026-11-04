@@ -4,16 +4,19 @@ A database can keep copies of itself on other machines, up to date as it changes
 takes the writes, and each **replica** follows it and answers reads. Replicas spread the reads
 over more machines, and keep the data on more than one.
 
-> **Warning.** Replication is **not encrypted**. The token and every change travel in clear over
-> TCP, so anyone on the network can read them, and anyone who learns the token can follow the
-> master. Run it only on a network you trust (a private network, a VPN or an SSH tunnel), and never
-> open the master's port to the internet.
+> **The token is the key.** With a token, every conversation is encrypted and authenticated, and
+> the token itself never travels: a side that does not hold it gets no further than the handshake.
+> Anyone who learns the token can follow the master and send it writes, and someone who recorded
+> a conversation can try guesses of the token against it, so make it long and random (16 bytes
+> from a secure source or more). With no token (C only), or `encrypted=False`, everything travels
+> in clear, the token too: then run replication only on a network you trust, or inside a VPN or an
+> SSH tunnel. See [Encryption](#encryption).
 
 ## Starting it
 
 Replication is a role the database opens with; there is nothing else to start. The master opens
 with `serve`, the address it listens at, and each replica with `replicate_from`, the master's
-address. Both give the same `token`, the secret a replica must send to be served:
+address. Both give the same `token`, the secret they share:
 
 ```python
 import os, tempfile, zypherdb
@@ -108,11 +111,28 @@ master tells the replica how often it sends them; five seconds) is left, and the
 again. `master_lsn` is the master's last change as its last heartbeat told,
 and `lag` the difference.
 `halted` is set when the replica stopped following for good, because asking again cannot help: it
-names the reason — `"token"` (the master refused the token), `"database_id"` (it is a replica of
-another master), `"ahead"` (it has changes the master never made: the master was restored from an
+names the reason — `"token"` (the master holds another token), `"encryption"` (one side encrypts
+and the other does not), `"database_id"` (it is a replica of another master), `"ahead"` (it has changes the master never made: the master was restored from an
 older copy), or a version, format or engine the two do not share. A halted replica keeps answering
 reads with what it has; fix the cause and open it again (or start it from an empty directory).
 `last_refusal` names why the master last turned it away, when that was not for good.
+
+## Encryption
+
+A token makes each conversation between a master and a replica encrypted: the Noise protocol's
+`Noise_NNpsk0_25519_ChaChaPoly_SHA256`, with the token as its pre-shared key. Each connection makes
+fresh keys, so what it carried stays secret even if the token is learned later, and every byte
+after the handshake is authenticated: anything changed, repeated or moved on the way ends the
+connection, and the replica connects again. There are no certificates: only the two sides that hold
+the token can finish the handshake.
+
+The master and its replicas must agree: `encrypted=False` (on by default) on all of them sends
+everything in clear, for a network that is already encrypted, or to save the CPU. A side that
+encrypts and one that does not stop with `"encryption"`.
+
+Before there are keys there is nothing to protect a message with, so a refusal for a wrong token
+or for not encrypting travels in clear, and whoever can write on the connection can forge one and
+stop a replica, until it is opened again.
 
 ## Writing on a replica
 

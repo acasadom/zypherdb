@@ -43,6 +43,7 @@ const network = zypherdb.replication_network;
 const Watched = network.Watched;
 const Wakeup = network.Wakeup;
 const MemoryNetwork = zypherdb.replication_memory_network.MemoryNetwork;
+const EncryptedNetwork = zypherdb.replication_encrypted_network.EncryptedNetwork;
 const master_node = zypherdb.replication_master_node;
 const MasterNode = master_node.MasterNode;
 const replica_node = zypherdb.replication_replica_node;
@@ -116,6 +117,8 @@ const Swarm = struct {
     max_unapplied_bytes: usize,
     /// The longest a forwarded write may take.
     request_timeout_ns: u64,
+    /// Whether the conversations go over an `EncryptedNetwork`.
+    encrypted: bool,
     /// The weight of each move (0: never).
     commit: u32,
     large_commit: u32,
@@ -141,6 +144,7 @@ const Swarm = struct {
             .change_log_limit = if (random.boolean()) 4 << 10 else 512 << 20,
             .max_unapplied_bytes = if (random.boolean()) 2 << 10 else 64 << 20,
             .request_timeout_ns = if (random.boolean()) timeout_ns else 10 * timeout_ns,
+            .encrypted = random.boolean(),
             .commit = random.intRangeAtMost(u32, 1, 10),
             .large_commit = if (random.uintLessThan(u32, 4) == 0) 1 else 0,
             .pass_time = random.intRangeAtMost(u32, 1, 10),
@@ -165,7 +169,7 @@ const Swarm = struct {
     pub fn format(self: Swarm, writer: *Io.Writer) Io.Writer.Error!void {
         inline for (@typeInfo(Swarm).@"struct".field_names, 0..) |name, i| {
             if (i > 0) try writer.writeAll(", ");
-            try writer.print("{s} {d}", .{ name, @field(self, name) });
+            try writer.print("{s} {any}", .{ name, @field(self, name) });
         }
     }
 };
@@ -313,6 +317,10 @@ const Simulation = struct {
     swarm: Swarm,
     clock: SimulatedClock = .{},
     network: MemoryNetwork,
+    /// Over `network`, if the swarm encrypts; its keys come from
+    /// `encryption_prng`, so a seed replays.
+    encrypted_network: EncryptedNetwork,
+    encryption_prng: std.Random.DefaultPrng,
     master: Master,
     replicas: [max_replicas]Replica,
     /// On the master's machine, apart from its node.
@@ -337,10 +345,13 @@ const Simulation = struct {
             .prng = prng,
             .swarm = swarm,
             .network = .{ .allocator = allocator, .capacity = swarm.capacity },
+            .encrypted_network = undefined,
+            .encryption_prng = .init(options.seed),
             .master = undefined,
             .replicas = undefined,
             .standby = undefined,
         };
+        self.encrypted_network = .init(self.network.network(), allocator, self.encryption_prng.random(), token);
         try self.openMaster(path);
         try self.openForwarding(&self.standby, &self.master.store, "standby");
         for (self.replicas[0..swarm.replicas], 0..) |*replica, i| {
@@ -387,7 +398,7 @@ const Simulation = struct {
         try master.store.startChangeLog();
         master.store.commit_listener = .{ .context = self, .committed = committed };
         master.graph = Graph.init(&master.store, self.allocator);
-        master.wakeup = try self.network.network().wakeup();
+        master.wakeup = try self.net().wakeup();
         try self.digests.put(self.allocator, try self.lastLsn(), try digest(&master.store));
         try self.startMasterNode();
     }
@@ -398,15 +409,24 @@ const Simulation = struct {
         errdefer master.copier.deinit();
         master.runner = .{ .allocator = self.allocator, .store = try master.store.share(), .wakeup = master.wakeup };
         errdefer master.runner.deinit();
-        master.node = try MasterNode.init(self.allocator, self.io, self.network.network(), &master.store, master.wakeup, master.copier.copier(), master.runner.runner(), .{
+        master.node = try MasterNode.init(self.allocator, self.io, self.net(), &master.store, master.wakeup, master.copier.copier(), master.runner.runner(), .{
             .address = master_address,
-            .token = token,
+            .token = self.tokenInHello(),
             .copies_directory = master.copies_path,
             .heartbeat_ns = heartbeat_ns,
             .timeout_ns = timeout_ns,
             .copy_timeout_ns = 10 * std.time.ns_per_s,
             .max_replicas = max_replicas + 1,
         });
+    }
+
+    /// The network the nodes run on.
+    fn net(self: *Simulation) network.Network {
+        return if (self.swarm.encrypted) self.encrypted_network.network() else self.network.network();
+    }
+
+    fn tokenInHello(self: *const Simulation) []const u8 {
+        return if (self.swarm.encrypted) "" else token;
     }
 
     fn committed(context: *anyopaque, lsn: u64) void {
@@ -426,7 +446,7 @@ const Simulation = struct {
         replica.applied = .{};
         replica.frozen_until = 0;
         replica.checked_lsn = null;
-        replica.wakeup = try self.network.network().wakeup();
+        replica.wakeup = try self.net().wakeup();
         errdefer replica.wakeup.close();
         replica.applier = .{
             .allocator = self.allocator,
@@ -436,9 +456,9 @@ const Simulation = struct {
             .wakeup = replica.wakeup,
         };
         errdefer replica.applier.deinit();
-        replica.node = try ReplicaNode.init(self.allocator, self.clock.clock(), self.network.network(), &replica.store, &replica.applied, replica.wakeup, replica.applier.applier(), .{
+        replica.node = try ReplicaNode.init(self.allocator, self.clock.clock(), self.net(), &replica.store, &replica.applied, replica.wakeup, replica.applier.applier(), .{
             .master_address = master_address,
-            .token = token,
+            .token = self.tokenInHello(),
             .first_retry_ns = 10 * ms,
             .longest_retry_ns = 200 * ms,
             .answer_timeout_ns = timeout_ns,
@@ -451,14 +471,14 @@ const Simulation = struct {
     }
 
     fn openForwarding(self: *Simulation, process: *Forwarding, store: *KeyValueStore, name: []const u8) !void {
-        const wakeup = try self.network.network().wakeup();
+        const wakeup = try self.net().wakeup();
         errdefer wakeup.close();
         process.* = .{
             .store = store,
             .wakeup = wakeup,
-            .node = try .init(self.allocator, self.network.network(), store, wakeup, .{
+            .node = try .init(self.allocator, self.net(), store, wakeup, .{
                 .master_address = master_address,
-                .token = token,
+                .token = self.tokenInHello(),
                 .answer_timeout_ns = timeout_ns,
                 .request_timeout_ns = self.swarm.request_timeout_ns,
                 .name = name,
@@ -809,13 +829,16 @@ const Simulation = struct {
     fn stepNodes(self: *Simulation) !bool {
         const now = self.clock.time;
         self.network.refusing = now < self.partition_until;
-        const net = self.network.network();
+        const net_now = self.net();
+        // Bytes of a record not yet whole move during a wait, with no node
+        // ready: that is progress too, and time must not pass for it.
+        const moved_before = self.network.bytes_moved;
         var stepped = false;
         {
             var buffer: [network.max_watched]Watched = undefined;
             const node = &self.master.node;
             const watched = node.watch(&buffer);
-            try net.wait(watched, null);
+            try net_now.wait(watched, null);
             node.ready(watched);
             if (anyReady(watched) or due(node.deadline(), now)) {
                 node.step(now);
@@ -827,7 +850,7 @@ const Simulation = struct {
             var buffer: [2]Watched = undefined;
             const node = &replica.node;
             const watched = node.watch(&buffer);
-            try net.wait(watched, null);
+            try net_now.wait(watched, null);
             node.ready(watched);
             if (anyReady(watched) or due(node.deadline(), now)) {
                 node.step(now);
@@ -837,14 +860,14 @@ const Simulation = struct {
             if (try self.stepForwarding(&replica.forwarding, now)) stepped = true;
         }
         if (try self.stepForwarding(&self.standby, now)) stepped = true;
-        return stepped;
+        return stepped or self.network.bytes_moved != moved_before;
     }
 
     fn stepForwarding(self: *Simulation, process: *Forwarding, now: Instant) !bool {
         var buffer: [2]Watched = undefined;
         const node = &process.node;
         const watched = node.watch(&buffer);
-        try self.network.network().wait(watched, null);
+        try self.net().wait(watched, null);
         node.ready(watched);
         if (!anyReady(watched) and !due(node.deadline(), now)) return false;
         node.step(now);

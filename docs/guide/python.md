@@ -44,8 +44,10 @@ exit, or closed with `close()`.
 - `serve`, `replicate_from`, `token` — a replication role (see [replication](replication.md)):
   `serve="host:port"` makes the database a master that serves replicas there, and
   `replicate_from="host:port"` a replica of the master there, which refuses writes. Either needs
-  `token`, the secret a replica sends; both at once raise `ValueError`. Replication is not
-  encrypted: run it only on a trusted network.
+  `token`, the secret master and replicas share; both at once raise `ValueError`.
+- `encrypted` — whether replication is encrypted with the token (`True`, the default; the token
+  never travels). `False`, on the master and on its replicas alike, sends the token and the data
+  in clear: only on a trusted network or a tunnel.
 - `name` — what a replica calls itself in its master's status (at most 255 bytes in UTF-8); by
   default the name of its host. Given to a database that is not a replica, `ValueError`.
 - `forward_writes`, `forward_timeout` — a replica with `forward_writes=True` sends the queries

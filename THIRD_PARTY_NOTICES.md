@@ -10,6 +10,7 @@ ZypherDB includes, or is derived from, the following works. Their licenses are r
 | Unicode Character Database 16.0 (tables generated from it) | `src/text/unicode_tables.zig` | Unicode License v3 (below) |
 | Snowball stemming algorithms (English "Porter2", Spanish), translated to Zig; the Snowball Spanish stop-word list | `src/text/stem_english.zig`, `src/text/stem_spanish.zig`, `src/text/stop_words.zig` | BSD 3-Clause (below) |
 | Snowball test vocabularies (a sample) | `tests/text/snowball/` (tests only) | BSD 3-Clause (below) |
+| A Noise protocol test vector, from Cacophony's vectors as distributed with snow (Jake McGinty) | `tests/replication/noise_test.zig` (tests only) | Apache License 2.0 (<https://github.com/mcginty/snow>) |
 | openCypher Technology Compatibility Kit | `tests/tck/features/` (tests only) | Apache License 2.0 (`tests/tck/LICENSE`) |
 
 The English stop words are Lucene's English stop set, a list of 33 common English words.

@@ -170,6 +170,7 @@ class Database:
         name: str | None = None,
         forward_writes: bool = False,
         forward_timeout: float = 30.0,
+        encrypted: bool = True,
     ):
         """Opens (or creates) the database in directory `path`.
 
@@ -195,9 +196,11 @@ class Database:
         `replicate_from` makes it a replica of the master at that address: it
         gets a copy of the master's database, then each change committed
         there, reconnecting on its own, and refuses writes. Either needs
-        `token`, the secret a replica must send. Replication is not
-        encrypted: the token and the data travel in clear, so run it only
-        on a trusted network. While another process runs replication on the
+        `token`, the secret master and replicas share. The conversation is
+        encrypted with it, and it never travels, so it must be hard to guess.
+        `encrypted=False`, on the master and on its replicas alike, sends the
+        token and the data in clear: only on a trusted network or a tunnel.
+        While another process runs replication on the
         database this one stands by, and takes over when that one closes it or
         dies; give a master a fixed port so its replicas find whichever runs.
         `name` is what a replica calls itself in its master's status (at
@@ -227,7 +230,7 @@ class Database:
         self._db = native.open(path, _DURABILITY[durability], _TEMPORALS[temporals])
         if role is not None:
             try:
-                native.start_replication(self._db, path, role[0], role[1], token, name, forward_writes, max(1, round(forward_timeout * 1000)))
+                native.start_replication(self._db, path, role[0], role[1], token, name, forward_writes, max(1, round(forward_timeout * 1000)), encrypted)
             except BaseException:
                 native.close(self._db)
                 raise

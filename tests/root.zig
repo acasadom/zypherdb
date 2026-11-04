@@ -16,6 +16,8 @@ test {
     _ = @import("replication/replica_test.zig");
     _ = @import("replication/clock_test.zig");
     _ = @import("replication/network_test.zig");
+    _ = @import("replication/noise_test.zig");
+    _ = @import("replication/encrypted_network_test.zig");
     _ = @import("replication/threads_test.zig");
     _ = @import("replication/replication_test.zig");
     _ = @import("replication/sessions_test.zig");

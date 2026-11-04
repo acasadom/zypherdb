@@ -82,6 +82,23 @@ def test_a_replica_told_the_wrong_token_halts_and_says_why(master, tmp_path):
         assert status["phase"] == "halted"
 
 
+def test_replicating_in_clear_if_both_sides_say_so(tmp_path):
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN, encrypted=False) as clear_master:
+        clear_master.query("CREATE (:Person {name: 'Ada'})")
+        lsn = clear_master.last_lsn
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(clear_master), token=TOKEN, encrypted=False) as replica:
+            assert replica.wait_for(lsn, timeout=20)
+            assert replica.query("MATCH (p:Person) RETURN p.name") == [["Ada"]]
+
+
+@pytest.mark.parametrize("master_encrypts", [True, False])
+def test_a_side_that_encrypts_and_one_that_does_not_halt_the_replica_and_it_says_why(master_encrypts, tmp_path):
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN, encrypted=master_encrypts) as db:
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(db), token=TOKEN, encrypted=not master_encrypts) as replica:
+            assert not replica.wait_for(1, timeout=20)
+            assert replica.replication_status()["halted"] == "encryption"
+
+
 def test_without_replication(tmp_path):
     with Database(str(tmp_path / "db")) as db:
         db.query("CREATE ()")

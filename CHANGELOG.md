@@ -4,6 +4,12 @@
 
 ### Added
 
+- **Encrypted replication.** With a token, a master and its replicas talk over an encrypted,
+  authenticated channel (Noise `NNpsk0` with X25519, ChaCha20-Poly1305 and SHA-256, the token as
+  its pre-shared key); the token no longer travels. `encrypted=False` (Python) or
+  `encrypted = false` (C) sends everything in clear, as before, on both sides. A side that
+  encrypts and one that does not stop with the refusal `"encryption"`. `zypherdb_open_replicated`
+  takes one more argument.
 - **`write_many`** (Python) and `zypherdb_write_many` (C): several queries in one transaction,
   each seeing what the ones before it wrote, committed together or not at all; the error tells
   which query failed. On a replica that forwards writes, a batch that writes goes to the master

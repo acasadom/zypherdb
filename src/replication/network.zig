@@ -35,7 +35,10 @@ pub const Connection = struct {
     }
 
     /// Bytes of `bytes` on their way to the other end: how many, never 0.
-    /// `WouldBlock`: no room for any yet.
+    /// `WouldBlock`: no room for any yet. Some may leave only during a
+    /// `Network.wait` that watches the connection: a loop watches each it
+    /// holds, whatever it wants of it. A connection that cannot send until
+    /// the two ends agree on keys is not writable until then.
     pub fn send(self: Connection, bytes: []const u8) error{ WouldBlock, Closed }!usize {
         return self.vtable.send(self.context, bytes);
     }

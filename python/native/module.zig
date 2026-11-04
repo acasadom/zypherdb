@@ -1195,7 +1195,7 @@ fn abortWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject 
 // --- Replication -------------------------------------------------------------------
 
 /// `start_replication(db, path, role, address, token, name, forward_writes,
-/// request_timeout_ms)`: role 0 serves replicas at `address`, role 1
+/// request_timeout_ms, encrypted)`: role 0 serves replicas at `address`, role 1
 /// follows the master at `address` calling itself `name` (None: the host's
 /// name), forwarding the statements that write if `forward_writes`, each
 /// in at most `request_timeout_ms`. Before `open_session` opens others.
@@ -1212,15 +1212,17 @@ fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyO
     var name_length: py.Py_ssize_t = 0;
     var forward_writes: c_int = 0;
     var request_timeout_ms: c_ulonglong = 0;
-    if (parseTuple(args, "Os#is#s#z#pK", &capsule, &path_pointer, &path_length, &role, &address_pointer, &address_length, &token_pointer, &token_length, &name_pointer, &name_length, &forward_writes, &request_timeout_ms) == 0) return null;
+    var encrypted: c_int = 1;
+    if (parseTuple(args, "Os#is#s#z#pKp", &capsule, &path_pointer, &path_length, &role, &address_pointer, &address_length, &token_pointer, &token_length, &name_pointer, &name_length, &forward_writes, &request_timeout_ms, &encrypted) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     const address = address_pointer[0..@intCast(address_length)];
     const token = token_pointer[0..@intCast(token_length)];
     const replication_role: zypherdb.replication.Role = switch (role) {
-        0 => .{ .master = .{ .address = address, .token = token } },
+        0 => .{ .master = .{ .address = address, .token = token, .encrypted = encrypted != 0 } },
         1 => .{ .replica = .{
             .master_address = address,
             .token = token,
+            .encrypted = encrypted != 0,
             .name = if (name_pointer == null) null else name_pointer[0..@intCast(name_length)],
             .forward_writes = forward_writes != 0,
             .request_timeout_ns = request_timeout_ms *| std.time.ns_per_ms,

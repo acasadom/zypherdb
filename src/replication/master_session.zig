@@ -23,7 +23,8 @@ const change_log = @import("../storage/change_log.zig");
 const StorageError = @import("../storage/key_value_store.zig").StorageError;
 
 pub const Settings = struct {
-    /// What a replica must send to be served.
+    /// What a replica must send to be served; empty in an encrypted
+    /// conversation, whose handshake proved the token.
     token: []const u8,
     heartbeat_ns: u64,
     /// A replica that reads nothing sent, or sends nothing awaited, for
@@ -149,6 +150,8 @@ pub const MasterSession = struct {
                         },
                     },
                     .writer_hello => |hello| return .{ .writer = hello },
+                    // It encrypts; this master does not.
+                    .handshake => self.refuse(.encryption),
                     else => return error.UnexpectedMessage,
                 },
                 .awaiting_copy_ack => switch (message) {

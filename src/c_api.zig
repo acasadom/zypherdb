@@ -212,21 +212,24 @@ pub export fn zypherdb_sync(context: *Context) c_int {
 
 /// Opens with a replication role: `ROLE_MASTER` serves replicas at
 /// `address` ("host:port"), `ROLE_REPLICA` follows the master at `address`
-/// (and refuses writes). A replica must not have been a master. Both send
-/// `token` in clear: run replication on a trusted network. A replica calls
+/// (and refuses writes). A replica must not have been a master. With
+/// `encrypted` and a `token`, the conversation is encrypted and the token is
+/// its key; otherwise the token and the data go in clear: run replication on
+/// a trusted network. Master and replicas must agree. A replica calls
 /// itself `name` in its master's status (NULL: the host's name). A replica
 /// with `forward_writes` sends the statements that write to its master
 /// instead of refusing them, each taking at most `request_timeout_ms` (0:
 /// 30 s) until it is applied here. NULL when the database cannot be opened
 /// or replication cannot start.
-pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, durability: c_int, role: c_int, address_ptr: [*]const u8, address_len: usize, token_ptr: [*]const u8, token_len: usize, name_ptr: ?[*]const u8, name_len: usize, forward_writes: bool, request_timeout_ms: u64) ?*Context {
+pub export fn zypherdb_open_replicated(path_ptr: [*]const u8, path_len: usize, durability: c_int, role: c_int, address_ptr: [*]const u8, address_len: usize, token_ptr: [*]const u8, token_len: usize, name_ptr: ?[*]const u8, name_len: usize, forward_writes: bool, request_timeout_ms: u64, encrypted: bool) ?*Context {
     const address = address_ptr[0..address_len];
     const token = token_ptr[0..token_len];
     const replication_role: replication_module.Role = switch (role) {
-        ROLE_MASTER => .{ .master = .{ .address = address, .token = token } },
+        ROLE_MASTER => .{ .master = .{ .address = address, .token = token, .encrypted = encrypted } },
         ROLE_REPLICA => .{ .replica = .{
             .master_address = address,
             .token = token,
+            .encrypted = encrypted,
             .name = if (name_ptr) |name| name[0..name_len] else null,
             .forward_writes = forward_writes,
             .request_timeout_ns = if (request_timeout_ms == 0) 30 * std.time.ns_per_s else request_timeout_ms *| std.time.ns_per_ms,

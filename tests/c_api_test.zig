@@ -466,7 +466,7 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     const token = "the master's token";
 
     const any_port = "127.0.0.1:0";
-    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0).?;
+    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0, true).?;
     defer zypherdb_close(master);
     var length: usize = 0;
     const master_status = c_api.zypherdb_replication_status(master, &length).?[0..length];
@@ -476,7 +476,7 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     const address = try std.fmt.bufPrint(&address_buffer, "{s}", .{master_status[address_start..std.mem.indexOfScalarPos(u8, master_status, address_start, '"').?]});
 
     const name = "replica-1";
-    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, name.ptr, name.len, false, 0).?;
+    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, name.ptr, name.len, false, 0, true).?;
     defer zypherdb_close(replica);
 
     const create = "CREATE (:Person {name: 'Ada'})";
@@ -513,7 +513,7 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
 fn openMaster(tmp: *testing.TmpDir, path_buffer: []u8, address_buffer: []u8, token: []const u8) !struct { *c_api.Context, []const u8 } {
     const path = std.fmt.bufPrint(path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
     const any_port = "127.0.0.1:0";
-    const master = c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0).?;
+    const master = c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0, true).?;
     var length: usize = 0;
     const status = c_api.zypherdb_replication_status(master, &length).?[0..length];
     const start = std.mem.indexOf(u8, status, "127.0.0.1:").?;
@@ -523,7 +523,7 @@ fn openMaster(tmp: *testing.TmpDir, path_buffer: []u8, address_buffer: []u8, tok
 
 fn openForwardingReplica(tmp: *testing.TmpDir, path_buffer: []u8, address: []const u8, token: []const u8, request_timeout_ms: u64) *c_api.Context {
     const path = std.fmt.bufPrint(path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
-    return c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, null, 0, true, request_timeout_ms).?;
+    return c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, null, 0, true, request_timeout_ms, true).?;
 }
 
 fn expectRefused(context: *c_api.Context, text: []const u8, code: ErrorCode) !void {

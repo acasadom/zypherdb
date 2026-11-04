@@ -207,6 +207,65 @@ test "a replica told the wrong token halts, and says why" {
     try testing.expectEqual(.halted, status.phase);
 }
 
+test "a master and a replica follow each other in clear if both say so" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path = std.mem.zeroes([256]u8);
+    var replica_path = std.mem.zeroes([256]u8);
+    var master = try open(&tmp, "master", &master_path);
+    defer master.deinit();
+    var replica = try open(&tmp, "replica", &replica_path);
+    defer replica.deinit();
+
+    const serving = try Replication.start(testing.allocator, &master, pathOf(&master_path), .{ .master = .{ .address = "127.0.0.1:0", .token = token, .encrypted = false } });
+    defer serving.stop();
+    const lsn = try commit(&master, "written");
+    var address_buffer: [max_address_bytes]u8 = undefined;
+    const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
+        .master_address = serving.address(&address_buffer).?,
+        .token = token,
+        .encrypted = false,
+    } });
+    defer following.stop();
+    try testing.expect(following.waitFor(&replica, lsn, patience));
+}
+
+/// A replica of a master that encrypts or not, itself the same or not, with
+/// the tokens given: what stops it.
+fn expectHalts(reason: protocol.Refusal, master_role: zypherdb.replication.Role.Master, replica_encrypted: bool, replica_token: []const u8) !void {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path = std.mem.zeroes([256]u8);
+    var replica_path = std.mem.zeroes([256]u8);
+    var master = try open(&tmp, "master", &master_path);
+    defer master.deinit();
+    var replica = try open(&tmp, "replica", &replica_path);
+    defer replica.deinit();
+
+    const serving = try Replication.start(testing.allocator, &master, pathOf(&master_path), .{ .master = master_role });
+    defer serving.stop();
+    var address_buffer: [max_address_bytes]u8 = undefined;
+    const following = try Replication.start(testing.allocator, &replica, pathOf(&replica_path), .{ .replica = .{
+        .master_address = serving.address(&address_buffer).?,
+        .token = replica_token,
+        .encrypted = replica_encrypted,
+    } });
+    defer following.stop();
+    try testing.expect(!following.waitFor(&replica, 1, patience));
+    try testing.expectEqual(reason, (try following.status(&replica, &.{})).replica.halted.?);
+}
+
+test "a side that encrypts and one that does not halt the replica, and it says why" {
+    try expectHalts(.encryption, .{ .address = "127.0.0.1:0", .token = token }, false, token);
+    try expectHalts(.encryption, .{ .address = "127.0.0.1:0", .token = token, .encrypted = false }, true, token);
+    try expectHalts(.encryption, .{ .address = "127.0.0.1:0", .token = "" }, true, token);
+    try expectHalts(.encryption, .{ .address = "127.0.0.1:0", .token = token }, true, "");
+}
+
+test "a wrong token in clear is refused in clear" {
+    try expectHalts(.token, .{ .address = "127.0.0.1:0", .token = token, .encrypted = false }, false, "another token");
+}
+
 /// Waits until `replication`, on `store`, runs replication (no longer stands by).
 fn expectTakesOver(replication: *Replication, store: *KeyValueStore) !void {
     const deadline = std.Io.Clock.awake.now(testing.io).nanoseconds + patience;

@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const protocol = @import("protocol.zig");
 const SystemClock = @import("clock.zig").SystemClock;
 const Tcp = @import("tcp.zig").Tcp;
+const EncryptedNetwork = @import("encrypted_network.zig").EncryptedNetwork;
 const server_module = @import("server.zig");
 const Server = server_module.Server;
 const follower_module = @import("follower.zig");
@@ -26,7 +27,7 @@ const Instant = @import("clock.zig").Instant;
 const sockets = @import("sockets.zig");
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 const Signal = @import("clock.zig").Signal;
-const network = @import("network.zig");
+const network_module = @import("network.zig");
 
 const log = std.log.scoped(.replication);
 
@@ -57,8 +58,12 @@ pub const Role = union(enum) {
     pub const Master = struct {
         /// Where to listen for replicas, "host:port" (port 0: any).
         address: []const u8,
-        /// What a replica must send to be served.
+        /// What a replica must hold to be served.
         token: []const u8,
+        /// Whether the conversations are encrypted, with `token` as their
+        /// key (it then never travels). Without it, or without a token, the
+        /// token and the data go in clear. A master and its replicas agree.
+        encrypted: bool = true,
         /// How often replicas hear from the master when it has nothing
         /// else to send; they derive from it when to leave a silent master.
         heartbeat_ns: u64 = std.time.ns_per_s,
@@ -70,6 +75,8 @@ pub const Role = union(enum) {
         /// The master's address, "host:port".
         master_address: []const u8,
         token: []const u8,
+        /// As a master's `encrypted`.
+        encrypted: bool = true,
         /// What the replica calls itself in its master's status, at most
         /// `protocol.max_name_bytes`; null: this host's name.
         name: ?[]const u8 = null,
@@ -129,6 +136,10 @@ pub const Replication = struct {
     threaded: Io.Threaded,
     clock: SystemClock,
     tcp: Tcp,
+    /// Where the keys of each encrypted connection come from.
+    entropy: std.Random.IoSource,
+    /// Over `tcp`, if the conversations are encrypted.
+    encrypted_network: ?EncryptedNetwork = null,
     /// The store replication started on. The shares of it made after start
     /// (the sessions of other threads) take its commit listener and its
     /// refusal of writes; replication starts no transaction on it.
@@ -175,6 +186,7 @@ pub const Replication = struct {
             .threaded = .init(allocator, .{}),
             .clock = undefined,
             .tcp = undefined,
+            .entropy = undefined,
             .store = store,
             .own_store = undefined,
             .role = role,
@@ -219,6 +231,12 @@ pub const Replication = struct {
         const io = self.threaded.io();
         self.clock = .{ .io = io };
         self.tcp = .{ .io = io, .allocator = allocator };
+        self.entropy = .{ .io = io };
+        switch (self.role) {
+            inline else => |either| if (either.encrypted and either.token.len > 0) {
+                self.encrypted_network = .init(self.tcp.network(), allocator, self.entropy.interface(), either.token);
+            },
+        }
         self.lock_file = try openLockFile(io, path);
         errdefer self.lock_file.close(io);
         self.own_store = try store.share();
@@ -258,15 +276,27 @@ pub const Replication = struct {
         self.allocator.destroy(self);
     }
 
+    /// The network replication's conversations run on.
+    fn network(self: *Replication) network_module.Network {
+        if (self.encrypted_network) |*encrypted| return encrypted.network();
+        return self.tcp.network();
+    }
+
+    /// What goes in a hello: nothing in an encrypted conversation, whose
+    /// handshake proved the token.
+    fn tokenInHello(self: *const Replication) []const u8 {
+        return if (self.encrypted_network != null) "" else self.role_token;
+    }
+
     /// Starts the server or the follower; the lock is held.
     fn activate(self: *Replication) !void {
         const io = self.threaded.io();
         switch (self.role) {
             .master => |master| {
                 try self.own_store.startChangeLog();
-                self.server.store(try Server.start(self.allocator, io, self.clock.clock(), self.tcp.network(), &self.own_store, .{
+                self.server.store(try Server.start(self.allocator, io, self.clock.clock(), self.network(), &self.own_store, .{
                     .address = master.address,
-                    .token = master.token,
+                    .token = self.tokenInHello(),
                     .copies_directory = self.copies_directory,
                     .heartbeat_ns = master.heartbeat_ns,
                     .timeout_ns = master.timeout_ns,
@@ -274,9 +304,9 @@ pub const Replication = struct {
                 }), .release);
             },
             .replica => |replica| {
-                self.follower.store(try Follower.start(self.allocator, io, self.clock.clock(), self.tcp.network(), &self.own_store, .{
+                self.follower.store(try Follower.start(self.allocator, io, self.clock.clock(), self.network(), &self.own_store, .{
                     .master_address = replica.master_address,
-                    .token = replica.token,
+                    .token = self.tokenInHello(),
                     .name = self.role_name,
                 }), .release);
             },
@@ -315,7 +345,7 @@ pub const Replication = struct {
 
     /// Where a master listens (the port chosen, if asked to choose); null
     /// on a replica, or while standing by.
-    pub fn address(self: *Replication, buffer: *[network.max_address_bytes]u8) ?[]const u8 {
+    pub fn address(self: *Replication, buffer: *[network_module.max_address_bytes]u8) ?[]const u8 {
         const server = self.server.load(.acquire) orelse return null;
         return server.address(buffer);
     }
@@ -372,7 +402,7 @@ pub const Replication = struct {
         var buffer: [max_replicas]ReplicaState = undefined;
         switch (try self.status(store, &buffer)) {
             .master => |master| {
-                var address_buffer: [network.max_address_bytes]u8 = undefined;
+                var address_buffer: [network_module.max_address_bytes]u8 = undefined;
                 const listening = self.address(&address_buffer) orelse self.role_address;
                 try json.print("{{\"role\":\"master\",\"standby\":{},\"address\":", .{master.standby});
                 try writeString(json, listening);
@@ -439,9 +469,9 @@ pub const Replication = struct {
         defer self.forwarder_mutex.unlock(io);
         if (self.forwarder) |forwarder| return forwarder;
         const replica = self.role.replica;
-        const forwarder = try Forwarder.start(self.allocator, io, self.clock.clock(), self.tcp.network(), self.store, .{
+        const forwarder = try Forwarder.start(self.allocator, io, self.clock.clock(), self.network(), self.store, .{
             .master_address = replica.master_address,
-            .token = replica.token,
+            .token = self.tokenInHello(),
             .request_timeout_ns = replica.request_timeout_ns,
             .name = self.role_name,
         });

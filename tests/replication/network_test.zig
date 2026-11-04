@@ -1,5 +1,6 @@
 //! The network for an event loop (replication/network.zig), each
-//! test on both backends: TCP on the loopback and the one in memory. What
+//! test on every backend: TCP on the loopback, the one in memory, and each
+//! of them encrypted. What
 //! one end sends the other receives, nothing blocks, a full connection
 //! makes a send wait, a closed end is told, and `wait` says what is ready.
 
@@ -16,6 +17,7 @@ const Source = network_module.Source;
 const Watched = network_module.Watched;
 const Tcp = zypherdb.replication_tcp.Tcp;
 const MemoryNetwork = zypherdb.replication_memory_network.MemoryNetwork;
+const EncryptedNetwork = zypherdb.replication_encrypted_network.EncryptedNetwork;
 const SystemClock = zypherdb.replication_clock.SystemClock;
 
 const loopback = "127.0.0.1:0";
@@ -27,6 +29,11 @@ fn onEachNetwork(comptime body: fn (Network) anyerror!void) !void {
     var memory: MemoryNetwork = .{ .allocator = testing.allocator, .capacity = 4096 };
     defer memory.deinit();
     try body(memory.network());
+    var prng: std.Random.DefaultPrng = .init(1);
+    var encrypted_tcp: EncryptedNetwork = .init(tcp.network(), testing.allocator, prng.random(), "a token");
+    try body(encrypted_tcp.network());
+    var encrypted_memory: EncryptedNetwork = .init(memory.network(), testing.allocator, prng.random(), "a token");
+    try body(encrypted_memory.network());
 }
 
 /// Waits until `source` is ready for `wanted` (some of it); fails if it
@@ -47,6 +54,35 @@ fn readyNow(network: Network, source: Source, wanted: Readiness) !Readiness {
     return watched[0].ready;
 }
 
+/// Waits until both ends can send: an encrypted connection's two ends must
+/// finish their handshake, and here one thread waits for both.
+fn established(network: Network, client: Connection, server: Connection) !void {
+    var watched = [_]Watched{
+        .{ .source = .{ .connection = client }, .wanted = .{ .writable = true } },
+        .{ .source = .{ .connection = server }, .wanted = .{ .writable = true } },
+    };
+    for (0..100) |_| {
+        try network.wait(&watched, 10 * std.time.ns_per_ms);
+        if (watched[0].ready.writable and watched[1].ready.writable) return;
+    }
+    return error.NeverReady;
+}
+
+/// Waits until `receiver` has something, also waiting on `sender`: what a
+/// connection sent may leave only while it is waited on, and here one thread
+/// waits for both.
+fn waitToReceive(network: Network, receiver: Connection, sender: Connection) !void {
+    var watched = [_]Watched{
+        .{ .source = .{ .connection = receiver }, .wanted = .{ .readable = true } },
+        .{ .source = .{ .connection = sender }, .wanted = .{} },
+    };
+    for (0..100) |_| {
+        try network.wait(&watched, 10 * std.time.ns_per_ms);
+        if (watched[0].ready.readable) return;
+    }
+    return error.NeverReady;
+}
+
 /// A listener, a connection to it, and the connection accepted.
 const Pair = struct {
     listener: Listener,
@@ -61,6 +97,8 @@ const Pair = struct {
         errdefer client.close();
         _ = try waitFor(network, .{ .listener = listener }, .{ .readable = true });
         const server = try listener.accept() orelse return error.NothingAccepted;
+        errdefer server.close();
+        try established(network, client, server);
         return .{ .listener = listener, .client = client, .server = server };
     }
 
@@ -141,7 +179,7 @@ test "a long stream sent and received in pieces of odd sizes arrives whole and i
                 const size = 1 + round * 13 % 997;
                 const count = pair.server.receive(piece[0..size]) catch |err| switch (err) {
                     error.WouldBlock => {
-                        if (sent == total) _ = try waitFor(network, .{ .connection = pair.server }, .{ .readable = true });
+                        if (sent == total) try waitToReceive(network, pair.server, pair.client);
                         continue;
                     },
                     else => return err,
@@ -178,6 +216,7 @@ test "a closed end is told to the other, after what it sent" {
             _ = try waitFor(network, .{ .listener = listener }, .{ .readable = true });
             const server = try listener.accept() orelse return error.NothingAccepted;
             defer server.close();
+            try established(network, client, server);
             try sendAll(network, client, "bye");
             client.close();
             var received: [3]u8 = undefined;
@@ -221,7 +260,7 @@ test "a send would block once the other end stops receiving, and goes on when it
             while (received < sent) {
                 const count = pair.server.receive(&chunk) catch |err| switch (err) {
                     error.WouldBlock => {
-                        _ = try waitFor(network, .{ .connection = pair.server }, .{ .readable = true });
+                        try waitToReceive(network, pair.server, pair.client);
                         continue;
                     },
                     else => return err,

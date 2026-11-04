@@ -38,6 +38,12 @@
 //! sends a `heartbeat` each interval and the replica `ack`s each one, so
 //! either side knows the other is alive.
 //!
+//! With a token and encryption on, all of this runs inside an encrypted
+//! conversation (encrypted_network.zig): the handshake proves the token, and
+//! the token field of a hello stays empty. Without encryption it goes in the
+//! hello, in clear. A side that encrypts and one that does not are refused
+//! (`encryption`).
+//!
 //! Every message is one frame, integers big-endian:
 //!
 //!     kind (u8) | payload length (u32) | CRC-32 of kind and payload (u32) | payload
@@ -48,6 +54,8 @@
 const std = @import("std");
 const Writer = std.Io.Writer;
 const Crc32 = std.hash.Crc32;
+
+const noise = @import("noise.zig");
 
 /// Bumped on every change to the messages once a release carries them (none
 /// has yet: 1 until then): a master and a replica of different versions do
@@ -95,6 +103,12 @@ pub const max_payload_bytes: usize = @max(
 
 const header_bytes = 9;
 
+/// What a frame holds before its payload.
+pub const frame_header_bytes: usize = header_bytes;
+
+/// The bytes of a `handshake` message.
+pub const handshake_bytes: usize = noise.handshake_message_bytes;
+
 /// The largest frame: what an `Inbox` or an `Outbox` holds at least.
 pub const max_frame_bytes: usize = header_bytes + max_payload_bytes;
 
@@ -114,6 +128,7 @@ pub const Kind = enum(u8) {
     request_part = 11,
     answer_part = 12,
     welcome = 13,
+    handshake = 14,
 };
 
 /// A replica introduces itself.
@@ -148,6 +163,8 @@ pub const Refusal = enum(u8) {
     /// The database is no master: its change log is not started, or it is
     /// a replica itself.
     not_master = 7,
+    /// One side encrypts the conversation and the other does not.
+    encryption = 8,
     _,
 
     /// Whether asking again cannot help until someone changes something:
@@ -205,6 +222,10 @@ pub const Message = union(Kind) {
     answer_part: WritePart,
     /// The master's heartbeat interval, in nanoseconds.
     welcome: u64,
+    /// A message of the handshake of an encrypted conversation
+    /// (encrypted_network.zig), `handshake_bytes` long. No session takes
+    /// one but a master's that does not encrypt, to refuse it.
+    handshake: []const u8,
 };
 
 pub const DecodeError = error{ MalformedFrame, ChecksumMismatch };
@@ -431,6 +452,10 @@ fn encodePayload(sink: anytype, message: Message) !void {
             try sink.writeAll(hello.name);
         },
         .refused => |reason| try sink.writeByte(@backingInt(reason)),
+        .handshake => |bytes| {
+            std.debug.assert(bytes.len == handshake_bytes);
+            try sink.writeAll(bytes);
+        },
         .stream, .snapshot_end, .heartbeat, .ack, .writer_ready, .welcome => |number| try sink.writeInt(u64, number, .big),
         .snapshot_part => |bytes| {
             std.debug.assert(bytes.len <= part_bytes);
@@ -509,6 +534,7 @@ fn decodePayload(kind: Kind, payload: []const u8) ?Message {
         },
         .writer_ready => .{ .writer_ready = cursor.int(u64) orelse return null },
         .welcome => .{ .welcome = cursor.int(u64) orelse return null },
+        .handshake => .{ .handshake = cursor.take(handshake_bytes) orelse return null },
         .request_part, .answer_part => part: {
             const id = cursor.int(u64) orelse return null;
             const final = cursor.int(u8) orelse return null;

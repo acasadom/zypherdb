@@ -354,7 +354,7 @@ valid until the next check or `zypherdb_close`.
 zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
                                            const char *address, size_t address_len, const char *token,
                                            size_t token_len, const char *name, size_t name_len,
-                                           bool forward_writes, uint64_t request_timeout_ms);
+                                           bool forward_writes, uint64_t request_timeout_ms, bool encrypted);
 bool zypherdb_result_visible(const zypherdb_result *result);
 uint64_t zypherdb_last_lsn(zypherdb_context *context);
 bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);
@@ -364,7 +364,8 @@ const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_l
 `zypherdb_open_replicated` opens the database with a replication role (see
 [replication](replication.md)): `ZYPHERDB_ROLE_MASTER` (0) serves replicas at `address`
 (`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
-writes. `token` is the secret a replica sends. `name` (at most 255 bytes) is what a replica calls
+writes. `token` is the secret master and replicas share. With `encrypted` and a token the
+conversation is encrypted, and the token never travels; both sides must agree. `name` (at most 255 bytes) is what a replica calls
 itself in its master's status; `NULL` takes the name of its host, and a master ignores it. A
 replica opened with `forward_writes` sends the statements that write to its master instead of
 refusing them, each taking at most `request_timeout_ms` (0: 30 s); `zypherdb_result_visible` is
@@ -375,8 +376,9 @@ runs replication on the database the context stands by (`"standby": true` in its
 takes over when that process closes it or dies. Closing the context
 stops replication.
 
-> **Warning.** Replication is not encrypted: the token and the data travel in clear. Run it only
-> on a trusted network.
+> **Warning.** With no token, or without `encrypted`, the token and the data travel in clear: run
+> replication only on a trusted network, or inside a VPN or a tunnel. See
+> [replication](replication.md#encryption).
 
 `zypherdb_last_lsn` is the number of the last change the database has: on a master the last
 committed, on a replica the last applied, also in a context opened without a role; 0 on a
