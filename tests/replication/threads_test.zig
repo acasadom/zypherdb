@@ -90,11 +90,10 @@ const Setup = struct {
         return server;
     }
 
-    fn startFollower(self: *Setup, server: *Server, with_token: []const u8, address: *[max_address_bytes]u8, copies: []u8) !*Follower {
+    fn startFollower(self: *Setup, server: *Server, with_token: []const u8, address: *[max_address_bytes]u8) !*Follower {
         return Follower.start(testing.allocator, testing.io, self.clock.clock(), self.tcp.network(), &self.replica, .{
             .master_address = server.address(address),
             .token = with_token,
-            .copies_directory = try self.path("replica-copies", copies),
             .first_retry_ns = 10 * millisecond,
             .longest_retry_ns = 100 * millisecond,
         });
@@ -205,7 +204,7 @@ test "an empty replica gets a copy, then each change set committed" {
     const server = try setup.startServer("127.0.0.1:0", &copies[0]);
     defer server.stop();
     var address: [max_address_bytes]u8 = undefined;
-    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    const follower = try setup.startFollower(server, token, &address);
     defer follower.stop();
     try setup.expectCaughtUp(follower, (try setup.master.changeLogState()).?.next_lsn - 1);
     try setup.expectCaughtUp(follower, try setup.write(20, 30));
@@ -223,7 +222,7 @@ test "the master tells how far each replica is, and forgets one gone" {
     defer server.stop();
     try setup.expectStates(server, 0, null);
     var address: [max_address_bytes]u8 = undefined;
-    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    const follower = try setup.startFollower(server, token, &address);
     var stopped = false;
     defer if (!stopped) follower.stop();
     const last = try setup.write(5, 5);
@@ -246,7 +245,7 @@ test "a replica resumes after its master restarts" {
     var stopped = false;
     defer if (!stopped) server.stop();
     var address: [max_address_bytes]u8 = undefined;
-    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    const follower = try setup.startFollower(server, token, &address);
     defer follower.stop();
     try setup.expectCaughtUp(follower, try setup.write(0, 10));
     var listened: [max_address_bytes]u8 = undefined;
@@ -270,7 +269,7 @@ test "a replica with the wrong token is turned away" {
     const server = try setup.startServer("127.0.0.1:0", &copies[0]);
     defer server.stop();
     var address: [max_address_bytes]u8 = undefined;
-    const follower = try setup.startFollower(server, "not the token", &address, &copies[1]);
+    const follower = try setup.startFollower(server, "not the token", &address);
     defer follower.stop();
     const clock = setup.clock.clock();
     const deadline = clock.now() + patience;
@@ -290,11 +289,9 @@ test "a replica asks again after a refusal that may pass, never after one that c
     const listener = try setup.tcp.network().listen("127.0.0.1:0");
     defer listener.close();
     var address: [max_address_bytes]u8 = undefined;
-    var copies: [256]u8 = undefined;
     const follower = try Follower.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{
         .master_address = listener.address(&address),
         .token = token,
-        .copies_directory = try setup.path("replica-copies", &copies),
         .first_retry_ns = 10 * millisecond,
         .longest_retry_ns = 10 * millisecond,
     });
@@ -323,7 +320,7 @@ test "a read on the replica waits to see a write committed on the master" {
     const server = try setup.startServer("127.0.0.1:0", &copies[0]);
     defer server.stop();
     var address: [max_address_bytes]u8 = undefined;
-    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    const follower = try setup.startFollower(server, token, &address);
     defer follower.stop();
     const clock = setup.clock.clock();
     for (0..20) |index| {
@@ -359,7 +356,7 @@ test "a silent replica is let go and frees its place" {
     defer silent.close();
     const also_silent = try setup.tcp.network().connect(server.address(&address));
     defer also_silent.close();
-    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    const follower = try setup.startFollower(server, token, &address);
     defer follower.stop();
     try setup.expectCaughtUp(follower, (try setup.master.changeLogState()).?.next_lsn - 1);
     // The master closed the silent ones, having sent them nothing.
@@ -391,7 +388,7 @@ test "a replica that stops reading holds up neither its master nor the others, a
         .token = token,
     } });
     try setup.expectStates(server, 1, first);
-    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    const follower = try setup.startFollower(server, token, &address);
     defer follower.stop();
 
     // More than the loopback's socket buffers hold, so sends to the stuck
@@ -441,11 +438,9 @@ test "a replica leaves a silent master and connects again" {
     const listener = try setup.tcp.network().listen("127.0.0.1:0");
     defer listener.close();
     var address: [max_address_bytes]u8 = undefined;
-    var copies: [256]u8 = undefined;
     const follower = try Follower.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{
         .master_address = listener.address(&address),
         .token = token,
-        .copies_directory = try setup.path("replica-copies", &copies),
         .first_retry_ns = 10 * millisecond,
         .answer_timeout_ns = 100 * millisecond,
     });
@@ -546,7 +541,7 @@ test "a replica's stream goes on beside its forwarded writes" {
     const server = try setup.startServerFor("127.0.0.1:0", &copies[0], 1);
     defer server.stop();
     var address: [max_address_bytes]u8 = undefined;
-    const follower = try setup.startFollower(server, token, &address, &copies[1]);
+    const follower = try setup.startFollower(server, token, &address);
     defer follower.stop();
     try setup.expectCaughtUp(follower, (try setup.master.changeLogState()).?.next_lsn - 1);
     var writer: Writer = try .open(&setup, server, (try setup.master.databaseId()).?);
@@ -647,7 +642,7 @@ test "replication's threads stop however soon after they start" {
     try forwarding.encodeRequest(&request, testing.allocator, .{ .text = "RETURN 1 AS one", .parameters = &.{} });
     for (0..200) |round| {
         const server = try setup.startServer("127.0.0.1:0", &copies[0]);
-        const follower = try setup.startFollower(server, token, &address, &copies[1]);
+        const follower = try setup.startFollower(server, token, &address);
         const sender = try Forwarder.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.master, .{
             .master_address = server.address(&address),
             .token = token,

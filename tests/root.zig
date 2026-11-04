@@ -19,6 +19,7 @@ test {
     _ = @import("replication/threads_test.zig");
     _ = @import("replication/replication_test.zig");
     _ = @import("replication/sessions_test.zig");
+    _ = @import("replication/copies_test.zig");
     _ = @import("storage/graph_test.zig");
     _ = @import("storage/integrity_test.zig");
     _ = @import("storage/fuzz_test.zig");

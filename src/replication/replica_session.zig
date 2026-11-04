@@ -1,9 +1,9 @@
 //! A replica's conversation with its master as a state machine with no
 //! I/O of its own: the bytes its connection receives go into `inbox`,
-//! `next` turns them into what the replica must do (write a part of the
-//! copy, load the copy, apply a change set), and the frames to send wait
-//! in `outbox`. Reading the socket, writing the copy's file, applying and
-//! keeping time are the caller's (follower.zig, or a simulation).
+//! `next` turns them into what the replica must do (load a part of the
+//! copy, make the copy its database, apply a change set), and the frames to
+//! send wait in `outbox`. Reading the socket, loading, applying and keeping
+//! time are the caller's (follower.zig, or a simulation).
 //!
 //! The replica acks each heartbeat with the last change set it applied, so
 //! the master learns its lag and that it is alive. A master silent for
@@ -19,10 +19,12 @@ const Instant = @import("clock.zig").Instant;
 pub const Event = union(enum) {
     /// The master turned the replica away: close the connection.
     refused: protocol.Refusal,
-    /// The next bytes of the master's copy: append them to the copy's
-    /// file. A view into the inbox, valid until its `unfilled`.
+    /// The next bytes of the master's copy: load them
+    /// (`KeyValueStore.applyCopyPart`). A view into the inbox, valid until
+    /// its `unfilled`.
     copy_part: []const u8,
-    /// The copy is whole: load it, then `copyLoaded`.
+    /// The copy is whole: make it the database (the final part), then
+    /// `copyLoaded`.
     copy_received,
     /// The next part of the change set being received: apply it, then,
     /// after the final part, `applied`. Its bytes are the caller's to free.

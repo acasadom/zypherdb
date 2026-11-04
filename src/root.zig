@@ -29,6 +29,7 @@ pub const property_indexes = @import("storage/property_indexes.zig");
 /// The layout of stored bytes, checked; and which names can be stored.
 pub const layout = @import("storage/layout.zig");
 pub const change_log = @import("storage/change_log.zig");
+pub const database_copy = @import("storage/copy.zig");
 pub const replication_protocol = @import("replication/protocol.zig");
 pub const replication_values = @import("replication/values.zig");
 pub const replication_forwarding = @import("replication/forwarding.zig");

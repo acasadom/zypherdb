@@ -1,7 +1,7 @@
 //! A replica's side of replication on one thread, with no thread of its
 //! own: it connects to the master and holds the conversation
 //! (replica_session.zig) over a connection that never blocks, handing
-//! what it receives to an `Applier`. When the conversation ends for any
+//! what it receives, change sets and copies alike, to an `Applier`. When the conversation ends for any
 //! reason it connects again after a while (a deadline, not a sleep). A
 //! master silent for `protocol.heartbeats_per_timeout` of its heartbeat
 //! intervals ends it too. A refusal that asking again cannot help (a wrong token, another
@@ -15,11 +15,9 @@
 //! heartbeat.
 
 const std = @import("std");
-const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const protocol = @import("protocol.zig");
-const copies = @import("copies.zig");
 const replica = @import("replica.zig");
 const Clock = @import("clock.zig").Clock;
 const Instant = @import("clock.zig").Instant;
@@ -40,9 +38,6 @@ pub const Options = struct {
     /// The master's address, "host:port".
     master_address: []const u8,
     token: []const u8,
-    /// A directory for the copies received, each in a directory of its
-    /// own, deleted once loaded.
-    copies_directory: []const u8,
     /// The waits between attempts to connect, doubling from the first to
     /// the longest.
     first_retry_ns: u64 = 100 * std.time.ns_per_ms,
@@ -51,8 +46,9 @@ pub const Options = struct {
     /// once it answers, one silent for `protocol.heartbeats_per_timeout`
     /// of its heartbeat intervals.
     answer_timeout_ns: u64 = 5 * std.time.ns_per_s,
-    /// The bytes of change sets received and not yet applied past which
-    /// the node stops reading until the applier catches up.
+    /// The bytes of change sets, or of a copy, received and not yet
+    /// applied past which the node stops reading until the applier catches
+    /// up.
     max_unapplied_bytes: usize = 64 << 20,
     /// What the replica calls itself in its hello, at most
     /// `protocol.max_name_bytes`.
@@ -76,8 +72,16 @@ pub const Work = union(enum) {
     /// is given; the applier keeps the change set's write transaction open
     /// from the first to the final one.
     change_set_part: ChangeSetPart,
-    /// The number of a copy to load, deleted once loaded.
-    load_copy: u64,
+    /// The parts of a copy come in order too, the final one (empty) once
+    /// it is whole; the applier keeps the copy's write transaction open
+    /// from the first to the final one.
+    copy_part: CopyPart,
+};
+
+pub const CopyPart = struct {
+    final: bool,
+    /// The applier's to free.
+    bytes: []u8,
 };
 
 /// What an applier did since the last `take`.
@@ -125,37 +129,44 @@ pub const Applier = struct {
 };
 
 /// Applies `work` to `store` and raises `applied`; returns the LSN applied
-/// (null until a change set's final part), or the copy's. Frees nothing.
-/// A failure leaves no change set partly applied.
-pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, copies_directory: []const u8, work: Work) !?u64 {
+/// (null until a change set's final part), or the copy's (null until its
+/// final part). Frees nothing. A failure leaves no change set, and no copy,
+/// partly applied.
+pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, work: Work) !?u64 {
     switch (work) {
         .change_set_part => |part| {
             _ = try store.applyChangeSetPart(part.lsn, part.bytes, part.final) orelse return null;
             clock.raise(applied, part.lsn);
             return part.lsn;
         },
-        .load_copy => |number| {
-            var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-            const lsn = try store.loadCopy(try copies.directory(&path_buffer, copies_directory, number));
+        .copy_part => |part| {
+            const lsn = try store.applyCopyPart(part.bytes, part.final) orelse return null;
             clock.raise(applied, lsn);
             return lsn;
         },
     }
 }
 
-/// The bytes of change set `work` holds.
+/// The bytes `work` holds.
 pub fn workBytes(work: Work) usize {
     return switch (work) {
-        .change_set_part => |part| part.bytes.len,
-        .load_copy => 0,
+        inline else => |part| part.bytes.len,
     };
 }
 
-/// Frees `work`'s bytes, or deletes its copy.
-pub fn dropWork(allocator: Allocator, io: Io, copies_directory: []const u8, work: Work) void {
+/// Frees `work`'s bytes.
+pub fn dropWork(allocator: Allocator, work: Work) void {
     switch (work) {
-        .change_set_part => |part| allocator.free(part.bytes),
-        .load_copy => |number| copies.delete(io, copies_directory, number),
+        inline else => |part| allocator.free(part.bytes),
+    }
+}
+
+/// Keeps in `done` what `work`, done, returned (`doWork`).
+pub fn keepDone(done: *Done, work: Work, lsn: ?u64) void {
+    const last = lsn orelse return;
+    switch (work) {
+        .change_set_part => done.applied = last,
+        .copy_part => done.copy_loaded = last,
     }
 }
 
@@ -163,12 +174,10 @@ pub fn dropWork(allocator: Allocator, io: Io, copies_directory: []const u8, work
 /// `applyNext`, on the owner's thread. For a simulation.
 pub const InlineApplier = struct {
     allocator: Allocator,
-    io: Io,
     clock: Clock,
     applied: *Signal,
     store: KeyValueStore,
     wakeup: Wakeup,
-    copies_directory: []const u8,
     work: std.ArrayList(Work) = .empty,
     unapplied_bytes: usize = 0,
     done: Done = .{},
@@ -191,13 +200,10 @@ pub const InlineApplier = struct {
     pub fn applyNext(self: *InlineApplier) void {
         if (self.work.items.len == 0) return;
         const work = self.work.orderedRemove(0);
-        defer dropWork(self.allocator, self.io, self.copies_directory, work);
+        defer dropWork(self.allocator, work);
         self.unapplied_bytes -= workBytes(work);
-        if (doWork(self.clock, self.applied, &self.store, self.copies_directory, work)) |done| {
-            if (done) |lsn| switch (work) {
-                .change_set_part => self.done.applied = lsn,
-                .load_copy => self.done.copy_loaded = lsn,
-            };
+        if (doWork(self.clock, self.applied, &self.store, work)) |lsn| {
+            keepDone(&self.done, work, lsn);
         } else |err| {
             log.info("applying what the master sent failed: {t}", .{err});
             self.done.failure = err;
@@ -208,7 +214,7 @@ pub const InlineApplier = struct {
     }
 
     fn dropAll(self: *InlineApplier) void {
-        for (self.work.items) |work| dropWork(self.allocator, self.io, self.copies_directory, work);
+        for (self.work.items) |work| dropWork(self.allocator, work);
         self.work.clearRetainingCapacity();
         self.unapplied_bytes = 0;
     }
@@ -241,8 +247,6 @@ pub const InlineApplier = struct {
 
 pub const ReplicaNode = struct {
     allocator: Allocator,
-    /// For the copies' files.
-    io: Io,
     clock: Clock,
     network: Network,
     options: Options,
@@ -271,18 +275,16 @@ pub const ReplicaNode = struct {
     /// When to connect again, with no conversation.
     retry_at: Instant = 0,
     retry_ns: u64,
-    copies_made: u64 = 0,
 
     /// Follows the master for the database of `store`, which must not be
     /// a master. It becomes a replica of it with its first copy.
-    pub fn init(allocator: Allocator, io: Io, clock: Clock, net: Network, store: *KeyValueStore, applied: *Signal, wakeup: Wakeup, applier: Applier, options: Options) !ReplicaNode {
+    pub fn init(allocator: Allocator, clock: Clock, net: Network, store: *KeyValueStore, applied: *Signal, wakeup: Wakeup, applier: Applier, options: Options) !ReplicaNode {
         if (try store.changeLogState() != null) return error.MasterDatabase;
         var shared = try store.share();
         errdefer shared.deinit();
         applied.value = try shared.appliedLsn() orelse 0;
         return .{
             .allocator = allocator,
-            .io = io,
             .clock = clock,
             .network = net,
             .options = options,
@@ -443,20 +445,10 @@ const Conversation = struct {
     session: ReplicaSession,
     /// What the connection was ready to read at the last wait.
     readable: bool = false,
-    /// The copy being received, open while it is.
-    copy_number: ?u64 = null,
-    copy_file: ?Io.File = null,
-    copy_writer: Io.File.Writer = undefined,
-    copy_buffer: [64 << 10]u8 = undefined,
     /// Whether the master streamed change sets or a copy to it.
     streamed: bool = false,
 
     fn deinit(self: *Conversation, node: *ReplicaNode) void {
-        // A copy received whole is the applier's, which deletes it.
-        if (self.copy_file) |file| {
-            file.close(node.io);
-            copies.delete(node.io, node.options.copies_directory, self.copy_number.?);
-        }
         node.allocator.free(self.buffers);
         self.connection.close();
     }
@@ -480,8 +472,8 @@ const Conversation = struct {
                         if (reason.permanent()) node.halt.store(@backingInt(reason), .release);
                         return false;
                     },
-                    .copy_part => |bytes| try self.writeCopyPart(node, bytes),
-                    .copy_received => try self.copyReceived(node),
+                    .copy_part => |bytes| try giveCopyPart(node, bytes, false),
+                    .copy_received => try giveCopyPart(node, "", true),
                     .change_set_part => |part| applier.give(.{ .change_set_part = part }) catch |err| {
                         node.allocator.free(part.bytes);
                         return err;
@@ -512,34 +504,12 @@ const Conversation = struct {
         return true;
     }
 
-    fn writeCopyPart(self: *Conversation, node: *ReplicaNode, bytes: []const u8) !void {
-        if (self.copy_file == null) {
-            const number = node.copies_made;
-            node.copies_made += 1;
-            var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-            const directory = try copies.directory(&path_buffer, node.options.copies_directory, number);
-            const cwd = Io.Dir.cwd();
-            cwd.deleteTree(node.io, directory) catch {};
-            try cwd.createDirPath(node.io, directory);
-            var file_path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-            const file_path = try std.fmt.bufPrint(&file_path_buffer, "{s}/{s}", .{ directory, KeyValueStore.data_file_name });
-            const file = try cwd.createFile(node.io, file_path, .{});
-            self.copy_number = number;
-            self.copy_file = file;
-            self.copy_writer = file.writer(node.io, &self.copy_buffer);
-        }
-        try self.copy_writer.interface.writeAll(bytes);
-    }
-
-    /// Hands the whole copy to the applier to load.
-    fn copyReceived(self: *Conversation, node: *ReplicaNode) !void {
-        const file = self.copy_file orelse return error.EmptyCopy;
-        defer {
-            file.close(node.io);
-            self.copy_file = null;
-        }
-        errdefer copies.delete(node.io, node.options.copies_directory, self.copy_number.?);
-        try self.copy_writer.interface.flush();
-        try node.applier.give(.{ .load_copy = self.copy_number.? });
+    /// Hands the applier the next part of the copy, or its end.
+    fn giveCopyPart(node: *ReplicaNode, bytes: []const u8, final: bool) !void {
+        const owned = try node.allocator.dupe(u8, bytes);
+        node.applier.give(.{ .copy_part = .{ .final = final, .bytes = owned } }) catch |err| {
+            node.allocator.free(owned);
+            return err;
+        };
     }
 };

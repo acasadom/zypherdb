@@ -2,17 +2,13 @@
 //! between ZypherDB and the key-value store underneath (LMDB, libmdbx, ...).
 //!
 //! An engine is a namespace (a Zig file) chosen at compile time (see
-//! `engine.zig`), with `data_file_name` (the one file of a copy, which a
-//! replica is sent: `[]const u8`) and three types:
+//! `engine.zig`), with three types:
 //!
 //! - `Environment`: an open database at a path.
 //!     `open(allocator, path, Options) Error!Environment`, `close()`,
 //!     `sync() Error!void`, `beginRead() Error!Transaction`,
 //!     `endRead(Transaction)` (ends a read transaction, perhaps keeping it
 //!     to be begun again cheaply), `beginWrite() Error!Transaction`,
-//!     `copy(allocator, directory) Error!void` (writes a compacted copy of
-//!     the database as of one moment, writers not blocked, into `directory`,
-//!     which must exist and hold no database; `open` opens it),
 //!     `share() Environment` (another environment on the same open
 //!     database, for another thread; its `close` leaves the database open,
 //!     and it is closed before the environment it shares).
@@ -98,8 +94,8 @@ pub const Options = struct { durability: Durability = .full };
 /// of the contract (signatures are checked by their use).
 pub fn check(comptime Engine: type) void {
     const required = .{
-        .{ Engine, &.{ "data_file_name", "Environment", "Transaction", "Cursor" } },
-        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "copy", "share" } },
+        .{ Engine, &.{ "Environment", "Transaction", "Cursor" } },
+        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "share" } },
         .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "clear", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },
     };

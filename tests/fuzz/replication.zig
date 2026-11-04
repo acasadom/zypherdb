@@ -261,7 +261,6 @@ const Master = struct {
 
 const Replica = struct {
     path: []const u8,
-    copies_path: []const u8,
     /// The simulation's own handle, for the checks.
     store: KeyValueStore,
     applied: Signal = .{},
@@ -346,7 +345,6 @@ const Simulation = struct {
         try self.openForwarding(&self.standby, &self.master.store, "standby");
         for (self.replicas[0..swarm.replicas], 0..) |*replica, i| {
             replica.path = try std.fmt.allocPrint(allocator, "{s}/replica-{d}", .{ path, i });
-            replica.copies_path = try std.fmt.allocPrint(allocator, "{s}/replica-{d}-copies", .{ path, i });
             try Io.Dir.cwd().createDirPath(io, replica.path);
             replica.open = false;
             try self.openReplica(replica);
@@ -357,7 +355,6 @@ const Simulation = struct {
         for (self.replicas[0..self.swarm.replicas]) |*replica| {
             self.closeReplica(replica);
             self.allocator.free(replica.path);
-            self.allocator.free(replica.copies_path);
         }
         self.closeForwarding(&self.standby);
         self.forwarded_writes.deinit(self.allocator);
@@ -433,18 +430,15 @@ const Simulation = struct {
         errdefer replica.wakeup.close();
         replica.applier = .{
             .allocator = self.allocator,
-            .io = self.io,
             .clock = self.clock.clock(),
             .applied = &replica.applied,
             .store = try replica.store.share(),
             .wakeup = replica.wakeup,
-            .copies_directory = replica.copies_path,
         };
         errdefer replica.applier.deinit();
-        replica.node = try ReplicaNode.init(self.allocator, self.io, self.clock.clock(), self.network.network(), &replica.store, &replica.applied, replica.wakeup, replica.applier.applier(), .{
+        replica.node = try ReplicaNode.init(self.allocator, self.clock.clock(), self.network.network(), &replica.store, &replica.applied, replica.wakeup, replica.applier.applier(), .{
             .master_address = master_address,
             .token = token,
-            .copies_directory = replica.copies_path,
             .first_retry_ns = 10 * ms,
             .longest_retry_ns = 200 * ms,
             .answer_timeout_ns = timeout_ns,
@@ -780,9 +774,13 @@ const Simulation = struct {
     fn apply(self: *Simulation, replica: *Replica) !void {
         if (replica.frozen_until > self.clock.time) return;
         if (replica.applier.waiting() == 0) return;
-        const loads_copy = replica.applier.work.items[0] == .load_copy;
+        switch (replica.applier.work.items[0]) {
+            .change_set_part => self.statistics.change_sets_applied += 1,
+            .copy_part => |part| if (part.final) {
+                self.statistics.copies_loaded += 1;
+            },
+        }
         replica.applier.applyNext();
-        if (loads_copy) self.statistics.copies_loaded += 1 else self.statistics.change_sets_applied += 1;
         try self.check(replica);
     }
 

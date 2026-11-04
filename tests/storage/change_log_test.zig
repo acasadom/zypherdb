@@ -352,7 +352,25 @@ test "a master applies no change sets" {
     try testing.expect(try store.appliedLsn() == null);
 }
 
-test "a copy of a master becomes a replica that follows it from where the copy was made" {
+/// A copy of `source` as it is now (`writeCopy`), owned by the caller.
+fn writeCopy(source: *KeyValueStore, lsn: *u64) ![]u8 {
+    var copy: std.Io.Writer.Allocating = .init(testing.allocator);
+    errdefer copy.deinit();
+    lsn.* = try source.writeCopy(&copy.writer);
+    return copy.toOwnedSlice();
+}
+
+/// Loads `copy` into `target` in parts of `part_bytes`, the last empty and
+/// final, as a replica gets them; returns the copy's LSN.
+fn loadCopy(target: *KeyValueStore, copy: []const u8, part_bytes: usize) !u64 {
+    var position: usize = 0;
+    while (position < copy.len) : (position += part_bytes) {
+        try testing.expect(try target.applyCopyPart(copy[position..@min(copy.len, position + part_bytes)], false) == null);
+    }
+    return (try target.applyCopyPart("", true)).?;
+}
+
+test "a copy of a master makes a replica that follows it from where the copy was made" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var source_path: [256]u8 = undefined;
@@ -365,49 +383,78 @@ test "a copy of a master becomes a replica that follows it from where the copy w
     var g = Graph.init(&source, testing.allocator);
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
-    try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Person {id: i})", &.{});
+    try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Person {id: i})-[:KNOWS]->(:Person {id: -i})", &.{});
     try expectQuery(&ast, &g, "CREATE INDEX FOR (p:Person) ON (p.id)", &.{});
     const copied = (try source.changeLogState()).?;
-
-    var base_buffer: [128]u8 = undefined;
-    var target_buffer: [256]u8 = undefined;
-    const target_path = try std.fmt.bufPrint(&target_buffer, "{s}/target", .{testPath(&tmp, &base_buffer)});
-    try tmp.dir.createDirPath(testing.io, "target");
-    try source.copyDatabase(target_path);
+    var lsn: u64 = undefined;
+    const copy = try writeCopy(&source, &lsn);
+    defer testing.allocator.free(copy);
+    try testing.expectEqual(copied.next_lsn - 1, lsn);
     // Written after the copy: the replica gets them from the log.
     try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.id > 10 SET p.old = true", &.{});
     try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.id < 5 DETACH DELETE p", &.{});
 
-    var target = try KeyValueStore.open(testing.allocator, target_path);
-    defer target.deinit();
-    try testing.expectEqual(copied.next_lsn - 1, try target.becomeReplica());
-    try testing.expectEqual(@as(?u64, copied.next_lsn - 1), try target.appliedLsn());
-    try testing.expectEqual(@as(?change_log.DatabaseId, id), try target.databaseId());
-    // The copied log is gone: a replica keeps none.
-    try testing.expect(try target.changeLogState() == null);
-    try testing.expect(try target.changeSet(copied.oldest_lsn) == null);
-    try testing.expectError(error.ReadOnlyReplica, target.put("mine", "value"));
+    // Parts of any size: one byte cuts the header and every entry.
+    for ([_]usize{ 1, 7, 100, copy.len }) |part_bytes| {
+        var name_buffer: [32]u8 = undefined;
+        var target_path: [256]u8 = undefined;
+        var target = try openAt(&tmp, try std.fmt.bufPrint(&name_buffer, "target-{d}", .{part_bytes}), &target_path);
+        defer target.deinit();
+        try testing.expectEqual(lsn, try loadCopy(&target, copy, part_bytes));
+        try testing.expectEqual(@as(?u64, lsn), try target.appliedLsn());
+        try testing.expectEqual(@as(?change_log.DatabaseId, id), try target.databaseId());
+        // A replica keeps no log.
+        try testing.expect(try target.changeLogState() == null);
+        try testing.expect(try target.changeSet(copied.oldest_lsn) == null);
+        try testing.expectError(error.ReadOnlyReplica, target.put("mine", "value"));
 
-    const state = (try source.changeLogState()).?;
-    try replay(&source, &target, copied.next_lsn, state.next_lsn);
-    try testing.expectEqual(try contents(&source), try contents(&target));
+        const state = (try source.changeLogState()).?;
+        try replay(&source, &target, lsn + 1, state.next_lsn);
+        try testing.expectEqual(try contents(&source), try contents(&target));
+    }
     // Started again, the log keeps its id.
     try source.startChangeLog();
     try testing.expectEqual(@as(?change_log.DatabaseId, id), try source.databaseId());
 }
 
-test "only a copy of a master becomes a replica, once" {
+test "a copy cut short, or that is not one, changes nothing" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    var path_buffer: [128]u8 = undefined;
-    var store = try KeyValueStore.open(testing.allocator, testPath(&tmp, &path_buffer));
-    defer store.deinit();
-    try store.put("key", "value");
-    try testing.expectError(error.WriteFailed, store.becomeReplica());
-    try store.startChangeLog();
-    try store.put("key", "other");
-    try testing.expectEqual(@as(u64, 1), try store.becomeReplica());
-    try testing.expectError(error.WriteFailed, store.becomeReplica());
+    var source_path: [256]u8 = undefined;
+    var source = try openAt(&tmp, "source", &source_path);
+    defer source.deinit();
+    try source.startChangeLog();
+    try source.put("key", "value");
+    var lsn: u64 = undefined;
+    const copy = try writeCopy(&source, &lsn);
+    defer testing.allocator.free(copy);
+
+    var target_path: [256]u8 = undefined;
+    var target = try openAt(&tmp, "target", &target_path);
+    defer target.deinit();
+    try target.put("mine", "value");
+    const before = try contents(&target);
+    // Its header cut; an entry cut; abandoned halfway.
+    try testing.expectError(error.MalformedChangeSet, target.applyCopyPart(copy[0..10], true));
+    try testing.expectError(error.MalformedChangeSet, target.applyCopyPart(copy[0 .. copy.len - 1], true));
+    try testing.expect(try target.applyCopyPart(copy[0 .. copy.len / 2], false) == null);
+    target.abandonChangeSet();
+    // A delete, or a write to the engine's catalog: no master copies one.
+    var not_one: std.ArrayList(u8) = .empty;
+    defer not_one.deinit(testing.allocator);
+    try not_one.appendSlice(testing.allocator, copy[0..zypherdb.database_copy.header_bytes]);
+    try not_one.appendSlice(testing.allocator, &.{ 0x02, @backingInt(change_log.Table.main), 0, 0, 0, 1, 'k' });
+    try testing.expectError(error.MalformedChangeSet, target.applyCopyPart(not_one.items, true));
+    not_one.shrinkRetainingCapacity(zypherdb.database_copy.header_bytes);
+    try not_one.appendSlice(testing.allocator, &.{ 0x01, @backingInt(change_log.Table.main), 0, 0, 0, 1, '#', 0, 0, 0, 0 });
+    try testing.expectError(error.MalformedChangeSet, target.applyCopyPart(not_one.items, true));
+    try testing.expectEqual(before, try contents(&target));
+    try testing.expect(try target.appliedLsn() == null);
+    // Nothing is left open: the whole copy loads.
+    try testing.expectEqual(lsn, try loadCopy(&target, copy, 3));
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    // A master loads none.
+    try testing.expectError(error.WriteFailed, source.applyCopyPart(copy, true));
 }
 
 test "a change set that is not one is refused" {
@@ -429,11 +476,9 @@ test "a database loads a copy of a master over what it held, while readers keep 
     defer ast.deinit();
     try expectQuery(&ast, &g, "UNWIND range(1, 20) AS i CREATE (:Person {id: i})-[:OWNS]->(:Thing)", &.{});
     try expectQuery(&ast, &g, "CREATE INDEX FOR (p:Person) ON (p.id)", &.{});
-    var base_buffer: [128]u8 = undefined;
-    var copy_buffer: [256]u8 = undefined;
-    const copy_path = try std.fmt.bufPrint(&copy_buffer, "{s}/copy", .{testPath(&tmp, &base_buffer)});
-    try tmp.dir.createDirPath(testing.io, "copy");
-    try source.copyDatabase(copy_path);
+    var lsn: u64 = undefined;
+    const copy = try writeCopy(&source, &lsn);
+    defer testing.allocator.free(copy);
     try expectQuery(&ast, &g, "MATCH (p:Person) WHERE p.id < 5 DETACH DELETE p", &.{});
 
     // What the database held before: records, an index, keys of its own.
@@ -448,7 +493,13 @@ test "a database loads a copy of a master over what it held, while readers keep 
     var reader = try target.share();
     errdefer reader.deinit();
     try reader.beginRead();
-    const applied = try target.loadCopy(copy_path);
+    try testing.expect(try target.applyCopyPart(copy[0 .. copy.len / 2], false) == null);
+    // Halfway, a reader starting now sees the database as it was too.
+    var halfway = try target.share();
+    defer halfway.deinit();
+    try testing.expect(try halfway.exists("mine"));
+    const applied = (try target.applyCopyPart(copy[copy.len / 2 ..], true)).?;
+    try testing.expectEqual(lsn, applied);
     try testing.expect(try reader.exists("mine"));
     reader.abortRead();
     try testing.expect(!try reader.exists("mine"));
@@ -464,8 +515,6 @@ test "a database loads a copy of a master over what it held, while readers keep 
     // Closing a share leaves the database open.
     reader.deinit();
     try testing.expectEqual(try contents(&source), try contents(&target));
-    // A master loads no copy.
-    try testing.expectError(error.WriteFailed, source.loadCopy(copy_path));
 }
 
 test "a commit listener is told the LSN of each change set committed" {

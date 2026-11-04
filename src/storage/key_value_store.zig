@@ -16,6 +16,7 @@ const engine = @import("engine.zig");
 const Definition = @import("fulltext.zig").Definition;
 const layout = @import("layout.zig");
 const change_log = @import("change_log.zig");
+const database_copy = @import("copy.zig");
 
 const Table = engine.Table;
 
@@ -132,6 +133,9 @@ pub const KeyValueStore = struct {
     /// The change set being applied part by part, in the active write
     /// transaction (`applyChangeSetPart`).
     application: ?change_log.Application = null,
+    /// The copy being loaded part by part, in the active write transaction
+    /// (`applyCopyPart`).
+    loading: ?database_copy.Loading = null,
 
     pub const CommitListener = struct {
         context: *anyopaque,
@@ -320,11 +324,16 @@ pub const KeyValueStore = struct {
         return applied;
     }
 
-    /// Drops the change set being applied, if any: none of it is.
+    /// Drops the change set, or the copy, being applied, if any: none of
+    /// it is.
     pub fn abandonChangeSet(self: *KeyValueStore) void {
-        var application = self.application orelse return;
-        application.deinit(self.allocator);
-        self.application = null;
+        if (self.application) |*application| {
+            application.deinit(self.allocator);
+            self.application = null;
+        } else if (self.loading) |*loading| {
+            loading.deinit(self.allocator);
+            self.loading = null;
+        } else return;
         self.active_write_transaction.?.abort();
         self.active_write_transaction = null;
     }
@@ -335,90 +344,47 @@ pub const KeyValueStore = struct {
         return (try self.applyChangeSetPart(lsn, bytes, true)).?;
     }
 
-    /// The one file of a copy (`copyDatabase`), in its directory.
-    pub const data_file_name = engine.data_file_name;
+    pub const CopyError = StorageError || database_copy.WriteError;
 
-    /// Writes a compacted copy of the database as it is now, its change log
-    /// included, into `directory`, which must exist and hold no database,
-    /// as one file (`data_file_name`). Writers go on meanwhile. A copy of a
-    /// master becomes a replica of it with `becomeReplica`.
-    pub fn copyDatabase(self: *KeyValueStore, directory: []const u8) StorageError!void {
-        return self.environment.copy(self.allocator, directory);
+    /// Writes a copy of this master's database as it is now to `into`
+    /// (copy.zig), in one read transaction: writers go on meanwhile.
+    /// Returns the LSN of the last change set it holds.
+    pub fn writeCopy(self: *KeyValueStore, into: *std.Io.Writer) CopyError!u64 {
+        const transaction = try self.environment.beginRead();
+        defer self.environment.endRead(transaction);
+        return database_copy.write(transaction, into);
     }
 
-    /// Makes this database, a copy of a master (`copyDatabase`), a replica of it
-    /// that has applied every change set the copy holds; returns that LSN.
-    /// Fails with `WriteFailed` unless it is such a copy.
-    pub fn becomeReplica(self: *KeyValueStore) StorageError!u64 {
-        if (self.inTransaction()) return error.WriteFailed;
-        const transaction = try self.environment.beginWrite();
-        errdefer transaction.abort();
-        const applied = try change_log.becomeReplica(transaction);
-        try transaction.commit();
-        return applied;
-    }
-
-    /// Makes everything this database holds the copy of a master in
-    /// `directory` (`copyDatabase`), in one write transaction (readers see
-    /// the database as it was until it commits), and the database a replica
-    /// of that master that has applied every change set the copy holds;
-    /// returns that LSN. The copy becomes a replica too, to be deleted.
-    /// Fails with `WriteFailed` on a master.
-    pub fn loadCopy(self: *KeyValueStore, directory: []const u8) StorageError!u64 {
-        if (self.inTransaction()) return error.WriteFailed;
-        var copied = try KeyValueStore.open(self.allocator, directory);
-        defer copied.deinit();
-        const applied = try copied.becomeReplica();
-        const source = try copied.environment.beginRead();
-        defer copied.environment.endRead(source);
-        const transaction = try self.environment.beginWrite();
-        errdefer transaction.abort();
-        if (try change_log.readState(transaction) != null) return error.WriteFailed;
-        try clearMainTable(self.allocator, transaction);
-        inline for (.{ Table.nodes, Table.relationships, Table.changes }) |table| try transaction.clear(table);
-        inline for (comptime std.enums.values(Table)) |table| {
-            var cursor = try source.openCursor(table);
-            defer cursor.close();
-            var entry = try cursor.first();
-            while (entry) |found| : (entry = try cursor.next()) {
-                if (table == .main and found.key[0] == catalog_key_start) continue;
-                // An integer key goes to the engine aligned, as a u64 (it
-                // need not be, in the copy's pages).
-                var id: u64 = undefined;
-                const key = if (comptime table.hasIntegerKeys()) aligned: {
-                    @memcpy(std.mem.asBytes(&id), found.key);
-                    break :aligned std.mem.asBytes(&id);
-                } else found.key;
-                try transaction.put(table, key, found.value);
-            }
+    /// Loads the next part, `bytes`, of a copy of this replica's master
+    /// (`writeCopy`); `final` after its last byte. A copy is loaded in one
+    /// write transaction, from its first part to its last: the first
+    /// empties the database, the last makes it a replica that has applied
+    /// every change set the copy holds, and returns that LSN (null until
+    /// then). Readers see the database as it was until the last part. A
+    /// failure, or `abandonChangeSet`, leaves it as it was. A master loads
+    /// none (`WriteFailed`). The transaction belongs to the thread that
+    /// gave the first part, as with `applyChangeSetPart`.
+    pub fn applyCopyPart(self: *KeyValueStore, bytes: []const u8, final: bool) ApplyError!?u64 {
+        errdefer self.abandonChangeSet();
+        if (self.loading == null) {
+            if (self.inTransaction()) return error.WriteFailed;
+            const transaction = try self.environment.beginWrite();
+            errdefer transaction.abort();
+            self.loading = try database_copy.Loading.begin(self.allocator, transaction);
+            self.active_write_transaction = transaction;
         }
+        const transaction = self.active_write_transaction.?;
+        const loading = &self.loading.?;
+        try loading.add(self.allocator, transaction, bytes);
+        if (!final) return null;
+        const lsn = try loading.finish(transaction);
+        loading.deinit(self.allocator);
+        self.loading = null;
+        self.active_write_transaction = null;
         try transaction.commit();
         // The copy's schema may have the version of the one cached.
         self.forgetSchemaDefinitions();
-        return applied;
-    }
-
-    /// Keys of the main table starting with it are the engine's catalog of
-    /// tables (engine/contract.zig).
-    const catalog_key_start = '#';
-
-    fn clearMainTable(allocator: std.mem.Allocator, transaction: engine.Transaction) StorageError!void {
-        var cursor = try transaction.openCursor(.main);
-        defer cursor.close();
-        var key: std.ArrayList(u8) = .empty;
-        defer key.deinit(allocator);
-        var entry = try cursor.first();
-        while (entry) |found| {
-            if (found.key[0] == catalog_key_start) {
-                entry = try cursor.seek(&.{catalog_key_start + 1});
-                continue;
-            }
-            // The cursor's bytes do not outlive the delete.
-            key.clearRetainingCapacity();
-            try key.appendSlice(allocator, found.key);
-            try transaction.delete(.main, key.items);
-            entry = try cursor.seek(key.items);
-        }
+        return lsn;
     }
 
     /// Another store on this open database, for another thread (a store is

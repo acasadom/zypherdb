@@ -246,11 +246,11 @@ const CopyWork = struct {
     const Done = master_node.Copier.Made;
 
     fn work(self: *CopyWork, number: u64) Done {
-        const failed = if (master_node.makeCopy(self.io, &self.store, self.copies_directory, number)) false else |err| blk: {
+        const lsn = master_node.makeCopy(self.io, &self.store, self.copies_directory, number) catch |err| {
             log.warn("making copy {d} failed: {t}", .{ number, err });
-            break :blk true;
+            return .{ .number = number, .failed = true };
         };
-        return .{ .number = number, .failed = failed };
+        return .{ .number = number, .failed = false, .lsn = lsn };
     }
 
     fn dropJob(_: *CopyWork, _: u64) void {}

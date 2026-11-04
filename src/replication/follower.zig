@@ -56,10 +56,10 @@ pub const Follower = struct {
             .clock = clock,
             .network = net,
             .wakeup = wakeup,
-            .applier = .{ .allocator = allocator, .io = io, .clock = clock, .applied = &self.applied, .store = applier_store, .wakeup = wakeup, .copies_directory = options.copies_directory },
+            .applier = .{ .allocator = allocator, .io = io, .clock = clock, .applied = &self.applied, .store = applier_store, .wakeup = wakeup },
             .node = undefined,
         };
-        self.node = try ReplicaNode.init(allocator, io, clock, net, store, &self.applied, wakeup, self.applier.applier(), options);
+        self.node = try ReplicaNode.init(allocator, clock, net, store, &self.applied, wakeup, self.applier.applier(), options);
         errdefer self.node.deinit();
         try self.applier.start();
         errdefer self.applier.stop();
@@ -145,13 +145,12 @@ const Applier = struct {
     applied: *Signal,
     store: KeyValueStore,
     wakeup: Wakeup,
-    copies_directory: []const u8,
     thread: ?std.Thread = null,
     mutex: Io.Mutex = .init,
     condition: Io.Condition = .init,
     /// Under `mutex`.
     work: std.ArrayList(Work) = .empty,
-    /// The bytes of the change set parts in `work` and in hand.
+    /// The bytes of the parts in `work` and in hand.
     unapplied_bytes: usize = 0,
     busy: bool = false,
     /// The change set partly applied is to be abandoned, on this thread
@@ -225,7 +224,7 @@ const Applier = struct {
     fn dropWork(self: *Applier) void {
         for (self.work.items) |work| {
             self.unapplied_bytes -= replica_node.workBytes(work);
-            replica_node.dropWork(self.allocator, self.io, self.copies_directory, work);
+            replica_node.dropWork(self.allocator, work);
         }
         self.work.clearRetainingCapacity();
     }
@@ -245,16 +244,13 @@ const Applier = struct {
             const work = self.work.orderedRemove(0);
             self.busy = true;
             self.mutex.unlock(self.io);
-            const result = replica_node.doWork(self.clock, self.applied, &self.store, self.copies_directory, work);
-            replica_node.dropWork(self.allocator, self.io, self.copies_directory, work);
+            const result = replica_node.doWork(self.clock, self.applied, &self.store, work);
+            replica_node.dropWork(self.allocator, work);
             self.mutex.lockUncancelable(self.io);
             self.busy = false;
             self.unapplied_bytes -= replica_node.workBytes(work);
-            if (result) |done| {
-                if (done) |lsn| switch (work) {
-                    .change_set_part => self.done.applied = lsn,
-                    .load_copy => self.done.copy_loaded = lsn,
-                };
+            if (result) |lsn| {
+                replica_node.keepDone(&self.done, work, lsn);
             } else |err| {
                 log.info("applying what the master sent failed: {t}", .{err});
                 self.done.failure = err;

@@ -115,8 +115,6 @@ pub var faults: Plan = .{};
 /// `Inner` (an engine, see contract.zig) with failures injected by `faults`.
 pub fn Wrap(comptime Inner: type) type {
     return struct {
-        pub const data_file_name = Inner.data_file_name;
-
         pub const Environment = struct {
             inner: Inner.Environment,
 
@@ -136,10 +134,6 @@ pub fn Wrap(comptime Inner: type) type {
             pub fn sync(self: *Environment) Error!void {
                 if (faults.fails(.sync, false)) return error.WriteFailed;
                 return self.inner.sync();
-            }
-
-            pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
-                return self.inner.copy(allocator, directory);
             }
 
             pub fn beginRead(self: *Environment) Error!Transaction {

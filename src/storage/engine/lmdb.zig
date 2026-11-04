@@ -10,9 +10,6 @@ const Error = contract.Error;
 const Table = contract.Table;
 const Entry = contract.Entry;
 
-/// The file of a database's directory that holds it all.
-pub const data_file_name = "data.mdb";
-
 /// The LMDB database handle of each table, indexed by `Table`.
 const TableHandles = [Table.count]c.MDB_dbi;
 
@@ -94,12 +91,6 @@ pub const Environment = struct {
     /// each commit).
     pub fn sync(self: *Environment) Error!void {
         if (c.mdb_env_sync(self.handle, 1) != 0) return error.WriteFailed;
-    }
-
-    pub fn copy(self: *Environment, allocator: std.mem.Allocator, directory: []const u8) Error!void {
-        const c_path = allocator.dupeSentinel(u8, directory, 0) catch return error.OutOfMemory;
-        defer allocator.free(c_path);
-        if (c.mdb_env_copy2(self.handle, c_path.ptr, c.MDB_CP_COMPACT) != 0) return error.WriteFailed;
     }
 
     pub fn beginRead(self: *Environment) Error!Transaction {

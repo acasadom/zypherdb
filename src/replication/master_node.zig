@@ -25,6 +25,7 @@ const Readiness = network.Readiness;
 const MasterSession = @import("master_session.zig").MasterSession;
 const WriterSession = @import("writer_session.zig").WriterSession;
 const forwarded_writes = @import("forwarded_writes.zig");
+const master = @import("master.zig");
 const Graph = @import("../storage/graph.zig").Graph;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 
@@ -35,8 +36,8 @@ pub const Options = struct {
     address: []const u8,
     /// What a replica must send to be served.
     token: []const u8,
-    /// A directory for the copies sent to replicas, each in a directory of
-    /// its own, deleted once sent.
+    /// A directory for the copies sent to replicas, a file each, deleted
+    /// once no replica reads it.
     copies_directory: []const u8,
     /// How often replicas hear from the master when it has nothing else
     /// to send; they leave one silent for `protocol.heartbeats_per_timeout`
@@ -91,7 +92,8 @@ pub const Copier = struct {
     context: *anyopaque,
     vtable: *const VTable,
 
-    pub const Made = struct { number: u64, failed: bool };
+    /// The LSN of the last change set a copy holds, unless it failed.
+    pub const Made = struct { number: u64, failed: bool, lsn: u64 = 0 };
 
     pub const VTable = struct {
         ask: *const fn (context: *anyopaque, number: u64) Allocator.Error!void,
@@ -109,15 +111,21 @@ pub const Copier = struct {
     }
 };
 
-/// Makes copy `number` of `store`'s database in `copies_directory`.
-pub fn makeCopy(io: Io, store: *KeyValueStore, copies_directory: []const u8, number: u64) !void {
+/// Makes copy `number` of `store`'s database (`KeyValueStore.writeCopy`) in
+/// `copies_directory`; returns the LSN of the last change set it holds.
+pub fn makeCopy(io: Io, store: *KeyValueStore, copies_directory: []const u8, number: u64) !u64 {
     var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-    const directory = try copies.directory(&path_buffer, copies_directory, number);
+    const path = try copies.path(&path_buffer, copies_directory, number);
     const cwd = Io.Dir.cwd();
-    cwd.deleteTree(io, directory) catch {};
-    try cwd.createDirPath(io, directory);
-    errdefer cwd.deleteTree(io, directory) catch {};
-    try store.copyDatabase(directory);
+    try cwd.createDirPath(io, copies_directory);
+    const file = try cwd.createFile(io, path, .{});
+    defer file.close(io);
+    errdefer copies.delete(io, copies_directory, number);
+    var buffer: [64 << 10]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    const lsn = try store.writeCopy(&writer.interface);
+    try writer.interface.flush();
+    return lsn;
 }
 
 /// Runs the writes replicas forward (`run`), one at a time and in order,
@@ -253,11 +261,11 @@ pub const InlineCopier = struct {
         if (self.asked.items.len == 0) return;
         try self.made.ensureUnusedCapacity(self.allocator, 1);
         const number = self.asked.orderedRemove(0);
-        const failed = if (makeCopy(self.io, &self.store, self.copies_directory, number)) false else |err| blk: {
+        const made: Copier.Made = if (makeCopy(self.io, &self.store, self.copies_directory, number)) |lsn| .{ .number = number, .failed = false, .lsn = lsn } else |err| blk: {
             log.warn("making copy {d} failed: {t}", .{ number, err });
-            break :blk true;
+            break :blk .{ .number = number, .failed = true };
         };
-        self.made.appendAssumeCapacity(.{ .number = number, .failed = failed });
+        self.made.appendAssumeCapacity(made);
         self.wakeup.raise();
     }
 
@@ -295,8 +303,10 @@ pub const MasterNode = struct {
     /// The wakeup was cleared since the last step: copies made or writes
     /// run may wait.
     woken: bool = false,
-    /// The copies asked for so far: each one's directory is numbered.
+    /// The copies asked for so far: each one's file is numbered.
     copies_asked: u64 = 0,
+    /// The copies being made, or read by replicas.
+    copies: std.ArrayList(SharedCopy) = .empty,
     /// The connections accepted so far: each is numbered.
     peers_accepted: u64 = 0,
     /// What `replicaStates` tells: the first `states_count`, published by
@@ -304,6 +314,18 @@ pub const MasterNode = struct {
     states: []ReplicaState,
     states_count: usize = 0,
     states_mutex: Io.Mutex = .init,
+
+    /// A copy of the database, for every replica that asks for one while
+    /// it is made, and for those that ask once it is made while the log
+    /// still holds the change sets after it. Each replica reads it on its
+    /// own; it is deleted once none does.
+    const SharedCopy = struct {
+        number: u64,
+        /// The last change set it holds, once made.
+        lsn: ?u64 = null,
+        /// The replicas it is for, until each is past sending it.
+        readers: usize = 0,
+    };
 
     /// A connection: a replica's, or, once it said so, a replica's for its
     /// forwarded writes.
@@ -321,7 +343,7 @@ pub const MasterNode = struct {
         /// Where it connected from: the first `address_length` bytes.
         address_buffer: [network.max_address_bytes]u8 = undefined,
         address_length: u8 = 0,
-        /// The copy asked for, or sent, for this replica.
+        /// The copy this replica waits for, or is sent.
         copy_number: ?u64 = null,
         copy_file: ?Io.File = null,
         copy_reader: Io.File.Reader = undefined,
@@ -365,6 +387,8 @@ pub const MasterNode = struct {
     pub fn deinit(self: *MasterNode) void {
         for (self.peers) |*slot| if (slot.*) |peer| self.release(slot, peer);
         self.publishStates();
+        // Copies still being made are the copier's to delete.
+        self.copies.deinit(self.allocator);
         self.listener.close();
         self.store.deinit();
         self.allocator.free(self.peers);
@@ -539,7 +563,7 @@ pub const MasterNode = struct {
             const outbox = switch (peer.conversation) {
                 .replica => |*session| outbox: {
                     try session.pump(&self.store, now);
-                    if (session.state != .sending_copy) self.closeCopy(peer);
+                    if (peer.copy_file != null and session.state != .sending_copy) self.closeCopy(peer);
                     break :outbox &session.outbox;
                 },
                 .writer => |*session| outbox: {
@@ -678,35 +702,54 @@ pub const MasterNode = struct {
         slot.* = null;
     }
 
+    /// Gives `peer` the newest copy if it may still serve (being made, or
+    /// made and followed by change sets the log still holds), else asks
+    /// for a new one.
     fn askCopy(self: *MasterNode, peer: *Peer) !void {
+        if (self.copies.items.len > 0) {
+            const newest = &self.copies.items[self.copies.items.len - 1];
+            const usable = if (newest.lsn) |lsn| try master.resumeFrom(&self.store, lsn) == .stream else true;
+            if (usable) {
+                newest.readers += 1;
+                peer.copy_number = newest.number;
+                if (newest.lsn != null) try self.openCopy(peer);
+                return;
+            }
+        }
+        try self.copies.ensureUnusedCapacity(self.allocator, 1);
+        try self.copier.ask(self.copies_asked);
+        self.copies.appendAssumeCapacity(.{ .number = self.copies_asked, .readers = 1 });
         peer.copy_number = self.copies_asked;
         self.copies_asked += 1;
-        try self.copier.ask(peer.copy_number.?);
     }
 
-    /// Hands each copy made to the replica that asked for it.
+    /// Hands each copy made to the replicas waiting for it.
     fn takeCopies(self: *MasterNode) void {
         var made = self.copier.take();
         defer made.deinit(self.allocator);
         for (made.items) |copy| {
-            const peer = for (self.peers) |slot| {
-                const peer = slot orelse continue;
-                if (peer.copy_number == copy.number) break peer;
-            } else {
-                // Its replica is gone.
-                copies.delete(self.io, self.options.copies_directory, copy.number);
-                continue;
-            };
+            const index = self.copyIndex(copy.number).?;
             if (copy.failed) {
-                log.warn("making a copy for a replica failed", .{});
-                self.release(self.slotOf(peer), peer);
+                log.warn("making a copy for replicas failed", .{});
+                _ = self.copies.orderedRemove(index);
+                copies.delete(self.io, self.options.copies_directory, copy.number);
+                for (self.peers) |*slot| {
+                    const peer = slot.* orelse continue;
+                    if (peer.copy_number == copy.number) self.release(slot, peer);
+                }
                 continue;
             }
-            self.openCopy(peer) catch |err| {
-                log.warn("opening a copy for a replica failed: {t}", .{err});
-                self.release(self.slotOf(peer), peer);
-                continue;
-            };
+            self.copies.items[index].lsn = copy.lsn;
+            for (self.peers) |*slot| {
+                const peer = slot.* orelse continue;
+                if (peer.copy_number != copy.number) continue;
+                self.openCopy(peer) catch |err| {
+                    log.warn("opening a copy for a replica failed: {t}", .{err});
+                    self.release(slot, peer);
+                };
+            }
+            // Its replicas are gone.
+            if (self.copyIndex(copy.number)) |left| if (self.copies.items[left].readers == 0) self.dropCopy(left);
         }
     }
 
@@ -739,20 +782,34 @@ pub const MasterNode = struct {
 
     fn openCopy(self: *MasterNode, peer: *Peer) !void {
         var path_buffer: [std.fs.max_path_bytes]u8 = undefined;
-        const path = try std.fmt.bufPrint(&path_buffer, "{s}/copy-{d}/{s}", .{ self.options.copies_directory, peer.copy_number.?, KeyValueStore.data_file_name });
+        const path = try copies.path(&path_buffer, self.options.copies_directory, peer.copy_number.?);
         const file = try Io.Dir.cwd().openFile(self.io, path, .{});
         peer.copy_file = file;
         peer.copy_reader = file.reader(self.io, &peer.copy_buffer);
         peer.conversation.replica.copyMade(&peer.copy_reader.interface);
     }
 
-    /// Closes and deletes `peer`'s copy once sent, or once the replica is
-    /// gone. A copy still being made is deleted when it is taken.
+    /// `peer` is done with its copy, sent or not, or never had one; the
+    /// copy is deleted once made and read by no one.
     fn closeCopy(self: *MasterNode, peer: *Peer) void {
-        const file = peer.copy_file orelse return;
-        file.close(self.io);
+        const number = peer.copy_number orelse return;
+        if (peer.copy_file) |file| file.close(self.io);
         peer.copy_file = null;
-        copies.delete(self.io, self.options.copies_directory, peer.copy_number.?);
         peer.copy_number = null;
+        // Gone already if making it failed.
+        const index = self.copyIndex(number) orelse return;
+        const copy = &self.copies.items[index];
+        copy.readers -= 1;
+        if (copy.readers == 0 and copy.lsn != null) self.dropCopy(index);
+    }
+
+    fn dropCopy(self: *MasterNode, index: usize) void {
+        const copy = self.copies.orderedRemove(index);
+        copies.delete(self.io, self.options.copies_directory, copy.number);
+    }
+
+    fn copyIndex(self: *const MasterNode, number: u64) ?usize {
+        for (self.copies.items, 0..) |copy, index| if (copy.number == number) return index;
+        return null;
     }
 };

@@ -189,9 +189,8 @@ const Fuzzer = struct {
     replica_next_lsn: u64 = 1,
     /// Where the replica is copied to at the first check, if it starts as a copy.
     replica_copy_path: ?[]const u8 = null,
-    /// Where new copies the replica loads are made (in its directory), if
-    /// it loads any.
-    reload_path: ?[]u8 = null,
+    /// Whether the replica loads new copies now and then.
+    reloads: bool = false,
 
     /// Fuzzing needs no durability: commits only reach the page cache.
     const store_options = KeyValueStore.Options{ .durability = .deferred };
@@ -218,7 +217,7 @@ const Fuzzer = struct {
                 self.replica = try KeyValueStore.openWithOptions(allocator, replica_path, store_options);
             } else {
                 self.replica_copy_path = replica_path;
-                self.reload_path = try std.fmt.allocPrint(allocator, "{s}/reload", .{replica_path});
+                self.reloads = true;
             }
         };
         if (options.verbose) try out.print("seed {d}, swarm: {f}{s}\n", .{ options.seed, self.swarm, if (self.replica != null) ", with a replica" else if (self.replica_copy_path != null) ", with a replica from a copy" else "" });
@@ -229,7 +228,6 @@ const Fuzzer = struct {
         if (self.snapshot) |*snapshot| snapshot.deinit();
         self.model.deinit();
         if (self.replica) |*replica| replica.deinit();
-        if (self.reload_path) |path| self.allocator.free(path);
         self.store.deinit();
         self.values.deinit();
         self.scratch.deinit();
@@ -637,23 +635,34 @@ const Fuzzer = struct {
         if (!self.graph.inWriteTransaction()) try self.verifyReplica();
     }
 
+    /// The replica loads a copy of the database, in parts of random size.
+    fn loadCopy(self: *Fuzzer) !void {
+        const replica = &self.replica.?;
+        var copy: std.Io.Writer.Allocating = .init(self.allocator);
+        defer copy.deinit();
+        const lsn = try self.store.writeCopy(&copy.writer);
+        var rest = copy.written();
+        while (rest.len > 0) {
+            const part = rest[0 .. 1 + self.random().uintLessThan(usize, @min(rest.len, 4096))];
+            if (try replica.applyCopyPart(part, false) != null) return self.fail("a copy was loaded before its end", .{});
+            rest = rest[part.len..];
+        }
+        if (try replica.applyCopyPart("", true) != lsn) return self.fail("the copy loaded is not the one made", .{});
+        self.replica_next_lsn = lsn + 1;
+    }
+
     /// The replica applies the change sets committed since the last check,
     /// then must pass the same checks as the database.
     fn verifyReplica(self: *Fuzzer) !void {
         if (self.replica_copy_path) |path| {
-            try self.store.copyDatabase(path);
             self.replica = try KeyValueStore.openWithOptions(self.allocator, path, store_options);
-            self.replica_next_lsn = try self.replica.?.becomeReplica() + 1;
+            try self.loadCopy();
             self.replica_copy_path = null;
-        } else if (self.reload_path) |path| if (self.random().uintLessThan(u8, 8) == 0) {
+        } else if (self.reloads and self.random().uintLessThan(u8, 8) == 0) {
             // As a replica that fell behind the log does.
-            const io = std.Io.Threaded.global_single_threaded.io();
-            try std.Io.Dir.cwd().createDirPath(io, path);
-            defer std.Io.Dir.cwd().deleteTree(io, path) catch {};
-            try self.store.copyDatabase(path);
-            self.replica_next_lsn = try self.replica.?.loadCopy(path) + 1;
+            try self.loadCopy();
             self.statistics.reloads += 1;
-        };
+        }
         const replica = &(self.replica orelse return);
         const state = (try self.store.changeLogState()) orelse return self.fail("the change log is not started", .{});
         while (self.replica_next_lsn < state.next_lsn) : (self.replica_next_lsn += 1) {

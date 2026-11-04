@@ -35,8 +35,8 @@ pub const Refusal = protocol.Refusal;
 pub const Phase = follower_module.Phase;
 pub const Outcome = forwarder_module.Outcome;
 
-/// The directory, inside the database's, where copies for or from other
-/// nodes are kept while they are sent or loaded.
+/// The directory, inside a master's, where the copies for its replicas are
+/// kept while they are sent (made there when one is first asked for).
 pub const copies_directory_name = "replication-copies";
 
 /// The file, inside the database's directory, that the process running
@@ -221,7 +221,6 @@ pub const Replication = struct {
         self.tcp = .{ .io = io, .allocator = allocator };
         self.lock_file = try openLockFile(io, path);
         errdefer self.lock_file.close(io);
-        try Io.Dir.cwd().createDirPath(io, self.copies_directory);
         self.own_store = try store.share();
         errdefer self.own_store.deinit();
         switch (self.role) {
@@ -278,7 +277,6 @@ pub const Replication = struct {
                 self.follower.store(try Follower.start(self.allocator, io, self.clock.clock(), self.tcp.network(), &self.own_store, .{
                     .master_address = replica.master_address,
                     .token = replica.token,
-                    .copies_directory = self.copies_directory,
                     .name = self.role_name,
                 }), .release);
             },

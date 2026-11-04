@@ -11,6 +11,10 @@
 
 ### Changed
 
+- **Replicas share copies, and load them as they arrive.** Replicas asking for a copy of the
+  master's database at once, or while one is sent, share one file on the master's disk, deleted
+  once sent; a replica writes no file of its own and keeps serving its database until the copy
+  is whole. A copy holds the database's entries, not the storage engine's pages.
 - **A stored value is at most 64 MiB** (was 4 GiB): a node with all its properties, or one
   property of a relationship. A replica holds each write whole while it applies it.
 

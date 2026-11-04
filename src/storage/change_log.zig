@@ -35,9 +35,8 @@
 //! it stopped, applying none twice and skipping none. It holds in memory a
 //! part and the start of a write the part cut; no write is longer than
 //! `layout.max_value_length` (its key neither), so neither is that. A replica writes nothing else. It starts
-//! as a copy of its master (`KeyValueStore.copyDatabase`) made a replica
-//! (`becomeReplica`): the copy holds the master's log, whose state says
-//! which change sets it already has.
+//! from a copy of its master (copy.zig), which tells the last change set it
+//! holds: loading it makes the database a replica (`becomeReplica`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -134,20 +133,14 @@ pub fn start(transaction: Transaction, id: DatabaseId) engine.Error!State {
     return state;
 }
 
-/// Makes a copy of a master, in write transaction `transaction`, a replica
-/// that has applied every change set the copy holds: drops the copied log
-/// and returns that LSN. Fails with `WriteFailed` unless the database is a
-/// copy of a master (its log started, not a replica).
-pub fn becomeReplica(transaction: Transaction) engine.Error!u64 {
-    const state = try readState(transaction) orelse return error.WriteFailed;
-    if (try appliedLsn(transaction) != null) return error.WriteFailed;
-    for (state.oldest_lsn..state.next_lsn) |lsn| _ = try dropChangeSet(transaction, lsn);
-    try transaction.delete(.changes, &state_key);
-    const applied = state.next_lsn - 1;
+/// Makes the database of write transaction `transaction`, loaded from a
+/// copy of master `id` (copy.zig), with no change log of its own, a replica
+/// of it that has applied change sets up to `applied`.
+pub fn becomeReplica(transaction: Transaction, id: DatabaseId, applied: u64) engine.Error!void {
+    try transaction.put(.changes, database_key, &id);
     var encoded: [8]u8 = undefined;
     std.mem.writeInt(u64, &encoded, applied, .big);
     try transaction.put(.changes, replica_key, &encoded);
-    return applied;
 }
 
 /// The change set of transaction `lsn`, its chunks joined (owned by the
@@ -370,18 +363,21 @@ pub const Application = struct {
 };
 
 fn applyEach(transaction: Transaction, changes: *Iterator) (engine.Error || error{MalformedChangeSet})!void {
-    while (try changes.next()) |change| {
-        // An integer key goes to the engine aligned, as a u64 (it is not,
-        // inside the change set).
-        var id: u64 = undefined;
-        const key = if (change.table.hasIntegerKeys()) aligned: {
-            if (change.key.len != @sizeOf(u64)) return error.MalformedChangeSet;
-            @memcpy(std.mem.asBytes(&id), change.key);
-            break :aligned std.mem.asBytes(&id);
-        } else change.key;
-        switch (change.operation) {
-            .put => try transaction.put(change.table, key, change.value),
-            .delete => try transaction.delete(change.table, key),
-        }
+    while (try changes.next()) |change| try apply(transaction, change);
+}
+
+/// Makes write `change` in `transaction`.
+pub fn apply(transaction: Transaction, change: Change) (engine.Error || error{MalformedChangeSet})!void {
+    // An integer key goes to the engine aligned, as a u64 (it is not,
+    // inside a change set).
+    var id: u64 = undefined;
+    const key = if (change.table.hasIntegerKeys()) aligned: {
+        if (change.key.len != @sizeOf(u64)) return error.MalformedChangeSet;
+        @memcpy(std.mem.asBytes(&id), change.key);
+        break :aligned std.mem.asBytes(&id);
+    } else change.key;
+    switch (change.operation) {
+        .put => try transaction.put(change.table, key, change.value),
+        .delete => try transaction.delete(change.table, key),
     }
 }

@@ -223,8 +223,10 @@ role for a process failure, and a machine failure is covered by restarting it.
   and their writes reach the replicas within a heartbeat; on a replica they read, and
   `last_lsn` and `wait_for` work in them as well.
 - **Copies.** A replica's first copy is the whole database, written to `replication-copies` in
-  the database's directory on both machines while it is sent and loaded, so plan disk space for
-  one more copy on each side. With libmdbx a copy is at least 16 MiB.
+  the master's directory while it is sent: plan disk space for one more copy there. Replicas
+  asking for a copy while one is made or sent share it. A replica loads its copy as it arrives,
+  with no file of its own, and goes on serving the database it had until the copy is whole; a
+  copy cut short leaves it as it was, and it asks for another.
 - **The change log.** The master keeps the recent changes (up to 512 MiB) for replicas that
   reconnect; one that was away longer gets a new copy.
 - **No failover to another machine.** A replica never becomes a master, on its own or by hand

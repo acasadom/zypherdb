@@ -57,8 +57,6 @@ pub const MDBX_UPSERT: c_uint = 0;
 // --- Results ---
 
 pub const MDBX_SUCCESS: c_int = 0;
-/// `mdbx_env_copy`: omit free pages from the copy.
-pub const MDBX_CP_COMPACT: c_uint = 1;
 /// Returned by mdbx_get / mdbx_del / mdbx_cursor_get when a key is absent.
 pub const MDBX_NOTFOUND: c_int = -30798;
 
@@ -92,7 +90,6 @@ pub extern "c" fn mdbx_setup_debug(log_level: c_int, debug_flags: c_int, logger:
 pub extern "c" fn mdbx_env_create(env: *?*MDBX_env) c_int;
 pub extern "c" fn mdbx_env_set_option(env: *MDBX_env, option: c_int, value: u64) c_int;
 pub extern "c" fn mdbx_env_set_geometry(env: *MDBX_env, size_lower: isize, size_now: isize, size_upper: isize, growth_step: isize, shrink_threshold: isize, pagesize: isize) c_int;
-pub extern "c" fn mdbx_env_copy(env: *MDBX_env, dest: [*:0]const u8, flags: c_uint) c_int;
 pub extern "c" fn mdbx_env_open(env: *MDBX_env, pathname: [*:0]const u8, flags: c_uint, mode: mdbx_mode_t) c_int;
 pub extern "c" fn mdbx_env_close_ex(env: *MDBX_env, dont_sync: bool) c_int;
 pub extern "c" fn mdbx_env_sync_ex(env: *MDBX_env, force: bool, nonblock: bool) c_int;

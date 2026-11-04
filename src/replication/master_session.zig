@@ -174,9 +174,9 @@ pub const MasterSession = struct {
         return null;
     }
 
-    /// The copy asked for (`make_copy`) is made: `copy` reads it, the file
-    /// `KeyValueStore.data_file_name` a `copyDatabase` wrote. It must stay
-    /// open until the session is past `sending_copy`.
+    /// The copy asked for (`make_copy`) is made: `copy` reads it from its
+    /// start, as `KeyValueStore.writeCopy` wrote it. It must stay open until
+    /// the session is past `sending_copy`.
     pub fn copyMade(self: *MasterSession, copy: *Reader) void {
         std.debug.assert(self.state == .making_copy);
         self.state = .sending_copy;

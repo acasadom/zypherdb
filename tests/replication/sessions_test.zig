@@ -55,14 +55,9 @@ const Conversation = struct {
     /// Whether each side reads what the other sends.
     master_reads: bool = true,
     replica_reads: bool = true,
-    /// The copy the master sends, open while it does.
-    master_copy: ?std.Io.File = null,
-    master_copy_buffer: [4096]u8 = undefined,
-    master_copy_reader: std.Io.File.Reader = undefined,
-    /// The copy the replica receives, open while it does.
-    replica_copy: ?std.Io.File = null,
-    replica_copy_buffer: [4096]u8 = undefined,
-    replica_copy_writer: std.Io.File.Writer = undefined,
+    /// The copy the master sends, kept while it does.
+    master_copy: ?[]u8 = null,
+    master_copy_reader: std.Io.Reader = undefined,
     refusal: ?protocol.Refusal = null,
     master_lsn: ?u64 = null,
     heartbeats: usize = 0,
@@ -85,8 +80,7 @@ const Conversation = struct {
     }
 
     fn deinit(self: *Conversation) void {
-        if (self.master_copy) |file| file.close(testing.io);
-        if (self.replica_copy) |file| file.close(testing.io);
+        if (self.master_copy) |bytes| testing.allocator.free(bytes);
         // As a replica's node does when a conversation ends.
         self.target.abandonChangeSet();
         self.master.deinit(testing.allocator);
@@ -99,8 +93,8 @@ const Conversation = struct {
             .writer => return error.UnexpectedMessage,
         };
         try self.master.pump(self.source, self.now);
-        if (self.master.state != .sending_copy) if (self.master_copy) |file| {
-            file.close(testing.io);
+        if (self.master.state != .sending_copy) if (self.master_copy) |bytes| {
+            testing.allocator.free(bytes);
             self.master_copy = null;
         };
         if (self.replica_reads) {
@@ -110,8 +104,8 @@ const Conversation = struct {
         }
         while (try self.replica.next(testing.allocator)) |event| switch (event) {
             .refused => |reason| self.refusal = reason,
-            .copy_part => |bytes| try self.writeCopyPart(bytes),
-            .copy_received => try self.loadCopy(),
+            .copy_part => |bytes| try testing.expect(try self.target.applyCopyPart(bytes, false) == null),
+            .copy_received => self.replica.copyLoaded((try self.target.applyCopyPart("", true)).?, self.now),
             .change_set_part => |part| {
                 defer testing.allocator.free(part.bytes);
                 if (try self.target.applyChangeSetPart(part.lsn, part.bytes, part.final) != null) self.replica.applied(part.lsn);
@@ -149,36 +143,13 @@ const Conversation = struct {
     }
 
     fn makeCopy(self: *Conversation) !void {
-        var name_buffer: [32]u8 = undefined;
-        const name = try std.fmt.bufPrint(&name_buffer, "master-copy-{d}", .{self.copies_made});
         self.copies_made += 1;
-        var path: [256]u8 = undefined;
-        try self.source.copyDatabase(try directoryAt(self.tmp, name, &path));
-        var file_path: [64]u8 = undefined;
-        const file = try self.tmp.dir.openFile(testing.io, try std.fmt.bufPrint(&file_path, "{s}/{s}", .{ name, KeyValueStore.data_file_name }), .{});
-        self.master_copy = file;
-        self.master_copy_reader = file.reader(testing.io, &self.master_copy_buffer);
-        self.master.copyMade(&self.master_copy_reader.interface);
-    }
-
-    fn writeCopyPart(self: *Conversation, bytes: []const u8) !void {
-        if (self.replica_copy == null) {
-            var path: [256]u8 = undefined;
-            _ = try directoryAt(self.tmp, "replica-copy", &path);
-            const file = try self.tmp.dir.createFile(testing.io, "replica-copy/" ++ KeyValueStore.data_file_name, .{});
-            self.replica_copy = file;
-            self.replica_copy_writer = file.writer(testing.io, &self.replica_copy_buffer);
-        }
-        try self.replica_copy_writer.interface.writeAll(bytes);
-    }
-
-    fn loadCopy(self: *Conversation) !void {
-        try self.replica_copy_writer.interface.flush();
-        self.replica_copy.?.close(testing.io);
-        self.replica_copy = null;
-        var path: [256]u8 = undefined;
-        const lsn = try self.target.loadCopy(try directoryAt(self.tmp, "replica-copy", &path));
-        self.replica.copyLoaded(lsn, self.now);
+        var copy: std.Io.Writer.Allocating = .init(testing.allocator);
+        errdefer copy.deinit();
+        _ = try self.source.writeCopy(&copy.writer);
+        self.master_copy = try copy.toOwnedSlice();
+        self.master_copy_reader = .fixed(self.master_copy.?);
+        self.master.copyMade(&self.master_copy_reader);
     }
 
     fn caughtUp(self: *Conversation) !bool {
