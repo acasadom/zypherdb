@@ -16,8 +16,9 @@
 //! a `refused` frame in clear (there is nothing to encrypt it with), given
 //! to the replica as received, so it reads like any other refusal. Anyone
 //! who can write to the connection can forge that frame, as they can cut the
-//! connection. Everything after the handshake is authenticated, and a record
-//! that fails to decrypt ends the connection.
+//! connection: so only the reasons `Refusal.beforeKeys` are believed, and a
+//! replica asks again after them. Everything after the handshake is
+//! authenticated, and a record that fails to decrypt ends the connection.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -319,8 +320,13 @@ const EncryptedConnection = struct {
                         self.handshake.wipe();
                         self.state = .established;
                     },
-                    // Taken as it came, by the session above.
-                    .refused => {
+                    // Taken as it came, by the session above. It may be
+                    // forged, so it stops nothing for good.
+                    .refused => |reason| {
+                        if (!reason.beforeKeys()) {
+                            self.broken = true;
+                            return;
+                        }
                         self.plain_start = self.input_start;
                         self.plain_end = self.input_start + decoded.length;
                         self.input_start = self.plain_end;

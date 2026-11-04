@@ -8,7 +8,9 @@
   authenticated channel (Noise `NNpsk0` with X25519, ChaCha20-Poly1305 and SHA-256, the token as
   its pre-shared key); the token no longer travels. `encrypted=False` (Python) or
   `encrypted = false` (C) sends everything in clear, as before, on both sides. A side that
-  encrypts and one that does not stop with the refusal `"encryption"`. `zypherdb_open_replicated`
+  encrypts and one that does not are refused with `"encryption"`. A replica refused for that or
+  for its token keeps asking (`last_refusal` tells why) instead of halting, as those refusals
+  cannot be authenticated. `zypherdb_open_replicated`
   takes one more argument.
 - **`write_many`** (Python) and `zypherdb_write_many` (C): several queries in one transaction,
   each seeing what the ones before it wrote, committed together or not at all; the error tells

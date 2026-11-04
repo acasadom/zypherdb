@@ -74,12 +74,19 @@ def test_a_replica_is_named_after_its_host_unless_told(master, tmp_path):
         Database(str(tmp_path / "another"), serve="127.0.0.1:0", token=TOKEN, name="eu-1")
 
 
-def test_a_replica_told_the_wrong_token_halts_and_says_why(master, tmp_path):
+def wait_for_refusal(replica):
+    deadline = time.monotonic() + 20
+    while replica.replication_status()["last_refusal"] is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    return replica.replication_status()
+
+
+def test_a_replica_told_the_wrong_token_keeps_asking_and_says_why(master, tmp_path):
     with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token="another") as replica:
-        assert not replica.wait_for(1, timeout=20)
-        status = replica.replication_status()
-        assert status["halted"] == "token"
-        assert status["phase"] == "halted"
+        status = wait_for_refusal(replica)
+        assert status["last_refusal"] == "token"
+        assert status["halted"] is None
 
 
 def test_replicating_in_clear_if_both_sides_say_so(tmp_path):
@@ -92,11 +99,12 @@ def test_replicating_in_clear_if_both_sides_say_so(tmp_path):
 
 
 @pytest.mark.parametrize("master_encrypts", [True, False])
-def test_a_side_that_encrypts_and_one_that_does_not_halt_the_replica_and_it_says_why(master_encrypts, tmp_path):
+def test_a_side_that_encrypts_and_one_that_does_not_are_refused_and_the_replica_says_why(master_encrypts, tmp_path):
     with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN, encrypted=master_encrypts) as db:
         with Database(str(tmp_path / "replica"), replicate_from=address_of(db), token=TOKEN, encrypted=not master_encrypts) as replica:
-            assert not replica.wait_for(1, timeout=20)
-            assert replica.replication_status()["halted"] == "encryption"
+            status = wait_for_refusal(replica)
+            assert status["last_refusal"] == "encryption"
+            assert status["halted"] is None
 
 
 def test_without_replication(tmp_path):

@@ -163,6 +163,18 @@ test "a wrong token is refused as such, in a frame the refused side reads" {
     try testing.expectError(error.Closed, bench.server.?.receive(&buffer));
 }
 
+test "before there are keys, a refusal that would stop a replica for good is not believed" {
+    var bench: Bench = undefined;
+    try bench.init(token, token);
+    defer bench.deinit();
+    var frame: [protocol.max_frame_bytes]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&frame);
+    try protocol.write(&writer, .{ .refused = .database_id });
+    _ = try bench.to_client.send(writer.buffered());
+    var buffer: [protocol.max_frame_bytes]u8 = undefined;
+    try testing.expectError(error.Closed, bench.client.receive(&buffer));
+}
+
 test "a side that does not encrypt is refused for that" {
     var bench: Bench = undefined;
     try bench.init(token, token);

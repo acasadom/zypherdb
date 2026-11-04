@@ -386,7 +386,7 @@ test "turned away: once if asking again cannot help, twice if it may" {
     bench.request(1, "not even sent");
     try bench.settle();
     try testing.expectEqual(Outcome{ .refused = .token }, try bench.finished(1));
-    try testing.expectEqual(1, bench.net.connects);
+    try testing.expectEqual(2, bench.net.connects);
 
     // In place of the master, one that is no master yet.
     bench.master.?.deinit();
@@ -405,7 +405,19 @@ test "turned away: once if asking again cannot help, twice if it may" {
         try bench.settle();
     }
     try testing.expectEqual(Outcome{ .refused = .not_master }, try bench.finished(2));
-    try testing.expectEqual(3, bench.net.connects);
+    try testing.expectEqual(4, bench.net.connects);
+
+    bench.request(3, "not even sent");
+    try bench.settle();
+    const connection = (try listener.accept()).?;
+    defer connection.close();
+    var frame: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&frame);
+    try protocol.write(&writer, .{ .refused = .database_id });
+    try testing.expectEqual(writer.end, try connection.send(writer.buffered()));
+    try bench.settle();
+    try testing.expectEqual(Outcome{ .refused = .database_id }, try bench.finished(3));
+    try testing.expectEqual(5, bench.net.connects);
 }
 
 test "a replica with no copy of a master forwards nothing" {

@@ -305,8 +305,9 @@ class Database:
         `standby` is True in a process that opened the database with a role
         while another process runs replication on it: it takes over when
         that one closes the database or dies. `halted` names why the replica stopped following for good (e.g.
-        "token": the master refused its token); `last_refusal` why the master
-        last turned it away.
+        "database_id": it is a replica of another master); `last_refusal` why
+        the master last turned it away (e.g. "token": it holds another token,
+        and the replica keeps asking).
         """
         with self._calls as session:
             text = native.replication_status(session.handle)

@@ -167,11 +167,20 @@ pub const Refusal = enum(u8) {
     encryption = 8,
     _,
 
-    /// Whether asking again cannot help until someone changes something:
-    /// all but `not_master` (the master may be starting). A reason this
-    /// version does not know is taken as permanent.
+    /// Whether asking again cannot help until someone changes something,
+    /// so a replica stops for good: all but `not_master` (the master may be
+    /// starting) and those `beforeKeys`, which anyone who can write on the
+    /// connection can forge. A reason this version does not know is taken
+    /// as permanent.
     pub fn permanent(self: Refusal) bool {
-        return self != .not_master;
+        return self != .not_master and !self.beforeKeys();
+    }
+
+    /// Whether it may come before an encrypted conversation has keys, so in
+    /// clear, unauthenticated. An encrypted side believes no other reason
+    /// then: the rest come inside the conversation.
+    pub fn beforeKeys(self: Refusal) bool {
+        return self == .token or self == .encryption;
     }
 };
 

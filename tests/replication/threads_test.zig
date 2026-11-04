@@ -260,7 +260,7 @@ test "a replica resumes after its master restarts" {
     try setup.expectCaughtUp(follower, try setup.write(20, 5));
 }
 
-test "a replica with the wrong token is turned away" {
+test "a replica with the wrong token is turned away and keeps asking" {
     var setup: Setup = undefined;
     try setup.init();
     defer setup.deinit();
@@ -273,12 +273,10 @@ test "a replica with the wrong token is turned away" {
     defer follower.stop();
     const clock = setup.clock.clock();
     const deadline = clock.now() + patience;
-    while (follower.halted() == null and clock.now() < deadline) try testing.io.sleep(.fromMilliseconds(5), .awake);
-    try testing.expectEqual(@as(?protocol.Refusal, .token), follower.halted());
+    while (follower.lastRefusal() == null and clock.now() < deadline) try testing.io.sleep(.fromMilliseconds(5), .awake);
     try testing.expectEqual(@as(?protocol.Refusal, .token), follower.lastRefusal());
+    try testing.expectEqual(@as(?protocol.Refusal, null), follower.halted());
     try testing.expectEqual(@as(?u64, null), try setup.replica.appliedLsn());
-    // Halted, it wakes whoever waits for a change set.
-    try testing.expectEqual(@as(?u64, null), follower.waitApplied(1, clock.now() + patience));
 }
 
 test "a replica asks again after a refusal that may pass, never after one that cannot" {
@@ -298,7 +296,7 @@ test "a replica asks again after a refusal that may pass, never after one that c
     defer follower.stop();
     const buffer = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
     defer testing.allocator.free(buffer);
-    for ([_]protocol.Refusal{ .not_master, .not_master, .database_id }) |reason| {
+    for ([_]protocol.Refusal{ .not_master, .token, .encryption, .database_id }) |reason| {
         const connection = try setup.accept(listener);
         defer connection.close();
         try testing.expectEqual(.hello, std.meta.activeTag(try setup.receiveMessage(connection, buffer)));
@@ -310,6 +308,8 @@ test "a replica asks again after a refusal that may pass, never after one that c
     // Many retries' worth later, nobody has come again.
     try testing.io.sleep(.fromMilliseconds(200), .awake);
     try testing.expectEqual(@as(?Connection, null), try listener.accept());
+    // Halted, it wakes whoever waits for a change set.
+    try testing.expectEqual(@as(?u64, null), follower.waitApplied(1, setup.clock.clock().now() + patience));
 }
 
 test "a read on the replica waits to see a write committed on the master" {

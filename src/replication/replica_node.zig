@@ -4,8 +4,8 @@
 //! what it receives, change sets and copies alike, to an `Applier`. When the conversation ends for any
 //! reason it connects again after a while (a deadline, not a sleep). A
 //! master silent for `protocol.heartbeats_per_timeout` of its heartbeat
-//! intervals ends it too. A refusal that asking again cannot help (a wrong token, another
-//! version, another master) stops it for good: `halted` tells why.
+//! intervals ends it too. A refusal that asking again cannot help (another version,
+//! another master) stops it for good: `halted` tells why.
 //! Whoever runs it waits on what `watch` tells until `deadline`, hands
 //! back what was `ready`, then calls `step`: follower.zig on a thread of
 //! its own, or a simulation that decides when time passes and when change

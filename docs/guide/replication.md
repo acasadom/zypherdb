@@ -60,7 +60,7 @@ if replica.wait_for(lsn, timeout=5.0):
 ```
 
 `wait_for` returns `False` if the change has not arrived within the timeout (the master is
-unreachable, or the replica halted). Pass the LSN along with whatever the reader needs, for
+unreachable, it holds another token, or the replica halted). Pass the LSN along with whatever the reader needs, for
 example in the response to the request that wrote. A read that may be a little old needs no
 waiting.
 
@@ -111,11 +111,12 @@ master tells the replica how often it sends them; five seconds) is left, and the
 again. `master_lsn` is the master's last change as its last heartbeat told,
 and `lag` the difference.
 `halted` is set when the replica stopped following for good, because asking again cannot help: it
-names the reason — `"token"` (the master holds another token), `"encryption"` (one side encrypts
-and the other does not), `"database_id"` (it is a replica of another master), `"ahead"` (it has changes the master never made: the master was restored from an
+names the reason — `"database_id"` (it is a replica of another master), `"ahead"` (it has changes the master never made: the master was restored from an
 older copy), or a version, format or engine the two do not share. A halted replica keeps answering
 reads with what it has; fix the cause and open it again (or start it from an empty directory).
-`last_refusal` names why the master last turned it away, when that was not for good.
+`last_refusal` names why the master last turned it away, when that was not for good: `"token"`
+(the master holds another token) and `"encryption"` (one side encrypts and the other does not) are
+the ones to look for when a replica never catches up, as it keeps asking until the cause is fixed.
 
 ## Encryption
 
@@ -128,11 +129,12 @@ the token can finish the handshake.
 
 The master and its replicas must agree: `encrypted=False` (on by default) on all of them sends
 everything in clear, for a network that is already encrypted, or to save the CPU. A side that
-encrypts and one that does not stop with `"encryption"`.
+encrypts and one that does not are refused with `"encryption"`.
 
 Before there are keys there is nothing to protect a message with, so a refusal for a wrong token
-or for not encrypting travels in clear, and whoever can write on the connection can forge one and
-stop a replica, until it is opened again.
+or for not encrypting travels in clear, and whoever can write on the connection can forge one. So
+neither stops a replica for good: it keeps asking, with a growing delay, and follows as soon as the
+conversation goes through. No other refusal is believed before there are keys.
 
 ## Writing on a replica
 
