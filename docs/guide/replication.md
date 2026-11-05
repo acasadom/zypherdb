@@ -249,8 +249,11 @@ role for a process failure, and a machine failure is covered by restarting it.
   asking for a copy while one is made or sent share it. A replica loads its copy as it arrives,
   with no file of its own, and goes on serving the database it had until the copy is whole; a
   copy cut short leaves it as it was, and it asks for another.
-- **The change log.** The master keeps the recent changes (up to 512 MiB) for replicas that
-  reconnect; one that was away longer gets a new copy.
+- **The change log.** The master keeps the recent changes (up to 512 MiB, a fixed size) for
+  replicas that reconnect. It goes by size alone: past that size the oldest changes are dropped,
+  whether or not a replica has read them, connected or not. A replica that still needs a dropped
+  change gets a new copy, so how long it can be away or behind depends on how fast the master
+  writes.
 - **No failover to another machine.** A replica never becomes a master, on its own or by hand
   ([staying available](#staying-available)).
 - **The same platform.** A replica must run the same ZypherDB storage format and storage engine

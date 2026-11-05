@@ -383,7 +383,7 @@ any other, so they follow with no special case.
   A transaction that changed nothing, or was aborted, takes no LSN.
 - Keys of `#changes`: `lsn (u64) | chunk (u32)`, big-endian, for each part of a change set, which
   is cut into chunks of 1 MiB as it is written (a large transaction is never held in memory
-  whole); and twelve zero bytes for the log's state (the next LSN, the oldest kept, the bytes kept).
+  whole); and twelve `0xff` bytes for the log's state (the next LSN, the oldest kept, the bytes kept).
 - A change set is its writes in order: `0x01 | table | key length | key | value length | value`
   for a put, `0x02 | table | key length | key` for a delete (lengths as u32, big-endian). Keys of
   the integer-key tables are native integers, so a replica must have the same byte order.
