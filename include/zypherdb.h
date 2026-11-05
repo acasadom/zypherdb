@@ -75,8 +75,8 @@ typedef struct zypherdb_statement zypherdb_statement;
 zypherdb_context *zypherdb_open(const char *path, size_t path_len);
 zypherdb_context *zypherdb_open_with_durability(const char *path, size_t path_len, int durability);
 int zypherdb_sync(zypherdb_context *context);
-/* Opens with a replication role. With encrypted and a token the conversation is encrypted, the token
- * its key; otherwise the token and the data go in clear: use a trusted network. Master and replicas
+/* Opens with a replication role. The token may not be empty. With encrypted the conversation is
+ * encrypted, the token its key; otherwise the token and the data go in clear: use a trusted network. Master and replicas
  * must agree. A replica's name
  * (NULL: the host's) shows in its master's status. A replica with forward_writes sends the statements
  * that write to its master, each taking at most request_timeout_ms (0: 30 s). NULL on failure. */

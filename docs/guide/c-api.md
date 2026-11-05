@@ -364,19 +364,19 @@ const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_l
 `zypherdb_open_replicated` opens the database with a replication role (see
 [replication](replication.md)): `ZYPHERDB_ROLE_MASTER` (0) serves replicas at `address`
 (`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
-writes. `token` is the secret master and replicas share. With `encrypted` and a token the
+writes. `token` is the secret master and replicas share, and may not be empty. With `encrypted` the
 conversation is encrypted, and the token never travels; both sides must agree. `name` (at most 255 bytes) is what a replica calls
 itself in its master's status; `NULL` takes the name of its host, and a master ignores it. A
 replica opened with `forward_writes` sends the statements that write to its master instead of
 refusing them, each taking at most `request_timeout_ms` (0: 30 s); `zypherdb_result_visible` is
 false for a forwarded write the replica had not applied in that time. The
 context keeps its own copy of `address`, `token` and `name`. It returns `NULL` when the database cannot be opened or replication cannot start (the
-address is taken, a database that was a master is opened as a replica, or the name is too long). While another process
+address is taken, the token is empty, a database that was a master or holds data is opened as a replica, or the name is too long). While another process
 runs replication on the database the context stands by (`"standby": true` in its status) and
 takes over when that process closes it or dies. Closing the context
 stops replication.
 
-> **Warning.** With no token, or without `encrypted`, the token and the data travel in clear: run
+> **Warning.** Without `encrypted`, the token and the data travel in clear: run
 > replication only on a trusted network, or inside a VPN or a tunnel. See
 > [replication](replication.md#encryption).
 

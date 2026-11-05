@@ -8,9 +8,9 @@ over more machines, and keep the data on more than one.
 > the token itself never travels: a side that does not hold it gets no further than the handshake.
 > Anyone who learns the token can follow the master and send it writes, and someone who recorded
 > a conversation can try guesses of the token against it, so make it long and random (16 bytes
-> from a secure source or more). With no token (C only), or `encrypted=False`, everything travels
-> in clear, the token too: then run replication only on a network you trust, or inside a VPN or an
-> SSH tunnel. See [Encryption](#encryption).
+> from a secure source or more). Replication does not start without a token. With `encrypted=False`,
+> everything travels in clear, the token too: then run replication only on a network you trust, or
+> inside a VPN or an SSH tunnel. See [Encryption](#encryption).
 
 ## Starting it
 

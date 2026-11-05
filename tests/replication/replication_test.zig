@@ -272,8 +272,19 @@ fn expectRefusal(reason: protocol.Refusal, master_role: zypherdb.replication.Rol
 test "a side that encrypts and one that does not are refused, and the replica says why" {
     try expectRefusal(.encryption, .{ .address = "127.0.0.1:0", .token = token }, false, token);
     try expectRefusal(.encryption, .{ .address = "127.0.0.1:0", .token = token, .encrypted = false }, true, token);
-    try expectRefusal(.encryption, .{ .address = "127.0.0.1:0", .token = "" }, true, token);
-    try expectRefusal(.encryption, .{ .address = "127.0.0.1:0", .token = token }, true, "");
+}
+
+test "replication does not start without a token, encrypted or not" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path = std.mem.zeroes([256]u8);
+    var store = try open(&tmp, "database", &path);
+    defer store.deinit();
+
+    try testing.expectError(error.TokenRequired, Replication.start(testing.allocator, &store, pathOf(&path), .{ .master = .{ .address = "127.0.0.1:0", .token = "" } }));
+    try testing.expectError(error.TokenRequired, Replication.start(testing.allocator, &store, pathOf(&path), .{ .master = .{ .address = "127.0.0.1:0", .token = "", .encrypted = false } }));
+    try testing.expectError(error.TokenRequired, Replication.start(testing.allocator, &store, pathOf(&path), .{ .replica = .{ .master_address = "127.0.0.1:1", .token = "" } }));
+    try testing.expectError(error.TokenRequired, Replication.start(testing.allocator, &store, pathOf(&path), .{ .replica = .{ .master_address = "127.0.0.1:1", .token = "", .encrypted = false } }));
 }
 
 test "a wrong token in clear is refused in clear" {

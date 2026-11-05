@@ -509,6 +509,17 @@ test "C ABI: a replica opened with its role follows its master and waits to see 
     try testing.expect(std.mem.endsWith(u8, replica_status, "\"last_refusal\":null,\"halted\":null}"));
 }
 
+test "C ABI: replication does not open with an empty token" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const address = "127.0.0.1:0";
+    for ([_]bool{ true, false }) |encrypted| {
+        try testing.expectEqual(null, c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, address.ptr, address.len, "", 0, null, 0, false, 0, encrypted));
+    }
+}
+
 /// A master on any port of this host, in `tmp`; its address goes in `buffer`.
 fn openMaster(tmp: *testing.TmpDir, path_buffer: []u8, address_buffer: []u8, token: []const u8) !struct { *c_api.Context, []const u8 } {
     const path = std.fmt.bufPrint(path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;

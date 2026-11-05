@@ -16,9 +16,9 @@
   file on the master's disk, deleted once sent. A replica writes no file of its own and keeps
   serving its database until the copy is whole. A copy holds the database's entries, not the
   storage engine's pages.
-- **Encrypted replication.** With a token, a master and its replicas talk over an encrypted,
-  authenticated channel (Noise `NNpsk0` with X25519, ChaCha20-Poly1305 and SHA-256, the token as
-  its pre-shared key), and the token never travels. `encrypted=False` (Python) or
+- **Encrypted replication.** Replication needs a token: a master and its replicas talk over an
+  encrypted, authenticated channel (Noise `NNpsk0` with X25519, ChaCha20-Poly1305 and SHA-256, the
+  token as its pre-shared key), and the token never travels. `encrypted=False` (Python) or
   `encrypted = false` (C) sends everything in clear, on both sides. A side that encrypts and one
   that does not are refused with `"encryption"`. A replica refused for that or for its token keeps
   asking (`last_refusal` tells why) instead of halting, as those refusals cannot be authenticated.

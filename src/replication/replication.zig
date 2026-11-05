@@ -61,8 +61,8 @@ pub const Role = union(enum) {
         /// What a replica must hold to be served.
         token: []const u8,
         /// Whether the conversations are encrypted, with `token` as their
-        /// key (it then never travels). Without it, or without a token, the
-        /// token and the data go in clear. A master and its replicas agree.
+        /// key (it then never travels). Without it, the token and the data
+        /// go in clear. A master and its replicas agree.
         encrypted: bool = true,
         /// How often replicas hear from the master when it has nothing
         /// else to send; they derive from it when to leave a silent master.
@@ -178,7 +178,12 @@ pub const Replication = struct {
     /// Stores shared from `store` from now on tell replication of their
     /// commits (a master's) or refuse writes (a replica's), as `store`
     /// does: deinit them before `stop`, which lets `store` go on alone.
+    /// Fails with `TokenRequired` on an empty token: it would serve anyone,
+    /// in clear.
     pub fn start(allocator: Allocator, store: *KeyValueStore, path: []const u8, role: Role) !*Replication {
+        switch (role) {
+            inline else => |either| if (either.token.len == 0) return error.TokenRequired,
+        }
         const self = try allocator.create(Replication);
         errdefer allocator.destroy(self);
         self.* = .{
@@ -233,7 +238,7 @@ pub const Replication = struct {
         self.tcp = .{ .io = io, .allocator = allocator };
         self.entropy = .{ .io = io };
         switch (self.role) {
-            inline else => |either| if (either.encrypted and either.token.len > 0) {
+            inline else => |either| if (either.encrypted) {
                 self.encrypted_network = .init(self.tcp.network(), allocator, self.entropy.interface(), either.token);
             },
         }
