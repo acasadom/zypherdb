@@ -39,3 +39,33 @@ test "a replica introduces itself by what it holds" {
     try store.startChangeLog();
     try testing.expectError(error.MasterDatabase, replica.hello(&store, token));
 }
+
+test "only an empty database or a replica can follow a master" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [256]u8 = undefined;
+
+    var store = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "database", &path));
+    defer store.deinit();
+    try replica.checkCanFollow(&store);
+
+    try store.put("a", "value");
+    try testing.expectError(error.DatabaseNotEmpty, replica.checkCanFollow(&store));
+
+    // Once a replica, what it holds is its master's, whatever it is.
+    _ = try store.applyChangeSet(1, "");
+    try replica.checkCanFollow(&store);
+}
+
+test "a record alone makes a database hold data" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [256]u8 = undefined;
+
+    var store = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "database", &path));
+    defer store.deinit();
+    try store.beginWrite();
+    try store.putDamagedNode(1, "record");
+    try store.commitWrite();
+    try testing.expectError(error.DatabaseNotEmpty, replica.checkCanFollow(&store));
+}

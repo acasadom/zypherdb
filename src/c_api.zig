@@ -212,7 +212,8 @@ pub export fn zypherdb_sync(context: *Context) c_int {
 
 /// Opens with a replication role: `ROLE_MASTER` serves replicas at
 /// `address` ("host:port"), `ROLE_REPLICA` follows the master at `address`
-/// (and refuses writes). A replica must not have been a master. With
+/// (and refuses writes). A replica must start from an empty database or a
+/// replica: not from a master, nor from a database holding data. With
 /// `encrypted` and a `token`, the conversation is encrypted and the token is
 /// its key; otherwise the token and the data go in clear: run replication on
 /// a trusted network. Master and replicas must agree. A replica calls

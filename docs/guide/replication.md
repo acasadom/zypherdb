@@ -37,8 +37,12 @@ restarts, it reconnects and goes on from where it was; if it fell too far behind
 copy. Closing the database stops replication.
 
 A replica refuses writes (`StorageError`, "the database is a replica"): every write goes to the
-master, or the replica forwards it there ([writing on a replica](#writing-on-a-replica)). A database that has been a master cannot become a replica (a replica starts from an empty
-directory or is one already), and a replica cannot serve other replicas.
+master, or the replica forwards it there ([writing on a replica](#writing-on-a-replica)). A replica
+starts from an empty directory or is one already. Opening anything else as a replica fails with
+`StorageError` and leaves the database untouched, since a copy would replace its contents: a database
+that has been a master ("the database is a master") or one that holds data ("the database holds
+data"). To replace a database with a replica, delete its directory first. A replica cannot serve
+other replicas.
 
 ## Reading your own writes
 

@@ -5,7 +5,17 @@ const protocol = @import("protocol.zig");
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 const StorageError = @import("../storage/key_value_store.zig").StorageError;
 const Graph = @import("../storage/graph.zig").Graph;
+const integrity = @import("../storage/integrity.zig");
 const storage_engine = @import("master.zig").storage_engine;
+
+/// Fails unless the database of `store` can follow a master: one with no
+/// data or a replica already. A master copies no one (`MasterDatabase`), and
+/// the first copy would erase any other database's data (`DatabaseNotEmpty`).
+pub fn checkCanFollow(store: *KeyValueStore) (StorageError || error{ MasterDatabase, DatabaseNotEmpty })!void {
+    if (try store.changeLogState() != null) return error.MasterDatabase;
+    if (try store.appliedLsn() != null) return;
+    if (try integrity.holdsData(store)) return error.DatabaseNotEmpty;
+}
 
 /// The `hello` of the replica `store` (null for one with no database yet)
 /// to a master that expects `token`. Fails with `MasterDatabase` if `store`

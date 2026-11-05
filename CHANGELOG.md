@@ -7,7 +7,8 @@
 - **Replication.** A database opened with `serve` is a master; one opened with `replicate_from`
   is a read-only replica on another machine (C: `zypherdb_open_replicated`). A replica gets a copy
   of the whole database, then each change committed on the master, in order, and reconnects on its
-  own. `last_lsn` and `wait_for` let a client read its own writes; `replication_status()` tells
+  own. A replica starts from an empty directory or a replica: a master or a database holding data
+  is refused, not overwritten. `last_lsn` and `wait_for` let a client read its own writes; `replication_status()` tells
   each replica's phase and lag. Another process on the master's or a replica's directory stands by
   and takes over when the first one ends. There is no failover to another machine. See
   `docs/guide/replication.md`.

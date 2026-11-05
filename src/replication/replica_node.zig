@@ -279,7 +279,7 @@ pub const ReplicaNode = struct {
     /// Follows the master for the database of `store`, which must not be
     /// a master. It becomes a replica of it with its first copy.
     pub fn init(allocator: Allocator, clock: Clock, net: Network, store: *KeyValueStore, applied: *Signal, wakeup: Wakeup, applier: Applier, options: Options) !ReplicaNode {
-        if (try store.changeLogState() != null) return error.MasterDatabase;
+        try replica.checkCanFollow(store);
         var shared = try store.share();
         errdefer shared.deinit();
         applied.value = try shared.appliedLsn() orelse 0;

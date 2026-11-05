@@ -133,6 +133,24 @@ def test_a_master_cannot_become_a_replica(master, tmp_path):
         Database(path, replicate_from=address_of(master), token=TOKEN)
 
 
+def test_a_database_holding_data_cannot_become_a_replica(master, tmp_path):
+    path = str(tmp_path / "other")
+    with Database(path) as db:
+        db.query("CREATE (:Person)")
+    with pytest.raises(StorageError, match="holds data"):
+        Database(path, replicate_from=address_of(master), token=TOKEN)
+    with Database(path) as db:
+        assert db.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+
+
+def test_a_database_opened_but_never_written_can_become_a_replica(master, tmp_path):
+    path = str(tmp_path / "other")
+    with Database(path):
+        pass
+    with Database(path, replicate_from=address_of(master), token=TOKEN):
+        pass
+
+
 def test_the_role_needs_a_token_and_only_one_role(tmp_path):
     with pytest.raises(ValueError, match="token"):
         Database(str(tmp_path / "db"), serve="127.0.0.1:0")

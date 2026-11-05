@@ -1234,6 +1234,7 @@ fn startReplication(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyO
     const shared = database.shared;
     shared.replication = Replication.start(allocator, &shared.store, path_pointer[0..@intCast(path_length)], replication_role) catch |err| return switch (err) {
         error.MasterDatabase => raise(classes.storage_error, "the database is a master: a replica must start from an empty database or a replica", .{}),
+        error.DatabaseNotEmpty => raise(classes.storage_error, "the database holds data: a replica must start from an empty database or a replica", .{}),
         error.ReadOnlyReplica => raise(classes.storage_error, "the database is a replica: it cannot serve replicas", .{}),
         error.NameTooLong => raise(py.PyExc_ValueError, "a replica's name is at most {d} bytes", .{zypherdb.replication_protocol.max_name_bytes}),
         else => raise(classes.storage_error, "replication could not start at {s}: {t}", .{ address, err }),

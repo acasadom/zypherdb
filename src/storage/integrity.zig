@@ -32,6 +32,7 @@ const NodeId = graph_module.NodeId;
 const RelationshipId = graph_module.RelationshipId;
 const Value = graph_module.Value;
 const StorageError = @import("key_value_store.zig").StorageError;
+const KeyValueStore = @import("key_value_store.zig").KeyValueStore;
 const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const NodeRecord = @import("node_record.zig").NodeRecord;
@@ -396,6 +397,23 @@ pub const Checker = struct {
         if (!std.mem.eql(u8, want, have)) try self.report.add("key {f} holds {f}, expected {f}", .{ Bytes{ .bytes = key }, Bytes{ .bytes = value }, Bytes{ .bytes = want } });
     }
 };
+
+/// Whether the database of `store` holds a node, a relationship, or any key
+/// of the main table but its metadata.
+pub fn holdsData(store: *KeyValueStore) StorageError!bool {
+    var nodes = try store.scanNodes();
+    defer nodes.deinit();
+    if (try nodes.next() != null) return true;
+    var relationships = try store.scanRelationships();
+    defer relationships.deinit();
+    if (try relationships.next() != null) return true;
+    var main = try store.scanAll();
+    defer main.deinit();
+    while (try main.next()) |entry| {
+        if (!isMetadataKey(entry.key)) return true;
+    }
+    return false;
+}
 
 /// A counter, the format, the schema version, or an entry of the engine's
 /// catalog of its tables (LMDB keeps the names of `#nodes`,

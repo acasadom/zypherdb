@@ -44,7 +44,6 @@ pub const Follower = struct {
     /// Starts following the master for the database of `store`, which must
     /// not be a master. It becomes a replica of it with its first copy.
     pub fn start(allocator: Allocator, io: Io, clock: Clock, net: Network, store: *KeyValueStore, options: Options) !*Follower {
-        if (try store.changeLogState() != null) return error.MasterDatabase;
         const self = try allocator.create(Follower);
         errdefer allocator.destroy(self);
         const wakeup = try net.wakeup();
