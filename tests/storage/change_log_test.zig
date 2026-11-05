@@ -600,3 +600,33 @@ test "a store that wrote before the database became a replica refuses writes onc
     try replay(&master, &replica, 1, 2);
     try testing.expectError(error.ReadOnlyReplica, writer.beginWrite());
 }
+
+test "a transaction with a write the log could not record does not commit" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [256]u8 = undefined;
+    var store = try openAt(&tmp, "database", &path);
+    defer store.deinit();
+    try store.startChangeLog();
+
+    // The first allocation fails with nothing recorded, the second with a
+    // write cut in the middle.
+    const long_value: [4096]u8 = @splat('v');
+    for ([_]usize{ 0, 1 }) |fail_index| {
+        try store.beginWrite();
+        var failing = testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index, .resize_fail_index = 0 });
+        store.allocator = failing.allocator();
+        try testing.expectError(error.OutOfMemory, store.put("key", &long_value));
+        store.allocator = testing.allocator;
+        try testing.expectError(error.WriteFailed, store.commitWrite());
+
+        try testing.expectEqual(null, try store.get("key"));
+        try testing.expectEqual(@as(u64, 1), (try store.changeLogState()).?.next_lsn);
+    }
+
+    // The store goes on as before.
+    try store.beginWrite();
+    try store.put("key", "value");
+    try store.commitWrite();
+    try testing.expectEqual(@as(u64, 2), (try store.changeLogState()).?.next_lsn);
+}

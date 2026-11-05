@@ -175,6 +175,9 @@ pub const Recorder = struct {
     /// The chunks of this change set written so far, and their bytes.
     chunks: u32 = 0,
     bytes: u64 = 0,
+    /// A write went unrecorded, or partly so: the change set would not be the
+    /// transaction's, so the transaction may not commit.
+    failed: bool = false,
 
     pub fn deinit(self: *Recorder, allocator: Allocator) void {
         self.pending.deinit(allocator);
@@ -182,6 +185,7 @@ pub const Recorder = struct {
 
     /// Records a write `transaction` has just made.
     pub fn record(self: *Recorder, allocator: Allocator, transaction: Transaction, change: Change) (engine.Error || Allocator.Error)!void {
+        errdefer self.failed = true;
         try self.pending.append(allocator, @backingInt(change.operation));
         try self.pending.append(allocator, @backingInt(change.table));
         try appendBytes(&self.pending, allocator, change.key);
@@ -193,8 +197,9 @@ pub const Recorder = struct {
     /// it its LSN, and, past `limit` bytes, drops the oldest change sets
     /// (never this one) until `drop_slack_bytes` under it, so that most
     /// commits of a full log touch only its newest end. A transaction that
-    /// changed nothing gets no LSN.
+    /// changed nothing gets no LSN. Fails if a write went unrecorded.
     pub fn finish(self: *Recorder, transaction: Transaction, limit: u64) engine.Error!void {
+        if (self.failed) return error.WriteFailed;
         if (self.pending.items.len > 0) try self.writeChunk(transaction, self.pending.items.len);
         if (self.chunks == 0) return;
         self.state.next_lsn += 1;
