@@ -200,6 +200,9 @@ def test_a_process_standing_by_takes_over_and_a_reader_without_a_role_waits(tmp_
         master.close()
         if standby.poll() is None:
             standby.kill()
+        standby.wait()
+        standby.stdin.close()
+        standby.stdout.close()
 
 
 _READER = r"""
