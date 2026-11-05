@@ -28,6 +28,7 @@ pub const property_indexes = @import("storage/property_indexes.zig");
 
 /// The layout of stored bytes, checked; and which names can be stored.
 pub const layout = @import("storage/layout.zig");
+pub const change_log = @import("storage/change_log.zig");
 
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
 pub const storage_engine = @tagName(@import("build_options").storage_engine);
