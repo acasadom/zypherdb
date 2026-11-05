@@ -143,6 +143,15 @@ def test_a_database_holding_data_cannot_become_a_replica(master, tmp_path):
         assert db.query("MATCH (p:Person) RETURN count(p)") == [[1]]
 
 
+def test_a_database_whose_schema_changed_cannot_become_a_replica(master, tmp_path):
+    path = str(tmp_path / "other")
+    with Database(path) as db:
+        db.query("CREATE INDEX person_name FOR (p:Person) ON (p.name)")
+        db.query("DROP INDEX person_name")
+    with pytest.raises(StorageError, match="holds data"):
+        Database(path, replicate_from=address_of(master), token=TOKEN)
+
+
 def test_a_database_opened_but_never_written_can_become_a_replica(master, tmp_path):
     path = str(tmp_path / "other")
     with Database(path):

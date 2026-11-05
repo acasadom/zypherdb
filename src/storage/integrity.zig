@@ -399,8 +399,11 @@ pub const Checker = struct {
 };
 
 /// Whether the database of `store` holds a node, a relationship, or any key
-/// of the main table but its metadata.
+/// of the main table but its metadata, or its schema ever changed: a session
+/// that cached its definitions would take a copy's, at the same version, for
+/// them (`fulltext.cachedDefinitions`).
 pub fn holdsData(store: *KeyValueStore) StorageError!bool {
+    if (try store.get(fulltext.schema_version_key) != null) return true;
     var nodes = try store.scanNodes();
     defer nodes.deinit();
     if (try nodes.next() != null) return true;
