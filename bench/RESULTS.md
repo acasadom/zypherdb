@@ -251,3 +251,46 @@ The same benchmark (`python bench/python_overhead.py`) after the package moved t
 What Python adds now: about 1.4 µs per query, and about 35 ns per returned cell; a whole node
 about 1 µs (its labels tuple and properties dict). The cycle collector is paused while a result is
 built, and entities are built without running their `__init__`.
+
+## What replication costs (November 2026)
+
+`python bench/replication_costs.py` on an Apple M5 laptop (10 cores): 100,000 people with 5
+relationships each, every database in a process of its own, replicas connected over the
+loopback interface (a real network adds its round trip to a replica's lag and to a forwarded
+write). Typical medians of three runs; single-node `CREATE`s, reads with the page cache warm.
+
+**Without replication** nothing changed: the engine and Python benchmarks against `main` (before
+replication) are within noise.
+
+**Reads** cost the same everywhere: on a database without replication, on a master (with or
+without replicas), on a replica, and on a replica opened with `forward_writes=True` that forwards
+nothing: about 2 µs for a point lookup, 3.5-4 µs for one hop, 5.2 ms for a scan of 100k nodes.
+
+**Writes**, `durability="deferred"` (no wait for the disk, so what replication adds shows):
+
+| Write | Median | Writes/s (one thread) |
+| --- | ---: | ---: |
+| no replication | 21-26 µs | 35,000-44,000 |
+| master, no replica | 26-28 µs | 33,000-36,000 |
+| master, one replica | 28-31 µs | 31,000-33,000 |
+| forwarded by a replica | 93-95 µs | 10,000 |
+
+A master writes each change to its change log too, replicas or not (about +4.5 µs; `zig build
+bench-change-log -Doptimize=ReleaseFast` measures it without Python: 10.2 µs a write without the
+log, 14.4 µs with it, 13.7 µs with it full). A forwarded write costs about 65 µs more than one on
+the master: the round trip and the change coming back to the replica. A replica keeps several
+forwarded writes on their way at once: from 4 threads it forwards about 26,000 writes a second,
+nearly as many as 4 threads on the master (24,000-30,000). Writes that go together are cheaper as one
+`write_many`: 10 single-node writes in one call take about 57 µs on the master (160,000 writes a
+second) and 140 µs forwarded (70,000 a second, one round trip for the ten). A replica has a write on the master
+about 45-50 µs later (median; p95 about 70 µs).
+
+**Writes**, `durability="full"`: a commit waits for the disk (8 ms on this laptop), and that is
+nearly all of it: without replication or on a master with no replica, 8 ms; a forwarded write
+16 ms (the master's commit, then the replica's). With master and replica on the same machine,
+both commit to the same disk and slow each other (a master write 12-13 ms, a replica 15-16 ms
+behind); with the replica at `durability="deferred"` the master is back to 6-8 ms and the replica
+60 µs behind. On two machines each has its own disk.
+
+A process idle for a few seconds reads 2-3 times slower at first on macOS (its core slows down,
+or it is moved): the benchmark keeps each process busy for 0.3 s before measuring its reads.

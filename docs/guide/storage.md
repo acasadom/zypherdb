@@ -232,7 +232,7 @@ with an error; none is reached silently.
 | A label, relationship type, property name or index/constraint name | 1024 bytes | names go into keys (label, edge and full-text keys) | `InvalidExpression`; `ZYPHERDB_INVALID_NAME` in C, `ValueError` in Python |
 | A document path in `CREATE INDEX ... ON (n.a.b)` | 1024 bytes in all | stored as one name | `InvalidExpression` |
 | Labels on one node | 65535 | counted in a u16 in the record | `TooManyLabels`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
-| One stored value | 4 GiB (2^32 - 1 bytes) | lengths in records and lists are u32 | `ValueTooLarge`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
+| One stored value: a node with all its properties, or one property of a relationship | 64 MiB | a replica holds each write whole while it applies it | `ValueTooLarge`; `ZYPHERDB_TOO_LARGE` in C, `ValueError` in Python |
 | Properties of a full-text index | 256 | postings number them with a u8 | `InvalidExpression` |
 | Labels or types, properties of an index or constraint | 65535 | counted in a u16 in the definition | `InvalidExpression` |
 
@@ -383,7 +383,7 @@ any other, so they follow with no special case.
   A transaction that changed nothing, or was aborted, takes no LSN.
 - Keys of `#changes`: `lsn (u64) | chunk (u32)`, big-endian, for each part of a change set, which
   is cut into chunks of 1 MiB as it is written (a large transaction is never held in memory
-  whole); and twelve zero bytes for the log's state (the next LSN, the oldest kept, the bytes kept).
+  whole); and twelve `0xff` bytes for the log's state (the next LSN, the oldest kept, the bytes kept).
 - A change set is its writes in order: `0x01 | table | key length | key | value length | value`
   for a put, `0x02 | table | key length | key` for a delete (lengths as u32, big-endian). Keys of
   the integer-key tables are native integers, so a replica must have the same byte order.
@@ -402,10 +402,14 @@ last LSN it stored (`appliedLsn`):
 - the first change set applied makes the database a replica, which refuses every other write
   (`ReadOnlyReplica`), and a database whose log is started (a master) applies none.
 
-A replica starts as a copy of its master: `KeyValueStore.copyDatabase(directory)` writes a
-compacted copy as of one moment (`mdb_env_copy2` / `mdbx_env_copy`; writers go on meanwhile), and
-`becomeReplica` on the copy drops the copied log and stores, as its applied LSN, the last change set
-that log holds. The copy needs no LSN taken alongside it, so nothing races with the writers. Starting
+A replica starts from a copy of its master: `KeyValueStore.writeCopy(writer)` writes, in one read
+transaction (writers go on meanwhile), a header (the LSN of the last change set the copy holds and
+the master's id) and then every entry of every table but `#changes`, as the puts of a change set
+(storage/copy.zig): records, not the engine's pages, so any engine loads any engine's copy. The
+replica loads it as it comes, part by part (`applyCopyPart`), in one write transaction: the first
+part empties its tables, the last stores the master's id and, as its applied LSN, the copy's.
+Readers see the database as it was until then; a copy cut short changes nothing. The LSN comes from
+the same read transaction as the entries, so nothing races with the writers. Starting
 the log gives the master a random 16-byte id (`databaseId`, key `database` in `#changes`), which
 its copies keep: a replica follows only the master it was copied from.
 

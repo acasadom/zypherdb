@@ -9,7 +9,7 @@ import importlib.util
 import zoneinfo
 from pathlib import Path
 
-from . import entities, errors, temporal
+from . import entities, errors, rows, temporal
 
 
 def _load():
@@ -48,6 +48,7 @@ native.configure(
         "timezone": datetime.timezone,
         "zone_info": zoneinfo.ZoneInfo,
         "duration": temporal.Duration,
+        "rows": rows.Rows,
         "query_error": errors.error_from_code,
         "storage_error": errors.StorageError,
         "node_not_found_error": errors.NodeNotFoundError,

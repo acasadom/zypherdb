@@ -25,13 +25,17 @@ typedef struct zypherdb_statement zypherdb_statement;
 #define ZYPHERDB_DURABILITY_RELAXED 1  /* a power failure can lose the last commit */
 #define ZYPHERDB_DURABILITY_DEFERRED 2 /* the OS or zypherdb_sync writes commits */
 
+/* Replication roles for zypherdb_open_replicated. */
+#define ZYPHERDB_ROLE_MASTER 0  /* serves replicas at the address */
+#define ZYPHERDB_ROLE_REPLICA 1 /* follows the master at the address, refuses writes */
+
 /* Mutator return codes. */
 #define ZYPHERDB_OK 0
 #define ZYPHERDB_STORAGE_ERROR 1
 #define ZYPHERDB_NODE_NOT_FOUND 2
 #define ZYPHERDB_CONSTRAINT_VIOLATION 3 /* zypherdb_last_error says which constraint */
 #define ZYPHERDB_INVALID_NAME 4         /* an empty name, one over 1024 bytes, or one with a 0x00 byte */
-#define ZYPHERDB_TOO_LARGE 5            /* a value over 4 GiB stored, or a node's 65536th label */
+#define ZYPHERDB_TOO_LARGE 5            /* a value over 64 MiB stored, or a node's 65536th label */
 
 /* Error codes reported by zypherdb_error_code. */
 #define ZYPHERDB_ERROR_NONE 0
@@ -45,6 +49,9 @@ typedef struct zypherdb_statement zypherdb_statement;
 #define ZYPHERDB_ERROR_ARITHMETIC 9
 #define ZYPHERDB_ERROR_CONSTRAINT_VIOLATION 10
 #define ZYPHERDB_ERROR_EXTERNAL_RESOURCE 11 /* LOAD CSV could not read its file */
+#define ZYPHERDB_ERROR_WRITE_NOT_FORWARDED 12 /* a replica cannot forward this write */
+#define ZYPHERDB_ERROR_MASTER_UNREACHABLE 13  /* a forwarded write did not run */
+#define ZYPHERDB_ERROR_OUTCOME_UNKNOWN 14     /* a forwarded write may have run or not */
 
 /* Cell types reported by zypherdb_result_type and zypherdb_result_list_item_type. */
 #define ZYPHERDB_TYPE_INT64 0
@@ -68,8 +75,27 @@ typedef struct zypherdb_statement zypherdb_statement;
 zypherdb_context *zypherdb_open(const char *path, size_t path_len);
 zypherdb_context *zypherdb_open_with_durability(const char *path, size_t path_len, int durability);
 int zypherdb_sync(zypherdb_context *context);
+/* Opens with a replication role. With encrypted and a token the conversation is encrypted, the token
+ * its key; otherwise the token and the data go in clear: use a trusted network. Master and replicas
+ * must agree. A replica's name
+ * (NULL: the host's) shows in its master's status. A replica with forward_writes sends the statements
+ * that write to its master, each taking at most request_timeout_ms (0: 30 s). NULL on failure. */
+zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
+                                           const char *address, size_t address_len, const char *token,
+                                           size_t token_len, const char *name, size_t name_len,
+                                           bool forward_writes, uint64_t request_timeout_ms, bool encrypted);
+/* The last change set this database has (master: committed, replica: applied), with or without a role. */
+uint64_t zypherdb_last_lsn(zypherdb_context *context);
+/* Waits until the master's change set lsn is applied here, at most timeout_ms; whether it is. */
+bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);
+/* How replication goes, as JSON; the buffer belongs to the context. NULL without replication. */
+const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_len);
 /* The directory LOAD CSV reads from; path_len 0 turns LOAD CSV off (as after opening). */
 int zypherdb_set_import_directory(zypherdb_context *context, const char *path, size_t path_len);
+/* Another session on the database of context, for another thread (with the context's import
+ * directory); a context is used by one thread at a time. NULL when out of memory. */
+zypherdb_context *zypherdb_open_session(zypherdb_context *context);
+/* Closes a context; closing the last session of a database closes the database. */
 void zypherdb_close(zypherdb_context *context);
 const char *zypherdb_last_error(zypherdb_context *context, size_t *out_len);
 int zypherdb_error_code(zypherdb_context *context);
@@ -91,6 +117,19 @@ zypherdb_result *zypherdb_query(zypherdb_context *context, const char *query, si
 zypherdb_result *zypherdb_query_with_parameters(zypherdb_context *context, const char *query, size_t query_len,
                                             const char *parameters_json, size_t parameters_len);
 void zypherdb_result_free(zypherdb_result *result);
+/* Several queries in one transaction, in order: each sees what the ones before
+ * it wrote; they commit together or, if one fails, none does. parameters_json
+ * (or any of its entries) may be NULL: no parameters. Returns 0 and fills
+ * out_results[0..count] (free each), or 1 and fills nothing:
+ * zypherdb_error_statement then gives the index of the query that failed
+ * (SIZE_MAX: none did, e.g. the commit). No schema command, EXPLAIN, PROFILE,
+ * LOAD CSV or defined procedure in a batch. */
+int zypherdb_write_many(zypherdb_context *context, size_t count, const char *const *queries,
+                        const size_t *query_lens, const char *const *parameters_json,
+                        const size_t *parameters_lens, zypherdb_result **out_results);
+size_t zypherdb_error_statement(zypherdb_context *context);
+/* False for a write forwarded to the master that the replica had not applied in time. */
+bool zypherdb_result_visible(const zypherdb_result *result);
 
 /* Prepared statements: a query parsed, checked and planned once, run again
  * and again with new parameters (zypherdb_query keeps the ones it prepares, by

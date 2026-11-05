@@ -108,6 +108,9 @@ message stays valid until the next call on the context.
 | 9 | `ZYPHERDB_ERROR_ARITHMETIC` | integer overflow or division by zero |
 | 10 | `ZYPHERDB_ERROR_CONSTRAINT_VIOLATION` | a write would break a uniqueness constraint |
 | 11 | `ZYPHERDB_ERROR_EXTERNAL_RESOURCE` | `LOAD CSV` could not read its file |
+| 12 | `ZYPHERDB_ERROR_WRITE_NOT_FORWARDED` | a replica that forwards writes cannot forward this one ([replication](replication.md#writing-on-a-replica)) |
+| 13 | `ZYPHERDB_ERROR_MASTER_UNREACHABLE` | a forwarded write did not run: the master could not be reached, or turned it away |
+| 14 | `ZYPHERDB_ERROR_OUTCOME_UNKNOWN` | a forwarded write was sent, then the connection was lost or the time ran out: it may have run or not |
 
 Code 3 is reserved: it was once "missing property", and a missing property now reads as `null`.
 
@@ -154,6 +157,23 @@ context's). `zypherdb_statement_query` runs it as `zypherdb_query_with_parameter
 counts it was planned on change at least twofold (and by 100 or more). A statement belongs to the
 context it was prepared with: free it before closing that context, and use it from one thread at a
 time, as the context.
+
+**Several queries in one transaction.**
+
+```c
+int zypherdb_write_many(zypherdb_context *context, size_t count, const char *const *queries,
+                        const size_t *query_lens, const char *const *parameters_json,
+                        const size_t *parameters_lens, zypherdb_result **out_results);
+size_t zypherdb_error_statement(zypherdb_context *context);
+```
+
+`zypherdb_write_many` runs `count` queries in order, in one transaction: each sees what the ones
+before it wrote, and they commit together or, if one fails, none does. `parameters_json` (or any
+entry of it) may be `NULL`: no parameters. It returns 0 and fills `out_results[0..count]` (free
+each), or 1 and fills nothing; `zypherdb_error_statement` then gives the index of the query that
+failed (`SIZE_MAX`: none did, the commit failed). A batch holds queries only: no schema command,
+`EXPLAIN`, `PROFILE` or `LOAD CSV` (`ZYPHERDB_ERROR_INVALID_EXPRESSION`). On a replica that
+forwards writes, a batch that writes goes to the master as one request.
 
 **Plans.** `EXPLAIN query` and `PROFILE query` are queries too: their result is the plan, one row
 per operator, with the columns `depth`, `operator`, `details`, `estimated_rows`, `rows` and
@@ -281,7 +301,7 @@ Each function returns `ZYPHERDB_OK`, `ZYPHERDB_STORAGE_ERROR`, `ZYPHERDB_CONSTRA
 uniqueness constraint refuses the write (`zypherdb_last_error` says which), `ZYPHERDB_INVALID_NAME`
 when a label, relationship type or property name is empty, longer than 1024 bytes or contains a 0x00
 byte (an empty label in `zypherdb_add_node` means none), `ZYPHERDB_TOO_LARGE` when a value is over
-4 GiB stored or a node would have more than 65535 labels, or `ZYPHERDB_NODE_NOT_FOUND` when a node it
+64 MiB stored (a node with all its properties) or a node would have more than 65535 labels, or `ZYPHERDB_NODE_NOT_FOUND` when a node it
 names does not exist.
 
 On its own, each call is a transaction that waits for the disk. Between `zypherdb_begin_write` and
@@ -328,11 +348,87 @@ valid until the next check or `zypherdb_close`.
 > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
 > reports is a bug in ZypherDB: please report it with the output.
 
+## Replication
+
+```c
+zypherdb_context *zypherdb_open_replicated(const char *path, size_t path_len, int durability, int role,
+                                           const char *address, size_t address_len, const char *token,
+                                           size_t token_len, const char *name, size_t name_len,
+                                           bool forward_writes, uint64_t request_timeout_ms, bool encrypted);
+bool zypherdb_result_visible(const zypherdb_result *result);
+uint64_t zypherdb_last_lsn(zypherdb_context *context);
+bool zypherdb_wait_for(zypherdb_context *context, uint64_t lsn, uint64_t timeout_ms);
+const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_len);
+```
+
+`zypherdb_open_replicated` opens the database with a replication role (see
+[replication](replication.md)): `ZYPHERDB_ROLE_MASTER` (0) serves replicas at `address`
+(`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
+writes. `token` is the secret master and replicas share. With `encrypted` and a token the
+conversation is encrypted, and the token never travels; both sides must agree. `name` (at most 255 bytes) is what a replica calls
+itself in its master's status; `NULL` takes the name of its host, and a master ignores it. A
+replica opened with `forward_writes` sends the statements that write to its master instead of
+refusing them, each taking at most `request_timeout_ms` (0: 30 s); `zypherdb_result_visible` is
+false for a forwarded write the replica had not applied in that time. The
+context keeps its own copy of `address`, `token` and `name`. It returns `NULL` when the database cannot be opened or replication cannot start (the
+address is taken, a database that was a master is opened as a replica, or the name is too long). While another process
+runs replication on the database the context stands by (`"standby": true` in its status) and
+takes over when that process closes it or dies. Closing the context
+stops replication.
+
+> **Warning.** With no token, or without `encrypted`, the token and the data travel in clear: run
+> replication only on a trusted network, or inside a VPN or a tunnel. See
+> [replication](replication.md#encryption).
+
+`zypherdb_last_lsn` is the number of the last change the database has: on a master the last
+committed, on a replica the last applied, also in a context opened without a role; 0 on a
+database that is neither. `zypherdb_wait_for` waits until the master's change `lsn` is applied, at
+most `timeout_ms`, and returns whether it is: to read on a replica a write made on the master, pass
+it the master's `zypherdb_last_lsn` after the write. It works in a context opened without a role
+too, and returns `true` at once on a database that is no replica.
+
+`zypherdb_replication_status` returns how replication goes as JSON, or `NULL` without replication.
+A master's:
+
+```json
+{"role": "master", "standby": false, "address": "0.0.0.0:7000", "last_lsn": 120,
+ "replicas": [{"name": "eu-1", "address": "10.0.0.7:51234", "connected_ms": 86400000,
+               "phase": "streaming", "acked_lsn": 118, "lag": 2}]}
+```
+
+A replica's (`phase` is `"connecting"`, `"copying"`, `"streaming"` or `"halted"`;
+`last_contact_ms` is how long ago the master was last heard from, `null` if never; `halted` and
+`last_refusal` are a reason's name, such as `"token"`, or `null`):
+
+```json
+{"role": "replica", "standby": false, "name": "eu-1", "master_address": "10.0.0.5:7000",
+ "phase": "streaming", "last_contact_ms": 120, "applied_lsn": 118, "master_lsn": 120, "lag": 2,
+ "last_refusal": null, "halted": null}
+```
+
+The text belongs to the context, and stays valid until the next status or `zypherdb_close`.
+
 ## Threads and processes
 
-A context is not thread-safe, so serialize the calls on one context. Each process opens the
-database itself: reads run in parallel across processes, and writes take turns, one write
-transaction at a time. Do not open the same directory twice in one process.
+A context is a session: one thread uses it at a time. For another thread, open another session on
+the same database with `zypherdb_open_session(context)`; it takes the context's import directory,
+and its replication role, if any. Sessions run at once: reads in parallel, never waiting for a
+write; writes take turns, one write transaction at a time (a `zypherdb_begin_write` holds the
+writer until its commit or abort). A session reads its own writes, and waits for no other
+session unless it writes too. Close each session with `zypherdb_close`: the database closes with
+the last one, whichever it is.
+
+```c
+zypherdb_context *db = zypherdb_open(path, strlen(path));
+zypherdb_context *worker = zypherdb_open_session(db); /* hand it to another thread */
+/* ... */
+zypherdb_close(worker);
+zypherdb_close(db);
+```
+
+Each process opens the database itself: reads run in parallel across processes, and writes take
+turns as they do between sessions. Do not open the same directory twice in one process: open
+sessions instead.
 
 ## Why this way — and the alternatives
 

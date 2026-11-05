@@ -4,6 +4,23 @@
 //! First building block: the storage layer (`KeyValueStore` over the
 //! storage engine of src/storage/engine.zig).
 
+const std = @import("std");
+/// The standard library's options for what a program embeds (this library,
+/// the Python module): each root says `pub const std_options` with these.
+/// Stderr belongs to the program. A thread of ours writing there at any time
+/// can race the program redirecting it, and write to a handle that has come
+/// to mean something else; how replication goes is told by its status. And
+/// std's report of an unexpected status, itself written to stderr, recurses
+/// without end when writing there is what failed.
+pub const library_std_options: std.Options = .{
+    .logFn = noLog,
+    .unexpected_error_tracing = false,
+};
+
+fn noLog(comptime _: std.log.Level, comptime _: @EnumLiteral(), comptime _: []const u8, _: anytype) void {}
+
+pub const std_options = library_std_options;
+
 pub const key_value_store = @import("storage/key_value_store.zig");
 
 pub const KeyValueStore = key_value_store.KeyValueStore;
@@ -29,6 +46,30 @@ pub const property_indexes = @import("storage/property_indexes.zig");
 /// The layout of stored bytes, checked; and which names can be stored.
 pub const layout = @import("storage/layout.zig");
 pub const change_log = @import("storage/change_log.zig");
+pub const database_copy = @import("storage/copy.zig");
+pub const replication_protocol = @import("replication/protocol.zig");
+pub const replication_values = @import("replication/values.zig");
+pub const replication_forwarding = @import("replication/forwarding.zig");
+pub const replication_forwarded_writes = @import("replication/forwarded_writes.zig");
+pub const replication_writer_session = @import("replication/writer_session.zig");
+pub const replication_forwarding_session = @import("replication/forwarding_session.zig");
+pub const replication_master = @import("replication/master.zig");
+pub const replication_replica = @import("replication/replica.zig");
+pub const replication_master_session = @import("replication/master_session.zig");
+pub const replication_replica_session = @import("replication/replica_session.zig");
+pub const replication_clock = @import("replication/clock.zig");
+pub const replication_network = @import("replication/network.zig");
+pub const replication_tcp = @import("replication/tcp.zig");
+pub const replication_noise = @import("replication/noise.zig");
+pub const replication_encrypted_network = @import("replication/encrypted_network.zig");
+pub const replication_memory_network = @import("replication/memory_network.zig");
+pub const replication_master_node = @import("replication/master_node.zig");
+pub const replication_replica_node = @import("replication/replica_node.zig");
+pub const replication_server = @import("replication/server.zig");
+pub const replication_follower = @import("replication/follower.zig");
+pub const replication_forwarder = @import("replication/forwarder.zig");
+pub const replication_replica_writes = @import("replication/replica_writes.zig");
+pub const replication = @import("replication/replication.zig");
 
 /// The storage engine this build uses (`zig build -Dstorage-engine=...`).
 pub const storage_engine = @tagName(@import("build_options").storage_engine);
@@ -88,6 +129,7 @@ pub const Token = lexer.Token;
 pub const Executor = @import("execution/Executor.zig");
 pub const ExecutionError = Executor.ExecutionError;
 pub const Row = Executor.Row;
+pub const entities = @import("execution/entities.zig");
 /// The planner's switches (`Executor.plan_options`): the query fuzzer turns
 /// optimizations off to compare results.
 pub const PlanOptions = @import("planning/builder.zig").Options;
@@ -95,6 +137,8 @@ pub const PlanOptions = @import("planning/builder.zig").Options;
 /// Prepared statements, and the cache of those `query` calls prepare.
 pub const Statement = @import("statement/Statement.zig");
 pub const StatementCache = @import("statement/Cache.zig");
+/// Several statements run in one transaction (`write_many`).
+pub const batch = @import("statement/batch.zig");
 
 pub const diagnostics = @import("diagnostics.zig");
 

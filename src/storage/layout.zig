@@ -196,9 +196,11 @@ pub const max_name_length = 1024;
 /// The most labels a node can have (a record counts them in a u16).
 pub const max_labels = std.math.maxInt(u16);
 
-/// The longest stored value, in bytes (a record and a list element count
-/// their bytes in a u32).
-pub const max_value_length = std.math.maxInt(u32);
+/// The longest stored value, in bytes: a record with all its properties, a
+/// relationship's property. A replica holds a write whole while it applies
+/// it (change_log.zig), so a write may not be any size; records and list
+/// elements count their bytes in a u32, far above it.
+pub const max_value_length: usize = 64 << 20;
 
 /// True if `name` can be stored as a label, relationship type or property
 /// name (see `nameProblem`).

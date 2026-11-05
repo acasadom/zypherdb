@@ -73,6 +73,7 @@ examples/helix
 guide/cypher
 guide/c-api
 guide/python
+guide/replication
 ```
 
 ## How it works inside

@@ -11,6 +11,7 @@ Usage::
 """
 
 from .db import Database, PreparedQuery
+from .rows import Rows
 from .entities import Node, Path, Relationship
 from .temporal import Duration
 from .errors import (
@@ -28,11 +29,15 @@ from .errors import (
     StorageError,
     TypeMismatchError,
     UnknownVariableError,
+    WriteNotForwardedError,
+    MasterUnreachableError,
+    OutcomeUnknownError,
 )
 
 __all__ = [
     "Database",
     "PreparedQuery",
+    "Rows",
     "Node",
     "Path",
     "Relationship",
@@ -51,4 +56,7 @@ __all__ = [
     "NodeNotFoundError",
     "ClosedError",
     "StorageError",
+    "WriteNotForwardedError",
+    "MasterUnreachableError",
+    "OutcomeUnknownError",
 ]

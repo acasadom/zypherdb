@@ -19,6 +19,14 @@ pub const ErrorCode = enum(u32) {
     arithmetic = 9,
     constraint_violation = 10,
     external_resource = 11,
+    /// A replica that forwards writes refused one it cannot forward.
+    write_not_forwarded = 12,
+    /// A forwarded write did not run: the master could not be reached, or
+    /// turned it away.
+    master_unreachable = 13,
+    /// A forwarded write was sent, then the connection was lost or the
+    /// time ran out: the master may have committed it or not.
+    outcome_unknown = 14,
 };
 
 pub const Diagnostic = struct {
@@ -71,6 +79,12 @@ test "messages too long for the buffer are truncated, not dropped" {
     try std.testing.expectEqual(d.buffer.len, d.message().len);
     try std.testing.expect(std.mem.startsWith(u8, d.message(), "unknown variable 'xxx"));
     try std.testing.expect(std.mem.endsWith(u8, d.message(), "..."));
+}
+
+/// Sets the message and code of an engine error that set no diagnostic.
+pub fn noteError(diagnostic: *Diagnostic, err: anyerror) void {
+    if (err == error.ReadOnlyReplica) return diagnostic.set(.storage, 0, "the database is a replica: it refuses writes, which go to its master", .{});
+    diagnostic.set(codeOf(err), 0, "query failed: {s}", .{@errorName(err)});
 }
 
 /// The error code of an engine error, for one that set no diagnostic.
