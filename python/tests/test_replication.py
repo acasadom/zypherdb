@@ -89,6 +89,16 @@ def test_a_replica_told_the_wrong_token_keeps_asking_and_says_why(master, tmp_pa
         assert status["halted"] is None
 
 
+def test_replication_writes_nothing_to_stderr(tmp_path, capfd):
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN) as db:
+        with Database(str(tmp_path / "refused"), replicate_from=address_of(db), token="another") as refused:
+            wait_for_refusal(refused)
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(db), token=TOKEN) as replica:
+            db.query("CREATE ()")
+            assert replica.wait_for(db.last_lsn, timeout=20)
+    assert capfd.readouterr().err == ""
+
+
 def test_replicating_in_clear_if_both_sides_say_so(tmp_path):
     with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN, encrypted=False) as clear_master:
         clear_master.query("CREATE (:Person {name: 'Ada'})")

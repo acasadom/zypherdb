@@ -25,6 +25,8 @@
 const std = @import("std");
 const zypherdb = @import("zypherdb");
 
+pub const std_options = zypherdb.library_std_options;
+
 const py = @import("python"); // python.h, translated by the build
 const temporals = @import("temporals.zig");
 

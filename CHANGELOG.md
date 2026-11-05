@@ -19,6 +19,8 @@
 
 ### Changed
 
+- **The library writes nothing to stderr.** Replication's threads used to log there; how
+  replication goes is in `replication_status()`.
 - **Replicas share copies, and load them as they arrive.** Replicas asking for a copy of the
   master's database at once, or while one is sent, share one file on the master's disk, deleted
   once sent; a replica writes no file of its own and keeps serving its database until the copy

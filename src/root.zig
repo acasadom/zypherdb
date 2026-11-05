@@ -4,6 +4,23 @@
 //! First building block: the storage layer (`KeyValueStore` over the
 //! storage engine of src/storage/engine.zig).
 
+const std = @import("std");
+/// The standard library's options for what a program embeds (this library,
+/// the Python module): each root says `pub const std_options` with these.
+/// Stderr belongs to the program. A thread of ours writing there at any time
+/// can race the program redirecting it, and write to a handle that has come
+/// to mean something else; how replication goes is told by its status. And
+/// std's report of an unexpected status, itself written to stderr, recurses
+/// without end when writing there is what failed.
+pub const library_std_options: std.Options = .{
+    .logFn = noLog,
+    .unexpected_error_tracing = false,
+};
+
+fn noLog(comptime _: std.log.Level, comptime _: @EnumLiteral(), comptime _: []const u8, _: anytype) void {}
+
+pub const std_options = library_std_options;
+
 pub const key_value_store = @import("storage/key_value_store.zig");
 
 pub const KeyValueStore = key_value_store.KeyValueStore;
