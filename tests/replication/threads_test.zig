@@ -657,3 +657,60 @@ test "replication's threads stop however soon after they start" {
         server.stop();
     }
 }
+
+test "a replica that takes longer than the timeout to empty itself still gets its new copy" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    const clock = setup.clock.clock();
+    setup.master.change_log_limit = 1 << 20;
+    const value: [32]u8 = @splat('v');
+    const commit = struct {
+        fn keys(store: *KeyValueStore, first: usize, count: usize, bytes: []const u8) !void {
+            try store.beginWrite();
+            for (first..first + count) |index| {
+                var key: [32]u8 = undefined;
+                try store.put(try std.fmt.bufPrint(&key, "k{d:0>20}", .{index}), bytes);
+            }
+            try store.commitWrite();
+        }
+    };
+    const key_count = 400_000;
+    try commit.keys(&setup.master, 0, key_count, &value);
+
+    // A timeout far under what emptying these keys takes, and a backlog the
+    // copy soon fills, so the replica stops reading while it empties.
+    var copies: [256]u8 = undefined;
+    const server = try Server.start(testing.allocator, testing.io, clock, setup.tcp.network(), &setup.master, .{
+        .address = "127.0.0.1:0",
+        .token = token,
+        .copies_directory = try setup.path("master-copies", &copies),
+        .heartbeat_ns = 20 * millisecond,
+        .timeout_ns = 100 * millisecond,
+        .max_replicas = 1,
+    });
+    defer server.stop();
+    defer setup.master.commit_listener = null;
+    setup.master.commit_listener = server.commitListener();
+    var address: [max_address_bytes]u8 = undefined;
+    const options: zypherdb.replication_follower.Options = .{
+        .master_address = server.address(&address),
+        .token = token,
+        .first_retry_ns = 10 * millisecond,
+        .longest_retry_ns = 100 * millisecond,
+        .max_unapplied_bytes = 1 << 20,
+    };
+
+    const first = try Follower.start(testing.allocator, testing.io, clock, setup.tcp.network(), &setup.replica, options);
+    try setup.expectCaughtUp(first, (try setup.master.changeLogState()).?.next_lsn - 1);
+    first.stop();
+
+    // The log moves past the replica: it needs a new copy.
+    const applied = (try setup.replica.appliedLsn()).?;
+    for (0..3) |round| try commit.keys(&setup.master, key_count + round * 60_000, 60_000, &value);
+    try testing.expect((try setup.master.changeLogState()).?.oldest_lsn > applied + 1);
+
+    const second = try Follower.start(testing.allocator, testing.io, clock, setup.tcp.network(), &setup.replica, options);
+    defer second.stop();
+    try setup.expectCaughtUp(second, (try setup.master.changeLogState()).?.next_lsn - 1);
+}

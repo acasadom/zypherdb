@@ -83,6 +83,12 @@ pub const ReplicaSession = struct {
         if (count > 0) self.last_heard = now;
     }
 
+    /// The replica did not read until `now`, its applier behind: the
+    /// master's silence until then tells nothing.
+    pub fn didNotRead(self: *ReplicaSession, now: Instant) void {
+        self.last_heard = now;
+    }
+
     /// What the replica must do next for the messages received, or null
     /// until more come. A message the master would not send now fails with
     /// `UnexpectedMessage`; the connection is then of no further use.

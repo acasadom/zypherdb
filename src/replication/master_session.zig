@@ -30,7 +30,8 @@ pub const Settings = struct {
     /// A replica that reads nothing sent, or sends nothing awaited, for
     /// this long is let go (longer than `heartbeat_ns`).
     timeout_ns: u64,
-    /// What a replica loading its copy may take.
+    /// What a replica reading and loading its copy may take to read more,
+    /// or to ack it.
     copy_timeout_ns: u64,
 };
 
@@ -227,7 +228,13 @@ pub const MasterSession = struct {
     }
 
     fn expiry(self: *const MasterSession) ?Instant {
-        const write_expiry: ?Instant = if (self.outbox.isEmpty()) null else self.last_sent + self.settings.timeout_ns;
+        // A replica stops reading a copy while it empties its database and
+        // loads what it read: for long, on a large one.
+        const write_timeout_ns = switch (self.state) {
+            .sending_copy, .awaiting_copy_ack => self.settings.copy_timeout_ns,
+            else => self.settings.timeout_ns,
+        };
+        const write_expiry: ?Instant = if (self.outbox.isEmpty()) null else self.last_sent + write_timeout_ns;
         const read_expiry: ?Instant = switch (self.state) {
             .awaiting_hello, .streaming => self.last_heard + self.settings.timeout_ns,
             .awaiting_copy_ack => @max(self.last_heard, self.last_sent) + self.settings.copy_timeout_ns,

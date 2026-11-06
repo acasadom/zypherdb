@@ -388,8 +388,9 @@ pub const ReplicaNode = struct {
     pub fn watch(self: *ReplicaNode, watched: *[2]Watched) []Watched {
         watched[0] = .{ .source = .{ .wakeup = self.wakeup }, .wanted = .{ .readable = true } };
         const conversation = self.conversation orelse return watched[0..1];
+        conversation.reading = self.applier.unappliedBytes() < self.options.max_unapplied_bytes;
         watched[1] = .{ .source = .{ .connection = conversation.connection }, .wanted = .{
-            .readable = self.applier.unappliedBytes() < self.options.max_unapplied_bytes,
+            .readable = conversation.reading,
             .writable = conversation.session.outbox.unsent().len > 0,
         } };
         return watched[0..2];
@@ -447,6 +448,8 @@ const Conversation = struct {
     session: ReplicaSession,
     /// What the connection was ready to read at the last wait.
     readable: bool = false,
+    /// Whether the last wait looked for something to read.
+    reading: bool = true,
     /// Whether the master streamed change sets or a copy to it.
     streamed: bool = false,
 
@@ -459,6 +462,7 @@ const Conversation = struct {
     fn step(self: *Conversation, node: *ReplicaNode, now: Instant) !bool {
         const session = &self.session;
         const applier = node.applier;
+        if (!self.reading) session.didNotRead(now);
         if (self.readable and applier.unappliedBytes() < node.options.max_unapplied_bytes) {
             while (session.inbox.unfilled().len > 0 and applier.unappliedBytes() < node.options.max_unapplied_bytes) {
                 const count = self.connection.receive(session.inbox.unfilled()) catch |err| switch (err) {

@@ -46,7 +46,8 @@ pub const Options = struct {
     /// A replica that reads nothing sent, or sends nothing awaited, for
     /// this long is let go (longer than `heartbeat_ns`).
     timeout_ns: u64 = 5 * std.time.ns_per_s,
-    /// What a replica loading its copy may take.
+    /// What a replica reading and loading its copy may take to read more,
+    /// or to ack it.
     copy_timeout_ns: u64 = 10 * std.time.ns_per_min,
     /// At most (`network.max_watched` - 2) / 2: besides the listener and
     /// the wakeup, each replica may hold a second connection, for its
