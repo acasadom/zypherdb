@@ -69,3 +69,29 @@ test "a record alone makes a database hold data" {
     try store.commitWrite();
     try testing.expectError(error.DatabaseNotEmpty, replica.checkCanFollow(&store));
 }
+
+test "an applier holds a change set while the next has come whole" {
+    const Group = zypherdb.replication_replica_node.Group;
+    const Work = zypherdb.replication_replica_node.Work;
+    const part = struct {
+        fn of(lsn: u64, final: bool) Work {
+            return .{ .change_set_part = .{ .lsn = lsn, .final = final, .bytes = &.{} } };
+        }
+    }.of;
+    const copy: Work = .{ .copy_part = .{ .final = false, .bytes = &.{} } };
+
+    var group: Group = .{};
+    // None waiting, or one partly come, or a copy: committed now.
+    try testing.expect(!group.holds(part(1, true), &.{}));
+    try testing.expect(!group.holds(part(1, true), &.{part(2, false)}));
+    try testing.expect(!group.holds(part(1, true), &.{copy}));
+    // The next whole: held, and a part that is not the last has no say.
+    try testing.expect(group.holds(part(1, true), &.{part(2, true)}));
+    try testing.expect(group.holds(part(2, true), &.{ part(3, false), part(3, true) }));
+    try testing.expect(!group.holds(part(3, false), &.{part(3, true)}));
+    try testing.expect(!group.holds(part(3, true), &.{}));
+    // Not without end.
+    var held: usize = 0;
+    while (group.holds(part(1, true), &.{part(1, true)})) held += 1;
+    try testing.expectEqual(@as(usize, 1023), held);
+}

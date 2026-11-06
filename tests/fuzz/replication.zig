@@ -805,6 +805,10 @@ const Simulation = struct {
     }
 
     fn check(self: *Simulation, replica: *Replica) !void {
+        // Told applied is committed: whoever waits for it reads it next.
+        const told = replica.applied.value;
+        const stored = try replica.store.appliedLsn() orelse 0;
+        if (told > stored) return self.fail("a replica told LSN {d} applied with {d} committed", .{ told, stored });
         const lsn = try replica.store.appliedLsn() orelse return;
         if (replica.checked_lsn == lsn) return;
         replica.checked_lsn = lsn;

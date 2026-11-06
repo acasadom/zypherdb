@@ -630,3 +630,61 @@ test "a transaction with a write the log could not record does not commit" {
     try store.commitWrite();
     try testing.expectEqual(@as(u64, 2), (try store.changeLogState()).?.next_lsn);
 }
+
+test "change sets in a group commit together, or none does" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var source_path: [256]u8 = undefined;
+    var source = try openAt(&tmp, "source", &source_path);
+    defer source.deinit();
+    var target_path: [256]u8 = undefined;
+    var target = try openAt(&tmp, "target", &target_path);
+    defer target.deinit();
+
+    try source.startChangeLog();
+    var change_sets: [4][]u8 = undefined;
+    for (&change_sets, 1..) |*bytes, lsn| {
+        try source.beginWrite();
+        try source.put(&.{ 'k', @intCast('0' + lsn) }, "value");
+        try source.commitWrite();
+        bytes.* = (try source.changeSet(lsn)).?;
+    }
+    defer for (change_sets) |bytes| testing.allocator.free(bytes);
+    var reader = try target.share();
+    defer reader.deinit();
+
+    // Abandoned, or failing, none stays.
+    _ = try target.applyChangeSetPartInGroup(1, change_sets[0], true, true);
+    target.abandonChangeSet();
+    try testing.expectEqual(@as(?u64, null), try reader.appliedLsn());
+    _ = try target.applyChangeSetPartInGroup(1, change_sets[0], true, true);
+    try testing.expectError(error.ChangeSetOutOfOrder, target.applyChangeSetPartInGroup(3, change_sets[2], true, false));
+    try testing.expectEqual(@as(?u64, null), try reader.appliedLsn());
+    try testing.expect(!try target.exists("k1"));
+
+    // Nothing shows until the last, without `hold`, and one sent again does not undo the others.
+    try testing.expectEqual(@as(?change_log.Applied, .applied), try target.applyChangeSetPartInGroup(1, change_sets[0], true, true));
+    try testing.expectEqual(@as(?change_log.Applied, .already_applied), try target.applyChangeSetPartInGroup(1, change_sets[0], true, true));
+    try testing.expectEqual(@as(?change_log.Applied, .applied), try target.applyChangeSetPartInGroup(2, change_sets[1], true, true));
+    try testing.expectEqual(@as(?u64, null), try reader.appliedLsn());
+    try testing.expectEqual(@as(?change_log.Applied, .applied), try target.applyChangeSetPartInGroup(3, change_sets[2], true, false));
+    try testing.expectEqual(@as(?u64, 3), try reader.appliedLsn());
+    try testing.expect(try reader.exists("k1") and try reader.exists("k3"));
+
+    // One sent again that ends a group still commits the others.
+    try testing.expectEqual(@as(?change_log.Applied, .applied), try target.applyChangeSetPartInGroup(4, change_sets[3], true, true));
+    try testing.expectEqual(@as(?change_log.Applied, .already_applied), try target.applyChangeSetPartInGroup(4, change_sets[3], true, false));
+    try testing.expectEqual(@as(?u64, 4), try reader.appliedLsn());
+
+    // Committed by hand, unless one is partly applied.
+    try testing.expectEqual(@as(?u64, null), try target.commitHeldChangeSets());
+    _ = try target.applyChangeSetPartInGroup(4, change_sets[3], true, true);
+    try testing.expectEqual(@as(?u64, 4), try target.commitHeldChangeSets());
+    _ = try target.applyChangeSetPartInGroup(4, "not even a change set", false, false);
+    try testing.expectEqual(@as(?u64, null), try target.commitHeldChangeSets());
+    target.abandonChangeSet();
+    try testing.expectEqual(@as(?u64, 4), try reader.appliedLsn());
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    // Sent again alone, it changes nothing, and the database stays usable.
+    try testing.expectEqual(.already_applied, try target.applyChangeSet(4, change_sets[3]));
+}

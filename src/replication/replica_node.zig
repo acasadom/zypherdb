@@ -129,13 +129,15 @@ pub const Applier = struct {
 };
 
 /// Applies `work` to `store` and raises `applied`; returns the LSN applied
-/// (null until a change set's final part), or the copy's (null until its
-/// final part). Frees nothing. A failure leaves no change set, and no copy,
-/// partly applied.
-pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, work: Work) !?u64 {
+/// (null until a change set's final part, and while `hold` keeps it from
+/// being committed: `Group`), or the copy's (null until its final part).
+/// Frees nothing. A failure leaves no change set, and no copy, partly
+/// applied, and none held.
+pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, work: Work, hold: bool) !?u64 {
     switch (work) {
         .change_set_part => |part| {
-            _ = try store.applyChangeSetPart(part.lsn, part.bytes, part.final) orelse return null;
+            _ = try store.applyChangeSetPartInGroup(part.lsn, part.bytes, part.final, hold) orelse return null;
+            if (hold) return null;
             clock.raise(applied, part.lsn);
             return part.lsn;
         },
@@ -145,6 +147,57 @@ pub fn doWork(clock: Clock, applied: *Signal, store: *KeyValueStore, work: Work)
             return lsn;
         },
     }
+}
+
+/// Which change sets an applier commits together: while the next one has
+/// come whole, a replica behind its master need not pay for a commit per
+/// change set, or it could never catch up with a master whose commits cost
+/// less. With none waiting, each is committed as it comes.
+pub const Group = struct {
+    change_sets: u32 = 0,
+    bytes: usize = 0,
+
+    /// So that readers do not wait long for what is held.
+    const max_change_sets = 1024;
+    const max_bytes = 16 << 20;
+
+    /// Whether `work`, taken from the head of the queue, is to be held, with
+    /// `rest` after it in the queue.
+    pub fn holds(self: *Group, work: Work, rest: []const Work) bool {
+        const part = switch (work) {
+            .change_set_part => |part| part,
+            .copy_part => return false,
+        };
+        self.bytes += part.bytes.len;
+        if (!part.final) return false;
+        self.change_sets += 1;
+        if (self.change_sets < max_change_sets and self.bytes < max_bytes and wholeChangeSetFirst(rest)) return true;
+        self.* = .{};
+        return false;
+    }
+
+    /// One partly come must not join: ending the conversation would lose
+    /// those before it.
+    fn wholeChangeSetFirst(rest: []const Work) bool {
+        for (rest) |work| {
+            switch (work) {
+                .change_set_part => |part| if (part.final) return true,
+                .copy_part => return false,
+            }
+        }
+        return false;
+    }
+};
+
+/// Commits the change sets held, if any, as what comes next is not for them
+/// (the conversation ended, or the applier stops), and tells it in `done`.
+pub fn commitHeld(clock: Clock, applied: *Signal, store: *KeyValueStore, done: *Done) void {
+    const lsn = store.commitHeldChangeSets() catch |err| {
+        log.info("committing what the master sent failed: {t}", .{err});
+        return;
+    } orelse return;
+    clock.raise(applied, lsn);
+    done.applied = lsn;
 }
 
 /// The bytes `work` holds.
@@ -181,6 +234,7 @@ pub const InlineApplier = struct {
     work: std.ArrayList(Work) = .empty,
     unapplied_bytes: usize = 0,
     done: Done = .{},
+    group: Group = .{},
 
     pub fn applier(self: *InlineApplier) Applier {
         return .{ .context = self, .vtable = &.{ .give = give, .take = take, .drop = drop, .unappliedBytes = unappliedBytes } };
@@ -202,11 +256,13 @@ pub const InlineApplier = struct {
         const work = self.work.orderedRemove(0);
         defer dropWork(self.allocator, work);
         self.unapplied_bytes -= workBytes(work);
-        if (doWork(self.clock, self.applied, &self.store, work)) |lsn| {
+        const hold = self.group.holds(work, self.work.items);
+        if (doWork(self.clock, self.applied, &self.store, work, hold)) |lsn| {
             keepDone(&self.done, work, lsn);
         } else |err| {
             log.info("applying what the master sent failed: {t}", .{err});
             self.done.failure = err;
+            self.group = .{};
             // What follows depends on what failed.
             self.dropAll();
         }
@@ -237,7 +293,9 @@ pub const InlineApplier = struct {
     fn drop(context: *anyopaque) void {
         const self: *InlineApplier = @ptrCast(@alignCast(context));
         self.dropAll();
+        commitHeld(self.clock, self.applied, &self.store, &self.done);
         self.store.abandonChangeSet();
+        self.group = .{};
         self.done = .{};
     }
 

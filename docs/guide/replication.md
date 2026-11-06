@@ -265,6 +265,9 @@ role for a process failure, and a machine failure is covered by restarting it.
   whether or not a replica has read them, connected or not. A replica that still needs a dropped
   change gets a new copy, so how long it can be away or behind depends on how fast the master
   writes.
+- **A replica behind.** It commits together the change sets it has already received, so a commit's
+  cost does not keep it from catching up, whatever the durability of each side. Its readers then
+  see the master's states in jumps, never one the master did not have.
 - **No failover to another machine.** A replica never becomes a master, on its own or by hand
   ([staying available](#staying-available)).
 - **The same platform.** A replica must run the same ZypherDB storage format and storage engine

@@ -161,6 +161,7 @@ const Applier = struct {
     /// (its write transaction is the thread's).
     abandoning: bool = false,
     done: Done = .{},
+    group: replica_node.Group = .{},
     stopping: bool = false,
 
     fn applier(self: *Applier) replica_node.Applier {
@@ -242,16 +243,19 @@ const Applier = struct {
         while (true) {
             while (!self.stopping and !self.abandoning and self.work.items.len == 0) self.condition.waitUncancelable(self.io, &self.mutex);
             if (self.stopping or self.abandoning) {
+                replica_node.commitHeld(self.clock, self.applied, &self.store, &self.done);
                 self.store.abandonChangeSet();
+                self.group = .{};
                 self.abandoning = false;
                 self.condition.broadcast(self.io);
                 if (self.stopping) return;
                 continue;
             }
             const work = self.work.orderedRemove(0);
+            const hold = self.group.holds(work, self.work.items);
             self.busy = true;
             self.mutex.unlock(self.io);
-            const result = replica_node.doWork(self.clock, self.applied, &self.store, work);
+            const result = replica_node.doWork(self.clock, self.applied, &self.store, work, hold);
             replica_node.dropWork(self.allocator, work);
             self.mutex.lockUncancelable(self.io);
             self.busy = false;
@@ -261,6 +265,7 @@ const Applier = struct {
             } else |err| {
                 log.info("applying what the master sent failed: {t}", .{err});
                 self.done.failure = err;
+                self.group = .{};
                 // What follows depends on what failed.
                 self.dropWork();
             }

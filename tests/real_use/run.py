@@ -850,7 +850,45 @@ def s14_memory(tmp):
     master.close()
 
 
-SCENARIOS = [s01_big_first_copy, s02_live_writes_two_replicas, s03_kill_replica, s04_kill_master, s05_standby_takeover, s06_forwarded_writes_master_dies, s07_network_cuts, s08_everything_replicates, s09_wrong_use, s10_replica_left_behind, s11_whole_restart, s12_process_exit, s13_soak, s14_memory]
+def s15_replica_durability_costs_more(tmp):
+    """A replica whose commits cost more than its master's keeps up, and survives a kill while behind."""
+    port = free_port()
+    master = Node(f"{tmp}/m", serve=f"127.0.0.1:{port}", token=TOKEN, durability="relaxed")
+    index_events(master)
+    replica = Node(f"{tmp}/r", replicate_from=f"localhost:{port}", token=TOKEN, durability="full")
+    replica.call("monitor", path=f"{tmp}/monitor")
+    master.call("stream", name="s", start=0, count=100_000_000, workers=4, ack_path=f"{tmp}/acks")
+    lags = []
+    for _ in range(6):
+        time.sleep(2)
+        lags.append(master.lsn() - replica.status()["applied_lsn"])
+    check(max(lags[2:]) < 200, f"the replica falls behind: {lags}")
+    note(f"lag every 2 s: {lags}")
+    master.call("stop", timeout=60)
+    replica.call("stop")
+    verify_monitor(f"{tmp}/monitor")
+    converge(master, [replica])
+
+    # Far behind, then killed while it applies in groups.
+    master.close()
+    master = Node(f"{tmp}/m", serve=f"127.0.0.1:{port}", token=TOKEN, durability="deferred")
+    master.call("stream", name="s", start=100_000_000, count=100_000_000, workers=4, ack_path=f"{tmp}/acks2")
+    for _ in range(4):
+        time.sleep(1)
+        replica.kill()
+        replica = Node(f"{tmp}/r", replicate_from=f"localhost:{port}", token=TOKEN, durability="full")
+        check(replica.call("check", timeout=120)["ok"], "replica unsound after a kill while behind")
+    time.sleep(1)
+    master.call("stop", timeout=60)
+    started = time.monotonic()
+    converge(master, [replica], 120)
+    answered, present = verify_stream(master, [f"{tmp}/acks2"], stream="s")
+    note(f"{present} events; {answered}; caught up in {time.monotonic() - started:.1f} s")
+    replica.close()
+    master.close()
+
+
+SCENARIOS = [s01_big_first_copy, s02_live_writes_two_replicas, s03_kill_replica, s04_kill_master, s05_standby_takeover, s06_forwarded_writes_master_dies, s07_network_cuts, s08_everything_replicates, s09_wrong_use, s10_replica_left_behind, s11_whole_restart, s12_process_exit, s13_soak, s14_memory, s15_replica_durability_costs_more]
 
 
 def main():

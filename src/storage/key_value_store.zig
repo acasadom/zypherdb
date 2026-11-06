@@ -133,6 +133,9 @@ pub const KeyValueStore = struct {
     /// The change set being applied part by part, in the active write
     /// transaction (`applyChangeSetPart`).
     application: ?change_log.Application = null,
+    /// The last change set applied in the write transaction open, and not
+    /// committed yet (`applyChangeSetPartInGroup`).
+    held_lsn: ?u64 = null,
     /// The copy being loaded part by part, in the active write transaction
     /// (`applyCopyPart`).
     loading: ?database_copy.Loading = null,
@@ -307,9 +310,22 @@ pub const KeyValueStore = struct {
     /// applies none (`WriteFailed`). The transaction belongs to the thread
     /// that gave the first part: it gives the others, or abandons it.
     pub fn applyChangeSetPart(self: *KeyValueStore, lsn: u64, bytes: []const u8, final: bool) ApplyError!?change_log.Applied {
+        return self.applyChangeSetPartInGroup(lsn, bytes, final, false);
+    }
+
+    /// As `applyChangeSetPart`, but with `hold` (on a last part) the write
+    /// transaction stays open for the next change set, and nothing is
+    /// committed yet: a group of change sets costs one commit, and readers
+    /// see all of it at once. The next one's last part without `hold`, or
+    /// `commitHeldChangeSets`, commits them. A failure abandons them all, and
+    /// they are to be applied again: a crash loses them whole, with the
+    /// record of having applied them.
+    pub fn applyChangeSetPartInGroup(self: *KeyValueStore, lsn: u64, bytes: []const u8, final: bool, hold: bool) ApplyError!?change_log.Applied {
         errdefer self.abandonChangeSet();
         if (self.application) |application| {
             if (lsn != application.lsn) return error.ChangeSetOutOfOrder;
+        } else if (self.held_lsn != null) {
+            self.application = try change_log.Application.begin(self.active_write_transaction.?, lsn);
         } else {
             if (self.inTransaction()) return error.WriteFailed;
             const transaction = try self.environment.beginWrite();
@@ -325,13 +341,31 @@ pub const KeyValueStore = struct {
         const applied = try application.finish(transaction);
         application.deinit(self.allocator);
         self.application = null;
+        if (hold) {
+            self.held_lsn = lsn;
+            return applied;
+        }
+        const held = self.held_lsn != null;
+        self.held_lsn = null;
         self.active_write_transaction = null;
-        if (applied == .already_applied) transaction.abort() else try transaction.commit();
+        if (applied == .already_applied and !held) transaction.abort() else try transaction.commit();
         return applied;
     }
 
-    /// Drops the change set, or the copy, being applied, if any: none of
-    /// it is.
+    /// Commits the change sets held (`applyChangeSetPartInGroup`), unless one
+    /// is partly applied; returns the last one's LSN, if it did.
+    pub fn commitHeldChangeSets(self: *KeyValueStore) StorageError!?u64 {
+        if (self.application != null) return null;
+        const lsn = self.held_lsn orelse return null;
+        const transaction = self.active_write_transaction.?;
+        self.held_lsn = null;
+        self.active_write_transaction = null;
+        try transaction.commit();
+        return lsn;
+    }
+
+    /// Drops the change set, or the copy, being applied, if any, and the
+    /// change sets held: none of them is.
     pub fn abandonChangeSet(self: *KeyValueStore) void {
         if (self.application) |*application| {
             application.deinit(self.allocator);
@@ -339,7 +373,8 @@ pub const KeyValueStore = struct {
         } else if (self.loading) |*loading| {
             loading.deinit(self.allocator);
             self.loading = null;
-        } else return;
+        } else if (self.held_lsn == null) return;
+        self.held_lsn = null;
         self.active_write_transaction.?.abort();
         self.active_write_transaction = null;
     }
