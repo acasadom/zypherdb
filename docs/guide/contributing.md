@@ -175,6 +175,23 @@ A process crash keeps what the operating system already holds, so every durabili
 every reported commit. Power failures, which lose what was not synced, are not tested: they need a
 simulated disk.
 
+### The real use test
+
+The fuzzers and the simulators find what they model: the simulator has no processes, no TCP and no
+bindings. `tests/real_use/run.py` runs what a user installs instead: the wheel, each node a process
+of its own, on TCP. It kills masters, replicas and writers with SIGKILL, cuts and stalls connections
+through a proxy, and checks each write against what it was answered: answered committed is there,
+answered that it did not run is not, nothing is there twice, no batch is seen in part, and in the
+end every replica equals its master. It also watches memory, file descriptors and lag.
+
+It takes about 8 minutes, so it does not run in CI: run it before each release, on Linux and macOS,
+on the wheels CI built:
+
+```bash
+python -m venv venv && venv/bin/pip install zypherdb-*.whl
+venv/bin/python -I tests/real_use/run.py
+```
+
 ### Snapshot tests
 
 Text that a reader checks as a whole — EXPLAIN and PROFILE plans
