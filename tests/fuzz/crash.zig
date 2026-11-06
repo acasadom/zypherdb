@@ -24,6 +24,12 @@
 //! kill). The last writer runs to the end, and the database must equal the
 //! twin.
 //!
+//! On odd seeds another process stays on the database all along (a
+//! survivor: `crash-survivor`), and the writer holds a read open as it
+//! works. After each writer it must still get the write lock, whatever the
+//! writer held when it died, and its write transactions must have dropped
+//! the dead writer's readers, which would keep old pages from being reused.
+//!
 //! A process crash keeps what the operating system already holds, so every
 //! durability keeps every reported commit; a seed picks one. Power failures
 //! are not tested (they need a simulated disk).
@@ -75,6 +81,8 @@ const Swarm = struct {
     /// The most microseconds between a report and a timed kill.
     max_delay: u32,
     mix: workload.Mix,
+    /// Another process stays on the database, and the writer holds a read.
+    survivor: bool = false,
 
     fn choose(random: std.Random) Swarm {
         var mix = workload.Mix.choose(random);
@@ -102,7 +110,9 @@ const Plan = struct {
 
     fn make(seed: u64, count: u32, arena: Allocator) Allocator.Error!Plan {
         var prng = std.Random.DefaultPrng.init(seed);
-        const swarm = Swarm.choose(prng.random());
+        var swarm = Swarm.choose(prng.random());
+        // Not drawn: the other choices of a seed stay as they were.
+        swarm.survivor = seed % 2 == 1;
         const steps = try arena.alloc(workload.Step, count);
         for (steps) |*step| step.* = try workload.generate(prng.random(), swarm.mix, arena);
         return .{ .swarm = swarm, .steps = steps, .random = .init(seed ^ 0x9e3779b97f4a7c15) };
@@ -142,6 +152,8 @@ pub fn run(allocator: Allocator, io: std.Io, executable: []const u8, path: []con
     if (options.verbose) try out.print("seed {d}, swarm: {f}\n", .{ options.seed, plan.swarm });
 
     const twin = try runTwin(allocator, arena, twin_path, plan);
+    var survivor: ?Survivor = if (plan.swarm.survivor) try Survivor.start(io, arena, executable, path, options) else null;
+    defer if (survivor) |*running| running.stop();
     var statistics = Statistics{ .statements = options.steps };
     var done: u32 = 0;
     var crash: u32 = 0;
@@ -150,6 +162,10 @@ pub fn run(allocator: Allocator, io: std.Io, executable: []const u8, path: []con
         const ending: Ending = if (last) .run_to_end else chooseEndingFor(&plan, twin, done);
         const writer = try runWriter(io, arena, executable, path, options, done, ending);
         if (options.verbose) try out.print("writer from {d}: {d} reported, {f}\n", .{ done, writer.reported, ending });
+        if (survivor) |*running| {
+            const answer = try running.probe();
+            if (!std.mem.eql(u8, answer, "ok")) return fail(out, options, plan.swarm, "after a writer ({f}) the process that stayed says: {s}\n", .{ ending, answer });
+        }
 
         var database: Database = undefined;
         database.open(allocator, path, storeOptions(plan.swarm.durability)) catch |err| {
@@ -265,6 +281,85 @@ fn runWriter(io: std.Io, arena: Allocator, executable: []const u8, path: []const
     };
 }
 
+/// The process that stays on the database, `crash-survivor`.
+const Survivor = struct {
+    io: std.Io,
+    child: std.process.Child,
+    out_buffer: [64]u8 = undefined,
+    in_buffer: [256]u8 = undefined,
+    reader: std.Io.File.Reader = undefined,
+
+    fn start(io: std.Io, arena: Allocator, executable: []const u8, path: []const u8, options: Options) !Survivor {
+        const argv = [_][]const u8{ executable, "crash-survivor", path, try std.fmt.allocPrint(arena, "{d}", .{options.seed}), try std.fmt.allocPrint(arena, "{d}", .{options.steps}) };
+        var self: Survivor = .{ .io = io, .child = try std.process.spawn(io, .{ .argv = &argv, .stdin = .pipe, .stdout = .pipe }) };
+        var buffer: [16]u8 = undefined;
+        var reader = self.child.stdout.?.readerStreaming(io, &buffer);
+        _ = try reader.interface.takeDelimiter('\n') orelse return error.SurvivorFailed;
+        return self;
+    }
+
+    /// What it says after trying: "ok", what went wrong, or that it is gone
+    /// (it ends itself if the write lock never comes).
+    fn probe(self: *Survivor) ![]const u8 {
+        var writer = self.child.stdin.?.writerStreaming(self.io, &self.out_buffer);
+        try writer.interface.writeAll("probe\n");
+        try writer.interface.flush();
+        var reader = self.child.stdout.?.readerStreaming(self.io, &self.in_buffer);
+        return try reader.interface.takeDelimiter('\n') orelse "it ended: the write lock never came";
+    }
+
+    fn stop(self: *Survivor) void {
+        self.child.stdin.?.close(self.io);
+        self.child.stdin = null;
+        _ = self.child.wait(self.io) catch {};
+    }
+};
+
+/// The survivor: `crash-survivor PATH SEED STEPS`. Holds the database open;
+/// on each line it reads, takes the write lock as many times as it takes to
+/// look for dead readers, then looks itself: it must find none left.
+pub fn survivorMain(allocator: Allocator, io: std.Io, arguments: []const [:0]const u8, out: *std.Io.Writer) !void {
+    if (arguments.len != 3) return error.Usage;
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const plan = try Plan.make(try std.fmt.parseInt(u64, arguments[1], 10), try std.fmt.parseInt(u32, arguments[2], 10), arena_state.allocator());
+    var database: Database = undefined;
+    try database.open(allocator, arguments[0], storeOptions(plan.swarm.durability));
+    defer database.close(allocator);
+    try out.writeAll("open\n");
+    try out.flush();
+
+    var waiting: std.atomic.Value(u64) = .init(0);
+    const watchdog = try std.Thread.spawn(.{}, endIfStuck, .{ io, &waiting });
+    watchdog.detach();
+    var buffer: [16]u8 = undefined;
+    var commands = std.Io.File.stdin().readerStreaming(io, &buffer);
+    var probes: u64 = 0;
+    while (try commands.interface.takeDelimiter('\n')) |_| {
+        probes += 1;
+        waiting.store(probes, .release);
+        for (0..zypherdb.storage_contract.writes_per_reader_check) |_| {
+            try database.store.beginWrite();
+            database.store.abortWrite();
+        }
+        waiting.store(0, .release);
+        const dead = database.store.dropDeadReaders();
+        if (dead == 0) try out.writeAll("ok\n") else try out.print("{d} dead readers were left behind\n", .{dead});
+        try out.flush();
+    }
+}
+
+/// Ends the process if the same probe is under way a minute apart.
+fn endIfStuck(io: std.Io, waiting: *std.atomic.Value(u64)) void {
+    var seen: u64 = 0;
+    while (true) {
+        io.sleep(.fromSeconds(60), .awake) catch return;
+        const now = waiting.load(.acquire);
+        if (now != 0 and now == seen) std.process.exit(3);
+        seen = now;
+    }
+}
+
 /// The writer: `crash-writer PATH SEED STEPS FROM CRASH_AT`. Runs the
 /// seed's statements from FROM on, printing the number done after each, and
 /// kills itself at crash point CRASH_AT ("-": none).
@@ -282,6 +377,10 @@ pub fn writerMain(allocator: Allocator, arguments: []const [:0]const u8, out: *s
     var database: Database = undefined;
     try database.open(allocator, path, storeOptions(plan.swarm.durability));
     defer database.close(allocator);
+    var read_held = try database.store.share();
+    defer read_held.deinit();
+    if (plan.swarm.survivor) try read_held.beginRead();
+    defer if (plan.swarm.survivor) read_held.abortRead();
     // Counted from here, as the twin counts them.
     zypherdb.faults.faults.crash_points = 0;
     zypherdb.faults.faults.crash_at = crash_at;

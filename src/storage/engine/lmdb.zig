@@ -23,6 +23,7 @@ pub const Environment = struct {
     /// Whether this is a share of another environment (`share`), which
     /// leaves the database open when it closes.
     shared: bool = false,
+    write_transactions: u32 = 0,
 
     const max_parked_reads = 4;
 
@@ -50,6 +51,7 @@ pub const Environment = struct {
             .deferred => c.MDB_NOSYNC,
         };
         if (c.mdb_env_open(environment.?, c_path.ptr, c.MDB_NOTLS | durability_flags, 0o644) != 0) return error.OpenFailed;
+        _ = dropDeadReadersOf(environment.?);
 
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(environment.?, null, 0, &transaction) != 0) return error.OpenFailed;
@@ -115,9 +117,25 @@ pub const Environment = struct {
     }
 
     pub fn beginWrite(self: *Environment) Error!Transaction {
+        self.write_transactions +%= 1;
+        if (self.write_transactions % contract.writes_per_reader_check == 0) _ = self.dropDeadReaders();
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.handle, null, 0, &transaction) != 0) return error.WriteFailed;
         return .{ .handle = transaction.?, .tables = self.tables };
+    }
+
+    /// A process killed during a read leaves its reader behind while other
+    /// processes keep the database open, and LMDB never reuses the pages it
+    /// could see: the file would grow for ever. This drops them, and tells
+    /// how many it found; on failure they stay until the next look.
+    pub fn dropDeadReaders(self: *Environment) usize {
+        return dropDeadReadersOf(self.handle);
+    }
+
+    fn dropDeadReadersOf(handle: *c.MDB_env) usize {
+        var dead: c_int = 0;
+        if (c.mdb_reader_check(handle, &dead) != 0) return 0;
+        return @intCast(dead);
     }
 };
 

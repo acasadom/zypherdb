@@ -59,6 +59,7 @@ pub const replication_master_session = @import("replication/master_session.zig")
 pub const replication_replica_session = @import("replication/replica_session.zig");
 pub const replication_clock = @import("replication/clock.zig");
 pub const replication_network = @import("replication/network.zig");
+pub const storage_contract = @import("storage/engine/contract.zig");
 pub const replication_tcp = @import("replication/tcp.zig");
 pub const replication_noise = @import("replication/noise.zig");
 pub const replication_encrypted_network = @import("replication/encrypted_network.zig");

@@ -185,7 +185,12 @@ fn zypherdbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTa
             module.addIncludePath(b.path("vendor/lmdb"));
             module.addCSourceFiles(.{
                 .files = &.{ "vendor/lmdb/mdb.c", "vendor/lmdb/midl.c" },
-                .flags = &.{"-O2"},
+                // On macOS LMDB's default lock is a POSIX semaphore, which a
+                // process killed holding it never gives back: the others
+                // wait for ever. This takes SysV semaphores with SEM_UNDO,
+                // which the kernel gives back, and LMDB's recovery from a
+                // dead owner.
+                .flags = if (target.result.os.tag == .macos) &.{ "-O2", "-DMDB_USE_ROBUST=1" } else &.{"-O2"},
             });
         },
         .mdbx => {
@@ -204,11 +209,15 @@ fn zypherdbModule(b: *std.Build, name: ?[]const u8, target: std.Build.ResolvedTa
             const common = .{ "-O2", "-DNDEBUG", "-DMDBX_BUILD_SHARED_LIBRARY=0", "-DMDBX_HAVE_BUILTIN_CPU_SUPPORTS=0", "-DMDBX_BUILD_TIMESTAMP=\"unknown\"", "-DMDBX_BUILD_FLAGS=\"zypherdb\"" };
             module.addCSourceFiles(.{
                 .files = &.{"vendor/libmdbx/mdbx.c"},
-                .flags = switch (optimize) {
-                    .debug => &(common ++ .{ "-DMDBX_CHECKING=1", "-fno-sanitize=alignment" }),
-                    .safe => &(common ++ .{"-fno-sanitize=alignment"}),
-                    .fast, .small => &common,
-                },
+                .flags = std.mem.concat(b.allocator, []const u8, &.{
+                    switch (optimize) {
+                        .debug => &(common ++ .{ "-DMDBX_CHECKING=1", "-fno-sanitize=alignment" }),
+                        .safe => &(common ++ .{"-fno-sanitize=alignment"}),
+                        .fast, .small => &common,
+                    },
+                    // SysV semaphores on macOS, for LMDB's reason above.
+                    if (target.result.os.tag == .macos) &.{"-DMDBX_LOCKING=5"} else &.{},
+                }) catch @panic("out of memory"),
             });
         },
     }

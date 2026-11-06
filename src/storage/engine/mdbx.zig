@@ -38,6 +38,7 @@ pub const Environment = struct {
     /// Whether this is a share of another environment (`share`), which
     /// leaves the database open when it closes.
     shared: bool = false,
+    write_transactions: u32 = 0,
 
     const max_parked_reads = 4;
 
@@ -129,7 +130,17 @@ pub const Environment = struct {
         self.parked_read_count += 1;
     }
 
+    /// Drops the readers of processes that died during a read, as lmdb.zig
+    /// does, and tells how many it found.
+    pub fn dropDeadReaders(self: *Environment) usize {
+        var dead: c_int = 0;
+        if (c.mdbx_reader_check(self.handle, &dead) != c.MDBX_SUCCESS) return 0;
+        return @intCast(dead);
+    }
+
     pub fn beginWrite(self: *Environment) Error!Transaction {
+        self.write_transactions +%= 1;
+        if (self.write_transactions % contract.writes_per_reader_check == 0) _ = self.dropDeadReaders();
         var transaction: ?*c.MDBX_txn = null;
         if (c.mdbx_txn_begin(self.handle, null, c.MDBX_TXN_READWRITE, &transaction) != c.MDBX_SUCCESS) return error.WriteFailed;
         return .{ .handle = transaction.?, .tables = self.tables };

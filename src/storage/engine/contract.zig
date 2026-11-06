@@ -6,7 +6,9 @@
 //!
 //! - `Environment`: an open database at a path.
 //!     `open(allocator, path, Options) Error!Environment`, `close()`,
-//!     `sync() Error!void`, `beginRead() Error!Transaction`,
+//!     `sync() Error!void`, `dropDeadReaders() usize` (the readers of dead
+//!     processes, how many; each `beginWrite` now and then does it too),
+//!     `beginRead() Error!Transaction`,
 //!     `endRead(Transaction)` (ends a read transaction, perhaps keeping it
 //!     to be begun again cheaply), `beginWrite() Error!Transaction`,
 //!     `share() Environment` (another environment on the same open
@@ -57,6 +59,9 @@ pub const Error = error{
 /// prefix (indexes, adjacency, metadata); `nodes` and `relationships` hold
 /// records by id; `changes` holds the change log replicas follow
 /// (change_log.zig), which no graph read sees.
+/// Write transactions between looks for the readers of dead processes.
+pub const writes_per_reader_check = 1024;
+
 pub const Table = enum {
     main,
     nodes,

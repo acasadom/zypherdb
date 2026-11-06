@@ -93,6 +93,7 @@ pub extern "c" fn mdbx_env_set_geometry(env: *MDBX_env, size_lower: isize, size_
 pub extern "c" fn mdbx_env_open(env: *MDBX_env, pathname: [*:0]const u8, flags: c_uint, mode: mdbx_mode_t) c_int;
 pub extern "c" fn mdbx_env_close_ex(env: *MDBX_env, dont_sync: bool) c_int;
 pub extern "c" fn mdbx_env_sync_ex(env: *MDBX_env, force: bool, nonblock: bool) c_int;
+pub extern "c" fn mdbx_reader_check(env: *MDBX_env, dead: ?*c_int) c_int;
 
 // --- Transactions ---
 

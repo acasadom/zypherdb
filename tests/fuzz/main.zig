@@ -5,7 +5,8 @@
 //! For the query fuzzer, `--steps` is the number of queries per seed; for
 //! the fault and crash fuzzers, the number of statements; for the
 //! replication simulator, the moves before the faults stop. The crash fuzzer
-//! starts this program as its writer (`crash-writer`, see crash.zig).
+//! starts this program as its writer and its survivor (`crash-writer`,
+//! `crash-survivor`, see crash.zig).
 //! Without `--seed` the first seed is random. `--seeds N` runs N seeds in a
 //! row from it (a long run). Each seed's database lives in `PATH/seed-N`
 //! (by default under .zig-cache/fuzz), removed when the seed passes. Build
@@ -50,6 +51,9 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     if (args.len > 1 and std.mem.eql(u8, args[1], "crash-writer")) {
         return crash.writerMain(std.heap.smp_allocator, args[2..], out);
+    }
+    if (args.len > 1 and std.mem.eql(u8, args[1], "crash-survivor")) {
+        return crash.survivorMain(std.heap.smp_allocator, init.io, args[2..], out);
     }
     const arguments = parseArguments(args) catch {
         try out.writeAll(usage);

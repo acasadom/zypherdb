@@ -167,6 +167,10 @@ zig build fuzz -- crash --seed 42 --steps 80 --verbose
 zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- crash --seeds 200 --steps 80
 ```
 
+On odd seeds another process stays on the database all along, and the writer holds a read open as it
+works: after each writer the one that stayed must still get the write lock, and its write
+transactions must have dropped the dead writer's readers.
+
 A process crash keeps what the operating system already holds, so every durability setting must keep
 every reported commit. Power failures, which lose what was not synced, are not tested: they need a
 simulated disk.

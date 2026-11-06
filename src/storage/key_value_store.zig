@@ -170,6 +170,12 @@ pub const KeyValueStore = struct {
         return self.environment.sync();
     }
 
+    /// Drops the readers of processes that died during a read (each write
+    /// transaction now and then does it too), and tells how many it found.
+    pub fn dropDeadReaders(self: *KeyValueStore) usize {
+        return self.environment.dropDeadReaders();
+    }
+
     pub fn deinit(self: *KeyValueStore) void {
         self.abandonChangeSet();
         self.forgetSchemaDefinitions();
