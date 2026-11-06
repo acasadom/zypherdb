@@ -221,6 +221,8 @@ pub const InlineApplier = struct {
 
     fn give(context: *anyopaque, work: Work) Allocator.Error!void {
         const self: *InlineApplier = @ptrCast(@alignCast(context));
+        // As `follower.zig`'s: nothing is applied after a failure.
+        if (self.done.failure != null) return dropWork(self.allocator, work);
         try self.work.append(self.allocator, work);
         self.unapplied_bytes += workBytes(work);
     }

@@ -346,3 +346,42 @@ test "a copy the log has left behind is given to no replica" {
     try testing.expect(!bench.copyKept(1));
     try bench.expectCaughtUp();
 }
+
+test "nothing is applied after a failure: the end of a change set does not pass for all of it" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var base: [128]u8 = undefined;
+    var path: [256]u8 = undefined;
+    var store = try KeyValueStore.open(testing.allocator, try std.fmt.bufPrint(&path, "{s}", .{support.testPath(&tmp, &base)}));
+    defer store.deinit();
+    var net: MemoryNetwork = .{ .allocator = testing.allocator, .capacity = 16 << 10 };
+    defer net.deinit();
+    const wakeup = try net.network().wakeup();
+    defer wakeup.close();
+    var test_clock: TestClock = .{};
+    var applied: Signal = .{};
+    var inline_applier: replica_node.InlineApplier = .{ .allocator = testing.allocator, .clock = test_clock.clock(), .applied = &applied, .store = try store.share(), .wakeup = wakeup };
+    defer inline_applier.deinit();
+    const applier = inline_applier.applier();
+
+    const a_put = "\x01\x00\x00\x00\x00\x03key\x00\x00\x00\x05value";
+    try applier.give(.{ .change_set_part = .{ .lsn = 1, .final = false, .bytes = try testing.allocator.dupe(u8, "\xff") } });
+    inline_applier.applyNext();
+
+    // The loop gives the next part before it takes the failure.
+    try applier.give(.{ .change_set_part = .{ .lsn = 1, .final = true, .bytes = try testing.allocator.dupe(u8, a_put) } });
+    try testing.expectEqual(@as(usize, 0), inline_applier.waiting());
+    inline_applier.applyNext();
+    try testing.expectEqual(null, try store.appliedLsn());
+    try testing.expectEqual(null, try store.get("key"));
+    try testing.expect(applier.take().failure != null);
+
+    // The next conversation sends it whole.
+    applier.drop();
+    try applier.give(.{ .change_set_part = .{ .lsn = 1, .final = true, .bytes = try testing.allocator.dupe(u8, a_put) } });
+    inline_applier.applyNext();
+    try testing.expectEqual(@as(?u64, 1), try store.appliedLsn());
+    const value = (try store.get("key")).?;
+    defer testing.allocator.free(value);
+    try testing.expectEqualStrings("value", value);
+}

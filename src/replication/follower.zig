@@ -187,6 +187,9 @@ const Applier = struct {
         const self: *Applier = @ptrCast(@alignCast(context));
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
+        // What follows a failure depends on what failed: applied alone, a
+        // change set's last parts would pass for all of it.
+        if (self.done.failure != null) return replica_node.dropWork(self.allocator, work);
         try self.work.append(self.allocator, work);
         self.unapplied_bytes += replica_node.workBytes(work);
         self.condition.broadcast(self.io);
