@@ -535,6 +535,8 @@ pub export fn zypherdb_write_many(context: *Context, count: usize, queries: [*]c
     if (count == 0) return RETURN_OK;
     const scratch = context.scratch.allocator();
     defer _ = context.scratch.reset(.{ .retain_with_limit = retained_scratch });
+    context.statements.hold();
+    defer context.statements.release();
     const statements = scratch.alloc(*Statement, count) catch return outOfMemory(context);
     const executors = scratch.alloc(Executor, count) catch return outOfMemory(context);
     for (statements, executors, 0..) |*statement, *executor, index| {

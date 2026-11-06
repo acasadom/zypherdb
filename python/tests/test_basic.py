@@ -132,6 +132,15 @@ def test_write_many_runs_in_one_transaction(db):
     assert db.write_many([]) == []
 
 
+def test_write_many_takes_more_different_statements_than_the_cache_keeps(db):
+    count = 200
+    results = db.write_many([f"CREATE (d:Door {{number: {number}}}) RETURN d.number" for number in range(count)])
+    assert results == [[[number]] for number in range(count)]
+    assert db.query("MATCH (d:Door) RETURN count(d)") == [[count]]
+    # The cache went back to its size and still works.
+    assert db.write_many(["MATCH (d:Door) RETURN count(d)"] * count) == [[[count]]] * count
+
+
 def test_write_many_commits_nothing_when_one_fails(db):
     with pytest.raises(ArithmeticQueryError) as failure:
         db.write_many(["CREATE (:Door)", "RETURN 1 / 0"])

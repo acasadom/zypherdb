@@ -19,6 +19,8 @@ capacity: usize = default_capacity,
 /// By text (the statement's own copy), each with when it was last used.
 entries: std.StringHashMapUnmanaged(Entry) = .empty,
 clock: u64 = 0,
+/// Between `hold` and `release`: nothing goes, whatever the capacity.
+held: bool = false,
 
 const Entry = struct { statement: *Statement, last_used: u64 };
 
@@ -43,9 +45,36 @@ pub fn get(self: *Cache, text: []const u8) ?*Statement {
 /// With no room to keep it (capacity 0, out of memory), it is destroyed.
 pub fn put(self: *Cache, statement: *Statement) void {
     if (self.capacity == 0) return statement.destroy();
-    if (self.entries.count() >= self.capacity) self.evictLeastRecent();
+    if (!self.held and self.entries.count() >= self.capacity) self.evictLeastRecent();
     self.clock += 1;
     self.entries.put(self.allocator, statement.text, .{ .statement = statement, .last_used = self.clock }) catch statement.destroy();
+}
+
+/// Keeps every statement until `release`, over the capacity if it must: a
+/// batch runs the statements it prepared before, however many it holds.
+pub fn hold(self: *Cache) void {
+    self.held = true;
+}
+
+/// Ends `hold`, back within the capacity (expected O(entries), once): each
+/// use has its own tick of the clock, so at most `capacity` statements were
+/// used in the last `capacity` ticks. Those stay; all the others go.
+pub fn release(self: *Cache) void {
+    self.held = false;
+    if (self.entries.count() <= self.capacity) return;
+    var kept: std.StringHashMapUnmanaged(Entry) = .empty;
+    kept.ensureTotalCapacity(self.allocator, @intCast(self.capacity)) catch return self.clear();
+    const oldest_kept = self.clock -| self.capacity;
+    var iterator = self.entries.iterator();
+    while (iterator.next()) |entry| {
+        if (entry.value_ptr.last_used > oldest_kept) {
+            kept.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
+        } else {
+            entry.value_ptr.statement.destroy();
+        }
+    }
+    self.entries.deinit(self.allocator);
+    self.entries = kept;
 }
 
 /// Drops every statement.

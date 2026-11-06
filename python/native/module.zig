@@ -910,6 +910,8 @@ fn writeMany(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     if (parseTuple(args, "OO!", &capsule, &py.PyList_Type, &list) == 0) return null;
     const database = databaseOf(capsule) orelse return null;
     database.diagnostic.clear();
+    database.statements.hold();
+    defer database.statements.release();
     const count: usize = @intCast(py.PyList_Size(list));
     const statements = arena.alloc(*Statement, count) catch return py.PyErr_NoMemory();
     const executors = arena.alloc(Executor, count) catch return py.PyErr_NoMemory();

@@ -680,6 +680,31 @@ test "C ABI: write_many runs its queries in one transaction, or none of them" {
     try testing.expectEqual(@as(i64, 1), countOf(context, "MATCH (d:Door) RETURN count(d)"));
 }
 
+test "C ABI: write_many takes more different queries than the statement cache keeps" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = zypherdb_open(path.ptr, path.len).?;
+    defer zypherdb_close(context);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const count = 200;
+    var pointers: [count][*]const u8 = undefined;
+    var lengths: [count]usize = undefined;
+    for (&pointers, &lengths, 0..) |*pointer, *length, index| {
+        const text = try std.fmt.allocPrint(arena.allocator(), "CREATE (d:Door {{number: {d}}}) RETURN d.number", .{index});
+        pointer.* = text.ptr;
+        length.* = text.len;
+    }
+    var results: [count]*c_api.Result = undefined;
+    try testing.expectEqual(@as(c_int, 0), c_api.zypherdb_write_many(context, count, &pointers, &lengths, null, null, &results));
+    defer for (results) |result| zypherdb_result_free(result);
+    for (results, 0..) |result, index| try testing.expectEqual(@as(i64, @intCast(index)), zypherdb_result_int(result, 0, 0));
+    try testing.expectEqual(@as(i64, count), countOf(context, "MATCH (d:Door) RETURN count(d)"));
+}
+
 test "C ABI: a replica that forwards writes sends a write_many whole, in one request" {
     var master_tmp = testing.tmpDir(.{});
     defer master_tmp.cleanup();
