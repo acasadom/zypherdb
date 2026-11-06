@@ -72,7 +72,7 @@ fn answerRequest(graph: *Graph, scratch: Allocator, allocator: Allocator, reques
         // a few rows.
         const rows = try statement.run(&executor);
         failed.* = null;
-        try encodeDone(answer, allocator, &.{try resultOf(scratch, statement.columns, rows, &executor.entities)}, try lastLsn(graph));
+        try encodeDone(answer, allocator, &.{try resultOf(scratch, statement.columns, rows, &executor.entities)}, lastLsn(graph));
         return;
     }
     const rows = try statement.runOpen(&executor);
@@ -83,7 +83,7 @@ fn answerRequest(graph: *Graph, scratch: Allocator, allocator: Allocator, reques
         failed.* = null;
     }
     try statement.commit(graph);
-    forwarding.setAnswerLsn(answer.items, try lastLsn(graph));
+    forwarding.setAnswerLsn(answer.items, lastLsn(graph));
 }
 
 /// Runs a batch of `requests` in one transaction, as `answerRequest` runs
@@ -114,7 +114,7 @@ fn answerBatch(graph: *Graph, scratch: Allocator, allocator: Allocator, requests
         try encodeDone(answer, allocator, results, 0);
     }
     try batch.commit(graph, statements);
-    forwarding.setAnswerLsn(answer.items, try lastLsn(graph));
+    forwarding.setAnswerLsn(answer.items, lastLsn(graph));
 }
 
 fn resultOf(scratch: Allocator, columns: []const []const u8, rows: []const Executor.Row, entities: *const EntitySnapshot) !forwarding.Result {
@@ -128,8 +128,10 @@ fn encodeDone(answer: *std.ArrayList(u8), allocator: Allocator, results: []const
     try forwarding.encodeAnswer(answer, allocator, .{ .done = .{ .lsn = lsn, .results = results } });
 }
 
-/// The master's last LSN, outside any transaction.
-fn lastLsn(graph: *Graph) !u64 {
-    const state = try graph.store.changeLogState() orelse return error.NotMaster;
+/// The master's last LSN, outside any transaction, once what ran committed: a
+/// read that fails now must not answer that it failed. Then, the last LSN this
+/// store committed.
+fn lastLsn(graph: *Graph) u64 {
+    const state = (graph.store.changeLogState() catch null) orelse return graph.store.last_committed_lsn orelse 0;
     return state.next_lsn - 1;
 }
