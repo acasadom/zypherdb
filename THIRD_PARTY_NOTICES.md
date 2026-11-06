@@ -13,6 +13,9 @@ ZypherDB includes, or is derived from, the following works. Their licenses are r
 | A Noise protocol test vector, from Cacophony's vectors as distributed with snow (Jake McGinty) | `tests/replication/noise_test.zig` (tests only) | Apache License 2.0 (<https://github.com/mcginty/snow>) |
 | openCypher Technology Compatibility Kit | `tests/tck/features/` (tests only) | Apache License 2.0 (`tests/tck/LICENSE`) |
 
+`vendor/lmdb/mdb.c` carries one local change, marked in the source: on Windows, the check of whether a
+reader's process is alive asks for `SYNCHRONIZE` too.
+
 The English stop words are Lucene's English stop set, a list of 33 common English words.
 
 ## libmdbx (Apache License 2.0)
