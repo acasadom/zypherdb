@@ -127,9 +127,17 @@ pub fn Wrap(comptime Inner: type) type {
                 self.inner.close();
             }
 
+            pub fn share(self: *Environment) Environment {
+                return .{ .inner = self.inner.share() };
+            }
+
             pub fn sync(self: *Environment) Error!void {
                 if (faults.fails(.sync, false)) return error.WriteFailed;
                 return self.inner.sync();
+            }
+
+            pub fn dropDeadReaders(self: *Environment) usize {
+                return self.inner.dropDeadReaders();
             }
 
             pub fn beginRead(self: *Environment) Error!Transaction {
@@ -181,6 +189,11 @@ pub fn Wrap(comptime Inner: type) type {
             pub fn delete(self: Transaction, table: Table, key: []const u8) Error!void {
                 if (faults.fails(.delete, self.writes)) return error.DeleteFailed;
                 return self.inner.delete(table, key);
+            }
+
+            pub fn clear(self: Transaction, table: Table) Error!void {
+                if (faults.fails(.delete, self.writes)) return error.DeleteFailed;
+                return self.inner.clear(table);
             }
 
             pub fn openCursor(self: Transaction, table: Table) Error!Cursor {

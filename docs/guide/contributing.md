@@ -167,9 +167,30 @@ zig build fuzz -- crash --seed 42 --steps 80 --verbose
 zig build fuzz -Doptimize=ReleaseSafe -Dstorage-engine=mdbx -- crash --seeds 200 --steps 80
 ```
 
+On odd seeds another process stays on the database all along, and the writer holds a read open as it
+works: after each writer the one that stayed must still get the write lock, and its write
+transactions must have dropped the dead writer's readers.
+
 A process crash keeps what the operating system already holds, so every durability setting must keep
 every reported commit. Power failures, which lose what was not synced, are not tested: they need a
 simulated disk.
+
+### The real use test
+
+The fuzzers and the simulators find what they model: the simulator has no processes, no TCP and no
+bindings. `tests/real_use/run.py` runs what a user installs instead: the wheel, each node a process
+of its own, on TCP. It kills masters, replicas and writers with SIGKILL, cuts and stalls connections
+through a proxy, and checks each write against what it was answered: answered committed is there,
+answered that it did not run is not, nothing is there twice, no batch is seen in part, and in the
+end every replica equals its master. It also watches memory, file descriptors and lag.
+
+It takes about 8 minutes, so it does not run in CI: run it before each release, on Linux and macOS,
+on the wheels CI built:
+
+```bash
+python -m venv venv && venv/bin/pip install zypherdb-*.whl
+venv/bin/python -I tests/real_use/run.py
+```
 
 ### Snapshot tests
 

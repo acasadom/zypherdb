@@ -1,0 +1,401 @@
+"""Replication through the Python API: a database opened to serve replicas,
+another opened to replicate from it."""
+
+import os
+import subprocess
+import sys
+import threading
+import time
+from pathlib import Path
+
+import pytest
+
+from zypherdb import Database, Rows
+from zypherdb.errors import InvalidExpressionError, MasterUnreachableError, StorageError, WriteNotForwardedError, ZypherDBError
+
+TOKEN = "the master's token"
+
+
+@pytest.fixture
+def master(tmp_path):
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN) as db:
+        yield db
+
+
+def address_of(master):
+    return master.replication_status()["address"]
+
+
+def test_a_replica_reads_a_write_made_on_the_master(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+        master.query("CREATE (:Person {name: 'Ada'})")
+        lsn = master.last_lsn
+        assert lsn > 0
+        assert replica.wait_for(lsn, timeout=20)
+        assert replica.last_lsn == lsn
+        assert replica.query("MATCH (p:Person) RETURN p.name") == [["Ada"]]
+
+
+def test_a_replica_refuses_writes(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+        with pytest.raises(ZypherDBError, match="is a replica"):
+            replica.query("CREATE (:Person)")
+
+
+def test_both_tell_how_replication_goes(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN, name="eu-1 ñ") as replica:
+        master.query("CREATE (:Person)")
+        lsn = master.last_lsn
+        assert replica.wait_for(lsn, timeout=20)
+        status = replica.replication_status()
+        assert status["role"] == "replica"
+        assert status["name"] == "eu-1 ñ"
+        assert status["master_address"] == address_of(master)
+        assert status["phase"] in ("copying", "streaming")
+        assert status["last_contact_ms"] >= 0
+        assert status["applied_lsn"] == lsn
+        assert status["halted"] is None
+        status = master.replication_status()
+        assert status["role"] == "master"
+        assert status["last_lsn"] == lsn
+        assert len(status["replicas"]) == 1
+        served = status["replicas"][0]
+        assert served["phase"] in ("introducing", "copying", "streaming")
+        assert served["address"].startswith("127.0.0.1:")
+        assert served["connected_ms"] >= 0
+
+
+def test_a_replica_is_named_after_its_host_unless_told(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+        assert replica.replication_status()["name"]
+    with pytest.raises(ValueError, match="at most 255 bytes"):
+        Database(str(tmp_path / "other"), replicate_from=address_of(master), token=TOKEN, name="n" * 256)
+    with pytest.raises(ValueError, match="only a replica"):
+        Database(str(tmp_path / "another"), serve="127.0.0.1:0", token=TOKEN, name="eu-1")
+
+
+def wait_for_refusal(replica):
+    deadline = time.monotonic() + 20
+    while replica.replication_status()["last_refusal"] is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    return replica.replication_status()
+
+
+def test_a_replica_told_the_wrong_token_keeps_asking_and_says_why(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token="another") as replica:
+        status = wait_for_refusal(replica)
+        assert status["last_refusal"] == "token"
+        assert status["halted"] is None
+
+
+def test_a_replica_finds_its_master_by_host_name(master, tmp_path):
+    port = address_of(master).rpartition(":")[2]
+    master.query("CREATE (:Door)")
+    # The master holds 127.0.0.1 only: where the name's first address is ::1,
+    # the replica goes on to the next.
+    with Database(str(tmp_path / "replica"), replicate_from=f"localhost:{port}", token=TOKEN) as replica:
+        assert replica.wait_for(master.last_lsn, 20)
+        assert replica.query("MATCH (d:Door) RETURN count(d)") == [[1]]
+        assert replica.replication_status()["master_unresolved"] is False
+
+
+def test_a_master_serves_at_a_host_name(tmp_path):
+    with Database(str(tmp_path / "master"), serve="localhost:0", token=TOKEN) as master:
+        port = address_of(master).rpartition(":")[2]
+        master.query("CREATE (:Door)")
+        with Database(str(tmp_path / "replica"), replicate_from=f"localhost:{port}", token=TOKEN) as replica:
+            assert replica.wait_for(master.last_lsn, 20)
+
+
+def test_a_replica_says_when_its_masters_name_has_no_address(tmp_path):
+    # .invalid never resolves (RFC 6761).
+    with Database(str(tmp_path / "replica"), replicate_from="no-such-host.invalid:7000", token=TOKEN) as replica:
+        deadline = time.monotonic() + 30
+        while not replica.replication_status()["master_unresolved"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert replica.replication_status()["phase"] == "connecting"
+
+
+def test_a_master_name_with_no_address_is_refused_when_opening(tmp_path):
+    with pytest.raises(StorageError, match="HostNotResolved"):
+        Database(str(tmp_path / "master"), serve="no-such-host.invalid:7000", token=TOKEN)
+
+
+def test_replication_writes_nothing_to_stderr(tmp_path, capfd):
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN) as db:
+        with Database(str(tmp_path / "refused"), replicate_from=address_of(db), token="another") as refused:
+            wait_for_refusal(refused)
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(db), token=TOKEN) as replica:
+            db.query("CREATE ()")
+            assert replica.wait_for(db.last_lsn, timeout=20)
+    assert capfd.readouterr().err == ""
+
+
+def test_replicating_in_clear_if_both_sides_say_so(tmp_path):
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN, encrypted=False) as clear_master:
+        clear_master.query("CREATE (:Person {name: 'Ada'})")
+        lsn = clear_master.last_lsn
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(clear_master), token=TOKEN, encrypted=False) as replica:
+            assert replica.wait_for(lsn, timeout=20)
+            assert replica.query("MATCH (p:Person) RETURN p.name") == [["Ada"]]
+
+
+@pytest.mark.parametrize("master_encrypts", [True, False])
+def test_a_side_that_encrypts_and_one_that_does_not_are_refused_and_the_replica_says_why(master_encrypts, tmp_path):
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN, encrypted=master_encrypts) as db:
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(db), token=TOKEN, encrypted=not master_encrypts) as replica:
+            status = wait_for_refusal(replica)
+            assert status["last_refusal"] == "encryption"
+            assert status["halted"] is None
+
+
+def test_without_replication(tmp_path):
+    with Database(str(tmp_path / "db")) as db:
+        db.query("CREATE ()")
+        assert db.last_lsn == 0
+        assert db.wait_for(10, timeout=0)
+        assert db.replication_status() is None
+
+
+def test_a_master_cannot_become_a_replica(master, tmp_path):
+    path = str(tmp_path / "other")
+    with Database(path, serve="127.0.0.1:0", token=TOKEN):
+        pass
+    with pytest.raises(StorageError, match="is a master"):
+        Database(path, replicate_from=address_of(master), token=TOKEN)
+
+
+def test_a_database_holding_data_cannot_become_a_replica(master, tmp_path):
+    path = str(tmp_path / "other")
+    with Database(path) as db:
+        db.query("CREATE (:Person)")
+    with pytest.raises(StorageError, match="holds data"):
+        Database(path, replicate_from=address_of(master), token=TOKEN)
+    with Database(path) as db:
+        assert db.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+
+
+def test_a_database_whose_schema_changed_cannot_become_a_replica(master, tmp_path):
+    path = str(tmp_path / "other")
+    with Database(path) as db:
+        db.query("CREATE INDEX person_name FOR (p:Person) ON (p.name)")
+        db.query("DROP INDEX person_name")
+    with pytest.raises(StorageError, match="holds data"):
+        Database(path, replicate_from=address_of(master), token=TOKEN)
+
+
+def test_a_database_opened_but_never_written_can_become_a_replica(master, tmp_path):
+    path = str(tmp_path / "other")
+    with Database(path):
+        pass
+    with Database(path, replicate_from=address_of(master), token=TOKEN):
+        pass
+
+
+def test_the_role_needs_a_token_and_only_one_role(tmp_path):
+    with pytest.raises(ValueError, match="token"):
+        Database(str(tmp_path / "db"), serve="127.0.0.1:0")
+    with pytest.raises(ValueError, match="not both"):
+        Database(str(tmp_path / "db"), serve="127.0.0.1:0", replicate_from="127.0.0.1:1", token=TOKEN)
+
+
+def test_closing_stops_serving(tmp_path):
+    path = str(tmp_path / "master")
+    with Database(path, serve="127.0.0.1:0", token=TOKEN) as db:
+        address = address_of(db)
+    with Database(path, serve=address, token=TOKEN) as db:
+        assert address_of(db) == address
+
+
+_STANDBY = r"""
+import sys, time
+from zypherdb import Database
+
+path, address = sys.argv[1], sys.argv[2]
+with Database(path, serve=address, token="the master's token") as db:
+    print(db.replication_status()["standby"], flush=True)
+    sys.stdin.readline()  # the parent's master closed
+    deadline = time.monotonic() + 20
+    while db.replication_status()["standby"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    print(db.replication_status()["standby"], flush=True)
+    db.query("CREATE (:Person {name: 'Grace'})")
+    print(db.last_lsn, flush=True)
+    sys.stdin.readline()  # the parent read it on the replica
+"""
+
+
+def test_a_process_standing_by_takes_over_and_a_reader_without_a_role_waits(tmp_path):
+    path = str(tmp_path / "master")
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
+    master = Database(path, serve="127.0.0.1:0", token=TOKEN)
+    address = address_of(master)
+    standby = subprocess.Popen(
+        [sys.executable, "-c", _STANDBY, path, address],
+        env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    )
+    try:
+        with Database(str(tmp_path / "replica"), replicate_from=address, token=TOKEN) as replica:
+            assert standby.stdout.readline().strip() == "True"
+            master.query("CREATE (:Person {name: 'Ada'})")
+            assert replica.wait_for(master.last_lsn, timeout=20)
+            master.close()
+            standby.stdin.write("closed\n")
+            standby.stdin.flush()
+            assert standby.stdout.readline().strip() == "False"
+            lsn = int(standby.stdout.readline())
+            assert replica.wait_for(lsn, timeout=20)
+            assert replica.query("MATCH (p:Person) RETURN p.name ORDER BY p.name") == [["Ada"], ["Grace"]]
+            # A reader without a role on the replica waits for it too.
+            output = subprocess.run(
+                [sys.executable, "-c", _READER, str(tmp_path / "replica"), str(lsn)],
+                env=environment, capture_output=True, text=True, timeout=60, check=True,
+            ).stdout.splitlines()
+            assert output == ["True", "[['Ada'], ['Grace']]", "False"]
+            standby.stdin.write("done\n")
+            standby.stdin.flush()
+        assert standby.wait(timeout=60) == 0
+    finally:
+        master.close()
+        if standby.poll() is None:
+            standby.kill()
+        standby.wait()
+        standby.stdin.close()
+        standby.stdout.close()
+
+
+_READER = r"""
+import sys
+from zypherdb import Database
+
+path, lsn = sys.argv[1], int(sys.argv[2])
+with Database(path) as db:
+    print(db.wait_for(lsn, timeout=20))
+    print(db.query("MATCH (p:Person) RETURN p.name ORDER BY p.name"))
+    print(db.wait_for(lsn + 1, timeout=0.2))
+"""
+
+
+def forwarding_replica(master, tmp_path, name="replica", **options):
+    replica = Database(str(tmp_path / name), replicate_from=address_of(master), token=TOKEN, forward_writes=True, **options)
+    # Its first copy: a write before it has no master's database to name.
+    master.query("CREATE (:Seed)")
+    assert replica.wait_for(master.last_lsn, timeout=20)
+    return replica
+
+
+def test_a_replica_that_forwards_writes_sends_them_to_its_master(master, tmp_path):
+    with forwarding_replica(master, tmp_path) as replica:
+        created = replica.query("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"})
+        assert isinstance(created, Rows) and created.visible
+        [[ada]] = created
+        assert ada.labels == ("Person",)
+        assert ada.properties == {"name": "Ada"}
+        # Read-your-writes, and the master has it.
+        assert replica.query("MATCH (p:Person) RETURN p.name") == [["Ada"]]
+        assert master.query("MATCH (p:Person) RETURN p.name") == [["Ada"]]
+        replica.query("CREATE CONSTRAINT person_name FOR (p:Person) REQUIRE p.name IS UNIQUE")
+        with pytest.raises(ZypherDBError, match="constraint .person_name."):
+            replica.query("CREATE (:Person {name: 'Ada'})")
+        assert replica.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+
+
+def test_a_replica_refuses_what_it_cannot_forward(master, tmp_path):
+    with forwarding_replica(master, tmp_path) as replica:
+        replica._define_procedure("test.names", [], [("name", "STRING?")], [["Ada"]])
+        with pytest.raises(WriteNotForwardedError, match="defined in this process"):
+            replica.query("CALL test.names() YIELD name CREATE (:Person {name: name})")
+        assert replica.query("CALL test.names() YIELD name RETURN name") == [["Ada"]]
+        with pytest.raises(WriteNotForwardedError, match="LOAD CSV"):
+            replica.query("LOAD CSV FROM 'file:///people.csv' AS row CREATE (:Person)")
+        with pytest.raises(ZypherDBError, match="PROFILE"):
+            replica.profile("CREATE (:Person)")
+        with pytest.raises(WriteNotForwardedError, match="write blocks"):
+            with replica.write():
+                pass
+        with pytest.raises(StorageError):
+            replica.add_node(replica.allocate_node_id(), "Person")
+        assert master.query("MATCH (p:Person) RETURN count(p)") == [[0]]
+
+
+def test_a_forwarded_write_under_way_holds_up_no_other_thread(master, tmp_path):
+    # Read-your-writes binds only the thread that wrote: while its write is
+    # on its way to the master, other threads read on the replica as ever.
+    with forwarding_replica(master, tmp_path) as replica:
+        outcome = {}
+        writer = threading.Thread(target=lambda: outcome.setdefault("rows", replica.query("CREATE (:Person) RETURN 1")))
+        reader = threading.Thread(target=lambda: outcome.setdefault("read", replica.query("MATCH (p:Person) RETURN count(p)")))
+        with master.write():  # holds the master's writer: the forwarded write waits there
+            writer.start()
+            time.sleep(0.3)
+            reader.start()
+            reader.join(timeout=2)
+            read_while_under_way = not reader.is_alive()
+        writer.join()
+        reader.join()
+        assert read_while_under_way, "a read waited for another thread's forwarded write"
+        assert outcome["read"] == [[0]]
+        assert outcome["rows"] == [[1]]
+
+
+def test_a_forwarded_write_to_a_master_gone_did_not_run(tmp_path):
+    master = Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN)
+    try:
+        replica = forwarding_replica(master, tmp_path, forward_timeout=1.0)
+    finally:
+        master.close()
+    with replica:
+        with pytest.raises(MasterUnreachableError, match="did not run"):
+            replica.query("CREATE (:Person)")
+
+
+def test_a_process_standing_by_on_a_replica_forwards_writes_too(master, tmp_path):
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
+    with forwarding_replica(master, tmp_path) as replica:
+        output = subprocess.run(
+            [sys.executable, "-c", _FORWARDING_STANDBY, str(tmp_path / "replica"), address_of(master)],
+            env=environment, capture_output=True, text=True, timeout=60, check=True,
+        ).stdout.splitlines()
+        assert output == ["True", "[['Grace']]"]
+        assert replica.wait_for(master.last_lsn, timeout=20)
+        assert replica.query("MATCH (p:Person) RETURN p.name") == [["Grace"]]
+
+
+_FORWARDING_STANDBY = r"""
+import sys
+from zypherdb import Database
+
+path, address = sys.argv[1], sys.argv[2]
+with Database(path, replicate_from=address, token="the master's token", forward_writes=True) as db:
+    print(db.replication_status()["standby"])
+    print(db.query("CREATE (p:Person {name: 'Grace'}) RETURN p.name"))
+"""
+
+
+def test_a_replica_forwards_a_write_many_whole(master, tmp_path):
+    with forwarding_replica(master, tmp_path) as replica:
+        before = master.last_lsn
+        created, counted = replica.write_many([
+            ("CREATE (p:Person {name: $name}) RETURN p", {"name": "Ada"}),
+            "MATCH (p:Person) RETURN count(p)",
+        ])
+        assert master.last_lsn == before + 1
+        assert created.visible and counted.visible
+        [[ada]] = created
+        assert ada.properties == {"name": "Ada"}
+        assert counted == [[1]]
+        assert replica.query("MATCH (p:Person) RETURN count(p)") == [[1]]
+        # One the master fails commits nothing and says which query failed.
+        with pytest.raises(ZypherDBError) as failure:
+            replica.write_many(["CREATE (:Person)", "RETURN 1 / 0"])
+        assert failure.value.statement == 1
+        assert master.last_lsn == before + 1
+        # One that only reads runs here.
+        assert replica.write_many(["MATCH (p:Person) RETURN p.name"]) == [[["Ada"]]]
+        # What cannot go in a batch is refused here, wherever it would run.
+        replica._define_procedure("test.names", [], [("name", "STRING?")], [["Bob"]])
+        with pytest.raises(InvalidExpressionError, match="defined in this process") as refused:
+            replica.write_many(["CREATE (:Person)", "CALL test.names() YIELD name CREATE (:Person {name: name})"])
+        assert refused.value.statement == 1

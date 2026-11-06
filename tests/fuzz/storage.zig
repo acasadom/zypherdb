@@ -30,6 +30,12 @@ pub const Options = struct {
     steps: u32 = 1000,
     /// Prints every operation as it runs.
     verbose: bool = false,
+    /// A directory for a replica: with one, a seed of even number starts the
+    /// change log, and at each check the replica applies the new change sets
+    /// and must equal the model too. The replica starts empty (seeds that are
+    /// multiples of 4) or as a copy of the database at the first check,
+    /// and now and then loads a new copy over what it holds.
+    replica: ?[]const u8 = null,
 };
 
 pub const Operation = enum {
@@ -114,6 +120,8 @@ pub const Swarm = struct {
 pub const Statistics = struct {
     performed: [operation_count]u64 = @splat(0),
     refused: [operation_count][refusals.len]u64 = @splat(@splat(0)),
+    /// Copies of the database a replica loaded over what it held.
+    reloads: u64 = 0,
 
     /// The failures the model predicts.
     pub const refusals = [_]anyerror{ error.NodeStillConnected, error.UnsupportedPropertyType, error.ConstraintViolation, error.InvalidExpression };
@@ -126,6 +134,7 @@ pub const Statistics = struct {
 
     pub fn add(self: *Statistics, other: Statistics) void {
         for (&self.performed, other.performed) |*total, count| total.* += count;
+        self.reloads += other.reloads;
         for (&self.refused, other.refused) |*totals, counts| {
             for (totals, counts) |*total, count| total.* += count;
         }
@@ -138,6 +147,7 @@ pub const Statistics = struct {
             for (refused, refusals) |count, refusal| if (count > 0) try writer.print(", {d} {t}", .{ count, refusal });
             try writer.writeAll("\n");
         }
+        if (self.reloads > 0) try writer.print("  replica copy reloads: {d}\n", .{self.reloads});
     }
 };
 
@@ -173,6 +183,14 @@ const Fuzzer = struct {
     operation: Operation = .create_node,
     history: History = .{},
     statistics: Statistics = .{},
+    /// Follows the database through its change log (`Options.replica`).
+    replica: ?KeyValueStore = null,
+    /// The next change set the replica applies.
+    replica_next_lsn: u64 = 1,
+    /// Where the replica is copied to at the first check, if it starts as a copy.
+    replica_copy_path: ?[]const u8 = null,
+    /// Whether the replica loads new copies now and then.
+    reloads: bool = false,
 
     /// Fuzzing needs no durability: commits only reach the page cache.
     const store_options = KeyValueStore.Options{ .durability = .deferred };
@@ -193,13 +211,23 @@ const Fuzzer = struct {
         };
         self.swarm = Swarm.choose(self.random());
         self.graph = Graph.init(&self.store, allocator);
-        if (options.verbose) try out.print("seed {d}, swarm: {f}\n", .{ options.seed, self.swarm });
+        if (options.replica) |replica_path| if (options.seed % 2 == 0) {
+            try self.store.startChangeLog();
+            if (options.seed % 4 == 0) {
+                self.replica = try KeyValueStore.openWithOptions(allocator, replica_path, store_options);
+            } else {
+                self.replica_copy_path = replica_path;
+                self.reloads = true;
+            }
+        };
+        if (options.verbose) try out.print("seed {d}, swarm: {f}{s}\n", .{ options.seed, self.swarm, if (self.replica != null) ", with a replica" else if (self.replica_copy_path != null) ", with a replica from a copy" else "" });
     }
 
     fn deinit(self: *Fuzzer) void {
         if (self.graph.inWriteTransaction()) self.graph.abortWrite();
         if (self.snapshot) |*snapshot| snapshot.deinit();
         self.model.deinit();
+        if (self.replica) |*replica| replica.deinit();
         self.store.deinit();
         self.values.deinit();
         self.scratch.deinit();
@@ -603,6 +631,59 @@ const Fuzzer = struct {
         const pools = storage_compare.Pools{ .labels = self.swarm.labels, .types = self.swarm.types };
         if (try storage_compare.difference(self.scratch.allocator(), &self.graph, &self.model, pools)) |difference| {
             return self.fail("the database differs from the model: {s}", .{difference});
+        }
+        if (!self.graph.inWriteTransaction()) try self.verifyReplica();
+    }
+
+    /// The replica loads a copy of the database, in parts of random size.
+    fn loadCopy(self: *Fuzzer) !void {
+        const replica = &self.replica.?;
+        var copy: std.Io.Writer.Allocating = .init(self.allocator);
+        defer copy.deinit();
+        const lsn = try self.store.writeCopy(&copy.writer);
+        var rest = copy.written();
+        while (rest.len > 0) {
+            const part = rest[0 .. 1 + self.random().uintLessThan(usize, @min(rest.len, 4096))];
+            if (try replica.applyCopyPart(part, false) != null) return self.fail("a copy was loaded before its end", .{});
+            rest = rest[part.len..];
+        }
+        if (try replica.applyCopyPart("", true) != lsn) return self.fail("the copy loaded is not the one made", .{});
+        self.replica_next_lsn = lsn + 1;
+    }
+
+    /// The replica applies the change sets committed since the last check,
+    /// then must pass the same checks as the database.
+    fn verifyReplica(self: *Fuzzer) !void {
+        if (self.replica_copy_path) |path| {
+            self.replica = try KeyValueStore.openWithOptions(self.allocator, path, store_options);
+            try self.loadCopy();
+            self.replica_copy_path = null;
+        } else if (self.reloads and self.random().uintLessThan(u8, 8) == 0) {
+            // As a replica that fell behind the log does.
+            try self.loadCopy();
+            self.statistics.reloads += 1;
+        }
+        const replica = &(self.replica orelse return);
+        const state = (try self.store.changeLogState()) orelse return self.fail("the change log is not started", .{});
+        while (self.replica_next_lsn < state.next_lsn) : (self.replica_next_lsn += 1) {
+            const bytes = (try self.store.changeSet(self.replica_next_lsn)) orelse return self.fail("change set {d} is missing", .{self.replica_next_lsn});
+            defer self.allocator.free(bytes);
+            if (try replica.applyChangeSet(self.replica_next_lsn, bytes) != .applied) return self.fail("change set {d} was not applied", .{self.replica_next_lsn});
+        }
+        // The last one sent again (a reconnection) is skipped.
+        if (self.replica_next_lsn > 1) {
+            const last = self.replica_next_lsn - 1;
+            const bytes = (try self.store.changeSet(last)) orelse return self.fail("change set {d} is missing", .{last});
+            defer self.allocator.free(bytes);
+            if (try replica.applyChangeSet(last, bytes) != .already_applied) return self.fail("change set {d} was applied twice", .{last});
+        }
+        var replica_graph = Graph.init(replica, self.allocator);
+        var report = try zypherdb.integrity.check(&replica_graph, self.allocator);
+        defer report.deinit();
+        if (!report.ok()) return self.fail("the replica: {f}", .{report});
+        const pools = storage_compare.Pools{ .labels = self.swarm.labels, .types = self.swarm.types };
+        if (try storage_compare.difference(self.scratch.allocator(), &replica_graph, &self.model, pools)) |difference| {
+            return self.fail("the replica differs from the model: {s}", .{difference});
         }
     }
 

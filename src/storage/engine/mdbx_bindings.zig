@@ -93,6 +93,7 @@ pub extern "c" fn mdbx_env_set_geometry(env: *MDBX_env, size_lower: isize, size_
 pub extern "c" fn mdbx_env_open(env: *MDBX_env, pathname: [*:0]const u8, flags: c_uint, mode: mdbx_mode_t) c_int;
 pub extern "c" fn mdbx_env_close_ex(env: *MDBX_env, dont_sync: bool) c_int;
 pub extern "c" fn mdbx_env_sync_ex(env: *MDBX_env, force: bool, nonblock: bool) c_int;
+pub extern "c" fn mdbx_reader_check(env: *MDBX_env, dead: ?*c_int) c_int;
 
 // --- Transactions ---
 
@@ -113,6 +114,8 @@ pub extern "c" fn mdbx_dbi_open(txn: *MDBX_txn, name: ?[*:0]const u8, flags: c_u
 pub extern "c" fn mdbx_get(txn: *const MDBX_txn, dbi: MDBX_dbi, key: *const MDBX_val, data: *MDBX_val) c_int;
 pub extern "c" fn mdbx_put(txn: *MDBX_txn, dbi: MDBX_dbi, key: *const MDBX_val, data: *MDBX_val, flags: c_uint) c_int;
 pub extern "c" fn mdbx_del(txn: *MDBX_txn, dbi: MDBX_dbi, key: *const MDBX_val, data: ?*const MDBX_val) c_int;
+/// Empties table `dbi` (`del` false keeps the table itself).
+pub extern "c" fn mdbx_drop(txn: *MDBX_txn, dbi: MDBX_dbi, del: bool) c_int;
 
 // --- Cursors ---
 

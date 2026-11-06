@@ -20,7 +20,7 @@ import zypherdb, tempfile
 db = zypherdb.Database(tempfile.mkdtemp())
 ```
 
-### `Database(path, durability="full", temporals="python", import_directory=None)`
+### `Database(path, durability="full", temporals="python", import_directory=None, serve=None, replicate_from=None, token=None, name=None, forward_writes=False, forward_timeout=30.0)`
 
 Opens the database in directory `path`, creating the directory and the database if they do not
 exist. A database is used as a context manager (`with Database(path) as db:`), which closes it on
@@ -41,11 +41,29 @@ exit, or closed with `close()`.
 - `import_directory` — the directory `LOAD CSV` reads from: a query's `file:///name.csv` is
   `name.csv` in it, and nothing outside it can be read. Without one, `LOAD CSV` raises
   `ExternalResourceError`. A path that is not a directory raises `ValueError`.
+- `serve`, `replicate_from`, `token` — a replication role (see [replication](replication.md)):
+  `serve="host:port"` makes the database a master that serves replicas there, and
+  `replicate_from="host:port"` a replica of the master there, which refuses writes (the host an IP
+  address or a name). Either needs
+  `token`, the secret master and replicas share; both at once raise `ValueError`.
+- `encrypted` — whether replication is encrypted with the token (`True`, the default; the token
+  never travels). `False`, on the master and on its replicas alike, sends the token and the data
+  in clear: only on a trusted network or a tunnel.
+- `name` — what a replica calls itself in its master's status (at most 255 bytes in UTF-8); by
+  default the name of its host. Given to a database that is not a replica, `ValueError`.
+- `forward_writes`, `forward_timeout` — a replica with `forward_writes=True` sends the queries
+  that write to its master instead of refusing them, and returns their rows once the change is
+  applied here, each taking at most `forward_timeout` seconds (see
+  [replication](replication.md#writing-on-a-replica)). Given to a database that is not a replica,
+  `ValueError`.
 
-### `query(text, parameters=None, /, **named) -> list[list]`
+### `query(text, parameters=None, /, **named) -> Rows`
 
 Runs one openCypher query ([reference](cypher)) and returns its rows: a list with one list per
-row, one value per `RETURN` item. A query without `RETURN` returns `[]`. Parameters (`$name` in the
+row, one value per `RETURN` item. A query without `RETURN` returns `[]`. The list is a `Rows`, a
+`list` subclass whose `visible` attribute is `True` but for a write a replica forwarded to its
+master and had not applied yet when `forward_timeout` ran out
+([replication](replication.md#writing-on-a-replica)). Parameters (`$name` in the
 query) come from a dict, keyword arguments, or both:
 
 ```python
@@ -153,6 +171,35 @@ print(db.query("MATCH (c:Card) RETURN count(c)"))
 [[4]]
 ```
 
+### `write_many(statements) -> list[Rows]`
+
+Runs several queries in one transaction and returns the rows of each, in order. Each item is a
+query's text, or a `(text, parameters)` pair. Each query sees what the ones before it wrote, and
+they commit together, as one change: if one fails, none does, and the `QueryError` raised has the
+index of the one that failed in `statement` (`None` when none did and the commit failed).
+
+```python
+made, counted = db.write_many([
+    ("CREATE (c:Card {number: $number}) RETURN c.number", {"number": 9}),
+    "MATCH (c:Card) RETURN count(c)",
+])
+print(made, counted)
+try:
+    db.write_many(["CREATE (:Card {number: 10})", "RETURN 1 / 0"])
+except zypherdb.QueryError as error:
+    print(error.statement, db.query("MATCH (c:Card {number: 10}) RETURN count(c)"))
+```
+
+```text
+[[9]] [[5]]
+1 [[0]]
+```
+
+A batch holds queries only: no schema command (`CREATE INDEX`...), `EXPLAIN`, `PROFILE`, `LOAD CSV`
+or procedure from `define_procedure`; one raises `InvalidExpressionError`. On a replica that
+forwards writes, a batch that writes goes to the master as one request (see
+[Replication](replication.md#writing-on-a-replica)); one that only reads runs on the replica.
+
 ### Mutators
 
 Direct writes, each its own transaction unless inside `write()`:
@@ -181,6 +228,16 @@ Direct writes, each its own transaction unless inside `write()`:
   > proportion to it, so on a large database it is slow and heavy; it repairs nothing. A problem it
   > reports is a bug in ZypherDB: please report it with the output.
 - `sync()` — writes every commit so far to disk (for `"deferred"` durability).
+- `last_lsn` — the number of the last change the database has: on a master the last write
+  committed, on a replica the last change applied, also in a process that opened it without a
+  role; 0 on a database that is neither.
+- `wait_for(lsn, timeout=5.0) -> bool` — on a replica, waits until the master's change `lsn` is
+  applied, at most `timeout` seconds, and returns whether it is: call it before reading a write
+  just made on the master, also in a process that opened the replica without a role. `True` at
+  once on a database that is no replica.
+- `replication_status() -> dict | None` — how replication goes, for monitoring: a master's
+  replicas (name, address, phase, lag), or a replica's phase, progress and why it halted
+  (see [replication](replication.md#watching-it)); `None` without replication.
 - `close()` — releases the database. Using it afterwards raises `ClosedError`.
 
 ## Values
@@ -266,7 +323,7 @@ print(db.query("RETURN duration('P1M2DT3H')"), str(zypherdb.Duration(months=14, 
 ## Exceptions
 
 Every exception is a `zypherdb.ZypherDBError`. A failed query raises a `QueryError`, with `code` and
-`message` attributes:
+`message` attributes (and `statement`, in a `write_many`):
 
 | Exception | Code | Raised when |
 | --- | --- | --- |
@@ -279,6 +336,9 @@ Every exception is a `zypherdb.ZypherDBError`. A failed query raises a `QueryErr
 | `ExternalResourceError` | 11 | `LOAD CSV` could not read its file (off, outside the import directory, missing, or not CSV) |
 | `ParameterMissingError` | 8 | a `$parameter` was not passed |
 | `ArithmeticQueryError` | 9 | integer overflow or division by zero (also an `ArithmeticError`) |
+| `WriteNotForwardedError` | 12 | a replica that forwards writes cannot forward this one ([replication](replication.md#writing-on-a-replica)) |
+| `MasterUnreachableError` | 13 | a forwarded write did not run: the master could not be reached, or turned it away |
+| `OutcomeUnknownError` | 14 | a forwarded write was sent, then the connection was lost or the time ran out: it may have run or not |
 
 and outside queries:
 
@@ -294,9 +354,13 @@ character U+0000 raises `ValueError` (a query with one raises `InvalidExpression
 
 ## Concurrency
 
-- **Threads.** Share one `Database` among threads. Its calls take turns (one query at a time per
-  `Database`), and a query releases the global interpreter lock while it runs, so the rest of the
-  program carries on. A read query sees one consistent snapshot.
+- **Threads.** Share one `Database` among threads. Each thread calls through a session of its own,
+  opened on its first call, so reads run in parallel and never wait for a write; writes take turns,
+  one write transaction at a time (a `write()` block holds the writer until it ends). A thread
+  reads its own writes; no thread waits for another's unless it writes too. Queries and writes
+  release the global interpreter lock while they run or wait. A read query sees one consistent
+  snapshot. A `prepare()`d query may be run by any thread (each plans it once). `close()` waits
+  for the calls under way in other threads, then later calls raise `ClosedError`.
 - **Processes.** Each process opens the database itself. Reads run in parallel across processes;
   writes are serialized, one write transaction at a time. Do not open the same directory twice in
   one process, and do not hand a `Database` to another process.

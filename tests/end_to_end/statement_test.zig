@@ -173,6 +173,33 @@ test "the statement cache keeps the most recently used" {
     try testing.expect(cache.get(texts[0]) == null);
 }
 
+test "the statement cache held keeps them all, then goes back within its capacity" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var cache = StatementCache.init(testing.allocator);
+    defer cache.deinit();
+    cache.capacity = 2;
+    const texts = [_][]const u8{ "RETURN 1", "RETURN 2", "RETURN 3", "RETURN 4" };
+    cache.hold();
+    for (texts) |text| cache.put(try Statement.prepare(testing.allocator, text, .{ .graph = &g }));
+    for (texts) |text| try testing.expect(cache.get(text) != null);
+    cache.release();
+    try testing.expectEqual(@as(usize, 2), cache.entries.count());
+    try testing.expect(cache.get(texts[0]) == null);
+    try testing.expect(cache.get(texts[1]) == null);
+    try testing.expect(cache.get(texts[2]) != null);
+    try testing.expect(cache.get(texts[3]) != null);
+    // Back to its usual way: one more makes the least recent go.
+    cache.put(try Statement.prepare(testing.allocator, texts[0], .{ .graph = &g }));
+    try testing.expectEqual(@as(usize, 2), cache.entries.count());
+    try testing.expect(cache.get(texts[2]) == null);
+}
+
 test "SHOW INDEXES and SHOW CONSTRAINTS name their columns as Neo4j does" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();

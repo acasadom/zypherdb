@@ -393,3 +393,355 @@ test "C ABI: a prepared statement runs again with new parameters" {
     const broken = "MATCH (n RETURN n";
     try testing.expect(c_api.zypherdb_prepare(context, broken.ptr, broken.len) == null);
 }
+
+/// The nodes thread `thread` made, as its session reads them.
+fn countOwn(session: *c_api.Context, thread: usize) !i64 {
+    var text_buffer: [64]u8 = undefined;
+    const text = try std.fmt.bufPrint(&text_buffer, "MATCH (n:T {{thread: {d}}}) RETURN count(n)", .{thread});
+    const result = zypherdb_query(session, text.ptr, text.len) orelse return error.QueryFailed;
+    defer zypherdb_result_free(result);
+    return zypherdb_result_int(result, 0, 0);
+}
+
+/// Writes and reads back, in a session of its own, while other threads do.
+fn writeAndReadBack(context: *c_api.Context, thread: usize, writes: usize, failed: *std.atomic.Value(bool)) void {
+    const session = c_api.zypherdb_open_session(context) orelse return failed.store(true, .release);
+    defer zypherdb_close(session);
+    var text_buffer: [64]u8 = undefined;
+    for (0..writes) |written| {
+        const text = std.fmt.bufPrint(&text_buffer, "CREATE (:T {{thread: {d}}})", .{thread}) catch unreachable;
+        const result = zypherdb_query(session, text.ptr, text.len) orelse return failed.store(true, .release);
+        zypherdb_result_free(result);
+        // Its own write, at once: no other thread's write held it up.
+        const own = countOwn(session, thread) catch return failed.store(true, .release);
+        if (own != @as(i64, @intCast(written + 1))) return failed.store(true, .release);
+    }
+}
+
+test "C ABI: sessions of several threads write and read at once, each reading its own writes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = zypherdb_open(path.ptr, path.len).?;
+    const import_directory = "imports";
+    try testing.expectEqual(RETURN_OK, c_api.zypherdb_set_import_directory(context, import_directory.ptr, import_directory.len));
+
+    const thread_count = 8;
+    const writes = 50;
+    var failed: std.atomic.Value(bool) = .init(false);
+    var threads: [thread_count]std.Thread = undefined;
+    for (&threads, 0..) |*thread, index| thread.* = try std.Thread.spawn(.{}, writeAndReadBack, .{ context, index, writes, &failed });
+    for (threads) |thread| thread.join();
+    try testing.expect(!failed.load(.acquire));
+
+    // A write block of one session holds up no read of another.
+    const reader = c_api.zypherdb_open_session(context).?;
+    try testing.expectEqualStrings(import_directory, reader.import_directory.?);
+    try testing.expectEqual(RETURN_OK, zypherdb_begin_write(context));
+    try testing.expectEqual(RETURN_OK, zypherdb_add_node(context, 1_000_000, "T".ptr, "T".len));
+    const all = "MATCH (n:T) RETURN count(n)";
+    const before = zypherdb_query(reader, all.ptr, all.len).?;
+    try testing.expectEqual(@as(i64, thread_count * writes), zypherdb_result_int(before, 0, 0));
+    zypherdb_result_free(before);
+    try testing.expectEqual(RETURN_OK, zypherdb_commit_write(context));
+
+    // The database stays open while a session is.
+    zypherdb_close(context);
+    const after = zypherdb_query(reader, all.ptr, all.len).?;
+    try testing.expectEqual(@as(i64, thread_count * writes + 1), zypherdb_result_int(after, 0, 0));
+    zypherdb_result_free(after);
+    zypherdb_close(reader);
+}
+
+test "C ABI: a replica opened with its role follows its master and waits to see its writes" {
+    var master_tmp = testing.tmpDir(.{});
+    defer master_tmp.cleanup();
+    var replica_tmp = testing.tmpDir(.{});
+    defer replica_tmp.cleanup();
+    var master_buffer: [256]u8 = undefined;
+    const master_path = std.fmt.bufPrint(&master_buffer, ".zig-cache/tmp/{s}", .{&master_tmp.sub_path}) catch unreachable;
+    var replica_buffer: [256]u8 = undefined;
+    const replica_path = std.fmt.bufPrint(&replica_buffer, ".zig-cache/tmp/{s}", .{&replica_tmp.sub_path}) catch unreachable;
+    const token = "the master's token";
+
+    const any_port = "127.0.0.1:0";
+    const master = c_api.zypherdb_open_replicated(master_path.ptr, master_path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0, true).?;
+    defer zypherdb_close(master);
+    var length: usize = 0;
+    const master_status = c_api.zypherdb_replication_status(master, &length).?[0..length];
+    try testing.expect(std.mem.startsWith(u8, master_status, "{\"role\":\"master\",\"standby\":false,\"address\":\"127.0.0.1:"));
+    const address_start = std.mem.indexOf(u8, master_status, "127.0.0.1:").?;
+    var address_buffer: [64]u8 = undefined;
+    const address = try std.fmt.bufPrint(&address_buffer, "{s}", .{master_status[address_start..std.mem.indexOfScalarPos(u8, master_status, address_start, '"').?]});
+
+    const name = "replica-1";
+    const replica = c_api.zypherdb_open_replicated(replica_path.ptr, replica_path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, name.ptr, name.len, false, 0, true).?;
+    defer zypherdb_close(replica);
+
+    const create = "CREATE (:Person {name: 'Ada'})";
+    zypherdb_result_free(zypherdb_query(master, create.ptr, create.len).?);
+    const lsn = c_api.zypherdb_last_lsn(master);
+    try testing.expect(lsn > 0);
+    try testing.expect(c_api.zypherdb_wait_for(replica, lsn, 20_000));
+    try testing.expectEqual(lsn, c_api.zypherdb_last_lsn(replica));
+
+    const count = "MATCH (p:Person) RETURN count(p)";
+    const result = zypherdb_query(replica, count.ptr, count.len).?;
+    defer zypherdb_result_free(result);
+    try testing.expectEqual(@as(i64, 1), zypherdb_result_int(result, 0, 0));
+    try testing.expectEqual(null, zypherdb_query(replica, create.ptr, create.len));
+
+    // Sessions of other threads take the database's role.
+    const master_session = c_api.zypherdb_open_session(master).?;
+    defer zypherdb_close(master_session);
+    const replica_session = c_api.zypherdb_open_session(replica).?;
+    defer zypherdb_close(replica_session);
+    zypherdb_result_free(zypherdb_query(master_session, create.ptr, create.len).?);
+    try testing.expect(c_api.zypherdb_wait_for(replica_session, c_api.zypherdb_last_lsn(master_session), 20_000));
+    const both = zypherdb_query(replica_session, count.ptr, count.len).?;
+    defer zypherdb_result_free(both);
+    try testing.expectEqual(@as(i64, 2), zypherdb_result_int(both, 0, 0));
+    try testing.expectEqual(null, zypherdb_query(replica_session, create.ptr, create.len));
+
+    const replica_status = c_api.zypherdb_replication_status(replica, &length).?[0..length];
+    try testing.expect(std.mem.startsWith(u8, replica_status, "{\"role\":\"replica\",\"standby\":false,\"name\":\"replica-1\",\"master_address\":\""));
+    try testing.expect(std.mem.endsWith(u8, replica_status, "\"last_refusal\":null,\"halted\":null}"));
+}
+
+test "C ABI: replication does not open with an empty token" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const address = "127.0.0.1:0";
+    for ([_]bool{ true, false }) |encrypted| {
+        try testing.expectEqual(null, c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, address.ptr, address.len, "", 0, null, 0, false, 0, encrypted));
+    }
+}
+
+/// A master on any port of this host, in `tmp`; its address goes in `buffer`.
+fn openMaster(tmp: *testing.TmpDir, path_buffer: []u8, address_buffer: []u8, token: []const u8) !struct { *c_api.Context, []const u8 } {
+    const path = std.fmt.bufPrint(path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const any_port = "127.0.0.1:0";
+    const master = c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_MASTER, any_port.ptr, any_port.len, token.ptr, token.len, null, 0, false, 0, true).?;
+    var length: usize = 0;
+    const status = c_api.zypherdb_replication_status(master, &length).?[0..length];
+    const start = std.mem.indexOf(u8, status, "127.0.0.1:").?;
+    const address = try std.fmt.bufPrint(address_buffer, "{s}", .{status[start..std.mem.indexOfScalarPos(u8, status, start, '"').?]});
+    return .{ master, address };
+}
+
+fn openForwardingReplica(tmp: *testing.TmpDir, path_buffer: []u8, address: []const u8, token: []const u8, request_timeout_ms: u64) *c_api.Context {
+    const path = std.fmt.bufPrint(path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    return c_api.zypherdb_open_replicated(path.ptr, path.len, c_api.DURABILITY_FULL, c_api.ROLE_REPLICA, address.ptr, address.len, token.ptr, token.len, null, 0, true, request_timeout_ms, true).?;
+}
+
+fn expectRefused(context: *c_api.Context, text: []const u8, code: ErrorCode) !void {
+    try testing.expectEqual(null, zypherdb_query(context, text.ptr, text.len));
+    try testing.expectEqual(@as(c_int, @intCast(@backingInt(code))), zypherdb_error_code(context));
+    var length: usize = 0;
+    try testing.expect(zypherdb_last_error(context, &length)[0..length].len > 0);
+}
+
+const ErrorCode = zypherdb.diagnostics.ErrorCode;
+
+/// Waits until `replica` has a copy of `master` (a write made for it).
+fn waitForCopy(master: *c_api.Context, replica: *c_api.Context) !void {
+    const seed = "CREATE (:Seed)";
+    zypherdb_result_free(zypherdb_query(master, seed.ptr, seed.len).?);
+    try testing.expect(c_api.zypherdb_wait_for(replica, c_api.zypherdb_last_lsn(master), 20_000));
+}
+
+test "C ABI: a replica that forwards writes sends them to its master and reads them back" {
+    var master_tmp = testing.tmpDir(.{});
+    defer master_tmp.cleanup();
+    var replica_tmp = testing.tmpDir(.{});
+    defer replica_tmp.cleanup();
+    const token = "the master's token";
+    var master_buffer: [256]u8 = undefined;
+    var address_buffer: [64]u8 = undefined;
+    const master, const address = try openMaster(&master_tmp, &master_buffer, &address_buffer, token);
+    defer zypherdb_close(master);
+    var replica_buffer: [256]u8 = undefined;
+    const replica = openForwardingReplica(&replica_tmp, &replica_buffer, address, token, 20_000);
+    defer zypherdb_close(replica);
+    // Wait for the replica's copy: a write before it has none to name.
+    try waitForCopy(master, replica);
+
+    const create = "CREATE (p:Person {name: 'Ada'}) RETURN p, p.name AS name";
+    const created = zypherdb_query(replica, create.ptr, create.len).?;
+    defer zypherdb_result_free(created);
+    try testing.expect(c_api.zypherdb_result_visible(created));
+    var length: usize = 0;
+    try testing.expectEqualStrings("Ada", zypherdb_result_string(created, 0, 1, &length)[0..length]);
+    const json = zypherdb_result_to_json(created, &length)[0..length];
+    try testing.expect(std.mem.indexOf(u8, json, "\"labels\":[\"Person\"]") != null);
+    try testing.expect(std.mem.indexOf(u8, json, "\"name\":\"Ada\"") != null);
+    // Read-your-writes: the replica has applied it, the master has it.
+    const count = "MATCH (p:Person) RETURN count(p)";
+    for ([_]*c_api.Context{ replica, master }) |context| {
+        const counted = zypherdb_query(context, count.ptr, count.len).?;
+        defer zypherdb_result_free(counted);
+        try testing.expectEqual(@as(i64, 1), zypherdb_result_int(counted, 0, 0));
+    }
+    // A schema command goes too; SHOW runs here and sees it.
+    const index = "CREATE INDEX person_name FOR (p:Person) ON (p.name)";
+    zypherdb_result_free(zypherdb_query(replica, index.ptr, index.len).?);
+    const show = "SHOW INDEXES";
+    const shown = zypherdb_query(replica, show.ptr, show.len).?;
+    defer zypherdb_result_free(shown);
+    try testing.expect(zypherdb_result_row_count(shown) >= 1);
+    // A write the master fails tells the master's error.
+    const constraint = "CREATE CONSTRAINT person_unique FOR (p:Person) REQUIRE p.name IS UNIQUE";
+    zypherdb_result_free(zypherdb_query(replica, constraint.ptr, constraint.len).?);
+    try expectRefused(replica, "CREATE (:Person {name: 'Ada'})", .constraint_violation);
+    // What cannot go is refused here.
+    try expectRefused(replica, "LOAD CSV FROM 'file:///people.csv' AS row CREATE (:Person {name: row[0]})", .write_not_forwarded);
+    try expectRefused(replica, "PROFILE CREATE (:Person {name: 'Bob'})", .write_not_forwarded);
+    try testing.expect(zypherdb_begin_write(replica) != 0);
+    try testing.expectEqual(@as(c_int, @intCast(@backingInt(ErrorCode.write_not_forwarded))), zypherdb_error_code(replica));
+    // Reads and PROFILE of reads stay here.
+    const profile = "PROFILE MATCH (p:Person) RETURN p.name";
+    zypherdb_result_free(zypherdb_query(replica, profile.ptr, profile.len).?);
+}
+
+test "C ABI: a forwarded write to a master that cannot be reached did not run" {
+    var master_tmp = testing.tmpDir(.{});
+    defer master_tmp.cleanup();
+    var replica_tmp = testing.tmpDir(.{});
+    defer replica_tmp.cleanup();
+    const token = "the master's token";
+    var master_buffer: [256]u8 = undefined;
+    var address_buffer: [64]u8 = undefined;
+    const master, const address = try openMaster(&master_tmp, &master_buffer, &address_buffer, token);
+    var replica_buffer: [256]u8 = undefined;
+    const replica = openForwardingReplica(&replica_tmp, &replica_buffer, address, token, 2_000);
+    defer zypherdb_close(replica);
+    // Before its copy the replica cannot name its master's database.
+    try expectRefused(replica, "CREATE (:Person)", .master_unreachable);
+    try waitForCopy(master, replica);
+    zypherdb_close(master);
+    try expectRefused(replica, "CREATE (:Person)", .master_unreachable);
+}
+
+/// Runs `texts`, each with its JSON parameters (null: none), as one
+/// `zypherdb_write_many`; the results go in `results`.
+fn writeMany(context: *c_api.Context, texts: []const []const u8, parameters: []const ?[]const u8, results: []*c_api.Result) c_int {
+    var pointers: [8][*]const u8 = undefined;
+    var lengths: [8]usize = undefined;
+    var parameter_pointers: [8]?[*]const u8 = undefined;
+    var parameter_lengths: [8]usize = undefined;
+    for (texts, parameters, 0..) |text, json, index| {
+        pointers[index] = text.ptr;
+        lengths[index] = text.len;
+        parameter_pointers[index] = if (json) |bytes| bytes.ptr else null;
+        parameter_lengths[index] = if (json) |bytes| bytes.len else 0;
+    }
+    return c_api.zypherdb_write_many(context, texts.len, &pointers, &lengths, &parameter_pointers, &parameter_lengths, results.ptr);
+}
+
+fn countOf(context: *c_api.Context, text: []const u8) i64 {
+    const result = zypherdb_query(context, text.ptr, text.len).?;
+    defer zypherdb_result_free(result);
+    return zypherdb_result_int(result, 0, 0);
+}
+
+test "C ABI: write_many runs its queries in one transaction, or none of them" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = zypherdb_open(path.ptr, path.len).?;
+    defer zypherdb_close(context);
+
+    var results: [3]*c_api.Result = undefined;
+    try testing.expectEqual(@as(c_int, 0), writeMany(context, &.{
+        "CREATE (:Door {name: $name})",
+        "MATCH (d:Door) RETURN count(d)",
+        "MATCH (d:Door {name: $name}) SET d.open = true RETURN d.open",
+    }, &.{ "{\"name\": \"B7\"}", null, "{\"name\": \"B7\"}" }, &results));
+    defer for (results) |result| zypherdb_result_free(result);
+    try testing.expectEqual(@as(usize, 0), zypherdb_result_column_count(results[0]));
+    try testing.expectEqual(@as(i64, 1), zypherdb_result_int(results[1], 0, 0));
+    try testing.expect(c_api.zypherdb_result_bool(results[2], 0, 0));
+    try testing.expectEqual(std.math.maxInt(usize), c_api.zypherdb_error_statement(context));
+
+    // One that fails, at run time or before, leaves nothing and says which.
+    var unused: [3]*c_api.Result = undefined;
+    try testing.expectEqual(@as(c_int, 1), writeMany(context, &.{ "CREATE (:Door)", "RETURN 1 / 0" }, &.{ null, null }, &unused));
+    try testing.expectEqual(@as(usize, 1), c_api.zypherdb_error_statement(context));
+    try testing.expectEqual(@as(c_int, @intCast(@backingInt(ErrorCode.arithmetic))), zypherdb_error_code(context));
+    try testing.expectEqual(@as(c_int, 1), writeMany(context, &.{ "CREATE (:Door)", "CREATE INDEX door_name FOR (d:Door) ON (d.name)" }, &.{ null, null }, &unused));
+    try testing.expectEqual(@as(usize, 1), c_api.zypherdb_error_statement(context));
+    try testing.expectEqual(@as(c_int, @intCast(@backingInt(ErrorCode.invalid_expression))), zypherdb_error_code(context));
+    try testing.expectEqual(@as(c_int, 1), writeMany(context, &.{ "CREATE (", "CREATE (:Door)" }, &.{ null, null }, &unused));
+    try testing.expectEqual(@as(usize, 0), c_api.zypherdb_error_statement(context));
+    try testing.expectEqual(@as(i64, 1), countOf(context, "MATCH (d:Door) RETURN count(d)"));
+}
+
+test "C ABI: write_many takes more different queries than the statement cache keeps" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buffer, ".zig-cache/tmp/{s}", .{&tmp.sub_path}) catch unreachable;
+    const context = zypherdb_open(path.ptr, path.len).?;
+    defer zypherdb_close(context);
+
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const count = 200;
+    var pointers: [count][*]const u8 = undefined;
+    var lengths: [count]usize = undefined;
+    for (&pointers, &lengths, 0..) |*pointer, *length, index| {
+        const text = try std.fmt.allocPrint(arena.allocator(), "CREATE (d:Door {{number: {d}}}) RETURN d.number", .{index});
+        pointer.* = text.ptr;
+        length.* = text.len;
+    }
+    var results: [count]*c_api.Result = undefined;
+    try testing.expectEqual(@as(c_int, 0), c_api.zypherdb_write_many(context, count, &pointers, &lengths, null, null, &results));
+    defer for (results) |result| zypherdb_result_free(result);
+    for (results, 0..) |result, index| try testing.expectEqual(@as(i64, @intCast(index)), zypherdb_result_int(result, 0, 0));
+    try testing.expectEqual(@as(i64, count), countOf(context, "MATCH (d:Door) RETURN count(d)"));
+}
+
+test "C ABI: a replica that forwards writes sends a write_many whole, in one request" {
+    var master_tmp = testing.tmpDir(.{});
+    defer master_tmp.cleanup();
+    var replica_tmp = testing.tmpDir(.{});
+    defer replica_tmp.cleanup();
+    const token = "the master's token";
+    var master_buffer: [256]u8 = undefined;
+    var address_buffer: [64]u8 = undefined;
+    const master, const address = try openMaster(&master_tmp, &master_buffer, &address_buffer, token);
+    defer zypherdb_close(master);
+    var replica_buffer: [256]u8 = undefined;
+    const replica = openForwardingReplica(&replica_tmp, &replica_buffer, address, token, 20_000);
+    defer zypherdb_close(replica);
+    try waitForCopy(master, replica);
+
+    const before = c_api.zypherdb_last_lsn(master);
+    var results: [2]*c_api.Result = undefined;
+    try testing.expectEqual(@as(c_int, 0), writeMany(replica, &.{
+        "CREATE (p:Person {name: $name}) RETURN p",
+        "MATCH (p:Person) RETURN count(p)",
+    }, &.{ "{\"name\": \"Ada\"}", null }, &results));
+    defer for (results) |result| zypherdb_result_free(result);
+    // One commit on the master, applied here before the call returned.
+    try testing.expectEqual(before + 1, c_api.zypherdb_last_lsn(master));
+    try testing.expect(c_api.zypherdb_result_visible(results[0]));
+    var length: usize = 0;
+    try testing.expect(std.mem.indexOf(u8, zypherdb_result_to_json(results[0], &length)[0..length], "\"name\":\"Ada\"") != null);
+    try testing.expectEqual(@as(i64, 1), zypherdb_result_int(results[1], 0, 0));
+    try testing.expectEqual(@as(i64, 1), countOf(replica, "MATCH (p:Person) RETURN count(p)"));
+
+    // A batch the master fails: nothing committed, the master's statement.
+    var unused: [2]*c_api.Result = undefined;
+    try testing.expectEqual(@as(c_int, 1), writeMany(replica, &.{ "CREATE (:Person)", "RETURN 1 / 0" }, &.{ null, null }, &unused));
+    try testing.expectEqual(@as(usize, 1), c_api.zypherdb_error_statement(replica));
+    try testing.expectEqual(@as(c_int, @intCast(@backingInt(ErrorCode.arithmetic))), zypherdb_error_code(replica));
+    try testing.expectEqual(before + 1, c_api.zypherdb_last_lsn(master));
+    // A batch that only reads runs here.
+    try testing.expectEqual(@as(c_int, 0), writeMany(replica, &.{"MATCH (p:Person) RETURN count(p)"}, &.{null}, unused[0..1]));
+    zypherdb_result_free(unused[0]);
+}

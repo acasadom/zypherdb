@@ -32,6 +32,7 @@ const NodeId = graph_module.NodeId;
 const RelationshipId = graph_module.RelationshipId;
 const Value = graph_module.Value;
 const StorageError = @import("key_value_store.zig").StorageError;
+const KeyValueStore = @import("key_value_store.zig").KeyValueStore;
 const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const NodeRecord = @import("node_record.zig").NodeRecord;
@@ -397,15 +398,36 @@ pub const Checker = struct {
     }
 };
 
+/// Whether the database of `store` holds a node, a relationship, or any key
+/// of the main table but its metadata, or its schema ever changed: a session
+/// that cached its definitions would take a copy's, at the same version, for
+/// them (`fulltext.cachedDefinitions`).
+pub fn holdsData(store: *KeyValueStore) StorageError!bool {
+    if (try store.get(fulltext.schema_version_key) != null) return true;
+    var nodes = try store.scanNodes();
+    defer nodes.deinit();
+    if (try nodes.next() != null) return true;
+    var relationships = try store.scanRelationships();
+    defer relationships.deinit();
+    if (try relationships.next() != null) return true;
+    var main = try store.scanAll();
+    defer main.deinit();
+    while (try main.next()) |entry| {
+        if (!isMetadataKey(entry.key)) return true;
+    }
+    return false;
+}
+
 /// A counter, the format, the schema version, or an entry of the engine's
-/// catalog of its tables (LMDB keeps the names of `#nodes` and
-/// `#relationships` in the main table, with their trailing 0x00).
+/// catalog of its tables (LMDB keeps the names of `#nodes`,
+/// `#relationships` and `#changes` in the main table, with their trailing
+/// 0x00).
 fn isMetadataKey(key: []const u8) bool {
     for ([_][]const u8{ key_encoding.counter_key, key_encoding.relationship_counter_key, key_encoding.format_key, fulltext.schema_version_key, fulltext.index_id_key }) |metadata| {
         if (std.mem.eql(u8, key, metadata)) return true;
     }
     const name = if (std.mem.endsWith(u8, key, "\x00")) key[0 .. key.len - 1] else key;
-    return std.mem.eql(u8, name, "#nodes") or std.mem.eql(u8, name, "#relationships");
+    return std.mem.eql(u8, name, "#nodes") or std.mem.eql(u8, name, "#relationships") or std.mem.eql(u8, name, "#changes");
 }
 
 fn isCounter(marker: u8) bool {

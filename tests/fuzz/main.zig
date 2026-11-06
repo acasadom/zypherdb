@@ -1,10 +1,12 @@
 //! The fuzzers' command line:
 //!
-//!     zig build fuzz -- storage|query|faults|crash [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose] [--quiet]
+//!     zig build fuzz -- storage|query|faults|crash|replication [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose] [--quiet]
 //!
 //! For the query fuzzer, `--steps` is the number of queries per seed; for
-//! the fault and crash fuzzers, the number of statements. The crash fuzzer
-//! starts this program as its writer (`crash-writer`, see crash.zig).
+//! the fault and crash fuzzers, the number of statements; for the
+//! replication simulator, the moves before the faults stop. The crash fuzzer
+//! starts this program as its writer and its survivor (`crash-writer`,
+//! `crash-survivor`, see crash.zig).
 //! Without `--seed` the first seed is random. `--seeds N` runs N seeds in a
 //! row from it (a long run). Each seed's database lives in `PATH/seed-N`
 //! (by default under .zig-cache/fuzz), removed when the seed passes. Build
@@ -16,10 +18,17 @@ const storage = @import("storage.zig");
 const query = @import("query.zig");
 const faults = @import("faults.zig");
 const crash = @import("crash.zig");
+const replication = @import("replication.zig");
 
-const usage = "usage: zig build fuzz -- storage|query|faults|crash [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose] [--quiet]\n";
+pub const std_options: std.Options = .{
+    // The replication nodes tell each connection lost and each replica
+    // let go: the simulator makes thousands.
+    .log_scope_levels = &.{.{ .scope = .replication, .level = .err }},
+};
 
-const Fuzzer = enum { storage, query, faults, crash };
+const usage = "usage: zig build fuzz -- storage|query|faults|crash|replication [--seed N] [--steps N] [--seeds N] [--dir PATH] [--verbose] [--quiet]\n";
+
+const Fuzzer = enum { storage, query, faults, crash, replication };
 
 const Arguments = struct {
     fuzzer: Fuzzer = .storage,
@@ -42,6 +51,9 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(arena);
     if (args.len > 1 and std.mem.eql(u8, args[1], "crash-writer")) {
         return crash.writerMain(std.heap.smp_allocator, args[2..], out);
+    }
+    if (args.len > 1 and std.mem.eql(u8, args[1], "crash-survivor")) {
+        return crash.survivorMain(std.heap.smp_allocator, init.io, args[2..], out);
     }
     const arguments = parseArguments(args) catch {
         try out.writeAll(usage);
@@ -77,6 +89,7 @@ pub fn main(init: std.process.Init) !void {
         .query => try out.print("over {d} seed(s):\n{f}", .{ arguments.seeds, totals.query }),
         .faults => try out.print("over {d} seed(s):\n{f}", .{ arguments.seeds, totals.faults }),
         .crash => try out.print("over {d} seed(s):\n{f}", .{ arguments.seeds, totals.crash }),
+        .replication => try out.print("over {d} seed(s):\n{f}", .{ arguments.seeds, totals.replication }),
     }
     try out.flush();
 }
@@ -89,11 +102,17 @@ const Totals = struct {
     query: query.Statistics = .{},
     faults: faults.Statistics = .{},
     crash: crash.Statistics = .{},
+    replication: replication.Statistics = .{},
 };
 
 fn runSeed(io: std.Io, allocator: std.mem.Allocator, path: []const u8, seed: u64, arguments: Arguments, out: *std.Io.Writer, totals: *Totals) !void {
     switch (arguments.fuzzer) {
-        .storage => totals.storage.add(try storage.run(allocator, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out)),
+        .storage => {
+            const replica = try std.fmt.allocPrint(allocator, "{s}/replica", .{path});
+            defer allocator.free(replica);
+            try std.Io.Dir.cwd().createDirPath(io, replica);
+            totals.storage.add(try storage.run(allocator, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose, .replica = replica }, out));
+        },
         .query => {
             var statistics = try query.run(allocator, path, .{ .seed = seed, .queries = arguments.steps, .verbose = arguments.verbose }, out);
             defer statistics.deinit(allocator);
@@ -111,6 +130,7 @@ fn runSeed(io: std.Io, allocator: std.mem.Allocator, path: []const u8, seed: u64
             defer allocator.free(paths.twin);
             totals.crash.add(try crash.run(allocator, io, totals.executable, paths.database, paths.twin, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out));
         },
+        .replication => totals.replication.add(try replication.run(allocator, io, path, .{ .seed = seed, .steps = arguments.steps, .verbose = arguments.verbose }, out)),
     }
 }
 

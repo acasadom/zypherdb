@@ -6,14 +6,21 @@
 //!
 //! - `Environment`: an open database at a path.
 //!     `open(allocator, path, Options) Error!Environment`, `close()`,
-//!     `sync() Error!void`, `beginRead() Error!Transaction`,
+//!     `sync() Error!void`, `dropDeadReaders() usize` (the readers of dead
+//!     processes, how many; each `beginWrite` now and then does it too),
+//!     `beginRead() Error!Transaction`,
 //!     `endRead(Transaction)` (ends a read transaction, perhaps keeping it
-//!     to be begun again cheaply), `beginWrite() Error!Transaction`.
+//!     to be begun again cheaply), `beginWrite() Error!Transaction`,
+//!     `share() Environment` (another environment on the same open
+//!     database, for another thread; its `close` leaves the database open,
+//!     and it is closed before the environment it shares).
 //! - `Transaction`: a snapshot (read) or the single writer (write).
 //!     `commit() Error!void` (a failed commit is aborted), `abort()` (a
 //!     read transaction ends better with `Environment.endRead`),
 //!     `get(Table, key) Error!?[]const u8`, `put(Table, key, value) Error!void`,
 //!     `delete(Table, key) Error!void` (deleting an absent key succeeds),
+//!     `clear(Table) Error!void` (deletes every key of a table but `main`,
+//!     whose keys starting with `#` are the engine's catalog of tables),
 //!     `openCursor(Table) Error!Cursor`.
 //! - `Cursor`: a position in one table of one transaction, in key order.
 //!     `close()`, `first() Error!?Entry`, `find(key) Error!?[]const u8` (the
@@ -24,9 +31,10 @@
 //! - Reads never copy: the bytes a `get` or a cursor returns are the
 //!   engine's, valid until the transaction ends or writes (the layers above
 //!   rely on it to read records without allocating).
-//! - One write transaction at a time per environment; any number of read
-//!   transactions, also several at once in one thread (nested scans), each a
-//!   consistent snapshot as of its start.
+//! - One write transaction at a time per database (a writer in another
+//!   thread waits); any number of read transactions, also several at once
+//!   in one thread (nested scans), each a consistent snapshot as of its
+//!   start.
 //! - Several processes may open the same database (the multiprocess model:
 //!   one writer at a time, readers never blocked).
 //! - Keys of the `main` table are byte strings in lexicographic order. Keys of
@@ -48,17 +56,23 @@ pub const Error = error{
 };
 
 /// The tables of a database. `main` holds every key the graph scans by
-/// prefix (indexes, adjacency, metadata); the others hold records by id.
+/// prefix (indexes, adjacency, metadata); `nodes` and `relationships` hold
+/// records by id; `changes` holds the change log replicas follow
+/// (change_log.zig), which no graph read sees.
+/// Write transactions between looks for the readers of dead processes.
+pub const writes_per_reader_check = 1024;
+
 pub const Table = enum {
     main,
     nodes,
     relationships,
+    changes,
 
     pub const count = @typeInfo(Table).@"enum".field_names.len;
 
     /// True for the tables keyed by a u64 id.
     pub fn hasIntegerKeys(table: Table) bool {
-        return table != .main;
+        return table == .nodes or table == .relationships;
     }
 };
 
@@ -86,8 +100,8 @@ pub const Options = struct { durability: Durability = .full };
 pub fn check(comptime Engine: type) void {
     const required = .{
         .{ Engine, &.{ "Environment", "Transaction", "Cursor" } },
-        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite" } },
-        .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "openCursor" } },
+        .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "share" } },
+        .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "clear", "openCursor" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },
     };
     inline for (required) |entry| {
@@ -101,4 +115,5 @@ test "the integer tables are the record tables" {
     try std.testing.expect(!Table.main.hasIntegerKeys());
     try std.testing.expect(Table.nodes.hasIntegerKeys());
     try std.testing.expect(Table.relationships.hasIntegerKeys());
+    try std.testing.expect(!Table.changes.hasIntegerKeys());
 }

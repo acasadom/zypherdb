@@ -20,6 +20,10 @@ pub const Environment = struct {
     /// allocation and keeps its reader slot.
     parked_reads: [max_parked_reads]*c.MDB_txn = undefined,
     parked_read_count: usize = 0,
+    /// Whether this is a share of another environment (`share`), which
+    /// leaves the database open when it closes.
+    shared: bool = false,
+    write_transactions: u32 = 0,
 
     const max_parked_reads = 4;
 
@@ -47,6 +51,7 @@ pub const Environment = struct {
             .deferred => c.MDB_NOSYNC,
         };
         if (c.mdb_env_open(environment.?, c_path.ptr, c.MDB_NOTLS | durability_flags, 0o644) != 0) return error.OpenFailed;
+        _ = dropDeadReadersOf(environment.?);
 
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(environment.?, null, 0, &transaction) != 0) return error.OpenFailed;
@@ -69,13 +74,19 @@ pub const Environment = struct {
         if (c.mdb_dbi_open(transaction, null, 0, &tables[@backingInt(Table.main)]) != 0) return error.OpenFailed;
         if (c.mdb_dbi_open(transaction, "#nodes", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@backingInt(Table.nodes)]) != 0) return error.OpenFailed;
         if (c.mdb_dbi_open(transaction, "#relationships", c.MDB_CREATE | c.MDB_INTEGERKEY, &tables[@backingInt(Table.relationships)]) != 0) return error.OpenFailed;
+        if (c.mdb_dbi_open(transaction, "#changes", c.MDB_CREATE, &tables[@backingInt(Table.changes)]) != 0) return error.OpenFailed;
         return tables;
     }
 
     pub fn close(self: *Environment) void {
         for (self.parked_reads[0..self.parked_read_count]) |transaction| c.mdb_txn_abort(transaction);
         self.parked_read_count = 0;
-        c.mdb_env_close(self.handle);
+        if (!self.shared) c.mdb_env_close(self.handle);
+    }
+
+    /// Another environment on the same open database, for another thread.
+    pub fn share(self: *Environment) Environment {
+        return .{ .handle = self.handle, .tables = self.tables, .shared = true };
     }
 
     /// Writes every commit so far to disk (what `full` durability does at
@@ -106,9 +117,25 @@ pub const Environment = struct {
     }
 
     pub fn beginWrite(self: *Environment) Error!Transaction {
+        self.write_transactions +%= 1;
+        if (self.write_transactions % contract.writes_per_reader_check == 0) _ = self.dropDeadReaders();
         var transaction: ?*c.MDB_txn = null;
         if (c.mdb_txn_begin(self.handle, null, 0, &transaction) != 0) return error.WriteFailed;
         return .{ .handle = transaction.?, .tables = self.tables };
+    }
+
+    /// A process killed during a read leaves its reader behind while other
+    /// processes keep the database open, and LMDB never reuses the pages it
+    /// could see: the file would grow for ever. This drops them, and tells
+    /// how many it found; on failure they stay until the next look.
+    pub fn dropDeadReaders(self: *Environment) usize {
+        return dropDeadReadersOf(self.handle);
+    }
+
+    fn dropDeadReadersOf(handle: *c.MDB_env) usize {
+        var dead: c_int = 0;
+        if (c.mdb_reader_check(handle, &dead) != 0) return 0;
+        return @intCast(dead);
     }
 };
 
@@ -145,6 +172,11 @@ pub const Transaction = struct {
         var key_val = makeVal(key);
         const rc = c.mdb_del(self.handle, self.tables[@backingInt(table)], &key_val, null);
         if (rc != 0 and rc != c.MDB_NOTFOUND) return error.DeleteFailed;
+    }
+
+    pub fn clear(self: Transaction, table: Table) Error!void {
+        std.debug.assert(table != .main);
+        if (c.mdb_drop(self.handle, self.tables[@backingInt(table)], 0) != 0) return error.DeleteFailed;
     }
 
     pub fn openCursor(self: Transaction, table: Table) Error!Cursor {

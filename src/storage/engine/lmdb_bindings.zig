@@ -74,10 +74,13 @@ pub extern "c" fn mdb_dbi_open(txn: *MDB_txn, name: ?[*:0]const u8, flags: c_uin
 pub extern "c" fn mdb_get(txn: *MDB_txn, dbi: MDB_dbi, key: *MDB_val, data: *MDB_val) c_int;
 pub extern "c" fn mdb_put(txn: *MDB_txn, dbi: MDB_dbi, key: *MDB_val, data: *MDB_val, flags: c_uint) c_int;
 pub extern "c" fn mdb_del(txn: *MDB_txn, dbi: MDB_dbi, key: *MDB_val, data: ?*MDB_val) c_int;
+/// Empties table `dbi` (`del` 0 keeps the table itself).
+pub extern "c" fn mdb_drop(txn: *MDB_txn, dbi: MDB_dbi, del: c_int) c_int;
 
 // --- Cursors ---
 
 pub extern "c" fn mdb_cursor_open(txn: *MDB_txn, dbi: MDB_dbi, cursor: *?*MDB_cursor) c_int;
 pub extern "c" fn mdb_cursor_close(cursor: *MDB_cursor) void;
 pub extern "c" fn mdb_env_sync(env: *MDB_env, force: c_int) c_int;
+pub extern "c" fn mdb_reader_check(env: *MDB_env, dead: ?*c_int) c_int;
 pub extern "c" fn mdb_cursor_get(cursor: *MDB_cursor, key: *MDB_val, data: *MDB_val, op: c_int) c_int;
