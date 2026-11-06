@@ -261,6 +261,8 @@ pub const ReplicaNode = struct {
     refusal: std.atomic.Value(u8) = .init(0),
     /// The permanent refusal that stopped the node, if one did. Any thread.
     halt: std.atomic.Value(u8) = .init(0),
+    /// The last try found no address for the master's name. Any thread.
+    master_unresolved: std.atomic.Value(bool) = .init(false),
     /// `Phase`, as the last step left it. Any thread.
     phase_value: std.atomic.Value(u8) = .init(@backingInt(Phase.connecting)),
     /// When the master was last heard from (`never_heard` if it was not).
@@ -312,6 +314,11 @@ pub const ReplicaNode = struct {
         return if (reason == 0) null else @fromBackingInt(@intCast(reason));
     }
 
+    /// Whether the last try to connect found no address for the master's name.
+    pub fn masterUnresolved(self: *const ReplicaNode) bool {
+        return self.master_unresolved.load(.acquire);
+    }
+
     /// The refusal that made the replica stop following its master for
     /// good (`Refusal.permanent`), or null while it follows.
     pub fn halted(self: *const ReplicaNode) ?protocol.Refusal {
@@ -355,6 +362,7 @@ pub const ReplicaNode = struct {
             if (now < self.retry_at) return;
             self.conversation = self.connect(now) catch |err| {
                 log.info("following the master ended: {t}", .{err});
+                if (err == error.HostNotResolved) self.master_unresolved.store(true, .release);
                 self.retry(now, false);
                 return;
             };
@@ -418,6 +426,7 @@ pub const ReplicaNode = struct {
         var hello = try replica.hello(&self.store, self.options.token);
         hello.name = self.options.name;
         const connection = try self.network.connect(self.options.master_address);
+        self.master_unresolved.store(false, .release);
         conversation.* = .{
             .connection = connection,
             .buffers = buffers,

@@ -363,7 +363,7 @@ const char *zypherdb_replication_status(zypherdb_context *context, size_t *out_l
 
 `zypherdb_open_replicated` opens the database with a replication role (see
 [replication](replication.md)): `ZYPHERDB_ROLE_MASTER` (0) serves replicas at `address`
-(`"host:port"`), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
+(`"host:port"`, the host an IP address or a name), and `ZYPHERDB_ROLE_REPLICA` (1) follows the master at `address` and refuses
 writes. `token` is the secret master and replicas share, and may not be empty. With `encrypted` the
 conversation is encrypted, and the token never travels; both sides must agree. `name` (at most 255 bytes) is what a replica calls
 itself in its master's status; `NULL` takes the name of its host, and a master ignores it. A
@@ -398,12 +398,13 @@ A master's:
 
 A replica's (`phase` is `"connecting"`, `"copying"`, `"streaming"` or `"halted"`;
 `last_contact_ms` is how long ago the master was last heard from, `null` if never; `halted` and
-`last_refusal` are a reason's name, such as `"token"`, or `null`):
+`last_refusal` are a reason's name, such as `"token"`, or `null`; `master_unresolved` is true when
+the last try found no address for the master's host name):
 
 ```json
 {"role": "replica", "standby": false, "name": "eu-1", "master_address": "10.0.0.5:7000",
  "phase": "streaming", "last_contact_ms": 120, "applied_lsn": 118, "master_lsn": 120, "lag": 2,
- "last_refusal": null, "halted": null}
+ "master_unresolved": false, "last_refusal": null, "halted": null}
 ```
 
 The text belongs to the context, and stays valid until the next status or `zypherdb_close`.

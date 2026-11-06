@@ -19,6 +19,9 @@ pub const Tcp = struct {
     /// Only to resolve host names.
     io: Io,
     allocator: Allocator,
+    /// Connections asked for: each starts at another of the addresses a
+    /// name resolved to, so one that never answers does not hide the others.
+    connects: std.atomic.Value(usize) = .init(0),
 
     pub fn network(self: *Tcp) Network {
         return .{ .context = self, .vtable = &.{ .listen = listen, .connect = connect, .wakeup = wakeup, .wait = wait } };
@@ -26,11 +29,21 @@ pub const Tcp = struct {
 
     fn listen(context: *anyopaque, address: []const u8) Error!Listener {
         const self: *Tcp = @ptrCast(@alignCast(context));
-        const ip = try self.resolve(address);
-        const handle = try sockets.open(&ip);
+        const addresses = try self.resolve(address);
+        for (addresses.items[0..addresses.count]) |*ip| {
+            return self.listenOn(ip) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => continue,
+            };
+        }
+        return error.NetworkFailed;
+    }
+
+    fn listenOn(self: *Tcp, ip: *const Io.net.IpAddress) Error!Listener {
+        const handle = try sockets.open(ip);
         errdefer sockets.close(handle);
         try sockets.reuseAddress(handle);
-        try sockets.bind(handle, &ip);
+        try sockets.bind(handle, ip);
         try sockets.listen(handle);
         const listener = self.allocator.create(TcpListener) catch return error.OutOfMemory;
         listener.* = .{ .tcp = self, .handle = handle, .address = try sockets.localAddress(handle) };
@@ -39,12 +52,19 @@ pub const Tcp = struct {
 
     fn connect(context: *anyopaque, address: []const u8) Error!Connection {
         const self: *Tcp = @ptrCast(@alignCast(context));
-        const ip = try self.resolve(address);
-        const handle = try sockets.open(&ip);
-        errdefer sockets.close(handle);
-        try sockets.noDelay(handle);
-        try sockets.connect(handle, &ip);
-        return self.connection(handle, true);
+        const addresses = try self.resolve(address);
+        const opened = self.allocator.create(TcpConnection) catch return error.OutOfMemory;
+        errdefer self.allocator.destroy(opened);
+        opened.* = .{
+            .tcp = self,
+            .handle = undefined,
+            .connecting = true,
+            .addresses = addresses,
+            .next = self.connects.fetchAdd(1, .monotonic),
+            .untried = addresses.count,
+        };
+        opened.handle = try opened.connectNext();
+        return opened.connection();
     }
 
     fn connection(self: *Tcp, handle: sockets.Handle, connecting: bool) Error!Connection {
@@ -94,10 +114,39 @@ pub const Tcp = struct {
         };
     }
 
-    fn resolve(self: *Tcp, address: []const u8) Error!Io.net.IpAddress {
+    /// Where "host:port" is. A name is looked up on the calling thread, which
+    /// waits for the answer. `error.HostNotResolved` if it gets no address.
+    fn resolve(self: *Tcp, address: []const u8) Error!Addresses {
         const split = try network_module.splitAddress(address);
-        return Io.net.IpAddress.parse(split.host, split.port) catch
-            Io.net.IpAddress.resolve(self.io, split.host, split.port) catch error.NetworkFailed;
+        var addresses: Addresses = .{};
+        if (Io.net.IpAddress.parse(split.host, split.port)) |ip| {
+            addresses.add(ip);
+            return addresses;
+        } else |_| {}
+        const name = Io.net.HostName.init(split.host) catch return error.HostNotResolved;
+        var buffer: [Addresses.capacity]Io.net.HostName.LookupResult = undefined;
+        var results: Io.Queue(Io.net.HostName.LookupResult) = .init(&buffer);
+        name.lookup(self.io, &results, .{ .port = split.port }) catch return error.HostNotResolved;
+        while (results.getOne(self.io)) |result| switch (result) {
+            .address => |ip| addresses.add(ip),
+            .canonical_name => {},
+        } else |_| {}
+        if (addresses.count == 0) return error.HostNotResolved;
+        return addresses;
+    }
+};
+
+/// The addresses of a host, in the order to try them. As many as a lookup
+/// gives without blocking.
+const Addresses = struct {
+    const capacity = 16;
+
+    items: [capacity]Io.net.IpAddress = undefined,
+    count: usize = 0,
+
+    fn add(self: *Addresses, ip: Io.net.IpAddress) void {
+        self.items[self.count] = ip;
+        self.count += 1;
     }
 };
 
@@ -149,6 +198,10 @@ const TcpConnection = struct {
     handle: sockets.Handle,
     /// Connecting still, as far as it knows.
     connecting: bool,
+    /// Where it connects, and which of them are left to try when one fails.
+    addresses: Addresses = .{},
+    next: usize = 0,
+    untried: usize = 0,
 
     const vtable: Connection.VTable = .{ .receive = receive, .send = send, .close = close, .peer = peer };
 
@@ -180,8 +233,36 @@ const TcpConnection = struct {
         var entries = [_]sockets.PollEntry{sockets.pollEntry(self.handle, sockets.poll_writable)};
         const ready = sockets.poll(&entries, 0) catch return error.Closed;
         if (ready == 0) return error.WouldBlock;
-        self.connecting = false;
-        if (sockets.connectFailed(self.handle)) return error.Closed;
+        if (!sockets.connectFailed(self.handle)) {
+            self.connecting = false;
+            return;
+        }
+        const handle = self.connectNext() catch {
+            self.connecting = false;
+            return error.Closed;
+        };
+        sockets.close(self.handle);
+        self.handle = handle;
+        return error.WouldBlock;
+    }
+
+    /// Starts connecting to the next address that takes it.
+    fn connectNext(self: *TcpConnection) sockets.Error!sockets.Handle {
+        while (self.untried > 0) {
+            const ip = &self.addresses.items[self.next % self.addresses.count];
+            self.next +%= 1;
+            self.untried -= 1;
+            return connectTo(ip) catch continue;
+        }
+        return error.NetworkFailed;
+    }
+
+    fn connectTo(ip: *const Io.net.IpAddress) sockets.Error!sockets.Handle {
+        const handle = try sockets.open(ip);
+        errdefer sockets.close(handle);
+        try sockets.noDelay(handle);
+        try sockets.connect(handle, ip);
+        return handle;
     }
 
     fn peer(context: *anyopaque, buffer: *[network_module.max_address_bytes]u8) []const u8 {

@@ -121,6 +121,13 @@ reads with what it has; fix the cause and open it again (or start it from an emp
 `last_refusal` names why the master last turned it away, when that was not for good: `"token"`
 (the master holds another token) and `"encryption"` (one side encrypts and the other does not) are
 the ones to look for when a replica never catches up, as it keeps asking until the cause is fixed.
+`master_unresolved` is true when its last try found no address for the master's host name: it
+keeps trying, and the name may be fixed meanwhile.
+
+An address is `"host:port"`, where the host is an IP address or a name. A name is looked up on each
+connection, and each of its addresses is tried until one takes it; a master binds the first
+address of its name that it can. The thread that follows the master, or that forwards writes, waits
+for the lookup: with a slow name server, forwarded writes may outlast their time by that wait.
 
 ## Encryption
 

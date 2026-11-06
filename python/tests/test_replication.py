@@ -89,6 +89,40 @@ def test_a_replica_told_the_wrong_token_keeps_asking_and_says_why(master, tmp_pa
         assert status["halted"] is None
 
 
+def test_a_replica_finds_its_master_by_host_name(master, tmp_path):
+    port = address_of(master).rpartition(":")[2]
+    master.query("CREATE (:Door)")
+    # The master holds 127.0.0.1 only: where the name's first address is ::1,
+    # the replica goes on to the next.
+    with Database(str(tmp_path / "replica"), replicate_from=f"localhost:{port}", token=TOKEN) as replica:
+        assert replica.wait_for(master.last_lsn, 20)
+        assert replica.query("MATCH (d:Door) RETURN count(d)") == [[1]]
+        assert replica.replication_status()["master_unresolved"] is False
+
+
+def test_a_master_serves_at_a_host_name(tmp_path):
+    with Database(str(tmp_path / "master"), serve="localhost:0", token=TOKEN) as master:
+        port = address_of(master).rpartition(":")[2]
+        master.query("CREATE (:Door)")
+        with Database(str(tmp_path / "replica"), replicate_from=f"localhost:{port}", token=TOKEN) as replica:
+            assert replica.wait_for(master.last_lsn, 20)
+
+
+def test_a_replica_says_when_its_masters_name_has_no_address(tmp_path):
+    # .invalid never resolves (RFC 6761).
+    with Database(str(tmp_path / "replica"), replicate_from="no-such-host.invalid:7000", token=TOKEN) as replica:
+        deadline = time.monotonic() + 30
+        while not replica.replication_status()["master_unresolved"]:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert replica.replication_status()["phase"] == "connecting"
+
+
+def test_a_master_name_with_no_address_is_refused_when_opening(tmp_path):
+    with pytest.raises(StorageError, match="HostNotResolved"):
+        Database(str(tmp_path / "master"), serve="no-such-host.invalid:7000", token=TOKEN)
+
+
 def test_replication_writes_nothing_to_stderr(tmp_path, capfd):
     with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN) as db:
         with Database(str(tmp_path / "refused"), replicate_from=address_of(db), token="another") as refused:

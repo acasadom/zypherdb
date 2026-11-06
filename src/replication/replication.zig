@@ -123,6 +123,8 @@ pub const Status = union(enum) {
         applied_lsn: u64,
         /// The master's last LSN, as its last heartbeat told (0 before one).
         master_lsn: u64,
+        /// The last try to connect found no address for `master_address`.
+        master_unresolved: bool,
         /// Why the master last turned the replica away, if it did since
         /// the replica last followed it.
         last_refusal: ?Refusal,
@@ -380,6 +382,7 @@ pub const Replication = struct {
                     .now = self.clock.clock().now(),
                     .applied_lsn = try store.appliedLsn() orelse 0,
                     .master_lsn = if (follower) |running| running.masterLsn() else 0,
+                    .master_unresolved = if (follower) |running| running.masterUnresolved() else false,
                     .last_refusal = if (follower) |running| running.lastRefusal() else null,
                     .halted = if (follower) |running| running.halted() else null,
                 } };
@@ -392,7 +395,8 @@ pub const Replication = struct {
     /// "address", "connected_ms", "phase", "acked_lsn", "lag"}]}, a
     /// replica's {"role", "standby", "name", "master_address", "phase",
     /// "last_contact_ms" (ago, or null), "applied_lsn", "master_lsn", "lag",
-    /// "last_refusal", "halted"} (a refusal's name, or null).
+    /// "master_unresolved", "last_refusal", "halted"} (a refusal's name, or
+    /// null).
     pub fn statusJson(self: *Replication, store: *KeyValueStore, allocator: Allocator) ![]u8 {
         var out: Io.Writer.Allocating = .init(allocator);
         defer out.deinit();
@@ -434,7 +438,7 @@ pub const Replication = struct {
                 try writeString(json, replica.master_address);
                 try json.print(",\"phase\":\"{t}\",\"last_contact_ms\":", .{replica.phase});
                 if (replica.last_heard) |at| try json.print("{d}", .{(replica.now -| at) / std.time.ns_per_ms}) else try json.writeAll("null");
-                try json.print(",\"applied_lsn\":{d},\"master_lsn\":{d},\"lag\":{d},\"last_refusal\":", .{ replica.applied_lsn, replica.master_lsn, replica.master_lsn -| replica.applied_lsn });
+                try json.print(",\"applied_lsn\":{d},\"master_lsn\":{d},\"lag\":{d},\"master_unresolved\":{},\"last_refusal\":", .{ replica.applied_lsn, replica.master_lsn, replica.master_lsn -| replica.applied_lsn, replica.master_unresolved });
                 try writeRefusal(json, replica.last_refusal);
                 try json.writeAll(",\"halted\":");
                 try writeRefusal(json, replica.halted);

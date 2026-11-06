@@ -43,7 +43,8 @@ exit, or closed with `close()`.
   `ExternalResourceError`. A path that is not a directory raises `ValueError`.
 - `serve`, `replicate_from`, `token` — a replication role (see [replication](replication.md)):
   `serve="host:port"` makes the database a master that serves replicas there, and
-  `replicate_from="host:port"` a replica of the master there, which refuses writes. Either needs
+  `replicate_from="host:port"` a replica of the master there, which refuses writes (the host an IP
+  address or a name). Either needs
   `token`, the secret master and replicas share; both at once raise `ValueError`.
 - `encrypted` — whether replication is encrypted with the token (`True`, the default; the token
   never travels). `False`, on the master and on its replicas alike, sends the token and the data

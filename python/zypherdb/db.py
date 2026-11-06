@@ -192,7 +192,8 @@ class Database:
         read. Without one, LOAD CSV is off.
 
         `serve` makes the database a master that serves replicas at that
-        address ("host:port"; "0.0.0.0:7000" for every interface).
+        address ("host:port", the host an IP address or a name; "0.0.0.0:7000"
+        for every interface).
         `replicate_from` makes it a replica of the master at that address: it
         gets a copy of the master's database, then each change committed
         there, reconnecting on its own, and refuses writes. Either needs
@@ -295,7 +296,7 @@ class Database:
 
             {"role": "replica", "standby": False, "name": "eu-1", "master_address": "10.0.0.5:7000",
              "phase": "streaming", "last_contact_ms": 120, "applied_lsn": 118, "master_lsn": 120,
-             "lag": 2, "last_refusal": None, "halted": None}
+             "lag": 2, "master_unresolved": False, "last_refusal": None, "halted": None}
 
         Its `phase` is "connecting" (also while waiting to connect again, and
         while standing by), "copying", "streaming" or "halted";
@@ -307,7 +308,8 @@ class Database:
         that one closes the database or dies. `halted` names why the replica stopped following for good (e.g.
         "database_id": it is a replica of another master); `last_refusal` why
         the master last turned it away (e.g. "token": it holds another token,
-        and the replica keeps asking).
+        and the replica keeps asking); `master_unresolved` whether its last
+        try found no address for the master's host name.
         """
         with self._calls as session:
             text = native.replication_status(session.handle)

@@ -379,3 +379,42 @@ test "a wait with nothing ready ends after its timeout" {
     try testing.expect(!watched[0].ready.any());
     try testing.expect(clock.now() - started >= 30 * std.time.ns_per_ms);
 }
+
+test "TCP: a host name reaches the listener at any of its addresses" {
+    var tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator };
+    const network = tcp.network();
+    const listener = try network.listen(loopback);
+    defer listener.close();
+    var buffer: [zypherdb.replication_network.max_address_bytes]u8 = undefined;
+    const listened = listener.address(&buffer);
+    const port = listened[std.mem.lastIndexOfScalar(u8, listened, ':').? + 1 ..];
+    var name_buffer: [32]u8 = undefined;
+    const name = try std.fmt.bufPrint(&name_buffer, "localhost:{s}", .{port});
+    // Twice: each connection starts at another of the addresses.
+    for (0..2) |_| {
+        const client = try network.connect(name);
+        defer client.close();
+        var sent: usize = 0;
+        for (0..100) |_| {
+            _ = try waitFor(network, .{ .connection = client }, .{ .writable = true });
+            sent = client.send("x") catch |err| switch (err) {
+                error.WouldBlock => continue,
+                else => return err,
+            };
+            break;
+        }
+        try testing.expectEqual(@as(usize, 1), sent);
+        _ = try waitFor(network, .{ .listener = listener }, .{ .readable = true });
+        const server = (try listener.accept()).?;
+        server.close();
+    }
+}
+
+test "TCP: a host name with no address is told apart" {
+    var tcp: Tcp = .{ .io = testing.io, .allocator = testing.allocator };
+    const network = tcp.network();
+    // .invalid never resolves (RFC 6761).
+    try testing.expectError(error.HostNotResolved, network.connect("no-such-host.invalid:7000"));
+    try testing.expectError(error.HostNotResolved, network.listen("no-such-host.invalid:7000"));
+    try testing.expectError(error.HostNotResolved, network.connect("not a name:7000"));
+}

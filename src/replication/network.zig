@@ -7,7 +7,7 @@
 
 const std = @import("std");
 
-pub const Error = error{ NetworkFailed, OutOfMemory };
+pub const Error = error{ NetworkFailed, HostNotResolved, OutOfMemory };
 
 /// The longest address `Listener.address` writes.
 pub const max_address_bytes = 64;

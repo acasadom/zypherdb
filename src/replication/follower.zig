@@ -92,6 +92,11 @@ pub const Follower = struct {
         return self.node.lastRefusal();
     }
 
+    /// Whether the last try to connect found no address for the master's name.
+    pub fn masterUnresolved(self: *Follower) bool {
+        return self.node.masterUnresolved();
+    }
+
     /// The master's last LSN, as its last heartbeat told (0 before one).
     pub fn masterLsn(self: *Follower) u64 {
         return self.node.master_lsn.load(.acquire);
