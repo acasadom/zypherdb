@@ -261,7 +261,8 @@ pub export fn zypherdb_last_lsn(context: *Context) u64 {
 /// Waits until change set `lsn` of the master is applied here, at most
 /// `timeout_ms`; whether it is. Read on a replica after it to see a write
 /// made on the master (`zypherdb_last_lsn` there after the write), also in a
-/// process that opened the replica without a role. True at once on a
+/// process that opened the replica without a role. A replica opened with a
+/// role waits for its first copy too, whatever `lsn`. True at once on a
 /// database that is no replica.
 pub export fn zypherdb_wait_for(context: *Context, lsn: u64, timeout_ms: u64) bool {
     const timeout_ns = timeout_ms *| std.time.ns_per_ms;
@@ -319,7 +320,8 @@ pub export fn zypherdb_error_code(context: *Context) c_int {
 
 /// The index of the statement that failed in the last `zypherdb_write_many`
 /// that failed; `SIZE_MAX` if the failure was in no statement (the commit,
-/// the master not reached) or the last call was not a `zypherdb_write_many`.
+/// the master not reached). Only `zypherdb_write_many` changes it: read it
+/// right after one that returned 1.
 pub export fn zypherdb_error_statement(context: *Context) usize {
     return context.failed_statement orelse std.math.maxInt(usize);
 }
@@ -459,7 +461,11 @@ fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) 
             defer statement.destroy();
             return runStatement(context, statement, parameters_json);
         }
-        context.statements.put(statement);
+        context.statements.put(statement) catch |err| {
+            statement.destroy();
+            noteFailure(&context.diagnostic, err);
+            return null;
+        };
         break :prepared statement;
     };
     return runStatement(context, statement, parameters_json);
@@ -592,7 +598,11 @@ fn cachedStatement(context: *Context, query: []const u8) ?*Statement {
         batch.check(statement, &.{}, &context.diagnostic) catch {};
         return null;
     }
-    context.statements.put(statement);
+    context.statements.put(statement) catch |err| {
+        statement.destroy();
+        noteFailure(&context.diagnostic, err);
+        return null;
+    };
     return statement;
 }
 

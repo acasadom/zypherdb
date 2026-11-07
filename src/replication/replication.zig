@@ -13,6 +13,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+const copies = @import("copies.zig");
 const protocol = @import("protocol.zig");
 const SystemClock = @import("clock.zig").SystemClock;
 const Tcp = @import("tcp.zig").Tcp;
@@ -301,6 +302,7 @@ pub const Replication = struct {
         switch (self.role) {
             .master => |master| {
                 try self.own_store.startChangeLog();
+                copies.deleteAll(io, self.copies_directory);
                 self.server.store(try Server.start(self.allocator, io, self.clock.clock(), self.network(), &self.own_store, .{
                     .address = master.address,
                     .token = self.tokenInHello(),
@@ -495,9 +497,14 @@ pub const Replication = struct {
 
     /// Waits until change set `lsn` of the master is applied here, at most
     /// `timeout_ns`; whether it is. A master has every change set it made.
-    /// A process standing by looks through `store` (the calling thread's).
+    /// A replica waits for its first copy too, whatever `lsn`: a master whose
+    /// data came before its change log says 0. A process standing by, or
+    /// waiting for a first copy, looks through `store` (the calling thread's).
     pub fn waitFor(self: *Replication, store: *KeyValueStore, lsn: u64, timeout_ns: u64) bool {
-        return self.waitForFollowing(lsn, timeout_ns) orelse waitApplied(store, lsn, timeout_ns) catch false;
+        if (lsn > 0) {
+            if (self.waitForFollowing(lsn, timeout_ns)) |applied| return applied;
+        }
+        return lookUntilApplied(store, lsn, timeout_ns, self.role == .replica) catch false;
     }
 
     /// As `waitFor`, in a process that follows the master; null in one
@@ -524,11 +531,18 @@ pub fn lastLsn(store: *KeyValueStore) !u64 {
 /// `timeout_ns`, looking at it every millisecond; whether it has. True at
 /// once on a database that is no replica.
 pub fn waitApplied(store: *KeyValueStore, lsn: u64, timeout_ns: u64) !bool {
+    return lookUntilApplied(store, lsn, timeout_ns, false);
+}
+
+/// `waitApplied`; with `awaits_copy`, a database that is no replica yet is
+/// one still to get its first copy, not one with nothing to wait for.
+fn lookUntilApplied(store: *KeyValueStore, lsn: u64, timeout_ns: u64, awaits_copy: bool) !bool {
     const io = Io.Threaded.global_single_threaded.io();
     const deadline = Io.Clock.awake.now(io).nanoseconds +| timeout_ns;
     while (true) {
-        const applied = try store.appliedLsn() orelse return true;
-        if (applied >= lsn) return true;
+        if (try store.appliedLsn()) |applied| {
+            if (applied >= lsn) return true;
+        } else if (!awaits_copy) return true;
         if (Io.Clock.awake.now(io).nanoseconds >= deadline) return false;
         io.sleep(.fromMilliseconds(1), .awake) catch return false;
     }

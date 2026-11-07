@@ -14,3 +14,9 @@ pub fn delete(io: Io, copies_directory: []const u8, number: u64) void {
     const file_path = path(&path_buffer, copies_directory, number) catch return;
     Io.Dir.cwd().deleteFile(io, file_path) catch {};
 }
+
+/// Deletes the copies a master killed left, before it serves again: only the
+/// process holding the replication lock makes copies, so none is in use.
+pub fn deleteAll(io: Io, copies_directory: []const u8) void {
+    Io.Dir.cwd().deleteTree(io, copies_directory) catch {};
+}

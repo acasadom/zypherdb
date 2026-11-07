@@ -1,0 +1,79 @@
+name: Real use
+
+# The real use test (docs/guide/contributing.md) on the wheels built here: each node a process of
+# its own, processes killed, connections cut, and a database of the latest release on PyPI opened
+# by the new version. Too long for every change: run it by hand before each release (it also runs
+# on a pull request that changes the test itself). tests/real_use is POSIX only: no Windows.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/real-use.yml
+      - tests/real_use/**
+
+permissions:
+  contents: read
+
+jobs:
+  wheels:
+    uses: ./.github/workflows/wheels.yml
+
+  real-use:
+    name: real use (${{ matrix.name }})
+    needs: wheels
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-24.04, arch: x64 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, arch: arm64 }
+          - { name: macos-arm64, os: macos-latest, arch: arm64 }
+          - { name: macos-x86_64, os: macos-15-intel, arch: x64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    env:
+      REAL_TMP: ${{ github.workspace }}/real-tmp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.arch }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist
+
+      # The file, not the name: by name, pip may take the release on PyPI over the wheel built.
+      - name: Install the new wheel, and the latest release in a Python of its own
+        run: |
+          mkdir "$REAL_TMP"
+          python -m venv "$RUNNER_TEMP/new"
+          "$RUNNER_TEMP/new/bin/python" -m pip install dist/*.whl
+          python -m venv "$RUNNER_TEMP/old"
+          "$RUNNER_TEMP/old/bin/python" -m pip install zypherdb
+
+      - name: Upgrade from the latest release
+        timeout-minutes: 10
+        run: |
+          "$RUNNER_TEMP/new/bin/python" -I tests/real_use/upgrade.py "$RUNNER_TEMP/old/bin/python" "$RUNNER_TEMP/new/bin/python"
+
+      - name: Replication in real use
+        timeout-minutes: 45
+        run: |
+          "$RUNNER_TEMP/new/bin/python" -I tests/real_use/run.py
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: real-use-${{ matrix.name }}
+          path: real-tmp
+          retention-days: 7
+          if-no-files-found: ignore

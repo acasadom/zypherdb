@@ -272,7 +272,8 @@ class Database:
         arrive. To read on a replica a write just made on the master, take
         the master's `last_lsn` after the write and call this on the replica
         before reading, also in a process that opened the replica without a
-        role. True at once on a database that is no replica.
+        role. A replica opened with a role waits for its first copy too,
+        whatever `lsn`. True at once on a database that is no replica.
         """
         if lsn < 0 or timeout < 0:
             raise ValueError("lsn and timeout must not be negative")

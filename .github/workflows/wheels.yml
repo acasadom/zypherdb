@@ -15,8 +15,10 @@ on:
 permissions:
   contents: read
 
+# github.workflow is the caller's when reused: a run of real-use.yml and one of this file on the
+# same pull request must not cancel each other.
 concurrency:
-  group: wheels-${{ github.ref }}-${{ github.event_name }}
+  group: wheels-${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
