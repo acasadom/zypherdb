@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-11-07
 
 ### Added
 
@@ -10,8 +10,9 @@
   own. A replica starts from an empty directory or a replica: a master or a database holding data
   is refused, not overwritten. `last_lsn` and `wait_for` let a client read its own writes; `replication_status()` tells
   each replica's phase and lag. Another process on the master's or a replica's directory stands by
-  and takes over when the first one ends. There is no failover to another machine. See
-  `docs/guide/replication.md`.
+  and takes over when the first one ends. There is no failover to another machine. Addresses are
+  `"host:port"`, the host an IP address or a name. A replica's readers can see the master's states
+  in jumps, never one the master did not have. See `docs/guide/replication.md`.
 - **Copies for replicas.** Replicas asking for a copy at once, or while one is sent, share one
   file on the master's disk, deleted once sent. A replica writes no file of its own and keeps
   serving its database until the copy is whole. A copy holds the database's entries, not the
@@ -38,7 +39,18 @@
 ### Changed
 
 - **A stored value is at most 64 MiB** (was 4 GiB): a node with all its properties, or one
-  property of a relationship. A replica holds each write whole while it applies it.
+  property of a relationship. A replica holds each write whole while it applies it. A database
+  from 0.1.0 holding a larger value cannot be copied to a replica.
+- **On macOS, locks are SysV semaphores** (were POSIX ones), for the fix below. When the last process
+  on a database is killed, its semaphores stay until the machine restarts, with room for thousands.
+
+### Fixed
+
+- **A process killed during a read no longer makes the file grow.** While another process kept the
+  database open, the pages the dead one could see were never reused, and the file grew for ever.
+  Opening a database and every 1024th write transaction now drop the readers of dead processes.
+- **On macOS, a process killed while writing no longer hangs the others.** Their writes waited for
+  ever for the lock it held.
 
 ## 0.1.0 — 2026-10-28
 
