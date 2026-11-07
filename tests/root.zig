@@ -26,6 +26,8 @@ test {
     _ = @import("storage/integrity_test.zig");
     _ = @import("storage/fuzz_test.zig");
     _ = @import("query/ast_test.zig");
+    _ = @import("vector/hnsw_test.zig");
+    _ = @import("vector/vector_index_test.zig");
     _ = @import("text/analyzer_test.zig");
     _ = @import("text/case_test.zig");
     _ = @import("text/query_test.zig");

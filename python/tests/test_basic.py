@@ -89,6 +89,29 @@ def test_uniqueness_constraint(db):
     assert db.query("MATCH (c:Card {number: 1}) RETURN count(c)") == [[1]]
 
 
+def test_vector_index(db):
+    db.query(
+        "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.embedding "
+        "OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'euclidean'}}"
+    )
+    for name, embedding in [("a", [0.0, 0.0, 0.0]), ("b", [1.0, 0.0, 0.0]), ("c", [5, 5, 5])]:
+        db.query("CREATE (:Doc {name: $name, embedding: $embedding})", name=name, embedding=embedding)
+    rows = db.query(
+        "CALL db.index.vector.queryNodes('docs', 2, $q) YIELD node, score RETURN node.name, score",
+        q=[0.9, 0.0, 0.0],
+    )
+    assert [name for name, _ in rows] == ["b", "a"]
+    assert rows[0][1] == pytest.approx(1 / (1 + 0.01))
+    # A vector of another length is refused, through the direct API too.
+    with pytest.raises(ConstraintViolationError, match="docs") as caught:
+        db.query("CREATE (:Doc {embedding: [1.0, 2.0]})")
+    assert caught.value.code == 10
+    db.add_node(50, "Doc")
+    with pytest.raises(ConstraintViolationError):
+        db.set_property(50, "embedding", [float("nan"), 0.0, 0.0])
+    assert db.check()["ok"]
+
+
 def test_load_csv_reads_only_from_the_import_directory(tmp_path):
     imports = tmp_path / "imports"
     imports.mkdir()

@@ -24,6 +24,7 @@ const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const expressions = @import("expressions.zig");
 const temporal_functions = @import("temporal_functions.zig");
+const vector_functions = @import("vector_functions.zig");
 
 pub const Function = struct {
     min_arguments: usize,
@@ -39,7 +40,7 @@ fn fixed(comptime count: usize, comptime implementation: anytype) Function {
 
 const Entry = struct { []const u8, Function };
 
-const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsciiIgnoreCase).initComptime(builtin_entries ++ temporal_table);
+const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsciiIgnoreCase).initComptime(builtin_entries ++ temporal_table ++ vector_functions.entries);
 
 const builtin_entries = [_]Entry{
     // Lists and strings.

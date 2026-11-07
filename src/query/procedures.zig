@@ -41,6 +41,14 @@ pub const catalog = [_]Signature{
         .{ .name = "relationship", .kind = .relationship },
         .{ .name = "score", .kind = .value },
     } },
+    .{ .name = "db.index.vector.queryNodes", .min_arguments = 3, .max_arguments = 3, .columns = &.{
+        .{ .name = "node", .kind = .node },
+        .{ .name = "score", .kind = .value },
+    } },
+    .{ .name = "db.index.vector.queryRelationships", .min_arguments = 3, .max_arguments = 3, .columns = &.{
+        .{ .name = "relationship", .kind = .relationship },
+        .{ .name = "score", .kind = .value },
+    } },
     .{ .name = "db.index.fulltext.listAvailableAnalyzers", .min_arguments = 0, .max_arguments = 0, .columns = &.{
         .{ .name = "analyzer", .kind = .value },
         .{ .name = "description", .kind = .value },

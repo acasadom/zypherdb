@@ -225,3 +225,57 @@ test "constraint violations name the constraint and the value" {
         \\  invalid_expression: a constraint named 'person_name' already exists
     ));
 }
+
+test "vector indexes name the index, the entity and what is wrong with the vector" {
+    try expectErrors("CREATE VECTOR INDEX docs FOR (d:Doc) ON d.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}", &.{
+        "CREATE (:Doc {embedding: [1.0, 2.0]})",
+        "CREATE (:Doc {embedding: 'text'})",
+        "CREATE (:Doc {embedding: [0, 0, 0]})",
+        "CREATE (:Doc {embedding: [1.0, 2.0, 1e308 * 10]})",
+        "CREATE (:Note {embedding: [1]})",
+        "CREATE VECTOR INDEX notes FOR (n:Note) ON n.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}",
+        "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other",
+        "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 0}}",
+        "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'dot'}}",
+        "CREATE VECTOR INDEX other FOR (d:Doc|Note) ON d.other",
+        "CALL db.index.vector.queryNodes('docs', 5, [1, 2]) YIELD node RETURN node",
+        "CALL db.index.vector.queryNodes('docs', 0, [1, 2, 3]) YIELD node RETURN node",
+        "CALL db.index.vector.queryNodes('nothing', 5, [1, 2, 3]) YIELD node RETURN node",
+        "CALL db.index.vector.queryRelationships('docs', 5, [1, 2, 3]) YIELD relationship RETURN relationship",
+        "RETURN vector.similarity.cosine([1, 2], [1])",
+        "RETURN vector.similarity.cosine([1, 'a'], [1, 2])",
+    }, snap(@src(),
+        \\CREATE (:Doc {embedding: [1.0, 2.0]})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one has 2 elements
+        \\CREATE (:Doc {embedding: 'text'})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one is not a list of numbers
+        \\CREATE (:Doc {embedding: [0, 0, 0]})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one is all zeros, which has no direction for cosine
+        \\CREATE (:Doc {embedding: [1.0, 2.0, 1e308 * 10]})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one has an element that is NaN or infinite
+        \\CREATE (:Note {embedding: [1]})
+        \\  ok
+        \\CREATE VECTOR INDEX notes FOR (n:Note) ON n.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}
+        \\  constraint_violation: cannot create vector index 'notes': it takes embedding as a list of 3 numbers, and that of node 0 has 1 elements
+        \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other
+        \\  invalid_expression: a vector index needs its dimensions: OPTIONS {indexConfig: {`vector.dimensions`: N}}
+        \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 0}}
+        \\  invalid_expression: `vector.dimensions` must be between 1 and 4096, not 0
+        \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'dot'}}
+        \\  invalid_expression: unknown vector similarity function 'dot' (available: cosine, euclidean)
+        \\CREATE VECTOR INDEX other FOR (d:Doc|Note) ON d.other
+        \\  parse: a vector index is on one label
+        \\CALL db.index.vector.queryNodes('docs', 5, [1, 2]) YIELD node RETURN node
+        \\  invalid_expression: db.index.vector.queryNodes(): index 'docs' takes a list of 3 numbers, and this vector has 2 elements
+        \\CALL db.index.vector.queryNodes('docs', 0, [1, 2, 3]) YIELD node RETURN node
+        \\  invalid_expression: db.index.vector.queryNodes() needs a number of results of at least 1, not 0
+        \\CALL db.index.vector.queryNodes('nothing', 5, [1, 2, 3]) YIELD node RETURN node
+        \\  invalid_expression: there is no vector index named 'nothing'
+        \\CALL db.index.vector.queryRelationships('docs', 5, [1, 2, 3]) YIELD relationship RETURN relationship
+        \\  invalid_expression: 'docs' indexes nodes: use db.index.vector.queryNodes
+        \\RETURN vector.similarity.cosine([1, 2], [1])
+        \\  invalid_expression: vector.similarity.cosine() needs two vectors of the same length, not 2 and 1
+        \\RETURN vector.similarity.cosine([1, 'a'], [1, 2])
+        \\  type_mismatch: vector.similarity.cosine() takes two non-empty lists of numbers
+    ));
+}

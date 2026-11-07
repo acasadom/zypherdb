@@ -1,4 +1,4 @@
-//! Schema commands: CREATE [FULLTEXT|RANGE] INDEX, CREATE CONSTRAINT, DROP
+//! Schema commands: CREATE [FULLTEXT|RANGE|VECTOR] INDEX, CREATE CONSTRAINT, DROP
 //! INDEX / CONSTRAINT, SHOW INDEXES / CONSTRAINTS. Each runs as a statement
 //! of its own, in its own transaction.
 
@@ -10,6 +10,8 @@ const fulltext = @import("../storage/fulltext.zig");
 const fulltext_postings = @import("../storage/fulltext_postings.zig");
 const constraints = @import("../storage/constraints.zig");
 const property_indexes = @import("../storage/property_indexes.zig");
+const vector_index = @import("../storage/vector_index.zig");
+const similarity = @import("../vector/similarity.zig");
 const layout = @import("../storage/layout.zig");
 
 const Executor = @import("Executor.zig");
@@ -32,7 +34,7 @@ pub const analyzers = [_][]const u8{ "standard", "english", "spanish" };
 
 pub fn isSchemaCommand(executor: *Executor, root: Index) bool {
     return switch (executor.ast.kind(root)) {
-        .create_fulltext_index, .create_index, .create_constraint, .drop_index, .drop_constraint, .show_indexes, .show_constraints => true,
+        .create_fulltext_index, .create_index, .create_vector_index, .create_constraint, .drop_index, .drop_constraint, .show_indexes, .show_constraints => true,
         else => false,
     };
 }
@@ -53,6 +55,7 @@ pub fn run(executor: *Executor, root: Index) ExecutionError![]const Row {
     switch (executor.ast.kind(root)) {
         .create_fulltext_index => try create(executor, root, .fulltext),
         .create_index => try create(executor, root, .range),
+        .create_vector_index => try create(executor, root, .vector),
         .create_constraint => try create(executor, root, .unique),
         .drop_index => try drop(executor, root, "index"),
         .drop_constraint => try drop(executor, root, "constraint"),
@@ -79,6 +82,7 @@ fn drop(executor: *Executor, root: Index, comptime what: []const u8) ExecutionEr
     }
     if (found.kind == .fulltext) try fulltext_postings.clear(graph, command.name);
     if (found.hasPropertyIndex()) try property_indexes.clear(graph, found.index_id);
+    if (found.kind == .vector) try vector_index.clear(graph, found.index_id);
     _ = try fulltext.drop(graph, command.name);
 }
 
@@ -115,8 +119,9 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         return error.InvalidExpression;
     }
     const children = executor.ast.nodeChildren(root);
-    const analyzer = if (kind != .fulltext) "" else if (children.len > 0) try analyzerOption(executor, children[0]) else "standard";
-    const definition = fulltext.Definition{
+    const options: ?Value = if (children.len > 0) try evaluateOptions(executor, children[0]) else null;
+    const analyzer = if (kind != .fulltext) "" else if (options) |map| try analyzerOption(executor, map) else "standard";
+    var definition = fulltext.Definition{
         .name = command.name,
         .kind = kind,
         .entity = if (command.relationships) .relationships else .nodes,
@@ -124,25 +129,82 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         .labels_or_types = command.labels_or_types,
         .properties = command.properties,
     };
+    if (kind == .vector) {
+        const config = try vectorOptions(executor, options);
+        definition.dimensions = config.dimensions;
+        definition.similarity = config.similarity;
+    }
     const stored = try fulltext.create(executor.graph, definition);
-    // Index what the graph holds already.
-    if (kind == .fulltext) try fulltext_postings.populate(executor.graph, stored);
-    if (stored.hasPropertyIndex()) try property_indexes.populate(executor.graph, stored);
-    // A constraint the graph already breaks is refused (checked on its index;
-    // the transaction is aborted).
-    if (kind == .unique) constraints.checkExisting(executor.graph, stored) catch |err| {
+    // A constraint, or a vector index, the graph already breaks is refused
+    // (the transaction is aborted).
+    populate(executor.graph, stored) catch |err| {
         if (err == error.ConstraintViolation) executor.fail(.constraint_violation, "{s}", .{executor.graph.violationMessage()});
         return err;
     };
 }
 
-/// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.
-fn analyzerOption(executor: *Executor, options_expression: Index) ExecutionError![]const u8 {
+/// Indexes what the graph holds already for a new definition (a constraint
+/// is checked on its index, once built).
+fn populate(graph: *@import("../storage/graph.zig").Graph, stored: fulltext.Definition) @import("../storage/key_value_store.zig").StorageError!void {
+    switch (stored.kind) {
+        .fulltext => try fulltext_postings.populate(graph, stored),
+        .range => try property_indexes.populate(graph, stored),
+        .unique => {
+            try property_indexes.populate(graph, stored);
+            try constraints.checkExisting(graph, stored);
+        },
+        .vector => try vector_index.populate(graph, stored),
+    }
+}
+
+/// The value of an OPTIONS map.
+fn evaluateOptions(executor: *Executor, options_expression: Index) ExecutionError!Value {
     // A schema command has no plan: its options are compiled here.
     const no_chains: std.AutoHashMapUnmanaged(Index, u32) = .empty;
     try executor.useExpressions(try ExpressionProgram.compile(executor.allocator, executor.ast, &.{}, &no_chains));
     var empty = try Bindings.init(executor.allocator, 0);
-    const options = try expressions.evaluate(executor, options_expression, &empty);
+    return expressions.evaluate(executor, options_expression, &empty);
+}
+
+/// `OPTIONS {indexConfig: {`vector.dimensions`: N, `vector.similarity_function`: 'cosine'}}`:
+/// the dimensions are required, the similarity is cosine unless named.
+fn vectorOptions(executor: *Executor, options: ?Value) ExecutionError!struct { dimensions: u16, similarity: similarity.Similarity } {
+    var dimensions: ?i64 = null;
+    var chosen: similarity.Similarity = .cosine;
+    if (options) |map| for (map.map) |option| {
+        if (!std.mem.eql(u8, option.key, "indexConfig") or option.value != .map) return unknownVectorOption(executor, option.key);
+        for (option.value.map) |setting| {
+            if (std.mem.eql(u8, setting.key, "vector.dimensions")) {
+                if (setting.value != .int) return unknownVectorOption(executor, setting.key);
+                dimensions = setting.value.int;
+            } else if (std.mem.eql(u8, setting.key, "vector.similarity_function")) {
+                chosen = if (setting.value == .string) similarity.Similarity.parse(setting.value.string) orelse {
+                    executor.fail(.invalid_expression, "unknown vector similarity function '{s}' (available: cosine, euclidean)", .{setting.value.string});
+                    return error.InvalidExpression;
+                } else return unknownVectorOption(executor, setting.key);
+            } else {
+                return unknownVectorOption(executor, setting.key);
+            }
+        }
+    };
+    const count = dimensions orelse {
+        executor.fail(.invalid_expression, "a vector index needs its dimensions: OPTIONS {{indexConfig: {{`vector.dimensions`: N}}}}", .{});
+        return error.InvalidExpression;
+    };
+    if (count < 1 or count > similarity.max_dimensions) {
+        executor.fail(.invalid_expression, "`vector.dimensions` must be between 1 and {d}, not {d}", .{ similarity.max_dimensions, count });
+        return error.InvalidExpression;
+    }
+    return .{ .dimensions = @intCast(count), .similarity = chosen };
+}
+
+fn unknownVectorOption(executor: *Executor, key: []const u8) ExecutionError {
+    executor.fail(.invalid_expression, "unknown index option '{s}' (expected indexConfig: {{`vector.dimensions`: N, `vector.similarity_function`: 'cosine' or 'euclidean'}})", .{key});
+    return error.InvalidExpression;
+}
+
+/// The analyzer named in `OPTIONS {indexConfig: {`fulltext.analyzer`: 'spanish'}}`.
+fn analyzerOption(executor: *Executor, options: Value) ExecutionError![]const u8 {
     var analyzer: []const u8 = "standard";
     for (options.map) |option| {
         if (!std.mem.eql(u8, option.key, "indexConfig")) return unknownOption(executor, option.key);
@@ -180,22 +242,31 @@ fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig"
     var rows = std.ArrayList(Row).empty;
     for (try fulltext.all(executor.graph, allocator)) |definition| {
         switch (definition.kind) {
-            .fulltext => if (which == .range) continue,
-            .range, .unique => if (which == .fulltext) continue,
+            .fulltext => if (which != .all and which != .fulltext) continue,
+            .range, .unique => if (which != .all and which != .range) continue,
+            .vector => if (which != .all and which != .vector) continue,
         }
         // A constraint's index keys its first property (constraints.zig).
         const properties = if (definition.kind == .unique) definition.properties[0..1] else definition.properties;
         var row = Row.empty;
         try row.append(allocator, .{ .string = definition.name });
-        try row.append(allocator, .{ .string = if (definition.kind == .fulltext) "FULLTEXT" else "RANGE" });
+        try row.append(allocator, .{ .string = switch (definition.kind) {
+            .fulltext => "FULLTEXT",
+            .range, .unique => "RANGE",
+            .vector => "VECTOR",
+        } });
         try row.append(allocator, .{ .string = if (definition.entity == .nodes) "NODE" else "RELATIONSHIP" });
         try row.append(allocator, try stringList(allocator, definition.labels_or_types));
         try row.append(allocator, try propertyList(allocator, properties));
         try row.append(allocator, if (definition.kind == .unique) .{ .string = definition.name } else .null);
-        const config: []const MapEntry = if (definition.kind == .fulltext)
-            try allocator.dupe(MapEntry, &.{.{ .key = "fulltext.analyzer", .value = .{ .string = definition.analyzer } }})
-        else
-            &.{};
+        const config: []const MapEntry = switch (definition.kind) {
+            .fulltext => try allocator.dupe(MapEntry, &.{.{ .key = "fulltext.analyzer", .value = .{ .string = definition.analyzer } }}),
+            .vector => try allocator.dupe(MapEntry, &.{
+                .{ .key = "vector.dimensions", .value = .{ .int = definition.dimensions } },
+                .{ .key = "vector.similarity_function", .value = .{ .string = definition.similarity.name() } },
+            }),
+            .range, .unique => &.{},
+        };
         try row.append(allocator, .{ .map = try allocator.dupe(MapEntry, &.{.{ .key = "indexConfig", .value = .{ .map = config } }}) });
         try rows.append(allocator, row);
     }

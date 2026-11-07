@@ -12,6 +12,7 @@
 //! - the relationship-type counters (`t`);
 //! - the postings of every full-text index (`w`, `W`, `v`, `V`;
 //!   integrity_fulltext.zig);
+//! - the HNSW graph of every vector index (`h`; integrity_vector.zig);
 //! - that every uniqueness constraint holds, and that the id counters are
 //!   above every id in use.
 //!
@@ -43,6 +44,8 @@ const valueProblem = layout.valueProblem;
 const fulltext = @import("fulltext.zig");
 const fulltext_postings = @import("fulltext_postings.zig");
 const integrity_fulltext = @import("integrity_fulltext.zig");
+const integrity_vector = @import("integrity_vector.zig");
+const vector_index = @import("vector_index.zig");
 const property_indexes = @import("property_indexes.zig");
 
 /// What a check found: the first problems, described, and how many there were.
@@ -113,6 +116,7 @@ pub fn check(graph: *Graph, allocator: Allocator) StorageError!Report {
             try checker.checkUnique(definition);
         },
         .range => try checker.expectPropertyIndex(definition),
+        .vector => try integrity_vector.expectIndex(&checker, definition),
     };
     try checker.checkCounters();
     try checker.compareMainTable();
@@ -368,6 +372,7 @@ pub const Checker = struct {
                 fulltext_postings.document_marker,
                 fulltext_postings.term_marker,
                 fulltext_postings.statistics_marker,
+                vector_index.marker,
                 => try self.compareDerived(key, entry.value, seen),
                 else => try self.report.add("unknown key {f}", .{Bytes{ .bytes = key }}),
             }
