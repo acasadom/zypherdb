@@ -26,6 +26,14 @@ def address_of(master):
     return master.replication_status()["address"]
 
 
+def test_a_master_deletes_the_copies_a_killed_one_left(tmp_path):
+    left = tmp_path / "master" / "replication-copies" / "copy-0"
+    left.parent.mkdir(parents=True)
+    left.write_bytes(b"cut short")
+    with Database(str(tmp_path / "master"), serve="127.0.0.1:0", token=TOKEN):
+        assert not left.exists()
+
+
 def test_a_replica_reads_a_write_made_on_the_master(master, tmp_path):
     with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
         master.query("CREATE (:Person {name: 'Ada'})")

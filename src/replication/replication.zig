@@ -13,6 +13,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
+const copies = @import("copies.zig");
 const protocol = @import("protocol.zig");
 const SystemClock = @import("clock.zig").SystemClock;
 const Tcp = @import("tcp.zig").Tcp;
@@ -301,6 +302,7 @@ pub const Replication = struct {
         switch (self.role) {
             .master => |master| {
                 try self.own_store.startChangeLog();
+                copies.deleteAll(io, self.copies_directory);
                 self.server.store(try Server.start(self.allocator, io, self.clock.clock(), self.network(), &self.own_store, .{
                     .address = master.address,
                     .token = self.tokenInHello(),
