@@ -319,7 +319,8 @@ pub export fn zypherdb_error_code(context: *Context) c_int {
 
 /// The index of the statement that failed in the last `zypherdb_write_many`
 /// that failed; `SIZE_MAX` if the failure was in no statement (the commit,
-/// the master not reached) or the last call was not a `zypherdb_write_many`.
+/// the master not reached). Only `zypherdb_write_many` changes it: read it
+/// right after one that returned 1.
 pub export fn zypherdb_error_statement(context: *Context) usize {
     return context.failed_statement orelse std.math.maxInt(usize);
 }
@@ -459,7 +460,11 @@ fn runQuery(context: *Context, query: []const u8, parameters_json: ?[]const u8) 
             defer statement.destroy();
             return runStatement(context, statement, parameters_json);
         }
-        context.statements.put(statement);
+        context.statements.put(statement) catch |err| {
+            statement.destroy();
+            noteFailure(&context.diagnostic, err);
+            return null;
+        };
         break :prepared statement;
     };
     return runStatement(context, statement, parameters_json);
@@ -592,7 +597,11 @@ fn cachedStatement(context: *Context, query: []const u8) ?*Statement {
         batch.check(statement, &.{}, &context.diagnostic) catch {};
         return null;
     }
-    context.statements.put(statement);
+    context.statements.put(statement) catch |err| {
+        statement.destroy();
+        noteFailure(&context.diagnostic, err);
+        return null;
+    };
     return statement;
 }
 

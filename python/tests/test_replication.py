@@ -315,9 +315,24 @@ def test_a_replica_refuses_what_it_cannot_forward(master, tmp_path):
         with pytest.raises(WriteNotForwardedError, match="write blocks"):
             with replica.write():
                 pass
-        with pytest.raises(StorageError):
-            replica.add_node(replica.allocate_node_id(), "Person")
+        with pytest.raises(StorageError, match="is a replica"):
+            replica.add_node(1, "Person")
+        with pytest.raises(StorageError, match="is a replica"):
+            replica.allocate_node_id()
         assert master.query("MATCH (p:Person) RETURN count(p)") == [[0]]
+        first, second = replica.query("CREATE (a:Person), (b:Person) RETURN id(a), id(b)")[0]
+        assert replica.wait_for(master.last_lsn, timeout=30)
+        with pytest.raises(StorageError, match="is a replica"):
+            replica.add_edge(first, second, "KNOWS")
+        with pytest.raises(StorageError, match="is a replica"):
+            replica.set_property(first, "name", "Ada")
+
+
+def test_a_replica_that_does_not_forward_tells_why_it_refuses_a_write_block(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+        with pytest.raises(StorageError, match="is a replica"):
+            with replica.write():
+                pass
 
 
 def test_a_forwarded_write_under_way_holds_up_no_other_thread(master, tmp_path):

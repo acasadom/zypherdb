@@ -879,7 +879,15 @@ fn statementFor(call: QueryCall, owned: *?*Statement) ?*Statement {
         noteFailure(&database.diagnostic, if (err == error.ParseFailed) error.InvalidExpression else err);
         return null;
     };
-    if (statement.is_query) database.statements.put(statement) else owned.* = statement;
+    if (!statement.is_query) {
+        owned.* = statement;
+        return statement;
+    }
+    database.statements.put(statement) catch |err| {
+        statement.destroy();
+        noteFailure(&database.diagnostic, err);
+        return null;
+    };
     return statement;
 }
 
@@ -1155,9 +1163,14 @@ fn storageFailure() ?*py.PyObject {
 }
 
 /// The exception for a failed write: a constraint it would break
-/// (ConstraintViolationError), a size limit (ValueError), or a storage
-/// failure.
+/// (ConstraintViolationError), a size limit (ValueError), a replica refusing
+/// it, or a storage failure.
 fn writeFailure(database: *Database, err: anyerror) ?*py.PyObject {
+    if (err == error.ReadOnlyReplica) {
+        database.diagnostic.clear();
+        noteFailure(&database.diagnostic, err);
+        return raiseQueryError(database);
+    }
     if (err == error.ValueTooLarge) return raise(py.PyExc_ValueError, "this value is too large to store (at most {d} bytes)", .{zypherdb.layout.max_value_length});
     if (err == error.TooManyLabels) return raise(py.PyExc_ValueError, "a node cannot have more than {d} labels", .{zypherdb.layout.max_labels});
     if (err != error.ConstraintViolation) return storageFailure();
@@ -1177,7 +1190,7 @@ fn beginWrite(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject 
     const thread_state = py.PyEval_SaveThread();
     const begun = database.graph.beginWrite();
     py.PyEval_RestoreThread(thread_state);
-    begun catch return storageFailure();
+    begun catch |err| return writeFailure(database, err);
     return none();
 }
 
@@ -1310,7 +1323,7 @@ fn allocateNodeId(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObj
             out.* = try graph.allocateNodeId();
         }
     };
-    writing(database, Allocate.apply, .{ &database.graph, &id }) catch return storageFailure();
+    writing(database, Allocate.apply, .{ &database.graph, &id }) catch |err| return writeFailure(database, err);
     return py.PyLong_FromUnsignedLongLong(id);
 }
 
@@ -1363,7 +1376,7 @@ fn addEdge(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
             out.* = try graph.addEdge(src, dst, edge_type);
         }
     };
-    writing(database, Add.apply, .{ &database.graph, source, target, type_pointer[0..@intCast(type_length)], &id }) catch return storageFailure();
+    writing(database, Add.apply, .{ &database.graph, source, target, type_pointer[0..@intCast(type_length)], &id }) catch |err| return writeFailure(database, err);
     return py.PyLong_FromUnsignedLongLong(id);
 }
 

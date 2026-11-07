@@ -162,15 +162,33 @@ test "the statement cache keeps the most recently used" {
     defer cache.deinit();
     cache.capacity = 2;
     const texts = [_][]const u8{ "RETURN 1", "RETURN 2", "RETURN 3" };
-    cache.put(try Statement.prepare(testing.allocator, texts[0], .{ .graph = &g }));
-    cache.put(try Statement.prepare(testing.allocator, texts[1], .{ .graph = &g }));
+    try cache.put(try Statement.prepare(testing.allocator, texts[0], .{ .graph = &g }));
+    try cache.put(try Statement.prepare(testing.allocator, texts[1], .{ .graph = &g }));
     try testing.expect(cache.get(texts[0]) != null); // now the most recent
-    cache.put(try Statement.prepare(testing.allocator, texts[2], .{ .graph = &g }));
+    try cache.put(try Statement.prepare(testing.allocator, texts[2], .{ .graph = &g }));
     try testing.expect(cache.get(texts[0]) != null);
     try testing.expect(cache.get(texts[1]) == null);
     try testing.expect(cache.get(texts[2]) != null);
     cache.clear();
     try testing.expect(cache.get(texts[0]) == null);
+}
+
+test "a statement the cache has no memory to keep stays the caller's" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 0 });
+    var cache = StatementCache.init(failing.allocator());
+    defer cache.deinit();
+    const statement = try Statement.prepare(testing.allocator, "RETURN 1", .{ .graph = &g });
+    defer statement.destroy();
+    try testing.expectError(error.OutOfMemory, cache.put(statement));
+    try testing.expect(cache.get("RETURN 1") == null);
+    try testing.expectEqualStrings("RETURN 1", statement.text);
 }
 
 test "the statement cache held keeps them all, then goes back within its capacity" {
@@ -186,7 +204,7 @@ test "the statement cache held keeps them all, then goes back within its capacit
     cache.capacity = 2;
     const texts = [_][]const u8{ "RETURN 1", "RETURN 2", "RETURN 3", "RETURN 4" };
     cache.hold();
-    for (texts) |text| cache.put(try Statement.prepare(testing.allocator, text, .{ .graph = &g }));
+    for (texts) |text| try cache.put(try Statement.prepare(testing.allocator, text, .{ .graph = &g }));
     for (texts) |text| try testing.expect(cache.get(text) != null);
     cache.release();
     try testing.expectEqual(@as(usize, 2), cache.entries.count());
@@ -195,7 +213,7 @@ test "the statement cache held keeps them all, then goes back within its capacit
     try testing.expect(cache.get(texts[2]) != null);
     try testing.expect(cache.get(texts[3]) != null);
     // Back to its usual way: one more makes the least recent go.
-    cache.put(try Statement.prepare(testing.allocator, texts[0], .{ .graph = &g }));
+    try cache.put(try Statement.prepare(testing.allocator, texts[0], .{ .graph = &g }));
     try testing.expectEqual(@as(usize, 2), cache.entries.count());
     try testing.expect(cache.get(texts[2]) == null);
 }

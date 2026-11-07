@@ -41,13 +41,12 @@ pub fn get(self: *Cache, text: []const u8) ?*Statement {
     return entry.statement;
 }
 
-/// Keeps `statement` (the cache owns it from now on), making room first.
-/// With no room to keep it (capacity 0, out of memory), it is destroyed.
-pub fn put(self: *Cache, statement: *Statement) void {
-    if (self.capacity == 0) return statement.destroy();
+/// Keeps `statement` (the cache owns it from now on), making room first. Out
+/// of memory, it is not kept and stays the caller's.
+pub fn put(self: *Cache, statement: *Statement) Allocator.Error!void {
     if (!self.held and self.entries.count() >= self.capacity) self.evictLeastRecent();
     self.clock += 1;
-    self.entries.put(self.allocator, statement.text, .{ .statement = statement, .last_used = self.clock }) catch statement.destroy();
+    try self.entries.put(self.allocator, statement.text, .{ .statement = statement, .last_used = self.clock });
 }
 
 /// Keeps every statement until `release`, over the capacity if it must: a
