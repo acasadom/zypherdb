@@ -26,6 +26,45 @@ def address_of(master):
     return master.replication_status()["address"]
 
 
+def test_a_new_replica_waits_for_its_first_copy_of_data_from_before_its_master_served(tmp_path):
+    path = str(tmp_path / "master")
+    with Database(path) as db:
+        db.query("UNWIND range(1, 1000) AS i CREATE (:Person {number: i})")
+    with Database(path, serve="127.0.0.1:0", token=TOKEN) as master:
+        assert master.last_lsn == 0
+        with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+            assert replica.wait_for(master.last_lsn, timeout=20)
+            assert replica.query("MATCH (p:Person) RETURN count(p)") == [[1000]]
+
+
+def test_a_new_replica_of_an_empty_master_has_nothing_more_to_wait_for(master, tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from=address_of(master), token=TOKEN) as replica:
+        assert replica.wait_for(master.last_lsn, timeout=20)
+
+
+def test_a_new_replica_that_reaches_no_master_has_not_got_its_first_copy(tmp_path):
+    with Database(str(tmp_path / "replica"), replicate_from="127.0.0.1:1", token=TOKEN) as replica:
+        assert not replica.wait_for(0, timeout=0.2)
+        assert not replica.wait_for(1, timeout=0.2)
+
+
+_STANDING_BY_REPLICA = r"""
+import sys
+from zypherdb import Database
+
+with Database(sys.argv[1], replicate_from="127.0.0.1:1", token="the master's token") as db:
+    print(db.replication_status()["standby"], db.wait_for(0, timeout=0.2), db.wait_for(7, timeout=0.2))
+"""
+
+
+def test_a_new_replica_standing_by_has_not_got_its_first_copy(tmp_path):
+    path = str(tmp_path / "replica")
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent))
+    with Database(path, replicate_from="127.0.0.1:1", token=TOKEN):
+        told = subprocess.run([sys.executable, "-c", _STANDING_BY_REPLICA, path], env=environment, capture_output=True, text=True, timeout=60)
+    assert told.stdout.split() == ["True", "False", "False"], told.stderr
+
+
 def test_a_master_deletes_the_copies_a_killed_one_left(tmp_path):
     left = tmp_path / "master" / "replication-copies" / "copy-0"
     left.parent.mkdir(parents=True)
