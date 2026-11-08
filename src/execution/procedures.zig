@@ -12,6 +12,7 @@ const eqlSequences = @import("../value.zig").eqlSequences;
 const signatures = @import("../query/procedures.zig");
 const fulltext = @import("../storage/fulltext.zig");
 const fulltext_search = @import("../storage/fulltext_search.zig");
+const vector_index = @import("../storage/vector_index.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -115,6 +116,8 @@ fn run(executor: *Executor, name: []const u8, arguments: []const Value, emit: Em
     if (signatures.findTable(name, executor.table_procedures)) |procedure| return runTable(procedure, arguments, emit);
     if (std.mem.eql(u8, name, "db.index.fulltext.queryNodes")) return queryIndex(executor, name, .nodes, arguments, emit);
     if (std.mem.eql(u8, name, "db.index.fulltext.queryRelationships")) return queryIndex(executor, name, .relationships, arguments, emit);
+    if (std.mem.eql(u8, name, "db.index.vector.queryNodes")) return queryVectorIndex(executor, name, .nodes, arguments, emit);
+    if (std.mem.eql(u8, name, "db.index.vector.queryRelationships")) return queryVectorIndex(executor, name, .relationships, arguments, emit);
     if (std.mem.eql(u8, name, "db.labels")) {
         for (try executor.graph.labelNames(executor.allocator)) |label| try emit.row(emit.context, &.{.{ .string = label }});
     } else if (std.mem.eql(u8, name, "db.relationshipTypes")) {
@@ -190,6 +193,51 @@ fn queryIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, ar
                 const id = std.mem.readInt(u64, hit.entity[0..8], .big);
                 const stored = try executor.graph.relationship(id, executor.allocator) orelse continue;
                 break :relationship .{ .relationship = .{ .id = id, .src = stored.src, .dst = stored.dst, .edge_type = stored.edge_type } };
+            },
+        };
+        try emit.row(emit.context, &.{ value, .{ .float = hit.score } });
+    }
+}
+
+/// `db.index.vector.queryNodes(index, k, vector)` and its relationship
+/// twin: the k entities closest to the vector, best first, with their scores.
+fn queryVectorIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, arguments: []const Value, emit: Emit) ExecutionError!void {
+    if (arguments[0] != .string or arguments[1] != .int) {
+        executor.fail(.type_mismatch, "{s}() takes an index name, a number of results and a vector", .{name});
+        return error.TypeMismatch;
+    }
+    const index_name = arguments[0].string;
+    const found = try fulltext.find(executor.graph, index_name, executor.allocator);
+    const definition = if (found != null and found.?.kind == .vector) found.? else {
+        executor.fail(.invalid_expression, "there is no vector index named '{s}'", .{index_name});
+        return error.InvalidExpression;
+    };
+    if (definition.entity != entity) {
+        executor.fail(.invalid_expression, "'{s}' indexes {s}: use db.index.vector.{s}", .{ index_name, @tagName(definition.entity), if (definition.entity == .nodes) "queryNodes" else "queryRelationships" });
+        return error.InvalidExpression;
+    }
+    if (arguments[1].int < 1) {
+        executor.fail(.invalid_expression, "{s}() needs a number of results of at least 1, not {d}", .{ name, arguments[1].int });
+        return error.InvalidExpression;
+    }
+    const k: usize = @intCast(arguments[1].int);
+    const query = switch (try vector_index.check(executor.allocator, definition, arguments[2])) {
+        .vector => |vector| vector,
+        .absent => {
+            executor.fail(.type_mismatch, "{s}() needs a vector, not null", .{name});
+            return error.TypeMismatch;
+        },
+        .invalid => |reason| {
+            executor.fail(.invalid_expression, "{s}(): index '{s}' takes a list of {d} numbers, and this vector {s}", .{ name, index_name, definition.dimensions, reason });
+            return error.InvalidExpression;
+        },
+    };
+    for (try vector_index.search(executor.graph, executor.allocator, definition, query, k)) |hit| {
+        const value: Value = switch (entity) {
+            .nodes => .{ .node = hit.id },
+            .relationships => relationship: {
+                const stored = try executor.graph.relationship(hit.id, executor.allocator) orelse continue;
+                break :relationship .{ .relationship = .{ .id = hit.id, .src = stored.src, .dst = stored.dst, .edge_type = stored.edge_type } };
             },
         };
         try emit.row(emit.context, &.{ value, .{ .float = hit.score } });

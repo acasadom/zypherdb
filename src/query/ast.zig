@@ -210,6 +210,9 @@ pub const NodeKind = enum {
     /// `CREATE [RANGE|TEXT] INDEX [name] FOR (n:L) ON (n.p, ...)` (or a
     /// document path `n.p.field`): data.schema_definition.
     create_index,
+    /// `CREATE VECTOR INDEX [name] FOR (n:L) ON n.p [OPTIONS {...}]`:
+    /// data.schema_definition; children: the OPTIONS map, if any.
+    create_vector_index,
     /// `CREATE CONSTRAINT [name] FOR (n:L) REQUIRE n.p IS UNIQUE`:
     /// data.schema_definition.
     create_constraint,
@@ -217,7 +220,7 @@ pub const NodeKind = enum {
     drop_index,
     /// `DROP CONSTRAINT name [IF EXISTS]`: data.drop_index.
     drop_constraint,
-    /// `SHOW [FULLTEXT|RANGE] INDEXES`: data.show_indexes.
+    /// `SHOW [FULLTEXT|RANGE|VECTOR] INDEXES`: data.show_indexes.
     show_indexes,
     /// `SHOW CONSTRAINTS`.
     show_constraints,
@@ -282,7 +285,7 @@ pub const Data = union(enum) {
         if_not_exists: bool,
     },
     /// Which indexes SHOW INDEXES lists.
-    show_indexes: enum { all, fulltext, range },
+    show_indexes: enum { all, fulltext, range, vector },
     drop_index: struct { name: []const u8, if_exists: bool },
     labels: []const []const u8,
     explain: ExplainMode,

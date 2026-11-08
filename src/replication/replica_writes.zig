@@ -62,7 +62,7 @@ pub fn route(statement: *const Statement, defined: []const procedures.TableProce
             }
             return .local;
         },
-        .create_fulltext_index, .create_index, .create_constraint, .drop_index, .drop_constraint => return .forward,
+        .create_fulltext_index, .create_index, .create_vector_index, .create_constraint, .drop_index, .drop_constraint => return .forward,
         else => {},
     }
     if (!statement.is_query or !statement.writes) return .local;

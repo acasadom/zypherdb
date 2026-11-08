@@ -194,6 +194,7 @@ before the query runs.
 | Null | `coalesce(x, …)` returns the first argument that is not `null`; `exists(n.property)` is true if the property is set (the same as `n.property IS NOT NULL`; its argument must be a property) |
 | Graph | `id(entity)`, `labels(node)`, `type(relationship)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
+| Vectors | `vector.similarity.cosine(a, b)`, `vector.similarity.euclidean(a, b)`: see [Vector search](#vector-search) |
 | Temporal | see [Temporal values](#temporal-values) |
 
 Nodes and relationships have ids of their own, each counted from 0: a node and a relationship may
@@ -328,6 +329,8 @@ machine.
 | `db.index.fulltext.queryNodes(index, query[, options])` | `node`, `score` | the nodes of a [full-text index](#full-text-search) that match `query`, best first |
 | `db.index.fulltext.queryRelationships(index, query[, options])` | `relationship`, `score` | the same, for an index of relationships |
 | `db.index.fulltext.listAvailableAnalyzers()` | `analyzer`, `description` | the full-text analyzers |
+| `db.index.vector.queryNodes(index, k, vector)` | `node`, `score` | the `k` nodes of a [vector index](#vector-search) closest to `vector`, best first |
+| `db.index.vector.queryRelationships(index, k, vector)` | `relationship`, `score` | the same, for an index of relationships |
 
 Procedure names are case-sensitive, as in Neo4j. The `options` of a full-text query are a map with
 `skip` and `limit`, non-negative integers.
@@ -338,7 +341,8 @@ takes arguments then takes each one from the query parameter of the same name.
 ## Schema commands
 
 As in Neo4j, a property is indexed only when an index is created for it: `CREATE INDEX` for
-equality and range lookups, `CREATE FULLTEXT INDEX` for words. Constraints keep values unique.
+equality and range lookups, `CREATE FULLTEXT INDEX` for words, `CREATE VECTOR INDEX` for
+nearest neighbours. Constraints keep values unique.
 Each schema command is a statement of its own:
 
 ```text
@@ -354,13 +358,17 @@ CREATE [RANGE | TEXT] INDEX [name] [IF NOT EXISTS]
   FOR (n:Label) ON (n.property)             -- or FOR ()-[r:TYPE]-() ON (r.property)
                                             -- or a document field: ON (n.property.field)
 
+CREATE VECTOR INDEX [name] [IF NOT EXISTS]
+  FOR (n:Label) ON n.property               -- or FOR ()-[r:TYPE]-() ON r.property
+  OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'cosine'}}
+
 CREATE CONSTRAINT [name] [IF NOT EXISTS]
   FOR (n:Label) REQUIRE n.property IS UNIQUE  -- or REQUIRE (n.a, n.b) IS UNIQUE
 
 DROP INDEX name [IF EXISTS]
 DROP CONSTRAINT name [IF EXISTS]
 
-SHOW [FULLTEXT | RANGE] INDEXES
+SHOW [FULLTEXT | RANGE | VECTOR] INDEXES
 SHOW CONSTRAINTS
 ```
 
@@ -398,7 +406,7 @@ SHOW CONSTRAINTS
   two nodes' values in one query fails. `CREATE CONSTRAINT` fails if the graph already has
   duplicates. Neo4j 4's `CREATE CONSTRAINT ON (n:Label) ASSERT n.p IS UNIQUE` is accepted too.
   Other constraints (`IS NOT NULL`, `IS NODE KEY`, on relationships) are not supported.
-- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT` or `RANGE`; a `TEXT` index
+- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT`, `RANGE` or `VECTOR`; a `TEXT` index
   is listed as `RANGE`, since it is one), `entityType`
   (`NODE` or `RELATIONSHIP`), `labelsOrTypes`, `properties`, `owningConstraint`, `options`. As in
   Neo4j 5, a uniqueness constraint's own index is listed: a `RANGE` index named as the
@@ -455,6 +463,44 @@ indexed when it holds a string or a list of strings; other values are skipped.
   for each edit.
 
 Results come best first.
+
+## Vector search
+
+A vector index finds the nodes (or relationships) whose vector is closest to a given one: the
+embeddings of texts or images, compared by meaning. It is on one label (or relationship type)
+and one property, which holds a list of numbers:
+
+```cypher
+CREATE VECTOR INDEX documents FOR (d:Document) ON d.embedding
+OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'cosine'}}
+
+CALL db.index.vector.queryNodes('documents', 10, $question_embedding) YIELD node, score
+RETURN node.title, score
+```
+
+- `vector.dimensions` (1 to 4096) is required: how many numbers each vector has.
+  `vector.similarity_function` is `'cosine'` (the default) or `'euclidean'`, in any case.
+- **A wrong vector is an error, not a skip.** A write that would give an indexed node (one with
+  the label) or relationship (of the type) something else in the property fails with a
+  constraint violation (`ConstraintViolationError` in Python, error code 10) and writes nothing:
+  a value that is not a list of numbers, a list of another length, NaN or infinity, or all zeros
+  under cosine (which has no direction). `CREATE VECTOR INDEX` fails the same way, naming the
+  first entity, when the graph already holds such a value. Neo4j leaves such entities out of the
+  index instead, so that a change of embedding model shows up only as missing results; here it
+  shows up at the first write. An entity without the property is simply not in the index.
+- The index keeps each vector as 32-bit floats (normalized under cosine); the property keeps the
+  numbers as they were written.
+- **Scores** are Neo4j's, between 0 and 1, higher is closer: cosine `(1 + cos(a, b)) / 2`,
+  euclidean `1 / (1 + d²)`, where `d` is the distance. Results come best first; equal scores by
+  id.
+- The search is approximate (an HNSW graph, as in Neo4j, Memgraph and FalkorDB): it looks at
+  `max(k, 100)` candidates and finds nearly all of the true `k` nearest. The index follows every
+  write in the transaction that makes it, as the other indexes do, and replicas get it with the
+  rest of the change.
+- `vector.similarity.cosine(a, b)` and `vector.similarity.euclidean(a, b)` score two lists of
+  numbers of the same length the same way, with no index. They return `null` if either is
+  `null`, or under cosine if one is all zeros; lists of other lengths, empty lists, or elements
+  that are not finite numbers are an error.
 
 ## EXPLAIN and PROFILE
 

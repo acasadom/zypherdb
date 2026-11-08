@@ -27,6 +27,7 @@ const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const fulltext_postings = @import("fulltext_postings.zig");
 const fulltext = @import("fulltext.zig");
+const vector_index = @import("vector_index.zig");
 const property_indexes = @import("property_indexes.zig");
 const constraints = @import("constraints.zig");
 const node_record = @import("node_record.zig");
@@ -154,8 +155,10 @@ pub const Graph = struct {
         const old = try self.keptRecord(record, scratch.allocator());
         const updated = try node_record.withLabel(scratch.allocator(), record, label, true);
         try constraints.checkNode(self, id, .{ .bytes = updated });
+        try vector_index.checkNode(self, id, .{ .bytes = updated });
         try self.writeRecord(id, updated);
         try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
+        try vector_index.nodeChanged(self, id, old, .{ .bytes = updated }, null);
         try property_indexes.nodeChanged(self, id, old, .{ .bytes = updated }, null);
 
         var key = std.ArrayList(u8).empty;
@@ -176,6 +179,7 @@ pub const Graph = struct {
         const updated = try node_record.withLabel(scratch.allocator(), record, label, false);
         try self.writeRecord(id, updated);
         try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
+        try vector_index.nodeChanged(self, id, old, .{ .bytes = updated }, null);
         try property_indexes.nodeChanged(self, id, old, .{ .bytes = updated }, null);
 
         var key = std.ArrayList(u8).empty;
@@ -312,6 +316,7 @@ pub const Graph = struct {
         }
         try property_indexes.nodeChanged(self, id, record, NodeRecord.empty, null);
         try fulltext_postings.nodeChanged(self, id, record, NodeRecord.empty, null);
+        try vector_index.nodeChanged(self, id, record, NodeRecord.empty, null);
         try self.store.deleteNode(id);
     }
 
@@ -356,6 +361,7 @@ pub const Graph = struct {
         }
         for (properties.items) |property| {
             try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, property.name, property.value, null);
+            try vector_index.relationshipPropertyChanged(self, id, stored.edge_type, property.name, null);
             try property_indexes.relationshipPropertyChanged(self, id, stored.edge_type, property.name, property.value, null);
             key.clearRetainingCapacity();
             try key_encoding.appendEdgePropertyKey(&key, arena, id, property.name);
@@ -417,10 +423,12 @@ pub const Graph = struct {
         if (encoded.items.len > layout.max_value_length) return error.ValueTooLarge;
         const updated = try node_record.withProperty(scratch.allocator(), record, name, encoded.items);
         try constraints.checkNode(self, id, .{ .bytes = updated });
+        try vector_index.checkNode(self, id, .{ .bytes = updated });
         const old_record = try self.keptRecord(record, scratch.allocator());
         try self.writeRecord(id, updated);
         try property_indexes.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
         try fulltext_postings.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
+        try vector_index.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
     }
 
     /// Removes a typed property `name` from node `id` (and its index entry).
@@ -435,6 +443,7 @@ pub const Graph = struct {
         try self.writeRecord(id, updated);
         try property_indexes.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
         try fulltext_postings.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
+        try vector_index.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
     }
 
     /// Iterates the nodes the node index `index_id` holds under `value`, in
@@ -768,10 +777,12 @@ pub const Graph = struct {
         var encoded = std.ArrayList(u8).empty;
         try value_encoding.encodeValue(&encoded, arena, value);
         if (encoded.items.len > layout.max_value_length) return error.ValueTooLarge;
+        try vector_index.checkRelationshipProperty(self, id, stored.edge_type, name, value);
         try self.store.put(key.items, encoded.items);
 
         try property_indexes.relationshipPropertyChanged(self, id, stored.edge_type, name, old, value);
         try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, name, old, value);
+        try vector_index.relationshipPropertyChanged(self, id, stored.edge_type, name, value);
     }
 
     /// Removes a typed property from relationship `id`. Idempotent.
@@ -786,6 +797,7 @@ pub const Graph = struct {
         try self.store.del(key.items);
         try property_indexes.relationshipPropertyChanged(self, id, stored.edge_type, name, old, null);
         try fulltext_postings.relationshipPropertyChanged(self, id, stored.edge_type, name, old, null);
+        try vector_index.relationshipPropertyChanged(self, id, stored.edge_type, name, null);
     }
 
     /// Iterates the relationships the relationship index `index_id` holds
