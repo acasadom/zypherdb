@@ -74,22 +74,45 @@ pub const Graph = struct {
         self.violation_length = written.len;
     }
 
-    /// The storage format this code writes and reads. A database in another
-    /// format is refused. 1 is the format of the first release; a later
-    /// change to how keys or values are written raises it.
-    pub const format_version: u32 = 1;
+    /// The storage formats this code reads. 1 is the format of the first
+    /// release. 2 is 1 plus vector indexes: the first vector index created
+    /// stamps it, so a release that reads only 1 refuses the database
+    /// instead of misreading it. A new database is stamped 1, and a format
+    /// is never lowered (dropping the last vector index keeps 2).
+    pub const first_format: u32 = 1;
+    pub const vector_format: u32 = 2;
+    pub const newest_format: u32 = vector_format;
 
-    /// Stamps a new database with this code's format, and refuses one
-    /// written in another (`error.IncompatibleFormat`). Call it after
-    /// opening, before anything else.
+    /// Stamps a new database with `first_format`, and refuses one written
+    /// in a format this code does not read (`error.IncompatibleFormat`).
+    /// Call it after opening, before anything else.
     pub fn checkFormat(self: *Graph) StorageError!void {
-        if (try self.store.get(key_encoding.format_key)) |raw| {
-            defer self.store.allocator.free(raw);
-            if (raw.len != 4 or std.mem.readInt(u32, raw[0..4], .big) != format_version) return error.IncompatibleFormat;
+        if (try self.storedFormat()) |format| {
+            if (format < first_format or format > newest_format) return error.IncompatibleFormat;
             return;
         }
+        try self.putFormat(first_format);
+    }
+
+    /// The database's format: null on a new database, 0 if `!format`
+    /// holds something that is not a format.
+    pub fn storedFormat(self: *Graph) StorageError!?u32 {
+        const raw = (try self.store.get(key_encoding.format_key)) orelse return null;
+        defer self.store.allocator.free(raw);
+        return if (raw.len == 4) std.mem.readInt(u32, raw[0..4], .big) else 0;
+    }
+
+    /// Raises the database's format to `format` (in the caller's write
+    /// transaction, so it is stamped only if the change that needs it
+    /// commits). A database already at `format` or above is left as is.
+    pub fn raiseFormat(self: *Graph, format: u32) StorageError!void {
+        if ((try self.storedFormat() orelse first_format) >= format) return;
+        try self.putFormat(format);
+    }
+
+    fn putFormat(self: *Graph, format: u32) StorageError!void {
         var bytes: [4]u8 = undefined;
-        std.mem.writeInt(u32, &bytes, format_version, .big);
+        std.mem.writeInt(u32, &bytes, format, .big);
         try self.store.put(key_encoding.format_key, &bytes);
     }
 

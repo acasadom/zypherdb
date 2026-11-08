@@ -214,13 +214,18 @@ upper bound's.
 
 ## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version` (1). When the C ABI or the
-Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
-written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
+The key `!format` holds the format's version. When the C ABI or the Python package opens a
+database, `Graph.checkFormat` stamps a new one with format 1, and refuses one written in a format
+this build does not read (`error.IncompatibleFormat`; in Python, a `StorageError`). The formats:
 
-Until the first release there are no migrations: ZypherDB has no users yet, so a change to how keys
-or values are written raises the version and earlier databases are not read. Migrations come with
-the first release.
+- 1: the format of the first release.
+- 2: 1 plus vector indexes. Creating the first vector index stamps it, in the same transaction, so
+  a release that reads only format 1 refuses the database instead of misreading the index. The
+  format is never lowered: dropping every vector index keeps 2.
+
+A build reads every format up to its newest (`Graph.newest_format`), and writes the lowest that
+holds what the database contains. The integrity checker reports a vector index in a database not
+stamped 2.
 
 ## Limits
 

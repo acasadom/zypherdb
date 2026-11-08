@@ -25,7 +25,7 @@ fn openAt(tmp: *testing.TmpDir, name: []const u8, buffer: []u8) !KeyValueStore {
 /// A hello from a replica of `store` that applied up to `applied_lsn`.
 fn helloFrom(store: *KeyValueStore, applied_lsn: u64) !protocol.Hello {
     return .{
-        .storage_format = Graph.format_version,
+        .storage_format = Graph.first_format,
         .storage_engine = zypherdb.storage_engine,
         .database_id = try store.databaseId(),
         .applied_lsn = applied_lsn,

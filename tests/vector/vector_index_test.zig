@@ -307,3 +307,46 @@ test "random writes, label changes and deletes, past a rebuild: sound, and recal
     if (recall < 0.95) std.debug.print("recall {d:.3}\n", .{recall});
     try testing.expect(recall >= 0.95);
 }
+
+test "the first vector index stamps the vector format, which stays after it is dropped" {
+    var fixture = Fixture{ .tmp = undefined };
+    try fixture.init();
+    defer fixture.deinit();
+    const ast = &fixture.ast;
+    const g = &fixture.graph;
+
+    try g.checkFormat();
+    try expectQuery(ast, g, "CREATE INDEX names FOR (d:Doc) ON (d.name)", &.{});
+    try expectQuery(ast, g, "CREATE FULLTEXT INDEX texts FOR (d:Doc) ON EACH [d.text]", &.{});
+    try testing.expectEqual(@as(?u32, Graph.first_format), try g.storedFormat());
+
+    // A vector index that is not made stamps nothing.
+    try expectQuery(ast, g, "CREATE (:Doc {v: [1, 2]})", &.{});
+    try expectQueryError(ast, g, "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 3}}", error.ConstraintViolation);
+    try testing.expectEqual(@as(?u32, Graph.first_format), try g.storedFormat());
+
+    try expectQuery(ast, g, "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 2}}", &.{});
+    try testing.expectEqual(@as(?u32, Graph.vector_format), try g.storedFormat());
+    try expectSound(g);
+    try expectQuery(ast, g, "DROP INDEX docs", &.{});
+    try testing.expectEqual(@as(?u32, Graph.vector_format), try g.storedFormat());
+    try g.checkFormat();
+    try expectSound(g);
+}
+
+test "the integrity checker reports a vector index in a database not stamped with the vector format" {
+    var fixture = Fixture{ .tmp = undefined };
+    try fixture.init();
+    defer fixture.deinit();
+    const g = &fixture.graph;
+
+    try g.checkFormat();
+    try expectQuery(&fixture.ast, g, "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 2}}", &.{});
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, Graph.first_format, .big);
+    try g.store.put("!format", &bytes);
+    var report = try zypherdb.integrity.check(g, testing.allocator);
+    defer report.deinit();
+    try testing.expectEqual(@as(usize, 1), report.problems.items.len);
+    try testing.expectEqualStrings("vector index docs in a database of format 1", report.problems.items[0]);
+}

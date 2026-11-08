@@ -134,7 +134,9 @@ pub const Kind = enum(u8) {
 /// A replica introduces itself.
 pub const Hello = struct {
     protocol_version: u16 = version,
-    /// `Graph.format_version` of the replica's build.
+    /// `Graph.first_format`: the hello does not tell format 2 yet, so a
+    /// replica that reads only 1 can still join a master with a vector
+    /// index (the replication part of format 2 is still to be designed).
     storage_format: u32,
     /// The replica build's storage engine (`zypherdb.storage_engine`): a
     /// snapshot is an engine's file.

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Vector indexes.** `CREATE VECTOR INDEX name FOR (n:Label) ON n.property` (or on a
+  relationship type) with `vector.dimensions` (1 to 4096) and `vector.similarity_function`
+  (`'cosine'` or `'euclidean'`), queried with `db.index.vector.queryNodes` and
+  `db.index.vector.queryRelationships`. The search is approximate (HNSW) and the index follows
+  every write in the same transaction. A write that would put something other than a vector of
+  the right length in an indexed property fails with a constraint violation instead of leaving the
+  entity out. `vector.similarity.cosine` and `vector.similarity.euclidean` score two lists with no
+  index. See "Vector search" in `docs/guide/cypher.md`.
+
+### Changed
+
+- **Storage format 2.** Creating the first vector index stamps the database with storage format 2,
+  and it stays 2 after the index is dropped. Earlier releases refuse to open such a database
+  (`StorageError`: written in another storage format); a database with no vector index stays at
+  format 1 and still opens with 0.2.0.
+
 ## 0.2.0 — 2026-11-07
 
 ### Added

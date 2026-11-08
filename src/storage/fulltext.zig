@@ -161,6 +161,7 @@ pub fn create(graph: *Graph, definition: Definition) StorageError!Definition {
     defer scratch.deinit();
     var stored = definition;
     if (definition.hasIndexId()) stored.index_id = try nextIndexId(graph);
+    if (definition.kind == .vector) try graph.raiseFormat(Graph.vector_format);
     var key = std.ArrayList(u8).empty;
     try appendDefinitionKey(&key, scratch.allocator(), definition.name);
     try graph.store.put(key.items, try stored.encode(scratch.allocator()));

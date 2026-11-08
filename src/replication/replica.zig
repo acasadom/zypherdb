@@ -22,7 +22,7 @@ pub fn checkCanFollow(store: *KeyValueStore) (StorageError || error{ MasterDatab
 /// is a master: it copies no one.
 pub fn hello(store: ?*KeyValueStore, token: []const u8) (StorageError || error{MasterDatabase})!protocol.Hello {
     var message: protocol.Hello = .{
-        .storage_format = Graph.format_version,
+        .storage_format = Graph.first_format,
         .storage_engine = storage_engine,
         .database_id = null,
         .applied_lsn = 0,
