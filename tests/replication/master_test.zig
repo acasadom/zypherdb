@@ -59,7 +59,7 @@ test "a master refuses whom it must not serve, telling nothing before the token"
     hello.storage_engine = "another";
     try testing.expectEqual(master.Answer{ .refused = .token }, try master.answer(&store, hello, token));
     hello = try helloFrom(&store, 1);
-    hello.storage_format += 1;
+    hello.storage_format = Graph.newest_format + 1;
     try testing.expectEqual(master.Answer{ .refused = .storage_format }, try master.answer(&store, hello, token));
     hello = try helloFrom(&store, 1);
     hello.storage_engine = "another";
@@ -70,6 +70,38 @@ test "a master refuses whom it must not serve, telling nothing before the token"
     // A replica with change sets this master never made.
     hello = try helloFrom(&store, 2);
     try testing.expectEqual(master.Answer{ .refused = .ahead }, try master.answer(&store, hello, token));
+}
+
+fn putFormat(store: *KeyValueStore, format: u32) !void {
+    var bytes: [4]u8 = undefined;
+    std.mem.writeInt(u32, &bytes, format, .big);
+    try store.put("!format", &bytes);
+}
+
+test "a master serves a replica that reads its database's format, and no newer one than it writes" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path: [256]u8 = undefined;
+    var store = try openAt(&tmp, "master", &path);
+    defer store.deinit();
+    try store.startChangeLog();
+    try putFormat(&store, Graph.first_format);
+
+    var hello = try helloFrom(&store, 1);
+    for ([_]u32{ Graph.first_format, Graph.vector_format }) |format| {
+        hello.storage_format = format;
+        try testing.expectEqual(master.Answer{ .stream = 2 }, try master.answer(&store, hello, token));
+    }
+    // One that reads newer formats asks again with an older one.
+    hello.storage_format = Graph.newest_format + 1;
+    try testing.expectEqual(master.Answer{ .refused = .storage_format }, try master.answer(&store, hello, token));
+
+    // Once the database has a vector index, one that reads only 1 (0.2.0) is refused.
+    try putFormat(&store, Graph.vector_format);
+    hello = try helloFrom(&store, 2);
+    try testing.expectEqual(master.Answer{ .refused = .storage_format }, try master.answer(&store, hello, token));
+    hello.storage_format = Graph.vector_format;
+    try testing.expectEqual(master.Answer{ .stream = 3 }, try master.answer(&store, hello, token));
 }
 
 test "a replica resumes where it stopped, or starts from a copy" {

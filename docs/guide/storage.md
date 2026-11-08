@@ -227,6 +227,14 @@ A build reads every format up to its newest (`Graph.newest_format`), and writes 
 holds what the database contains. The integrity checker reports a vector index in a database not
 stamped 2.
 
+A replica's `hello` tells the newest format it reads. The master refuses one that reads only
+formats older than its database's, or one newer than the master writes; the replica then asks again
+announcing one format less, down to 1, so a new replica follows an older master, and announces its
+newest again once a master welcomed it. A master whose database rises past the format of a replica
+it serves (the first vector index, while a 0.2.0 replica follows) ends that conversation before
+sending the change set that raised it, or the copy: the replica comes back and its `hello` is
+refused for good (`storage_format`).
+
 ## Limits
 
 The formats count lengths with fixed-width integers, and keys must fit the storage engine's key

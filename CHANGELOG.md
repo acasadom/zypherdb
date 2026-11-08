@@ -19,6 +19,10 @@
   and it stays 2 after the index is dropped. Earlier releases refuse to open such a database
   (`StorageError`: written in another storage format); a database with no vector index stays at
   format 1 and still opens with 0.2.0.
+- **Replicas and the storage format.** A replica follows a master whose storage format it reads,
+  older releases included, so replicas can be upgraded before their master. A master upgraded
+  first keeps serving 0.2.0 replicas until it makes its first vector index; then they stop for
+  good with `halted` `"storage_format"`, keeping what they had, until they are upgraded.
 
 ## 0.2.0 — 2026-11-07
 

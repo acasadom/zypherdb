@@ -466,3 +466,104 @@ test "a message out of turn ends a conversation" {
         try testing.expectError(error.SnapshotSizeMismatch, session.next(testing.allocator));
     }
 }
+
+/// Starts `conversation` again with a replica that reads formats only up
+/// to `format`, as an older release does.
+fn announce(conversation: *Conversation, format: u32) !void {
+    const has_database = try conversation.target.appliedLsn() != null;
+    var hello = try replica.hello(if (has_database) conversation.target else null, token);
+    hello.storage_format = format;
+    conversation.replica = .init(conversation.buffers[2], conversation.buffers[3], hello, settings.timeout_ns, conversation.now);
+}
+
+const create_vector_index = "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 2}}";
+
+test "a replica that reads only format 1 is let go before the change set that stamps format 2" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var source = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "master", &master_path));
+    defer source.deinit();
+    try source.startChangeLog();
+    var g = Graph.init(&source, testing.allocator);
+    try g.checkFormat();
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try expectQuery(&ast, &g, "CREATE (:Doc {v: [1.0, 0.0]})", &.{});
+    var replica_path: [256]u8 = undefined;
+    var target = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "replica", &replica_path));
+    defer target.deinit();
+
+    var conversation: Conversation = undefined;
+    try conversation.init(&tmp, &source, &target, 11);
+    defer conversation.deinit();
+    try announce(&conversation, Graph.first_format);
+    try conversation.stepUntil(Conversation.caughtUp);
+    const applied = try target.appliedLsn();
+
+    try expectQuery(&ast, &g, create_vector_index, &.{});
+    try testing.expectError(error.FormatRaised, conversation.stepUntil(Conversation.caughtUp));
+    try testing.expectEqual(applied, try target.appliedLsn());
+    var replica_graph = Graph.init(&target, testing.allocator);
+    try testing.expectEqual(@as(?u32, Graph.first_format), try replica_graph.storedFormat());
+}
+
+test "a replica that reads only format 1 is sent no copy of a database stamped format 2 after its hello" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var source = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "master", &master_path));
+    defer source.deinit();
+    try source.startChangeLog();
+    var g = Graph.init(&source, testing.allocator);
+    try g.checkFormat();
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    var replica_path: [256]u8 = undefined;
+    var target = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "replica", &replica_path));
+    defer target.deinit();
+
+    var conversation: Conversation = undefined;
+    try conversation.init(&tmp, &source, &target, 12);
+    defer conversation.deinit();
+    try announce(&conversation, Graph.first_format);
+    // The hello reaches the master, which asks for a copy.
+    const event = while (true) {
+        const count = conversation.cross(conversation.replica.outbox.unsent(), conversation.master.inbox.unfilled());
+        conversation.replica.outbox.sent(count);
+        conversation.master.received(count, conversation.now);
+        if (try conversation.master.next(&source)) |event| break event;
+    };
+    try testing.expect(event == .make_copy);
+    // The database is stamped 2 before the copy is made.
+    try expectQuery(&ast, &g, create_vector_index, &.{});
+    try conversation.makeCopy();
+    try testing.expectError(error.FormatRaised, conversation.master.pump(&source, conversation.now));
+}
+
+test "a replica that reads format 2 is streamed the change set that stamps it" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var source = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "master", &master_path));
+    defer source.deinit();
+    try source.startChangeLog();
+    var g = Graph.init(&source, testing.allocator);
+    try g.checkFormat();
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try expectQuery(&ast, &g, "CREATE (:Doc {v: [1.0, 0.0]})", &.{});
+    var replica_path: [256]u8 = undefined;
+    var target = try KeyValueStore.open(testing.allocator, try directoryAt(&tmp, "replica", &replica_path));
+    defer target.deinit();
+
+    var conversation: Conversation = undefined;
+    try conversation.init(&tmp, &source, &target, 13);
+    defer conversation.deinit();
+    try conversation.stepUntil(Conversation.caughtUp);
+    try expectQuery(&ast, &g, create_vector_index, &.{});
+    try conversation.stepUntil(Conversation.caughtUp);
+    try testing.expectEqual(try contents(&source), try contents(&target));
+    var replica_graph = Graph.init(&target, testing.allocator);
+    try testing.expectEqual(@as(?u32, Graph.vector_format), try replica_graph.storedFormat());
+}

@@ -312,6 +312,46 @@ test "a replica asks again after a refusal that may pass, never after one that c
     try testing.expectEqual(@as(?u64, null), follower.waitApplied(1, setup.clock.clock().now() + patience));
 }
 
+test "a replica refused for its storage format asks again with an older one, and with the newest once welcomed" {
+    var setup: Setup = undefined;
+    try setup.init();
+    defer setup.deinit();
+    // A master that refuses as told.
+    const listener = try setup.tcp.network().listen("127.0.0.1:0");
+    defer listener.close();
+    var address: [max_address_bytes]u8 = undefined;
+    const follower = try Follower.start(testing.allocator, testing.io, setup.clock.clock(), setup.tcp.network(), &setup.replica, .{
+        .master_address = listener.address(&address),
+        .token = token,
+        .first_retry_ns = 10 * millisecond,
+        .longest_retry_ns = 10 * millisecond,
+    });
+    defer follower.stop();
+    const buffer = try testing.allocator.alloc(u8, protocol.max_frame_bytes);
+    defer testing.allocator.free(buffer);
+    const Turn = struct { told: u32, answer: protocol.Message };
+    // A master that reads only format 1 (0.2.0) refuses the newest, then
+    // welcomes 1; once it goes, the next one is told the newest again.
+    // Refused at format 1, the replica stops for good.
+    for ([_]Turn{
+        .{ .told = Graph.newest_format, .answer = .{ .refused = .storage_format } },
+        .{ .told = Graph.first_format, .answer = .{ .welcome = 100 * millisecond } },
+        .{ .told = Graph.newest_format, .answer = .{ .refused = .storage_format } },
+        .{ .told = Graph.first_format, .answer = .{ .refused = .storage_format } },
+    }) |turn| {
+        try testing.expectEqual(@as(?protocol.Refusal, null), follower.halted());
+        const connection = try setup.accept(listener);
+        defer connection.close();
+        const hello = try setup.receiveMessage(connection, buffer);
+        try testing.expectEqual(turn.told, hello.hello.storage_format);
+        try setup.send(connection, turn.answer);
+        if (turn.answer == .refused) try testing.expectEqual(@as(?usize, null), try setup.receive(connection, buffer));
+    }
+    const deadline = setup.clock.clock().now() + patience;
+    while (follower.halted() == null and setup.clock.clock().now() < deadline) try testing.io.sleep(.fromMilliseconds(5), .awake);
+    try testing.expectEqual(@as(?protocol.Refusal, .storage_format), follower.halted());
+}
+
 test "a read on the replica waits to see a write committed on the master" {
     var setup: Setup = undefined;
     try setup.init();
