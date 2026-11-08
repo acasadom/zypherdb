@@ -13,8 +13,9 @@
 //! - the postings of every full-text index (`w`, `W`, `v`, `V`;
 //!   integrity_fulltext.zig);
 //! - the HNSW graph of every vector index (`h`; integrity_vector.zig);
-//! - that every uniqueness constraint holds, and that the id counters are
-//!   above every id in use.
+//! - that every uniqueness constraint holds, that the id counters are
+//!   above every id in use, and that a database with a vector index is
+//!   stamped with the vector format.
 //!
 //! Every key of the main table must be one of these: any other is reported.
 //! The records themselves and their values are checked for their layout
@@ -320,7 +321,9 @@ pub const Checker = struct {
     }
 
     /// The id counters are above every id in use; definitions are counted
-    /// in the schema version (else no write would keep their indexes).
+    /// in the schema version (else no write would keep their indexes); the
+    /// format is one this code reads, and the vector format if there is a
+    /// vector index (else an older release would misread it).
     fn checkCounters(self: *Checker) StorageError!void {
         const store = self.graph.store;
         const next_node = try self.storedCounter(key_encoding.counter_key);
@@ -332,10 +335,16 @@ pub const Checker = struct {
         for (self.relationships.keys()) |id| if (id >= next_relationship) {
             try self.report.add("relationship {d} is not below the relationship id counter ({d})", .{ id, next_relationship });
         };
-        if (try store.get(key_encoding.format_key)) |raw| {
+        const format = try self.graph.storedFormat() orelse Graph.first_format;
+        if (format < Graph.first_format or format > Graph.newest_format) {
+            const raw = (try store.get(key_encoding.format_key)).?;
             defer store.allocator.free(raw);
-            if (raw.len != 4 or std.mem.readInt(u32, raw[0..4], .big) != Graph.format_version) try self.report.add("format key holds {f}", .{Bytes{ .bytes = raw }});
+            try self.report.add("format key holds {f}", .{Bytes{ .bytes = raw }});
         }
+        for (self.definitions) |definition| if (definition.kind == .vector) {
+            if (format < Graph.vector_format) try self.report.add("vector index {s} in a database of format {d}", .{ definition.name, format });
+            break;
+        };
         if (self.definitions.len > 0 and try fulltext.schemaVersion(self.graph) == 0) {
             try self.report.add("{d} schema definition(s) but the schema version is 0", .{self.definitions.len});
         }

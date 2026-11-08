@@ -381,7 +381,7 @@ test "a replica that stops reading holds up neither its master nor the others, a
     const stuck = try setup.tcp.network().connect(server.address(&address));
     defer stuck.close();
     try setup.send(stuck, .{ .hello = .{
-        .storage_format = Graph.format_version,
+        .storage_format = Graph.first_format,
         .storage_engine = zypherdb.storage_engine,
         .database_id = try setup.master.databaseId(),
         .applied_lsn = first,

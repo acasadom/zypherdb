@@ -27,7 +27,7 @@ pub const Answer = union(enum) {
 pub fn answer(store: *KeyValueStore, hello: protocol.Hello, token: []const u8) StorageError!Answer {
     if (hello.protocol_version != protocol.version) return .{ .refused = .protocol_version };
     if (!protocol.tokensMatch(hello.token, token)) return .{ .refused = .token };
-    if (hello.storage_format != Graph.format_version) return .{ .refused = .storage_format };
+    if (hello.storage_format != Graph.first_format) return .{ .refused = .storage_format };
     if (!std.mem.eql(u8, hello.storage_engine, storage_engine)) return .{ .refused = .storage_engine };
     const state = try store.changeLogState() orelse return .{ .refused = .not_master };
     const replica_of = hello.database_id orelse return .snapshot;
