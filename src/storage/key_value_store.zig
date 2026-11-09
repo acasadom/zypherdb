@@ -141,10 +141,29 @@ pub const KeyValueStore = struct {
     /// The copy being loaded part by part, in the active write transaction
     /// (`applyCopyPart`).
     loading: ?database_copy.Loading = null,
+    /// The active write transaction writes only keys the change log does
+    /// not carry (`beginLocalWrite`).
+    local_write: bool = false,
+    /// Told when a vector index may have population left, to go on with it
+    /// in the background (vector_population.zig). Without one, population
+    /// goes no further than the batch its CREATE does.
+    population_waker: ?PopulationWaker = null,
+    /// How much one batch of a vector index's population does.
+    population_budget: PopulationBudget = .{},
 
     pub const CommitListener = struct {
         context: *anyopaque,
         committed: *const fn (context: *anyopaque, lsn: u64) void,
+    };
+
+    pub const PopulationWaker = struct {
+        context: *anyopaque,
+        wake: *const fn (context: *anyopaque) void,
+    };
+
+    pub const PopulationBudget = struct {
+        entities: u64 = std.math.maxInt(u64),
+        nanoseconds: u64 = 20 * std.time.ns_per_ms,
     };
 
     pub const SchemaDefinitions = struct {
@@ -222,6 +241,22 @@ pub const KeyValueStore = struct {
         if (self.commit_listener) |listener| listener.committed(listener.context, recorder.state.next_lsn - 1);
     }
 
+    /// Begins a write transaction of keys the change log does not carry (a
+    /// vector index's, vector_population.zig), on a replica too: any other
+    /// write in it fails. Ended by `commitWrite`/`abortWrite`.
+    pub fn beginLocalWrite(self: *KeyValueStore) StorageError!void {
+        if (self.inTransaction()) return error.WriteFailed;
+        self.active_write_transaction = try self.environment.beginWrite();
+        self.write_transaction_memo = .{};
+        self.local_write = true;
+    }
+
+    /// Tells the population waker, if there is one, that a vector index may
+    /// have population left.
+    pub fn wakePopulation(self: *KeyValueStore) void {
+        if (self.population_waker) |waker| waker.wake(waker.context);
+    }
+
     pub fn abortWrite(self: *KeyValueStore) void {
         if (self.active_write_transaction) |transaction| {
             transaction.abort();
@@ -236,6 +271,7 @@ pub const KeyValueStore = struct {
     fn stopRecording(self: *KeyValueStore) void {
         if (self.change_recorder) |*recorder| recorder.deinit(self.allocator);
         self.change_recorder = null;
+        self.local_write = false;
     }
 
     fn refuseOnReplica(self: *KeyValueStore, transaction: engine.Transaction) StorageError!void {
@@ -251,6 +287,7 @@ pub const KeyValueStore = struct {
     /// Records a write the active write transaction has just made, if the
     /// change log is started.
     fn recordChange(self: *KeyValueStore, transaction: engine.Transaction, change: change_log.Change) StorageError!void {
+        if (self.local_write) return error.WriteFailed;
         if (self.change_recorder) |*recorder| try recorder.record(self.allocator, transaction, change);
     }
 
@@ -435,6 +472,8 @@ pub const KeyValueStore = struct {
         try transaction.commit();
         // The copy's schema may have the version of the one cached.
         self.forgetSchemaDefinitions();
+        // It may hold an index populating, here to go on with.
+        self.wakePopulation();
         return lsn;
     }
 
@@ -451,6 +490,8 @@ pub const KeyValueStore = struct {
             .change_log_limit = self.change_log_limit,
             .commit_listener = self.commit_listener,
             .follows_master = self.follows_master,
+            .population_waker = self.population_waker,
+            .population_budget = self.population_budget,
         };
     }
 
@@ -722,6 +763,11 @@ pub const KeyValueStore = struct {
     /// are the ids in native byte order, the values their records).
     pub fn scanRelationships(self: *KeyValueStore) StorageError!PrefixIterator {
         return self.scan(.relationships, "", "", null);
+    }
+
+    /// As `scanRelationships`, from id `first` on.
+    pub fn scanRelationshipsFrom(self: *KeyValueStore, first: u64) StorageError!PrefixIterator {
+        return self.scan(.relationships, "", std.mem.asBytes(&first), null);
     }
 
     /// Iterates every key of the main table, in key order.

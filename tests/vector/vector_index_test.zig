@@ -98,6 +98,13 @@ test "a node index: built from what is there, kept current, queried best first" 
     try expectQuery(ast, g, "SHOW VECTOR INDEXES", &.{&.{
         string("docs"),                 string("VECTOR"),             string("NODE"),
         .{ .list = &.{string("Doc")} }, .{ .list = &.{string("v")} }, .null,
+        .{ .map = &options },           string("ONLINE"),             float(100),
+        .null,
+    }});
+    // SHOW INDEXES keeps its columns.
+    try expectQuery(ast, g, "SHOW INDEXES", &.{&.{
+        string("docs"),                 string("VECTOR"),             string("NODE"),
+        .{ .list = &.{string("Doc")} }, .{ .list = &.{string("v")} }, .null,
         .{ .map = &options },
     }});
     try expectQuery(ast, g, "SHOW RANGE INDEXES", &.{});
@@ -125,7 +132,7 @@ test "euclidean scores, relationships" {
     try expectQueryError(ast, g, "CALL db.index.vector.queryNodes('links', 1, [0, 0]) YIELD node RETURN node", error.InvalidExpression);
 }
 
-test "a relationship index built from what is there: its type only, and refused on a bad vector" {
+test "a relationship index built from what is there: its type only, and failed by a bad vector" {
     var fixture = Fixture{ .tmp = undefined };
     try fixture.init();
     defer fixture.deinit();
@@ -136,8 +143,18 @@ test "a relationship index built from what is there: its type only, and refused 
     try expectQuery(ast, g, "CREATE VECTOR INDEX links FOR ()-[r:LINK]-() ON r.v OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'euclidean'}}", &.{});
     try expectOrdered(ast, g, "CALL db.index.vector.queryRelationships('links', 10, [0, 1]) YIELD relationship RETURN relationship.w", &.{ &.{int(1)}, &.{int(2)} });
     try expectSound(g);
-    try expectQueryError(ast, g, "CREATE VECTOR INDEX others FOR ()-[r:OTHER]-() ON r.v OPTIONS {indexConfig: {`vector.dimensions`: 2}}", error.ConstraintViolation);
+    try expectQuery(ast, g, "CREATE VECTOR INDEX others FOR ()-[r:OTHER]-() ON r.v OPTIONS {indexConfig: {`vector.dimensions`: 2}}", &.{});
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const others = (try zypherdb.schema_definitions.find(g, "others", arena.allocator())).?;
+    const failure = (try zypherdb.vector.index.state(g, arena.allocator(), others.index_id)).failed;
+    try testing.expectEqual(@as(u64, 4), failure.entity);
+    try testing.expectEqualStrings("is not a list of numbers", failure.reason);
     try expectQueryError(ast, g, "CALL db.index.vector.queryRelationships('others', 1, [0, 0]) YIELD relationship RETURN relationship", error.InvalidExpression);
+    try expectSound(g);
+    // Failed, it is neither kept nor checked: a bad vector is written.
+    try expectQuery(ast, g, "MATCH (a)-[r:OTHER]->(b) WITH a, b LIMIT 1 CREATE (a)-[:OTHER {v: [1, 2, 3]}]->(b)", &.{});
+    try expectSound(g);
 }
 
 test "what is not a vector is refused, before anything is written" {
@@ -163,9 +180,12 @@ test "what is not a vector is refused, before anything is written" {
     try expectQuery(ast, g, "MATCH (d:Doc) RETURN count(d)", &.{&.{int(0)}});
     try expectSound(g);
 
-    // An index on data that breaks it is not made.
-    try expectQueryError(ast, g, "CREATE VECTOR INDEX notes FOR (n:Note) ON n.v OPTIONS {indexConfig: {`vector.dimensions`: 3}}", error.ConstraintViolation);
-    try testing.expectEqual(@as(usize, 1), (try zypherdb.schema_definitions.all(g, arena.allocator())).len);
+    // An index on data that breaks it is made, and fails.
+    try expectQuery(ast, g, "CREATE VECTOR INDEX notes FOR (n:Note) ON n.v OPTIONS {indexConfig: {`vector.dimensions`: 3}}", &.{});
+    try testing.expectEqual(@as(usize, 2), (try zypherdb.schema_definitions.all(g, arena.allocator())).len);
+    try expectQueryError(ast, g, "CALL db.index.vector.queryNodes('notes', 1, [1, 2, 3]) YIELD node RETURN node", error.InvalidExpression);
+    try expectSound(g);
+    try expectQuery(ast, g, "DROP INDEX notes", &.{});
 
     // Options and queries that make no sense.
     try expectQueryError(ast, g, "CREATE VECTOR INDEX a FOR (n:A) ON n.v", error.InvalidExpression);
@@ -337,7 +357,7 @@ test "the first vector index stamps the vector format, which stays after it is d
 
     // A vector index that is not made stamps nothing.
     try expectQuery(ast, g, "CREATE (:Doc {v: [1, 2]})", &.{});
-    try expectQueryError(ast, g, "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 3}}", error.ConstraintViolation);
+    try expectQueryError(ast, g, "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 5000}}", error.InvalidExpression);
     try testing.expectEqual(@as(?u32, Graph.first_format), try g.storedFormat());
 
     try expectQuery(ast, g, "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 2}}", &.{});

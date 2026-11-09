@@ -864,12 +864,16 @@ pub const Graph = struct {
     /// Iterates all nodes carrying `label`, in ascending node-id order.
     /// O(log N + nodes with the label).
     pub fn nodesWithLabel(self: *Graph, label: []const u8) StorageError!NodeIdIterator {
-        var prefix = std.ArrayList(u8).empty;
-        defer prefix.deinit(self.allocator);
-        try prefix.append(self.allocator, key_encoding.label_marker);
-        try prefix.appendSlice(self.allocator, label);
-        try prefix.append(self.allocator, key_encoding.separator);
-        const iterator = try self.store.scanPrefix(prefix.items);
+        return self.nodesWithLabelFrom(label, 0);
+    }
+
+    /// As `nodesWithLabel`, from node `first` on.
+    pub fn nodesWithLabelFrom(self: *Graph, label: []const u8, first: NodeId) StorageError!NodeIdIterator {
+        var start = std.ArrayList(u8).empty;
+        defer start.deinit(self.allocator);
+        try key_encoding.appendLabelKey(&start, self.allocator, label, first);
+        const prefix = start.items[0 .. start.items.len - key_encoding.node_id_length];
+        const iterator = try self.store.scanRange(prefix, start.items, null);
         return .{ .inner = iterator };
     }
 

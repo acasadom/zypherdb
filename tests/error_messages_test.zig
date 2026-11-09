@@ -234,6 +234,7 @@ test "vector indexes name the index, the entity and what is wrong with the vecto
         "CREATE (:Doc {embedding: [1.0, 2.0, 1e308 * 10]})",
         "CREATE (:Note {embedding: [1]})",
         "CREATE VECTOR INDEX notes FOR (n:Note) ON n.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}",
+        "CALL db.index.vector.queryNodes('notes', 5, [1, 2, 3]) YIELD node RETURN node",
         "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other",
         "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 0}}",
         "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'dot'}}",
@@ -256,7 +257,9 @@ test "vector indexes name the index, the entity and what is wrong with the vecto
         \\CREATE (:Note {embedding: [1]})
         \\  ok
         \\CREATE VECTOR INDEX notes FOR (n:Note) ON n.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}
-        \\  constraint_violation: cannot create vector index 'notes': it takes embedding as a list of 3 numbers, and that of node 0 has 1 elements
+        \\  ok
+        \\CALL db.index.vector.queryNodes('notes', 5, [1, 2, 3]) YIELD node RETURN node
+        \\  invalid_expression: vector index 'notes' failed (node 0: its embedding has 1 elements, and the index takes a list of 3 numbers): correct the data, then drop it and create it again
         \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other
         \\  invalid_expression: a vector index needs its dimensions: OPTIONS {indexConfig: {`vector.dimensions`: N}}
         \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 0}}

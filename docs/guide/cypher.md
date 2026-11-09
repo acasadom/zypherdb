@@ -412,7 +412,9 @@ SHOW CONSTRAINTS
   Neo4j 5, a uniqueness constraint's own index is listed: a `RANGE` index named as the
   constraint, with the constraint's name in `owningConstraint` (null for the others), on the
   constraint's first property (the one its keys hold); `DROP INDEX` refuses it, `DROP CONSTRAINT`
-  drops both. `SHOW CONSTRAINTS` returns `name`, `type` (`UNIQUENESS`), `entityType`,
+  drops both. `SHOW VECTOR INDEXES` adds three columns: `state` (`POPULATING`, `ONLINE` or
+  `FAILED`), `populationPercent` (100 once online) and `failureMessage` (null but for a failed
+  index). `SHOW CONSTRAINTS` returns `name`, `type` (`UNIQUENESS`), `entityType`,
   `labelsOrTypes`, `properties`, `ownedIndex`.
 
 ## Full-text search
@@ -484,10 +486,20 @@ RETURN node.title, score
   the label) or relationship (of the type) something else in the property fails with a
   constraint violation (`ConstraintViolationError` in Python, error code 10) and writes nothing:
   a value that is not a list of numbers, a list of another length, NaN or infinity, or all zeros
-  under cosine (which has no direction). `CREATE VECTOR INDEX` fails the same way, naming the
-  first entity, when the graph already holds such a value. Neo4j leaves such entities out of the
-  index instead, so that a change of embedding model shows up only as missing results; here it
-  shows up at the first write. An entity without the property is simply not in the index.
+  under cosine (which has no direction). Neo4j leaves such entities out of the index instead, so
+  that a change of embedding model shows up only as missing results; here it shows up at the
+  first write. An entity without the property is simply not in the index.
+- **Populated in the background.** `CREATE VECTOR INDEX` returns at once, having indexed what it
+  could in about 20 ms (on a small graph, all of it); the rest is indexed by a thread of the open
+  database, in batches of about 20 ms that writes run between. Writes keep the index current
+  meanwhile. Until it is done, `SHOW VECTOR INDEXES` shows it `POPULATING` with its
+  `populationPercent`, and querying it is an error (`InvalidExpressionError`) that says how far it
+  got. Closed (or killed) before the end, the database goes on from there when it is opened again;
+  population only moves while some process has the database open. If population meets a value
+  that is not a vector the index takes, the index is `FAILED`: `failureMessage` names the entity
+  and what is wrong, writes no longer keep or check it, and querying it is an error. Correct the
+  data, then `DROP INDEX` and create it again. A replica populates its own copy of each index the
+  same way, so it can be `ONLINE` on the master and still `POPULATING` on a replica.
 - The index keeps each vector as 32-bit floats (normalized under cosine); the property keeps the
   numbers as they were written.
 - **Scores** are Neo4j's, between 0 and 1, higher is closer: cosine `(1 + cos(a, b)) / 2`,
@@ -495,8 +507,8 @@ RETURN node.title, score
   id.
 - The search is approximate (an HNSW graph, as in Neo4j, Memgraph and FalkorDB): it looks at
   `max(k, 100)` candidates and finds nearly all of the true `k` nearest. The index follows every
-  write in the transaction that makes it, as the other indexes do, and replicas get it with the
-  rest of the change.
+  write in the transaction that makes it, as the other indexes do. Replicas keep their own: each
+  moves an entity in its indexes as it applies the write that changed it.
 - `vector.similarity.cosine(a, b)` and `vector.similarity.euclidean(a, b)` score two lists of
   numbers of the same length the same way, with no index. They return `null` if either is
   `null`, or under cosine if one is all zeros; lists of other lengths, empty lists, or elements

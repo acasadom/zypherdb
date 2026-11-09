@@ -5,8 +5,10 @@
 //! applies the write that changed it, as its master did when it made that
 //! write: the same writes in the same order make the same HNSW graph
 //! (an entity's level comes from its id). Applying a vector index's
-//! definition builds it from the data there, as the master's CREATE did;
-//! applying its removal drops its keys.
+//! definition starts populating it from the data there, as the master's
+//! CREATE did, and in the background (vector_population.zig) the same way:
+//! where population and writes interleave differently, the replica's graph
+//! differs from its master's, each sound. Applying its removal drops its keys.
 
 const std = @import("std");
 
@@ -19,6 +21,7 @@ const fulltext = @import("fulltext.zig");
 const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const vector_index = @import("vector_index.zig");
+const vector_population = @import("vector_population.zig");
 
 /// Told of each write of the change sets a replica applies
 /// (`change_log.Application.add`), in one write transaction of `store`.
@@ -83,7 +86,7 @@ pub const Observer = struct {
             if (self.dropped_index) |index_id| return vector_index.clear(&self.graph, index_id);
             if (change.operation != .put) return;
             const definition = try fulltext.Definition.decode(change.key[1..], change.value, self.scratch.allocator());
-            if (definition.kind == .vector) try vector_index.populate(&self.graph, definition);
+            if (definition.kind == .vector) try vector_population.start(&self.graph, definition);
             return;
         }
         // A relationship property: `f | relationship id | name`.

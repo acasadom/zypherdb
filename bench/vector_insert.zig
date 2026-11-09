@@ -8,7 +8,8 @@
 //!     plain      no vector index
 //!     indexed    a cosine vector index on the property
 //!     populate   the writes with no index, then CREATE VECTOR INDEX over
-//!                them (one transaction), its time and the process's peak
+//!                them and its population batch after batch, as the
+//!                builder thread does; their times and the process's peak
 //!                memory
 //!
 //!     zig build bench-vector-insert -Doptimize=ReleaseFast -- [--nodes N] [--dimensions N] [--only MODE]
@@ -99,14 +100,19 @@ fn measure(io: std.Io, out: *std.Io.Writer, config: Config, mode: Mode) !void {
     if (mode == .populate) {
         const start = now(io);
         try createIndex(&graph, arena.allocator(), config);
+        const created: u64 = @intCast(now(io) - start);
+        var batches: usize = 0;
+        while (try zypherdb.vector.population.advanceAny(graph.store)) batches += 1;
         const elapsed: u64 = @intCast(now(io) - start);
         const usage = std.posix.getrusage(std.posix.rusage.SELF);
         // ru_maxrss is in bytes on macOS, in KiB on Linux.
         const peak_bytes: u64 = @as(u64, @intCast(usage.maxrss)) * (if (@import("builtin").os.tag == .macos) 1 else 1024);
-        try out.print("{s:<8} CREATE VECTOR INDEX over {d}: {d:.2} s, {d:.0} us per entity, peak memory {d} MiB\n", .{
+        try out.print("{s:<8} CREATE VECTOR INDEX over {d}: returned in {d:.1} ms, populated in {d:.2} s ({d} batches), {d:.0} us per entity, peak memory {d} MiB\n", .{
             @tagName(mode),
             config.nodes,
+            micros(created) / 1000,
             @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_s,
+            batches,
             micros(elapsed) / @as(f64, @floatFromInt(config.nodes)),
             peak_bytes >> 20,
         });

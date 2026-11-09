@@ -11,6 +11,7 @@ const fulltext_postings = @import("../storage/fulltext_postings.zig");
 const constraints = @import("../storage/constraints.zig");
 const property_indexes = @import("../storage/property_indexes.zig");
 const vector_index = @import("../storage/vector_index.zig");
+const vector_population = @import("../storage/vector_population.zig");
 const similarity = @import("../vector/similarity.zig");
 const layout = @import("../storage/layout.zig");
 
@@ -135,8 +136,8 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         definition.similarity = config.similarity;
     }
     const stored = try fulltext.create(executor.graph, definition);
-    // A constraint, or a vector index, the graph already breaks is refused
-    // (the transaction is aborted).
+    // A constraint the graph already breaks is refused (the transaction is
+    // aborted); a vector index fails later instead, as it is populated.
     populate(executor.graph, stored) catch |err| {
         if (err == error.ConstraintViolation) executor.fail(.constraint_violation, "{s}", .{executor.graph.violationMessage()});
         return err;
@@ -144,7 +145,8 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
 }
 
 /// Indexes what the graph holds already for a new definition (a constraint
-/// is checked on its index, once built).
+/// is checked on its index, once built), or starts a vector index's
+/// population in the background.
 fn populate(graph: *@import("../storage/graph.zig").Graph, stored: fulltext.Definition) @import("../storage/key_value_store.zig").StorageError!void {
     switch (stored.kind) {
         .fulltext => try fulltext_postings.populate(graph, stored),
@@ -153,7 +155,7 @@ fn populate(graph: *@import("../storage/graph.zig").Graph, stored: fulltext.Defi
             try property_indexes.populate(graph, stored);
             try constraints.checkExisting(graph, stored);
         },
-        .vector => try vector_index.populate(graph, stored),
+        .vector => try vector_population.start(graph, stored),
     }
 }
 
@@ -231,6 +233,10 @@ fn unknownOption(executor: *Executor, key: []const u8) ExecutionError {
 /// The columns of SHOW INDEXES (`showIndexes`) and SHOW CONSTRAINTS
 /// (`showConstraints`), named as Neo4j 5 names them.
 pub const index_columns = [_][]const u8{ "name", "type", "entityType", "labelsOrTypes", "properties", "owningConstraint", "options" };
+/// SHOW VECTOR INDEXES adds where each index is: `state` (POPULATING,
+/// ONLINE or FAILED), `populationPercent`, and `failureMessage` (null but
+/// for a failed one).
+pub const vector_index_columns = index_columns ++ [_][]const u8{ "state", "populationPercent", "failureMessage" };
 pub const constraint_columns = [_][]const u8{ "name", "type", "entityType", "labelsOrTypes", "properties", "ownedIndex" };
 
 /// One row per index (full-text or range, a uniqueness constraint's
@@ -268,9 +274,51 @@ fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig"
             .range, .unique => &.{},
         };
         try row.append(allocator, .{ .map = try allocator.dupe(MapEntry, &.{.{ .key = "indexConfig", .value = .{ .map = config } }}) });
+        if (which == .vector) try appendVectorState(executor, &row, definition);
         try rows.append(allocator, row);
     }
     return rows.items;
+}
+
+/// A vector index's state, how much of it is populated, and why it failed.
+fn appendVectorState(executor: *Executor, row: *Row, definition: fulltext.Definition) ExecutionError!void {
+    const allocator = executor.allocator;
+    const graph = executor.graph;
+    switch (try vector_index.state(graph, allocator, definition.index_id)) {
+        .populating => |progress| {
+            try row.append(allocator, .{ .string = "POPULATING" });
+            try row.append(allocator, .{ .float = try populationPercent(graph, definition, progress) });
+            try row.append(allocator, .null);
+        },
+        .online => {
+            try row.append(allocator, .{ .string = "ONLINE" });
+            try row.append(allocator, .{ .float = 100 });
+            try row.append(allocator, .null);
+        },
+        .failed => |failure| {
+            try row.append(allocator, .{ .string = "FAILED" });
+            try row.append(allocator, .{ .float = 0 });
+            try row.append(allocator, .{ .string = try vectorFailureMessage(allocator, definition, failure) });
+        },
+    }
+}
+
+/// How much of a populating index is done, from the entities it looked at
+/// and those of its label or type now: below 100 until it is online.
+pub fn populationPercent(graph: *@import("../storage/graph.zig").Graph, definition: fulltext.Definition, progress: vector_index.Progress) ExecutionError!f64 {
+    const total = switch (definition.entity) {
+        .nodes => try graph.labelCount(definition.labels_or_types[0]),
+        .relationships => try graph.edgeTypeCount(definition.labels_or_types[0]),
+    };
+    if (total == 0) return 0;
+    const percent = 100 * @as(f64, @floatFromInt(progress.examined)) / @as(f64, @floatFromInt(total));
+    return @min(percent, 99.9);
+}
+
+/// "node 5: its v has 2 elements, and the index takes a list of 3 numbers".
+pub fn vectorFailureMessage(allocator: std.mem.Allocator, definition: fulltext.Definition, failure: vector_index.Failure) std.mem.Allocator.Error![]const u8 {
+    const what = if (definition.entity == .nodes) "node" else "relationship";
+    return std.fmt.allocPrint(allocator, "{s} {d}: its {s} {s}, and the index takes a list of {d} numbers", .{ what, failure.entity, definition.properties[0], failure.reason, definition.dimensions });
 }
 
 /// One row per constraint: name, type, entityType, labelsOrTypes,
