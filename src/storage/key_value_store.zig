@@ -17,6 +17,8 @@ const Definition = @import("fulltext.zig").Definition;
 const layout = @import("layout.zig");
 const change_log = @import("change_log.zig");
 const database_copy = @import("copy.zig");
+const vector_index_marker = @import("vector_index.zig").marker;
+const ReplicaVectorIndexes = @import("replica_vector_indexes.zig").Observer;
 
 const Table = engine.Table;
 
@@ -333,10 +335,13 @@ pub const KeyValueStore = struct {
             if (try change_log.readState(transaction) != null) return error.WriteFailed;
             self.application = try change_log.Application.begin(transaction, lsn);
             self.active_write_transaction = transaction;
+            self.write_transaction_memo = .{};
         }
         const transaction = self.active_write_transaction.?;
         const application = &self.application.?;
-        try application.add(self.allocator, transaction, bytes);
+        var observer = ReplicaVectorIndexes.init(self);
+        defer observer.deinit();
+        try application.add(self.allocator, transaction, bytes, &observer);
         if (!final) return null;
         const applied = try application.finish(transaction);
         application.deinit(self.allocator);
@@ -348,6 +353,7 @@ pub const KeyValueStore = struct {
         const held = self.held_lsn != null;
         self.held_lsn = null;
         self.active_write_transaction = null;
+        self.write_transaction_memo = .{};
         if (applied == .already_applied and !held) transaction.abort() else try transaction.commit();
         return applied;
     }
@@ -360,6 +366,7 @@ pub const KeyValueStore = struct {
         const transaction = self.active_write_transaction.?;
         self.held_lsn = null;
         self.active_write_transaction = null;
+        self.write_transaction_memo = .{};
         try transaction.commit();
         return lsn;
     }
@@ -377,6 +384,9 @@ pub const KeyValueStore = struct {
         self.held_lsn = null;
         self.active_write_transaction.?.abort();
         self.active_write_transaction = null;
+        // They may hold a schema change that never happened.
+        self.write_transaction_memo = .{};
+        self.forgetSchemaDefinitions();
     }
 
     /// Applies change set `lsn` whole, `bytes` (see `applyChangeSetPart`).
@@ -543,7 +553,7 @@ pub const KeyValueStore = struct {
         const transaction = self.writer() orelse return self.commitAlone(put, .{ self, key, value });
         try checkLength(value);
         try transaction.put(.main, key, value);
-        try self.recordChange(transaction, .{ .operation = .put, .table = .main, .key = key, .value = value });
+        if (isLogged(key)) try self.recordChange(transaction, .{ .operation = .put, .table = .main, .key = key, .value = value });
     }
 
     /// Idempotent: deleting a missing key is a success. Commits at once
@@ -551,7 +561,13 @@ pub const KeyValueStore = struct {
     pub fn del(self: *KeyValueStore, key: []const u8) StorageError!void {
         const transaction = self.writer() orelse return self.commitAlone(del, .{ self, key });
         try transaction.delete(.main, key);
-        try self.recordChange(transaction, .{ .operation = .delete, .table = .main, .key = key });
+        if (isLogged(key)) try self.recordChange(transaction, .{ .operation = .delete, .table = .main, .key = key });
+    }
+
+    /// Whether the change log carries a write to `key` of the main table: all
+    /// but a vector index's (replicas keep their own, replica_vector_indexes.zig).
+    fn isLogged(key: []const u8) bool {
+        return key.len == 0 or key[0] != vector_index_marker;
     }
 
     /// An absent key is a normal result: `null`, not an error.
