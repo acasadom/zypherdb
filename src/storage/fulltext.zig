@@ -84,7 +84,7 @@ pub const Definition = struct {
     }
 
     /// The definition `name` stored as `bytes`, its strings copied with `allocator`.
-    fn decode(name: []const u8, bytes: []const u8, allocator: Allocator) Allocator.Error!Definition {
+    pub fn decode(name: []const u8, bytes: []const u8, allocator: Allocator) Allocator.Error!Definition {
         var reader = Reader{ .bytes = bytes };
         const kind: Kind = @fromBackingInt(@intCast(reader.byte()));
         const entity: Entity = @fromBackingInt(@intCast(reader.byte()));

@@ -1,7 +1,7 @@
 //! Vector indexes: an HNSW graph (src/vector/hnsw.zig) per index, kept in
 //! the key-value store and written in the transaction of the change that
-//! moves it, so readers see it as of their snapshot and replicas get it
-//! with the change log.
+//! moves it, so readers see it as of their snapshot. The change log does
+//! not carry its keys: a replica keeps its own (replica_vector_indexes.zig).
 //!
 //! A vector index is on one label (or relationship type) and one
 //! property, which holds a list of `dimensions` numbers. A write that
@@ -304,6 +304,29 @@ pub fn relationshipPropertyChanged(graph: *Graph, id: RelationshipId, edge_type:
         if (!std.mem.eql(u8, definition.labels_or_types[0], edge_type) or !std.mem.eql(u8, definition.properties[0], name)) continue;
         try place(graph, arena, definition, id, new);
     }
+}
+
+/// After property `name` of relationship `id` was removed, takes it out of
+/// the vector indexes on that property: those of its type held it, the
+/// others did not (a replica applying the removal of a relationship may
+/// no longer know its type).
+pub fn relationshipPropertyRemoved(graph: *Graph, id: RelationshipId, name: []const u8) StorageError!void {
+    if (try fulltext.schemaVersion(graph) == 0) return;
+    var scratch = std.heap.ArenaAllocator.init(graph.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    for (try fulltext.cachedDefinitions(graph)) |definition| {
+        if (definition.kind != .vector or definition.entity != .relationships) continue;
+        if (!std.mem.eql(u8, definition.properties[0], name)) continue;
+        try place(graph, arena, definition, id, null);
+    }
+}
+
+/// Whether the database has a vector index.
+pub fn exist(graph: *Graph) StorageError!bool {
+    if (try fulltext.schemaVersion(graph) == 0) return false;
+    for (try fulltext.cachedDefinitions(graph)) |definition| if (definition.kind == .vector) return true;
+    return false;
 }
 
 /// Puts entity `id` where `value` (checked) puts it in index `definition`:
