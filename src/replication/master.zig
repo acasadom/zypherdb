@@ -27,7 +27,7 @@ pub const Answer = union(enum) {
 pub fn answer(store: *KeyValueStore, hello: protocol.Hello, token: []const u8) StorageError!Answer {
     if (hello.protocol_version != protocol.version) return .{ .refused = .protocol_version };
     if (!protocol.tokensMatch(hello.token, token)) return .{ .refused = .token };
-    if (hello.storage_format != Graph.first_format) return .{ .refused = .storage_format };
+    if (!try readsFormat(store, hello.storage_format)) return .{ .refused = .storage_format };
     if (!std.mem.eql(u8, hello.storage_engine, storage_engine)) return .{ .refused = .storage_engine };
     const state = try store.changeLogState() orelse return .{ .refused = .not_master };
     const replica_of = hello.database_id orelse return .snapshot;
@@ -46,6 +46,14 @@ pub fn answerWriter(store: *KeyValueStore, hello: protocol.WriterHello, token: [
     const id = try store.databaseId() orelse return .not_master;
     if (!std.mem.eql(u8, &hello.database_id, &id)) return .database_id;
     return null;
+}
+
+/// Whether a replica that reads formats up to `newest` can be sent the
+/// database of `store`: its format is one of those, and one this build
+/// writes (a replica that reads newer ones asks again with an older one).
+pub fn readsFormat(store: *KeyValueStore, newest: u32) StorageError!bool {
+    const format = try Graph.formatOf(store) orelse Graph.first_format;
+    return format <= newest and newest <= Graph.newest_format;
 }
 
 /// Where a replica of this master that applied up to `applied_lsn` goes on

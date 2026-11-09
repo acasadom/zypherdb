@@ -97,8 +97,13 @@ pub const Graph = struct {
     /// The database's format: null on a new database, 0 if `!format`
     /// holds something that is not a format.
     pub fn storedFormat(self: *Graph) StorageError!?u32 {
-        const raw = (try self.store.get(key_encoding.format_key)) orelse return null;
-        defer self.store.allocator.free(raw);
+        return formatOf(self.store);
+    }
+
+    /// `storedFormat` of the database of `store`.
+    pub fn formatOf(store: *KeyValueStore) StorageError!?u32 {
+        const raw = (try store.get(key_encoding.format_key)) orelse return null;
+        defer store.allocator.free(raw);
         return if (raw.len == 4) std.mem.readInt(u32, raw[0..4], .big) else 0;
     }
 

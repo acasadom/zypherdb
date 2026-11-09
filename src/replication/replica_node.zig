@@ -31,6 +31,7 @@ const replica_session = @import("replica_session.zig");
 const ReplicaSession = replica_session.ReplicaSession;
 const ChangeSetPart = replica_session.ChangeSetPart;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
+const Graph = @import("../storage/graph.zig").Graph;
 
 const log = std.log.scoped(.replication);
 
@@ -326,6 +327,11 @@ pub const ReplicaNode = struct {
     /// When the master was last heard from (`never_heard` if it was not).
     /// Any thread.
     last_heard: std.atomic.Value(Instant) = .init(never_heard),
+    /// The format its next hello tells: the newest it reads, one less
+    /// after each `storage_format` refusal (a master that reads only older
+    /// ones cannot have a database in a newer one), the newest again once a
+    /// master welcomed it. The node's thread.
+    announced_format: u32 = Graph.newest_format,
     /// The node's own store, for its hellos.
     store: KeyValueStore,
     /// The owner's: raised by the applier when it is done with something.
@@ -483,6 +489,7 @@ pub const ReplicaNode = struct {
         errdefer self.allocator.free(buffers);
         var hello = try replica.hello(&self.store, self.options.token);
         hello.name = self.options.name;
+        hello.storage_format = self.announced_format;
         const connection = try self.network.connect(self.options.master_address);
         self.master_unresolved.store(false, .release);
         conversation.* = .{
@@ -542,7 +549,9 @@ const Conversation = struct {
                     .refused => |reason| {
                         log.info("the master turned this replica away: {t}", .{reason});
                         node.refusal.store(@backingInt(reason), .release);
-                        if (reason.permanent()) node.halt.store(@backingInt(reason), .release);
+                        if (reason == .storage_format and node.announced_format > Graph.first_format) {
+                            node.announced_format -= 1;
+                        } else if (reason.permanent()) node.halt.store(@backingInt(reason), .release);
                         return false;
                     },
                     .copy_part => |bytes| try giveCopyPart(node, bytes, false),
@@ -553,6 +562,7 @@ const Conversation = struct {
                     },
                     .heartbeat => |last| node.master_lsn.store(last, .release),
                 };
+                if (session.state != .awaiting_welcome) node.announced_format = Graph.newest_format;
                 if (session.state != .awaiting_answer) {
                     self.streamed = true;
                     node.refusal.store(0, .release);
