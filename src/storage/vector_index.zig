@@ -29,6 +29,7 @@ const NodeRecord = @import("node_record.zig").NodeRecord;
 const StorageError = @import("key_value_store.zig").StorageError;
 const Value = @import("../value.zig").Value;
 const value_encoding = @import("value_encoding.zig");
+const key_encoding = @import("key_encoding.zig");
 const fulltext = @import("fulltext.zig");
 const similarity_functions = @import("../vector/similarity.zig");
 const hnsw = @import("../vector/hnsw.zig");
@@ -47,14 +48,16 @@ const entity_prefix_length = 2;
 const Hnsw = hnsw.Hnsw(IndexStorage);
 
 /// The HNSW storage context over one index's keys (see hnsw.zig).
-/// Distances read vectors as views, copied to the context's two buffers.
+/// An entity's record is read and decoded once per context: an insert
+/// measures thousands of distances among a few hundred entities.
 pub const IndexStorage = struct {
     graph: *Graph,
     arena: Allocator,
     index_id: u32,
     similarity: Similarity,
-    first: []f32,
-    second: []f32,
+    dimensions: usize,
+    /// The records read or written through this context, by entity id.
+    entities: std.AutoHashMapUnmanaged(u64, Entity) = .empty,
 
     pub const Error = StorageError;
 
@@ -64,10 +67,16 @@ pub const IndexStorage = struct {
             .arena = arena,
             .index_id = definition.index_id,
             .similarity = definition.similarity,
-            .first = try arena.alloc(f32, definition.dimensions),
-            .second = try arena.alloc(f32, definition.dimensions),
+            .dimensions = definition.dimensions,
         };
     }
+
+    /// An entity record, decoded.
+    const Entity = struct {
+        level: u8,
+        live: bool,
+        vector: []const f32,
+    };
 
     fn prefix(self: *const IndexStorage, tag: u8) [6]u8 {
         var key: [6]u8 = undefined;
@@ -101,11 +110,15 @@ pub const IndexStorage = struct {
     }
 
     /// Entity `id`'s record, which must be there.
-    fn entity(self: *IndexStorage, id: u64) StorageError![]const u8 {
+    fn entity(self: *IndexStorage, id: u64) StorageError!Entity {
+        const slot = try self.entities.getOrPut(self.arena, id);
+        if (slot.found_existing) return slot.value_ptr.*;
+        errdefer _ = self.entities.remove(id);
         const key = self.entityKey(id);
         const record = try self.read(&key) orelse return error.ReadFailed;
-        if (record.len != entity_prefix_length + 4 * self.first.len) return error.ReadFailed;
-        return record;
+        if (record.len != entity_prefix_length + 4 * self.dimensions) return error.ReadFailed;
+        slot.value_ptr.* = .{ .level = record[0], .live = record[1] == 1, .vector = try vectorOfRecord(self.arena, record) };
+        return slot.value_ptr.*;
     }
 
     /// The entity's record if it has one (live or a tombstone).
@@ -114,28 +127,21 @@ pub const IndexStorage = struct {
         return self.read(&key);
     }
 
-    fn vectorInto(self: *IndexStorage, id: u64, into: []f32) StorageError!void {
-        const bytes = (try self.entity(id))[entity_prefix_length..];
-        for (into, 0..) |*element, i| element.* = @bitCast(std.mem.readInt(u32, bytes[4 * i ..][0..4], .little));
-    }
-
     pub fn distanceTo(self: *IndexStorage, query: []const f32, id: u64) StorageError!f32 {
-        try self.vectorInto(id, self.first);
-        return similarity_functions.distance(self.similarity, query, self.first);
+        return similarity_functions.distance(self.similarity, query, (try self.entity(id)).vector);
     }
 
     pub fn distanceBetween(self: *IndexStorage, a: u64, b: u64) StorageError!f32 {
-        try self.vectorInto(a, self.first);
-        try self.vectorInto(b, self.second);
-        return similarity_functions.distance(self.similarity, self.first, self.second);
+        const first = (try self.entity(a)).vector;
+        return similarity_functions.distance(self.similarity, first, (try self.entity(b)).vector);
     }
 
     pub fn isLive(self: *IndexStorage, id: u64) StorageError!bool {
-        return (try self.entity(id))[1] == 1;
+        return (try self.entity(id)).live;
     }
 
     pub fn level(self: *IndexStorage, id: u64) StorageError!u8 {
-        return (try self.entity(id))[0];
+        return (try self.entity(id)).level;
     }
 
     pub fn neighbours(self: *IndexStorage, arena: Allocator, id: u64, at: u8) StorageError![]u64 {
@@ -177,7 +183,8 @@ pub const IndexStorage = struct {
         try self.graph.store.put(&key, &bytes);
     }
 
-    /// Stores entity `id`'s record: its level, whether it is live, its vector.
+    /// Stores entity `id`'s record: its level, whether it is live, its vector
+    /// (kept as it is: it must live as long as this context).
     fn putEntity(self: *IndexStorage, id: u64, entity_level: u8, live: bool, vector: []const f32) StorageError!void {
         const bytes = try self.arena.alloc(u8, entity_prefix_length + 4 * vector.len);
         bytes[0] = entity_level;
@@ -185,6 +192,7 @@ pub const IndexStorage = struct {
         for (vector, 0..) |element, i| std.mem.writeInt(u32, bytes[entity_prefix_length + 4 * i ..][0..4], @bitCast(element), .little);
         const key = self.entityKey(id);
         try self.graph.store.put(&key, bytes);
+        try self.entities.put(self.arena, id, .{ .level = entity_level, .live = live, .vector = vector });
     }
 };
 
@@ -349,9 +357,16 @@ fn rebuild(graph: *Graph, arena: Allocator, definition: fulltext.Definition) Sto
         }
     }
     try clear(graph, definition.index_id);
+    // The scratch of one insert, dropped after it: kept for all of them, it
+    // would grow with the index.
+    var insert_scratch = std.heap.ArenaAllocator.init(graph.allocator);
+    defer insert_scratch.deinit();
     for (live.items) |entity| {
-        try storage.putEntity(entity.id, hnsw.levelOf(entity.id, parameters), true, entity.vector);
-        try Hnsw.insert(&storage, arena, parameters, entity.id, false);
+        defer _ = insert_scratch.reset(.retain_capacity);
+        const insert_arena = insert_scratch.allocator();
+        var insert_storage = try IndexStorage.init(graph, insert_arena, definition);
+        try insert_storage.putEntity(entity.id, hnsw.levelOf(entity.id, parameters), true, entity.vector);
+        try Hnsw.insert(&insert_storage, insert_arena, parameters, entity.id, false);
     }
 }
 
@@ -363,42 +378,49 @@ pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!voi
     defer scratch.deinit();
     const arena = scratch.allocator();
     const property = definition.properties[0];
-    // Collect first: indexing writes, and no scan may be open across writes.
-    const Entry = struct { id: u64, value: Value };
-    var entries = std.ArrayList(Entry).empty;
+    // Collect the ids first: indexing writes, and no scan may be open across
+    // writes. Only the ids: the values of a large graph may not fit in memory.
+    var ids = std.ArrayList(u64).empty;
     switch (definition.entity) {
         .nodes => {
             var nodes = try graph.nodesWithLabel(definition.labels_or_types[0]);
             defer nodes.deinit();
-            while (try nodes.next()) |id| {
-                const record = NodeRecord{ .bytes = try graph.recordCopy(id, arena) };
-                const value = try decodedProperty(arena, record, property) orelse continue;
-                try entries.append(arena, .{ .id = id, .value = value });
-            }
+            while (try nodes.next()) |id| try ids.append(arena, id);
         },
         .relationships => {
             // Relationship properties are keys `f | relationship_id | name`.
-            var keys = try graph.store.scanPrefix(&.{@import("key_encoding.zig").edge_property_marker});
+            var keys = try graph.store.scanPrefix(&.{key_encoding.edge_property_marker});
             defer keys.deinit();
             while (try keys.next()) |entry| {
                 if (!std.mem.eql(u8, entry.key[9..], property)) continue;
-                const id = std.mem.readInt(u64, entry.key[1..9], .big);
-                try entries.append(arena, .{ .id = id, .value = try value_encoding.decodeValue(entry.value, arena) });
+                try ids.append(arena, std.mem.readInt(u64, entry.key[1..9], .big));
             }
         },
     }
     const what = if (definition.entity == .nodes) "node" else "relationship";
-    for (entries.items) |entry| {
-        if (definition.entity == .relationships) {
-            const stored = try graph.relationship(entry.id, arena) orelse continue;
-            if (!std.mem.eql(u8, stored.edge_type, definition.labels_or_types[0])) continue;
-        }
-        const checked = try check(arena, definition, entry.value);
+    // The scratch of one entity, dropped after it, as in `rebuild`.
+    var entity_scratch = std.heap.ArenaAllocator.init(graph.allocator);
+    defer entity_scratch.deinit();
+    for (ids.items) |id| {
+        defer _ = entity_scratch.reset(.retain_capacity);
+        const entity_arena = entity_scratch.allocator();
+        const value = switch (definition.entity) {
+            .nodes => try decodedProperty(entity_arena, .{ .bytes = try graph.recordCopy(id, entity_arena) }, property),
+            .relationships => value: {
+                const stored = try graph.relationship(id, entity_arena) orelse continue;
+                if (!std.mem.eql(u8, stored.edge_type, definition.labels_or_types[0])) continue;
+                var key = std.ArrayList(u8).empty;
+                try key_encoding.appendEdgePropertyKey(&key, entity_arena, id, property);
+                const encoded = try graph.store.view(key.items) orelse continue;
+                break :value try value_encoding.decodeValue(encoded, entity_arena);
+            },
+        } orelse continue;
+        const checked = try check(entity_arena, definition, value);
         if (checked == .invalid) {
-            graph.setViolation("cannot create vector index '{s}': it takes {s} as a list of {d} numbers, and that of {s} {d} {s}", .{ definition.name, property, definition.dimensions, what, entry.id, checked.invalid });
+            graph.setViolation("cannot create vector index '{s}': it takes {s} as a list of {d} numbers, and that of {s} {d} {s}", .{ definition.name, property, definition.dimensions, what, id, checked.invalid });
             return error.ConstraintViolation;
         }
-        try place(graph, arena, definition, entry.id, entry.value);
+        try place(graph, entity_arena, definition, id, value);
     }
 }
 
