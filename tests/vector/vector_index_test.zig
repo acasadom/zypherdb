@@ -125,6 +125,21 @@ test "euclidean scores, relationships" {
     try expectQueryError(ast, g, "CALL db.index.vector.queryNodes('links', 1, [0, 0]) YIELD node RETURN node", error.InvalidExpression);
 }
 
+test "a relationship index built from what is there: its type only, and refused on a bad vector" {
+    var fixture = Fixture{ .tmp = undefined };
+    try fixture.init();
+    defer fixture.deinit();
+    const ast = &fixture.ast;
+    const g = &fixture.graph;
+
+    try expectQuery(ast, g, "CREATE (a)-[:LINK {w: 1, v: [0, 0]}]->(b), (a)-[:LINK {w: 2, v: [0, 2]}]->(b), (a)-[:LINK {w: 3}]->(b), (a)-[:OTHER {v: [0, 1]}]->(b), (a)-[:OTHER {v: 'not a vector'}]->(b)", &.{});
+    try expectQuery(ast, g, "CREATE VECTOR INDEX links FOR ()-[r:LINK]-() ON r.v OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'euclidean'}}", &.{});
+    try expectOrdered(ast, g, "CALL db.index.vector.queryRelationships('links', 10, [0, 1]) YIELD relationship RETURN relationship.w", &.{ &.{int(1)}, &.{int(2)} });
+    try expectSound(g);
+    try expectQueryError(ast, g, "CREATE VECTOR INDEX others FOR ()-[r:OTHER]-() ON r.v OPTIONS {indexConfig: {`vector.dimensions`: 2}}", error.ConstraintViolation);
+    try expectQueryError(ast, g, "CALL db.index.vector.queryRelationships('others', 1, [0, 0]) YIELD relationship RETURN relationship", error.InvalidExpression);
+}
+
 test "what is not a vector is refused, before anything is written" {
     var fixture = Fixture{ .tmp = undefined };
     try fixture.init();

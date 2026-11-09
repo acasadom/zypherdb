@@ -161,6 +161,20 @@ pub fn build(b: *std.Build) void {
     const run_change_log_bench = b.addRunArtifact(change_log_bench);
     run_change_log_bench.addPassthruArgs();
     b.step("bench-change-log", "Run the change log benchmark").dependOn(&run_change_log_bench.step);
+
+    // Benchmark: `zig build bench-vector-insert -Doptimize=ReleaseFast`.
+    const vector_insert_bench = b.addExecutable(.{
+        .name = "bench-vector-insert",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/vector_insert.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "zypherdb", .module = zypherdb }},
+        }),
+    });
+    const run_vector_insert_bench = b.addRunArtifact(vector_insert_bench);
+    run_vector_insert_bench.addPassthruArgs();
+    b.step("bench-vector-insert", "Run the vector insert benchmark").dependOn(&run_vector_insert_bench.step);
 }
 
 /// The ZypherDB library over `storage_engine` (its C sources compiled in),
