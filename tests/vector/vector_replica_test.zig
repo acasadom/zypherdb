@@ -73,6 +73,10 @@ test "a replica builds its vector indexes as its master did: created over data, 
     var replica_path: [256]u8 = undefined;
     var replica = try openAt(&tmp, "replica", &replica_path);
     defer replica.deinit();
+    // Each CREATE populates its index whole, on the master and on the
+    // replica, so the two interleave writes and population alike.
+    master.population_budget = .{ .nanoseconds = std.math.maxInt(u64) };
+    replica.population_budget = master.population_budget;
     var g = Graph.init(&master, testing.allocator);
     try g.checkFormat();
     var replica_graph = Graph.init(&replica, testing.allocator);
@@ -89,7 +93,7 @@ test "a replica builds its vector indexes as its master did: created over data, 
         try expectQuery(&ast, &g, query, &.{});
     }
     try expectQuery(&ast, &g, "MATCH (a:Doc), (b:Doc) WHERE b.id = a.id + 1 CREATE (a)-[:LINK {v: [a.id, b.id, 1, 1]}]->(b)", &.{});
-    // Built over what is there, in the transaction that creates them.
+    // Populated in the transaction that creates them.
     try expectQuery(&ast, &g, node_index, &.{});
     try expectQuery(&ast, &g, relationship_index, &.{});
     try replay(&master, &replica, &next);

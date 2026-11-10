@@ -11,9 +11,17 @@
 //! would hide an embedding model change as missing results. The property
 //! keeps the numbers; the index a copy as f32 (normalized under cosine).
 //!
+//! A new index is populated from the data already there in the background
+//! (vector_population.zig); writes keep it current meanwhile. One whose
+//! data holds something that is not a vector fails: it is no longer kept
+//! or checked, and queries on it are refused until it is dropped.
+//!
 //! Keys, after the marker `h` and the index id (u32, big-endian); the
 //! values' integers and floats are little-endian:
 //!
+//!     S                       state: 0 populating, next id (u64),
+//!                             entities examined (u64); 1 online; 2 failed,
+//!                             entity (u64), reason (the rest)
 //!     H                       header: entry (u64), top level (u8),
 //!                             live (u64), tombstones (u64)
 //!     E entity                level (u8), live (u8), the vector (f32 each)
@@ -29,7 +37,6 @@ const NodeRecord = @import("node_record.zig").NodeRecord;
 const StorageError = @import("key_value_store.zig").StorageError;
 const Value = @import("../value.zig").Value;
 const value_encoding = @import("value_encoding.zig");
-const key_encoding = @import("key_encoding.zig");
 const fulltext = @import("fulltext.zig");
 const similarity_functions = @import("../vector/similarity.zig");
 const hnsw = @import("../vector/hnsw.zig");
@@ -38,6 +45,7 @@ pub const Similarity = similarity_functions.Similarity;
 pub const marker: u8 = 'h';
 pub const parameters = hnsw.Parameters{};
 
+const state_tag: u8 = 'S';
 const header_tag: u8 = 'H';
 const entity_tag: u8 = 'E';
 const neighbours_tag: u8 = 'N';
@@ -79,11 +87,7 @@ pub const IndexStorage = struct {
     };
 
     fn prefix(self: *const IndexStorage, tag: u8) [6]u8 {
-        var key: [6]u8 = undefined;
-        key[0] = marker;
-        std.mem.writeInt(u32, key[1..5], self.index_id, .big);
-        key[5] = tag;
-        return key;
+        return tagKey(self.index_id, tag);
     }
 
     pub fn entityKey(self: *const IndexStorage, id: u64) [14]u8 {
@@ -103,10 +107,7 @@ pub const IndexStorage = struct {
 
     /// The value of `key`: a view inside a transaction, else a copy.
     fn read(self: *IndexStorage, key: []const u8) StorageError!?[]const u8 {
-        if (self.graph.store.inTransaction()) return self.graph.store.view(key);
-        const owned = try self.graph.store.get(key) orelse return null;
-        defer self.graph.store.allocator.free(owned);
-        return try self.arena.dupe(u8, owned);
+        return readIn(self.graph, self.arena, key);
     }
 
     /// Entity `id`'s record, which must be there.
@@ -196,6 +197,95 @@ pub const IndexStorage = struct {
     }
 };
 
+fn tagKey(index_id: u32, tag: u8) [6]u8 {
+    var key: [6]u8 = undefined;
+    key[0] = marker;
+    std.mem.writeInt(u32, key[1..5], index_id, .big);
+    key[5] = tag;
+    return key;
+}
+
+// --- State ----------------------------------------------------------------------
+
+/// Where an index is in its life. Kept per database, not in the change
+/// log: a replica populates its own indexes.
+pub const State = union(enum) {
+    populating: Progress,
+    online,
+    failed: Failure,
+};
+
+pub const Progress = struct {
+    /// The entities with a smaller id are in the index.
+    next: u64 = 0,
+    /// How many entities of its label or type the population looked at.
+    examined: u64 = 0,
+};
+
+pub const Failure = struct {
+    entity: u64,
+    /// What is wrong with the entity's value, a phrase whose subject is
+    /// the value ("has 2 elements").
+    reason: []const u8,
+};
+
+/// Index `index_id`'s state (its strings in `arena`).
+pub fn state(graph: *Graph, arena: Allocator, index_id: u32) StorageError!State {
+    const key = tagKey(index_id, state_tag);
+    const bytes = try readIn(graph, arena, &key) orelse return error.ReadFailed;
+    if (bytes.len == 0) return error.ReadFailed;
+    switch (bytes[0]) {
+        0 => {
+            if (bytes.len != 17) return error.ReadFailed;
+            return .{ .populating = .{ .next = std.mem.readInt(u64, bytes[1..9], .little), .examined = std.mem.readInt(u64, bytes[9..17], .little) } };
+        },
+        1 => return if (bytes.len == 1) .online else error.ReadFailed,
+        2 => {
+            if (bytes.len < 9) return error.ReadFailed;
+            return .{ .failed = .{ .entity = std.mem.readInt(u64, bytes[1..9], .little), .reason = try arena.dupe(u8, bytes[9..]) } };
+        },
+        else => return error.ReadFailed,
+    }
+}
+
+pub fn setState(graph: *Graph, index_id: u32, value: State) StorageError!void {
+    var buffer: [17]u8 = undefined;
+    const key = tagKey(index_id, state_tag);
+    switch (value) {
+        .populating => |progress| {
+            buffer[0] = 0;
+            std.mem.writeInt(u64, buffer[1..9], progress.next, .little);
+            std.mem.writeInt(u64, buffer[9..17], progress.examined, .little);
+            try graph.store.put(&key, &buffer);
+        },
+        .online => try graph.store.put(&key, &.{1}),
+        .failed => |failure| {
+            var scratch = std.heap.ArenaAllocator.init(graph.allocator);
+            defer scratch.deinit();
+            const bytes = try scratch.allocator().alloc(u8, 9 + failure.reason.len);
+            bytes[0] = 2;
+            std.mem.writeInt(u64, bytes[1..9], failure.entity, .little);
+            @memcpy(bytes[9..], failure.reason);
+            try graph.store.put(&key, bytes);
+        },
+    }
+}
+
+/// Whether writes keep index `index_id` (all but a failed one).
+fn isKept(graph: *Graph, index_id: u32) StorageError!bool {
+    const key = tagKey(index_id, state_tag);
+    const bytes = try graph.store.view(&key) orelse return error.ReadFailed;
+    return bytes.len == 0 or bytes[0] != 2;
+}
+
+/// The value of `key`: a view inside a transaction, else a copy in `arena`.
+fn readIn(graph: *Graph, arena: Allocator, key: []const u8) StorageError!?[]const u8 {
+    if (graph.store.inTransaction()) return graph.store.view(key);
+    const owned = try graph.store.get(key) orelse return null;
+    defer graph.store.allocator.free(owned);
+    return try arena.dupe(u8, owned);
+}
+
 // --- Values -------------------------------------------------------------------
 
 /// What an indexed property must hold, or why it does not (a phrase
@@ -228,7 +318,7 @@ pub fn check(arena: Allocator, definition: fulltext.Definition, value: ?Value) A
     return .{ .vector = vector };
 }
 
-fn decodedProperty(arena: Allocator, record: NodeRecord, property: []const u8) Allocator.Error!?Value {
+pub fn decodedProperty(arena: Allocator, record: NodeRecord, property: []const u8) Allocator.Error!?Value {
     const encoded = record.property(property) orelse return null;
     return try value_encoding.decodeValue(encoded, arena);
 }
@@ -250,6 +340,7 @@ pub fn checkNode(graph: *Graph, id: NodeId, record: NodeRecord) StorageError!voi
     for (try fulltext.cachedDefinitions(graph)) |definition| {
         if (definition.kind != .vector or definition.entity != .nodes) continue;
         if (!record.hasLabel(definition.labels_or_types[0])) continue;
+        if (!try isKept(graph, definition.index_id)) continue;
         const checked = try check(arena, definition, try decodedProperty(arena, record, definition.properties[0]));
         if (checked == .invalid) return fail(graph, definition, "node", id, checked.invalid);
     }
@@ -265,6 +356,7 @@ pub fn checkRelationshipProperty(graph: *Graph, id: RelationshipId, edge_type: [
     for (try fulltext.cachedDefinitions(graph)) |definition| {
         if (definition.kind != .vector or definition.entity != .relationships) continue;
         if (!std.mem.eql(u8, definition.labels_or_types[0], edge_type) or !std.mem.eql(u8, definition.properties[0], name)) continue;
+        if (!try isKept(graph, definition.index_id)) continue;
         const checked = try check(arena, definition, value);
         if (checked == .invalid) return fail(graph, definition, "relationship", id, checked.invalid);
     }
@@ -287,6 +379,7 @@ pub fn nodeChanged(graph: *Graph, id: NodeId, old: NodeRecord, new: NodeRecord, 
         if (changed) |name| if (!std.mem.eql(u8, name, property)) continue;
         const label = definition.labels_or_types[0];
         if (!old.hasLabel(label) and !new.hasLabel(label)) continue;
+        if (!try isKept(graph, definition.index_id)) continue;
         const value = if (new.hasLabel(label)) try decodedProperty(arena, new, property) else null;
         try place(graph, arena, definition, id, value);
     }
@@ -302,6 +395,7 @@ pub fn relationshipPropertyChanged(graph: *Graph, id: RelationshipId, edge_type:
     for (try fulltext.cachedDefinitions(graph)) |definition| {
         if (definition.kind != .vector or definition.entity != .relationships) continue;
         if (!std.mem.eql(u8, definition.labels_or_types[0], edge_type) or !std.mem.eql(u8, definition.properties[0], name)) continue;
+        if (!try isKept(graph, definition.index_id)) continue;
         try place(graph, arena, definition, id, new);
     }
 }
@@ -318,6 +412,7 @@ pub fn relationshipPropertyRemoved(graph: *Graph, id: RelationshipId, name: []co
     for (try fulltext.cachedDefinitions(graph)) |definition| {
         if (definition.kind != .vector or definition.entity != .relationships) continue;
         if (!std.mem.eql(u8, definition.properties[0], name)) continue;
+        if (!try isKept(graph, definition.index_id)) continue;
         try place(graph, arena, definition, id, null);
     }
 }
@@ -331,7 +426,7 @@ pub fn exist(graph: *Graph) StorageError!bool {
 
 /// Puts entity `id` where `value` (checked) puts it in index `definition`:
 /// in with its vector, or out (a tombstone).
-fn place(graph: *Graph, arena: Allocator, definition: fulltext.Definition, id: u64, value: ?Value) StorageError!void {
+pub fn place(graph: *Graph, arena: Allocator, definition: fulltext.Definition, id: u64, value: ?Value) StorageError!void {
     var storage = try IndexStorage.init(graph, arena, definition);
     const stored = try storage.entityRecord(id);
     const was_live = if (stored) |record| record[1] == 1 else false;
@@ -379,7 +474,11 @@ fn rebuild(graph: *Graph, arena: Allocator, definition: fulltext.Definition) Sto
             try live.append(arena, .{ .id = id, .vector = try vectorOfRecord(arena, entry.value) });
         }
     }
+    // The state stays: a rebuild can come while the index is populating.
+    const state_key = tagKey(definition.index_id, state_tag);
+    const kept_state = try arena.dupe(u8, try graph.store.view(&state_key) orelse return error.ReadFailed);
     try clear(graph, definition.index_id);
+    try graph.store.put(&state_key, kept_state);
     // The scratch of one insert, dropped after it: kept for all of them, it
     // would grow with the index.
     var insert_scratch = std.heap.ArenaAllocator.init(graph.allocator);
@@ -390,60 +489,6 @@ fn rebuild(graph: *Graph, arena: Allocator, definition: fulltext.Definition) Sto
         var insert_storage = try IndexStorage.init(graph, insert_arena, definition);
         try insert_storage.putEntity(entity.id, hnsw.levelOf(entity.id, parameters), true, entity.vector);
         try Hnsw.insert(&insert_storage, insert_arena, parameters, entity.id, false);
-    }
-}
-
-/// Indexes what the graph already holds for a new index, failing with
-/// `error.ConstraintViolation` on the first entity whose property is not a
-/// vector the index takes (the caller aborts the transaction).
-pub fn populate(graph: *Graph, definition: fulltext.Definition) StorageError!void {
-    var scratch = std.heap.ArenaAllocator.init(graph.allocator);
-    defer scratch.deinit();
-    const arena = scratch.allocator();
-    const property = definition.properties[0];
-    // Collect the ids first: indexing writes, and no scan may be open across
-    // writes. Only the ids: the values of a large graph may not fit in memory.
-    var ids = std.ArrayList(u64).empty;
-    switch (definition.entity) {
-        .nodes => {
-            var nodes = try graph.nodesWithLabel(definition.labels_or_types[0]);
-            defer nodes.deinit();
-            while (try nodes.next()) |id| try ids.append(arena, id);
-        },
-        .relationships => {
-            // Relationship properties are keys `f | relationship_id | name`.
-            var keys = try graph.store.scanPrefix(&.{key_encoding.edge_property_marker});
-            defer keys.deinit();
-            while (try keys.next()) |entry| {
-                if (!std.mem.eql(u8, entry.key[9..], property)) continue;
-                try ids.append(arena, std.mem.readInt(u64, entry.key[1..9], .big));
-            }
-        },
-    }
-    const what = if (definition.entity == .nodes) "node" else "relationship";
-    // The scratch of one entity, dropped after it, as in `rebuild`.
-    var entity_scratch = std.heap.ArenaAllocator.init(graph.allocator);
-    defer entity_scratch.deinit();
-    for (ids.items) |id| {
-        defer _ = entity_scratch.reset(.retain_capacity);
-        const entity_arena = entity_scratch.allocator();
-        const value = switch (definition.entity) {
-            .nodes => try decodedProperty(entity_arena, .{ .bytes = try graph.recordCopy(id, entity_arena) }, property),
-            .relationships => value: {
-                const stored = try graph.relationship(id, entity_arena) orelse continue;
-                if (!std.mem.eql(u8, stored.edge_type, definition.labels_or_types[0])) continue;
-                var key = std.ArrayList(u8).empty;
-                try key_encoding.appendEdgePropertyKey(&key, entity_arena, id, property);
-                const encoded = try graph.store.view(key.items) orelse continue;
-                break :value try value_encoding.decodeValue(encoded, entity_arena);
-            },
-        } orelse continue;
-        const checked = try check(entity_arena, definition, value);
-        if (checked == .invalid) {
-            graph.setViolation("cannot create vector index '{s}': it takes {s} as a list of {d} numbers, and that of {s} {d} {s}", .{ definition.name, property, definition.dimensions, what, id, checked.invalid });
-            return error.ConstraintViolation;
-        }
-        try place(graph, entity_arena, definition, id, value);
     }
 }
 

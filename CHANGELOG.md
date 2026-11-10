@@ -10,8 +10,12 @@
   `db.index.vector.queryRelationships`. The search is approximate (HNSW) and the index follows
   every write in the same transaction. A write that would put something other than a vector of
   the right length in an indexed property fails with a constraint violation instead of leaving the
-  entity out. `vector.similarity.cosine` and `vector.similarity.euclidean` score two lists with no
-  index. See "Vector search" in `docs/guide/cypher.md`.
+  entity out. `CREATE VECTOR INDEX` returns at once and the index is populated from the data
+  already there in the background; `SHOW VECTOR INDEXES` shows its `state` (`POPULATING`,
+  `ONLINE` or `FAILED`), `populationPercent` and `failureMessage`. A value in the data that is not
+  a vector fails the index, naming the entity. `vector.similarity.cosine` and
+  `vector.similarity.euclidean` score two lists with no index. See "Vector search" in
+  `docs/guide/cypher.md`.
 
 ### Changed
 

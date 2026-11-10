@@ -447,6 +447,7 @@ Its keys, after `h` and the index number (`u32`, big-endian); the values are lit
 
 | Key | Value |
 | --- | --- |
+| `h \| index \| S` | its state: 0 populating, then the next id to look at and the entities looked at (u64 each); 1 online; 2 failed, then the entity (u64) and what is wrong with its value |
 | `h \| index \| H` | the header: the entry point (u64), the top level (u8), the live entities and the tombstones (u64 each) |
 | `h \| index \| E \| id` | the entity's level (u8), whether it is live (u8), its vector (f32 each) |
 | `h \| index \| N \| id \| level` | its neighbours on that level (u64 each) |
@@ -468,7 +469,21 @@ current as they keep the full-text postings, from the same mutators:
   the index is rebuilt from the live ones, in the same transaction.
 
 Every key is written in the transaction of the change, so a reader sees the index as of its
-snapshot, and the change log carries it to replicas with no protocol of its own.
+snapshot. The change log does not carry these keys: a replica moves each entity in its own
+indexes as it applies the write that changed it (`replica_vector_indexes.zig`), and the state is
+each database's own. A copy carries them as they are.
+
+A new index is populated in the background (`vector_population.zig`): `CREATE VECTOR INDEX` (or a
+replica applying it) stores the state populating and does a first batch; the builder thread of
+the open database does the rest, one write transaction of about 20 ms per batch, which places
+the next entities by id (from the label index, or the relationship table) and stores how far it
+got, so a crash loses at most a batch. Writes keep the index meanwhile, ahead of that point too:
+placing an entity is idempotent. Several processes share the work, each batch going on from the
+state it reads. A value that is not a vector fails the index: its keys are removed but the state,
+which names the entity and why; writes then leave it alone. The builder's transactions write only
+`h` keys, which a replica allows (`KeyValueStore.beginLocalWrite`). The integrity checker
+requires a populating index to hold the entities below where it got to, and those above that
+writes placed.
 
 ## Checking integrity
 

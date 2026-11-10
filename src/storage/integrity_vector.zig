@@ -9,7 +9,10 @@
 //! - each record has a neighbour list on each of its levels, of at most
 //!   the level's maximum, naming other recorded entities, once each;
 //! - the header names a recorded entity on the top level, and counts the
-//!   live entities and the tombstones.
+//!   live entities and the tombstones;
+//! - the index has a state. One populating must hold the entities below
+//!   where population got to; above, those writes placed (any of them).
+//!   One failed holds no other key.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -27,29 +30,49 @@ const hnsw = @import("../vector/hnsw.zig");
 /// its stored graph gets wrong.
 pub fn expectIndex(checker: *Checker, definition: fulltext.Definition) StorageError!void {
     const arena = checker.arena;
+    const index_state = vector_index.state(checker.graph, arena, definition.index_id) catch |err| switch (err) {
+        error.ReadFailed => return checker.report.add("vector index '{s}': its state is missing or malformed", .{definition.name}),
+        else => |other| return other,
+    };
+    const required: Required = switch (index_state) {
+        .online => .{},
+        .populating => |progress| .{ .below = progress.next },
+        .failed => return expectFailed(checker, definition),
+    };
     var storage = try vector_index.IndexStorage.init(checker.graph, arena, definition);
     var live = std.AutoArrayHashMapUnmanaged(u64, void).empty;
     switch (definition.entity) {
         .nodes => for (checker.nodes.keys(), checker.nodes.values()) |id, record| {
             if (!record.hasLabel(definition.labels_or_types[0])) continue;
             const encoded = record.property(definition.properties[0]) orelse continue;
-            try expectEntity(checker, &storage, definition, id, try value_encoding.decodeValue(encoded, arena), &live);
+            try expectEntity(checker, &storage, definition, required, id, try value_encoding.decodeValue(encoded, arena), &live);
         },
         .relationships => for (checker.relationships.keys(), checker.relationships.values()) |id, relationship| {
             if (!std.mem.eql(u8, relationship.edge_type, definition.labels_or_types[0])) continue;
             for (relationship.properties.items) |stored| if (std.mem.eql(u8, stored.name, definition.properties[0])) {
-                try expectEntity(checker, &storage, definition, id, try value_encoding.decodeValue(stored.encoded, arena), &live);
+                try expectEntity(checker, &storage, definition, required, id, try value_encoding.decodeValue(stored.encoded, arena), &live);
             };
         },
     }
     try checkGraph(checker, &storage, definition, &live);
 }
 
-fn expectEntity(checker: *Checker, storage: *vector_index.IndexStorage, definition: fulltext.Definition, id: u64, value: Value, live: *std.AutoArrayHashMapUnmanaged(u64, void)) StorageError!void {
+/// The entities an index must hold: those below `below` (all, once online).
+/// Above, population has not looked yet: only what writes placed is there.
+const Required = struct {
+    below: u64 = std.math.maxInt(u64),
+};
+
+fn expectEntity(checker: *Checker, storage: *vector_index.IndexStorage, definition: fulltext.Definition, required: Required, id: u64, value: Value, live: *std.AutoArrayHashMapUnmanaged(u64, void)) StorageError!void {
     const arena = checker.arena;
+    if (id >= required.below and try storage.entityRecord(id) == null) return;
     const vector = switch (try vector_index.check(arena, definition, value)) {
         .absent => return,
-        .invalid => |reason| return checker.report.add("vector index '{s}': the value of entity {d} {s}", .{ definition.name, id, reason }),
+        .invalid => |reason| {
+            // Population fails the index when it gets there.
+            if (id >= required.below) return;
+            return checker.report.add("vector index '{s}': the value of entity {d} {s}", .{ definition.name, id, reason });
+        },
         .vector => |vector| vector,
     };
     try live.put(arena, id, {});
@@ -82,7 +105,9 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
         while (try keys.next()) |entry| {
             const key = try arena.dupe(u8, entry.key);
             const rest = key[5..];
-            if (rest.len == 1 and rest[0] == 'H') {
+            if (rest.len == 1 and rest[0] == 'S') {
+                try checker.expect(key, null); // read by `expectIndex`
+            } else if (rest.len == 1 and rest[0] == 'H') {
                 header_value = try arena.dupe(u8, entry.value);
                 try checker.expect(key, null);
             } else if (rest.len == 9 and rest[0] == 'E' and entry.value.len == 2 + 4 * @as(usize, definition.dimensions)) {
@@ -139,5 +164,21 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
     const entry_level = levels.get(header.entry) orelse return report.add("vector index '{s}': the entry point {d} has no record", .{ name, header.entry });
     if (entry_level != header.top_level or header.top_level != top_level) {
         try report.add("vector index '{s}': the entry point {d} is on level {d}, the header says {d}, the top level is {d}", .{ name, header.entry, entry_level, header.top_level, top_level });
+    }
+}
+
+/// A failed index keeps its state, and nothing else.
+fn expectFailed(checker: *Checker, definition: fulltext.Definition) StorageError!void {
+    const arena = checker.arena;
+    var prefix: [5]u8 = undefined;
+    prefix[0] = vector_index.marker;
+    std.mem.writeInt(u32, prefix[1..5], definition.index_id, .big);
+    var keys = try checker.graph.store.scanPrefix(&prefix);
+    defer keys.deinit();
+    while (try keys.next()) |entry| {
+        const key = try arena.dupe(u8, entry.key);
+        try checker.expect(key, null);
+        if (key.len == 6 and key[5] == 'S') continue;
+        try checker.report.add("vector index '{s}' failed, and still has key {f}", .{ definition.name, Bytes{ .bytes = key } });
     }
 }

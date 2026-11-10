@@ -221,7 +221,7 @@ fn isQuery(ast: *const Ast, root: Index) bool {
 /// first part's. SHOW INDEXES and SHOW CONSTRAINTS have their own.
 fn columnNames(ast: *const Ast, arena: Allocator, root: Index, table_procedures: []const signatures.TableProcedure) Allocator.Error![]const []const u8 {
     switch (ast.kind(root)) {
-        .show_indexes => return &schema.index_columns,
+        .show_indexes => return if (ast.data(root).show_indexes == .vector) &schema.vector_index_columns else &schema.index_columns,
         .show_constraints => return &schema.constraint_columns,
         else => {},
     }

@@ -13,6 +13,7 @@ const signatures = @import("../query/procedures.zig");
 const fulltext = @import("../storage/fulltext.zig");
 const fulltext_search = @import("../storage/fulltext_search.zig");
 const vector_index = @import("../storage/vector_index.zig");
+const schema = @import("schema.zig");
 
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
@@ -215,6 +216,19 @@ fn queryVectorIndex(executor: *Executor, name: []const u8, entity: fulltext.Enti
     if (definition.entity != entity) {
         executor.fail(.invalid_expression, "'{s}' indexes {s}: use db.index.vector.{s}", .{ index_name, @tagName(definition.entity), if (definition.entity == .nodes) "queryNodes" else "queryRelationships" });
         return error.InvalidExpression;
+    }
+    switch (try vector_index.state(executor.graph, executor.allocator, definition.index_id)) {
+        .online => {},
+        .populating => |progress| {
+            const percent = try schema.populationPercent(executor.graph, definition, progress);
+            executor.fail(.invalid_expression, "vector index '{s}' is still being populated ({d:.1}% done): query it once SHOW VECTOR INDEXES shows it ONLINE", .{ index_name, percent });
+            return error.InvalidExpression;
+        },
+        .failed => |failure| {
+            const message = try schema.vectorFailureMessage(executor.allocator, definition, failure);
+            executor.fail(.invalid_expression, "vector index '{s}' failed ({s}): correct the data, then drop it and create it again", .{ index_name, message });
+            return error.InvalidExpression;
+        },
     }
     if (arguments[1].int < 1) {
         executor.fail(.invalid_expression, "{s}() needs a number of results of at least 1, not {d}", .{ name, arguments[1].int });
