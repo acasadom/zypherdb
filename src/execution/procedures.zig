@@ -119,6 +119,10 @@ fn run(executor: *Executor, name: []const u8, arguments: []const Value, emit: Em
     if (std.mem.eql(u8, name, "db.index.fulltext.queryRelationships")) return queryIndex(executor, name, .relationships, arguments, emit);
     if (std.mem.eql(u8, name, "db.index.vector.queryNodes")) return queryVectorIndex(executor, name, .nodes, arguments, emit);
     if (std.mem.eql(u8, name, "db.index.vector.queryRelationships")) return queryVectorIndex(executor, name, .relationships, arguments, emit);
+    if (std.mem.eql(u8, name, "db.awaitIndexes")) {
+        executor.fail(.invalid_expression, "db.awaitIndexes() runs on its own: CALL db.awaitIndexes([seconds]) as the whole query", .{});
+        return error.InvalidExpression;
+    }
     if (std.mem.eql(u8, name, "db.labels")) {
         for (try executor.graph.labelNames(executor.allocator)) |label| try emit.row(emit.context, &.{.{ .string = label }});
     } else if (std.mem.eql(u8, name, "db.relationshipTypes")) {
@@ -221,8 +225,8 @@ fn queryVectorIndex(executor: *Executor, name: []const u8, entity: fulltext.Enti
         .online => {},
         .populating => |progress| {
             const percent = try schema.populationPercent(executor.graph, definition, progress);
-            executor.fail(.invalid_expression, "vector index '{s}' is still being populated ({d:.1}% done): query it once SHOW VECTOR INDEXES shows it ONLINE", .{ index_name, percent });
-            return error.InvalidExpression;
+            executor.fail(.index_populating, "vector index '{s}' is still being populated ({d:.1}% done): query it once SHOW VECTOR INDEXES shows it ONLINE, or wait for it with CALL db.awaitIndexes()", .{ index_name, percent });
+            return error.IndexPopulating;
         },
         .failed => |failure| {
             const message = try schema.vectorFailureMessage(executor.allocator, definition, failure);

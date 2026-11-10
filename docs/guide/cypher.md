@@ -331,6 +331,7 @@ machine.
 | `db.index.fulltext.listAvailableAnalyzers()` | `analyzer`, `description` | the full-text analyzers |
 | `db.index.vector.queryNodes(index, k, vector)` | `node`, `score` | the `k` nodes of a [vector index](#vector-search) closest to `vector`, best first |
 | `db.index.vector.queryRelationships(index, k, vector)` | `relationship`, `score` | the same, for an index of relationships |
+| `db.awaitIndexes([seconds])` | nothing | waits until no [vector index](#vector-search) is being populated |
 
 Procedure names are case-sensitive, as in Neo4j. The `options` of a full-text query are a map with
 `skip` and `limit`, non-negative integers.
@@ -493,12 +494,17 @@ RETURN node.title, score
   could in about 20 ms (on a small graph, all of it); the rest is indexed by a thread of the open
   database, in batches of about 20 ms that writes run between. Writes keep the index current
   meanwhile. Until it is done, `SHOW VECTOR INDEXES` shows it `POPULATING` with its
-  `populationPercent`, and querying it is an error (`InvalidExpressionError`) that says how far it
-  got. Closed (or killed) before the end, the database goes on from there when it is opened again;
+  `populationPercent`, and querying it is an error that says how far it got (error code 15,
+  `IndexPopulatingError` in Python): retry later, or wait first. `CALL db.awaitIndexes()` waits
+  until no vector index is populating, for at most 300 seconds (`CALL db.awaitIndexes(60)`: 60);
+  still populating then, it is the same error. It is the whole query, and not in a write
+  transaction, since population needs the writer; on a replica it waits for the replica's own
+  indexes. Closed (or killed) before the end, the database goes on from there when it is opened again;
   population only moves while some process has the database open. If population meets a value
   that is not a vector the index takes, the index is `FAILED`: `failureMessage` names the entity
   and what is wrong, writes no longer keep or check it, and querying it is an error. Correct the
-  data, then `DROP INDEX` and create it again. A replica populates its own copy of each index the
+  data, then `DROP INDEX` and create it again; `db.awaitIndexes()` meeting a failed index is that
+  error too. A replica populates its own copy of each index the
   same way, so it can be `ONLINE` on the master and still `POPULATING` on a replica.
 - The index keeps each vector as 32-bit floats (normalized under cosine); the property keeps the
   numbers as they were written.

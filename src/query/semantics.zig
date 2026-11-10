@@ -668,6 +668,9 @@ const Checker = struct {
                     continue;
                 },
                 .call_clause => {
+                    // It waits in read transactions of its own (schema.zig).
+                    if (query_clauses.len != 1 and std.mem.eql(u8, self.ast.data(clause).call.procedure, "db.awaitIndexes"))
+                        return self.fail("db.awaitIndexes() runs on its own: CALL db.awaitIndexes([seconds]) as the whole query", .{});
                     try self.checkCall(clause, position + 1 == query_clauses.len);
                     try self.checkExpressions(clause);
                     continue;

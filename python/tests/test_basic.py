@@ -17,6 +17,7 @@ from zypherdb import (
     Database,
     Duration,
     ExternalResourceError,
+    IndexPopulatingError,
     InvalidExpressionError,
     NodeNotFoundError,
     Node,
@@ -141,9 +142,10 @@ def test_vector_index_populated_in_the_background(tmp_path):
         db.query("CREATE VECTOR INDEX docs FOR (d:Doc) ON d.embedding OPTIONS {indexConfig: {`vector.dimensions`: 8}}")
         try:
             db.query("CALL db.index.vector.queryNodes('docs', 1, [1, 0, 0, 0, 0, 0, 0, 0]) YIELD node RETURN node")
-        except InvalidExpressionError as error:
+        except IndexPopulatingError as error:
             assert "still being populated" in str(error)
-        wait_online(db, "docs")
+        db.query("CALL db.awaitIndexes()")
+        assert vector_index_state(db, "docs")[0] == "ONLINE"
         rows = db.query("CALL db.index.vector.queryNodes('docs', 5, [1, 1, 1, 1, 1, 1, 1, 1]) YIELD node RETURN node.id")
         assert len(rows) == 5
         assert db.check()["ok"]
@@ -161,6 +163,8 @@ def test_vector_index_populated_in_the_background(tmp_path):
         assert "has 2 elements" in failure
         with pytest.raises(InvalidExpressionError, match="failed"):
             db.query("CALL db.index.vector.queryNodes('notes', 1, [1, 2, 3]) YIELD node RETURN node")
+        with pytest.raises(InvalidExpressionError, match="failed"):
+            db.query("CALL db.awaitIndexes()")
 
 
 def test_load_csv_reads_only_from_the_import_directory(tmp_path):

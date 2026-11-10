@@ -81,7 +81,8 @@ test "population goes in batches, kept by writes meanwhile, and resumes after a 
         .{ .map = &options },                  .{ .string = "POPULATING" },         .{ .float = 10 },
         .null,
     }});
-    try expectQueryError(&ast, &g, "CALL db.index.vector.queryNodes('docs', 5, [1, 0, 0, 0]) YIELD node RETURN node", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CALL db.index.vector.queryNodes('docs', 5, [1, 0, 0, 0]) YIELD node RETURN node", error.IndexPopulating);
+    try expectQueryError(&ast, &g, "CALL db.awaitIndexes(0)", error.IndexPopulating);
     try expectSound(&g);
 
     // Writes meanwhile, behind and ahead of the population; a bad vector is
@@ -105,6 +106,7 @@ test "population goes in batches, kept by writes meanwhile, and resumes after a 
     try expectPopulating(&g, "docs", 20);
     try population.finish(&store);
     try expectOnline(&g, "docs");
+    try expectQuery(&ast, &g, "CALL db.awaitIndexes(0)", &.{});
     try testing.expect(!try population.advanceAny(&store));
     try expectQuery(&ast, &g, "CALL db.index.vector.queryNodes('docs', 200, [1, 0, 0, 0]) YIELD node RETURN count(node)", &.{&.{int(99)}});
     try expectSound(&g);
@@ -142,6 +144,7 @@ test "a bad vector met by population fails the index, which is dropped and made 
     try expectQuery(&ast, &g, "CREATE (:Doc {id: 20, v: [1.0]})", &.{});
     try expectSound(&g);
     try expectQueryError(&ast, &g, "CALL db.index.vector.queryNodes('docs', 5, [1, 0, 0, 0]) YIELD node RETURN node", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CALL db.awaitIndexes()", error.InvalidExpression);
 
     try expectQuery(&ast, &g, "MATCH (d:Doc) WHERE d.id IN [12, 20] SET d.v = [1.0, 2.0, 3.0, 4.0]", &.{});
     try expectQuery(&ast, &g, "DROP INDEX docs", &.{});
@@ -259,7 +262,8 @@ test "the builder thread populates in the background, and goes on after a reopen
         if (round == 0) {
             try createDocs(&ast, &g, 200);
             try expectQuery(&ast, &g, node_index, &.{});
-            try waitOnline(&g, "docs");
+            try expectQuery(&ast, &g, "CALL db.awaitIndexes()", &.{});
+            try expectOnline(&g, "docs");
             try expectQuery(&ast, &g, "CALL db.index.vector.queryNodes('docs', 300, [1, 0, 0, 0]) YIELD node RETURN count(node)", &.{&.{int(200)}});
             try expectSound(&g);
             // Closed at once: some of it is likely left for the next open.
@@ -270,6 +274,35 @@ test "the builder thread populates in the background, and goes on after a reopen
             try expectSound(&g);
         }
     }
+}
+
+test "db.awaitIndexes() runs on its own, out of write transactions, with a number of seconds" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    // No vector index: nothing to wait for.
+    try expectQuery(&ast, &g, "CALL db.awaitIndexes()", &.{});
+    try expectQuery(&ast, &g, "CALL db.awaitIndexes", &.{});
+    try support.expectQueryWithParameters(&ast, &g, "CALL db.awaitIndexes($seconds)", &.{.{ "seconds", int(1) }}, &.{});
+    try expectQueryError(&ast, &g, "CALL db.awaitIndexes(-1)", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CALL db.awaitIndexes(1.5)", error.TypeMismatch);
+    try expectQueryError(&ast, &g, "CALL db.awaitIndexes(1, 2)", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "MATCH (d:Doc) CALL db.awaitIndexes() RETURN d", error.InvalidExpression);
+    try expectQueryError(&ast, &g, "CALL db.awaitIndexes() RETURN 1", error.InvalidExpression);
+
+    try g.beginWrite();
+    defer g.abortWrite();
+    const query = try zypherdb.parser.parse(&ast, "CALL db.awaitIndexes()", null);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var executor = zypherdb.Executor.init(&ast, &g, arena.allocator());
+    try testing.expectError(error.InvalidExpression, executor.run(query));
 }
 
 fn waitOnline(g: *Graph, name: []const u8) !void {
