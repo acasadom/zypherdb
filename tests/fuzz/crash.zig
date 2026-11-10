@@ -24,6 +24,10 @@
 //! kill). The last writer runs to the end, and the database must equal the
 //! twin.
 //!
+//! Some seeds create vector indexes and populate them a batch at a time,
+//! as the builder thread does: a crash in a batch leaves the population
+//! where its last committed batch did, and the next writer goes on.
+//!
 //! On odd seeds another process stays on the database all along (a
 //! survivor: `crash-survivor`), and the writer holds a read open as it
 //! works. After each writer it must still get the write lock, whatever the
@@ -57,16 +61,23 @@ pub const Statistics = struct {
     /// Crashes after which the statement in flight had committed.
     in_flight_committed: u64 = 0,
     statements: u64 = 0,
+    /// Batches of a vector index's population the workload did.
+    population_batches: u64 = 0,
+    /// Crashes that left a vector index populating.
+    crashes_mid_population: u64 = 0,
 
     pub fn add(self: *Statistics, other: Statistics) void {
         self.crashes += other.crashes;
         self.timed_kills += other.timed_kills;
         self.in_flight_committed += other.in_flight_committed;
         self.statements += other.statements;
+        self.population_batches += other.population_batches;
+        self.crashes_mid_population += other.crashes_mid_population;
     }
 
     pub fn format(self: Statistics, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("  {d} statements, {d} crashes ({d} timed kills), {d} with the statement in flight committed\n", .{ self.statements, self.crashes, self.timed_kills, self.in_flight_committed });
+        try writer.print("  {d} population batches, {d} crashes mid-population\n", .{ self.population_batches, self.crashes_mid_population });
     }
 };
 
@@ -113,6 +124,17 @@ const Plan = struct {
         var swarm = Swarm.choose(prng.random());
         // Not drawn: the other choices of a seed stay as they were.
         swarm.survivor = seed % 2 == 1;
+        // Drawn apart, for the same reason: some seeds work on vector
+        // indexes too, their population killed and resumed. (The constant
+        // leaves the seeds build.zig runs first, which found the fuzzer's
+        // mutations, as they were.)
+        var vector_prng = std.Random.DefaultPrng.init(seed ^ 0xfa8cfc37711c2db9);
+        if (vector_prng.random().boolean()) {
+            swarm.mix.writes = vector_prng.random().intRangeAtMost(u8, 4, 6);
+            swarm.mix.vector = 8;
+            // Batches are a few of the statements: more crashes to land in them.
+            swarm.crashes = vector_prng.random().intRangeAtMost(u8, 8, 16);
+        }
         const steps = try arena.alloc(workload.Step, count);
         for (steps) |*step| step.* = try workload.generate(prng.random(), swarm.mix, arena);
         return .{ .swarm = swarm, .steps = steps, .random = .init(seed ^ 0x9e3779b97f4a7c15) };
@@ -128,6 +150,18 @@ fn chooseEndingFor(plan: *Plan, twin: Twin, done: u32) Ending {
         return .{ .timed = .{ .reports = random.uintLessThan(u32, @max(1, left / 2)), .delay = random.uintAtMost(u32, plan.swarm.max_delay) } };
     }
     const start = twin.crash_points[done];
+    // In a population batch ahead, half the time, on the seeds that have
+    // some (the others draw nothing more): anywhere in it, or at its end
+    // (its commit, and the state written just before).
+    const batches = twin.population_batches.items;
+    const ahead = std.sort.lowerBound(u32, batches, done, orderU32);
+    if (ahead < batches.len and random.boolean()) {
+        const step = batches[ahead + random.uintLessThan(usize, batches.len - ahead)];
+        const first = twin.crash_points[step] - start;
+        const end = twin.crash_points[step + 1] - start;
+        if (random.boolean()) return .{ .crash_point = @max(first, (end + random.uintAtMost(u64, 1)) -| 3) };
+        return .{ .crash_point = first + random.uintLessThan(u64, @max(1, end - first)) };
+    }
     if (random.boolean()) {
         // Near the end of a statement: its last points, or the next one's first.
         const statement = done + random.uintLessThan(u32, @max(1, left / 2)) + 1;
@@ -135,6 +169,10 @@ fn chooseEndingFor(plan: *Plan, twin: Twin, done: u32) Ending {
         return .{ .crash_point = (end + random.uintAtMost(u64, 2)) -| 3 };
     }
     return .{ .crash_point = random.uintLessThan(u64, @max(1, (twin.crash_points[plan.steps.len] - start) / 2)) };
+}
+
+fn orderU32(context: u32, item: u32) std.math.Order {
+    return std.math.order(context, item);
 }
 
 fn storeOptions(durability: Durability) zypherdb.KeyValueStore.Options {
@@ -154,7 +192,7 @@ pub fn run(allocator: Allocator, io: std.Io, executable: []const u8, path: []con
     const twin = try runTwin(allocator, arena, twin_path, plan);
     var survivor: ?Survivor = if (plan.swarm.survivor) try Survivor.start(io, arena, executable, path, options) else null;
     defer if (survivor) |*running| running.stop();
-    var statistics = Statistics{ .statements = options.steps };
+    var statistics = Statistics{ .statements = options.steps, .population_batches = twin.population_batches.items.len };
     var done: u32 = 0;
     var crash: u32 = 0;
     while (true) : (crash += 1) {
@@ -184,6 +222,7 @@ pub fn run(allocator: Allocator, io: std.Io, executable: []const u8, path: []con
         }
         statistics.crashes += 1;
         if (ending == .timed) statistics.timed_kills += 1;
+        if (try zypherdb.vector.population.anyPopulating(&database.store)) statistics.crashes_mid_population += 1;
         if (digest == twin.digests[committed]) {
             done = committed;
         } else if (committed < options.steps and digest == twin.digests[committed + 1]) {
@@ -200,7 +239,12 @@ pub fn run(allocator: Allocator, io: std.Io, executable: []const u8, path: []con
 
 /// The twin's digests and crash points: when opened, then after each
 /// statement.
-const Twin = struct { digests: []u64, crash_points: []u64 };
+const Twin = struct {
+    digests: []u64,
+    crash_points: []u64,
+    /// The steps (from 0) that took a population a batch further.
+    population_batches: std.ArrayList(u32) = .empty,
+};
 
 fn runTwin(allocator: Allocator, arena: Allocator, twin_path: []const u8, plan: Plan) !Twin {
     const counts = &zypherdb.faults.faults;
@@ -208,13 +252,15 @@ fn runTwin(allocator: Allocator, arena: Allocator, twin_path: []const u8, plan: 
     var twin: Database = undefined;
     try twin.open(allocator, twin_path, storeOptions(plan.swarm.durability));
     defer twin.close(allocator);
-    const result = Twin{ .digests = try arena.alloc(u64, plan.steps.len + 1), .crash_points = try arena.alloc(u64, plan.steps.len + 1) };
+    var result = Twin{ .digests = try arena.alloc(u64, plan.steps.len + 1), .crash_points = try arena.alloc(u64, plan.steps.len + 1) };
     result.crash_points[0] = counts.crash_points;
     result.digests[0] = try twin.digest();
     counts.crash_points = result.crash_points[0]; // the digest's reads are not the writer's
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     for (plan.steps, 1..) |step, i| {
+        if (step.populate and try zypherdb.vector.population.anyPopulating(&twin.store)) try result.population_batches.append(arena, @intCast(i - 1));
+        counts.crash_points = result.crash_points[i - 1]; // nor are these
         _ = try twin.run(allocator, scratch.allocator(), step, false, .empty);
         _ = scratch.reset(.retain_capacity);
         result.crash_points[i] = counts.crash_points;
