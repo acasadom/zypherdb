@@ -9,8 +9,8 @@
 //! at least `drift_floor`; or when the schema changed, if the plan asked for
 //! its property indexes.
 //!
-//! EXPLAIN, PROFILE and schema commands are parsed again on each run (they
-//! have no plan to keep). A statement is not safe to run from two threads at
+//! EXPLAIN, PROFILE, schema commands and `CALL db.awaitIndexes()` are
+//! parsed again on each run (they have no plan to keep). A statement is not safe to run from two threads at
 //! once; its database's are not either.
 
 const std = @import("std");
@@ -208,10 +208,12 @@ fn drifted(then: usize, now: usize) bool {
     return high - low >= drift_floor and high / drift_factor >= low;
 }
 
-/// A query or a UNION: what gets a plan to keep.
+/// A query or a UNION: what gets a plan to keep. `CALL db.awaitIndexes()`
+/// on its own is not: it reads in transactions of its own, as it waits.
 fn isQuery(ast: *const Ast, root: Index) bool {
     return switch (ast.kind(root)) {
-        .query, .union_query => true,
+        .query => !schema.awaitsIndexes(ast, root),
+        .union_query => true,
         else => false,
     };
 }

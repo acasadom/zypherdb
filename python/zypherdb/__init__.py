@@ -32,6 +32,7 @@ from .errors import (
     WriteNotForwardedError,
     MasterUnreachableError,
     OutcomeUnknownError,
+    IndexPopulatingError,
 )
 
 __all__ = [
@@ -59,4 +60,5 @@ __all__ = [
     "WriteNotForwardedError",
     "MasterUnreachableError",
     "OutcomeUnknownError",
+    "IndexPopulatingError",
 ]

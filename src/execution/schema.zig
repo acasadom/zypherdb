@@ -1,8 +1,10 @@
 //! Schema commands: CREATE [FULLTEXT|RANGE|VECTOR] INDEX, CREATE CONSTRAINT, DROP
 //! INDEX / CONSTRAINT, SHOW INDEXES / CONSTRAINTS. Each runs as a statement
-//! of its own, in its own transaction.
+//! of its own, in its own transaction. `CALL db.awaitIndexes()` runs here
+//! too, on its own, in a read transaction per look.
 
 const std = @import("std");
+const Ast = @import("../query/ast.zig").Ast;
 const Index = @import("../query/ast.zig").Index;
 const Value = @import("../value.zig").Value;
 const MapEntry = @import("../value.zig").MapEntry;
@@ -36,14 +38,23 @@ pub const analyzers = [_][]const u8{ "standard", "english", "spanish" };
 pub fn isSchemaCommand(executor: *Executor, root: Index) bool {
     return switch (executor.ast.kind(root)) {
         .create_fulltext_index, .create_index, .create_vector_index, .create_constraint, .drop_index, .drop_constraint, .show_indexes, .show_constraints => true,
+        .query => awaitsIndexes(executor.ast, root),
         else => false,
     };
+}
+
+/// True if query `root` is `CALL db.awaitIndexes(...)` and nothing else.
+pub fn awaitsIndexes(ast: *const Ast, root: Index) bool {
+    const clauses = ast.nodeChildren(root);
+    if (clauses.len != 1 or ast.kind(clauses[0]) != .call_clause) return false;
+    return std.mem.eql(u8, ast.data(clauses[0]).call.procedure, "db.awaitIndexes");
 }
 
 /// Runs a schema command; SHOW returns rows, the others none.
 pub fn run(executor: *Executor, root: Index) ExecutionError![]const Row {
     const graph = executor.graph;
     switch (executor.ast.kind(root)) {
+        .query => return awaitIndexes(executor, root),
         .show_indexes, .show_constraints => {
             try graph.beginRead();
             defer graph.commitRead();
@@ -157,6 +168,78 @@ fn populate(graph: *@import("../storage/graph.zig").Graph, stored: fulltext.Defi
         },
         .vector => try vector_population.start(graph, stored),
     }
+}
+
+/// How long `db.awaitIndexes()` waits without an argument, as in Neo4j.
+const default_await_seconds = 300;
+/// How often it looks at the indexes again.
+const await_poll_interval = std.Io.Duration.fromMilliseconds(10);
+
+/// `CALL db.awaitIndexes([seconds])`: waits until no vector index is being
+/// populated (the other kinds are populated as they are created), for at
+/// most `seconds`, 300 unless given. It looks at what is committed every
+/// few milliseconds, each time in a read transaction of its own, so it
+/// holds no old snapshot as it waits. A failed index, or one still
+/// populating when the time is up, is an error. It refuses to wait in a
+/// write transaction: populating needs the writer.
+fn awaitIndexes(executor: *Executor, root: Index) ExecutionError![]const Row {
+    try executor.check(root);
+    if (executor.graph.inWriteTransaction()) {
+        executor.fail(.invalid_expression, "db.awaitIndexes() cannot wait in a write transaction: populating an index needs the writer it holds", .{});
+        return error.InvalidExpression;
+    }
+    const seconds = try awaitSeconds(executor, root);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const deadline = std.Io.Clock.awake.now(io).nanoseconds +| @as(i96, seconds) * std.time.ns_per_s;
+    // Each look in memory of its own: a long wait makes many.
+    var look_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer look_arena.deinit();
+    while (true) {
+        _ = look_arena.reset(.retain_capacity);
+        const populating = try lookForPopulating(executor, look_arena.allocator()) orelse return &.{};
+        if (std.Io.Clock.awake.now(io).nanoseconds >= deadline) {
+            executor.fail(.index_populating, "vector index '{s}' is still being populated ({d:.1}% done) after waiting {d} s", .{ populating.name, populating.percent, seconds });
+            return error.IndexPopulating;
+        }
+        io.sleep(await_poll_interval, .awake) catch {};
+    }
+}
+
+/// The seconds `db.awaitIndexes()` was given: a whole number, 0 or more.
+fn awaitSeconds(executor: *Executor, root: Index) ExecutionError!u32 {
+    const call = executor.ast.nodeChildren(root)[0];
+    const data = executor.ast.data(call).call;
+    if (data.argument_count == 0) return default_await_seconds;
+    const seconds = try evaluateOptions(executor, executor.ast.nodeChildren(call)[0]);
+    if (seconds != .int) {
+        executor.fail(.type_mismatch, "db.awaitIndexes() takes a number of seconds, as an integer", .{});
+        return error.TypeMismatch;
+    }
+    if (seconds.int < 0) {
+        executor.fail(.invalid_expression, "db.awaitIndexes() needs a number of seconds of at least 0, not {d}", .{seconds.int});
+        return error.InvalidExpression;
+    }
+    return std.math.cast(u32, seconds.int) orelse std.math.maxInt(u32);
+}
+
+/// A vector index being populated now, and how far it got; null if none
+/// is. A failed one is an error.
+fn lookForPopulating(executor: *Executor, allocator: std.mem.Allocator) ExecutionError!?struct { name: []const u8, percent: f64 } {
+    const graph = executor.graph;
+    try graph.beginRead();
+    defer graph.commitRead();
+    for (try fulltext.allOfKind(graph, allocator, .vector)) |definition| {
+        switch (try vector_index.state(graph, allocator, definition.index_id)) {
+            .online => {},
+            .populating => |progress| return .{ .name = definition.name, .percent = try populationPercent(graph, definition, progress) },
+            .failed => |failure| {
+                const message = try vectorFailureMessage(allocator, definition, failure);
+                executor.fail(.invalid_expression, "vector index '{s}' failed ({s}): correct the data, then drop it and create it again", .{ definition.name, message });
+                return error.InvalidExpression;
+            },
+        }
+    }
+    return null;
 }
 
 /// The value of an OPTIONS map.

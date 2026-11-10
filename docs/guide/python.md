@@ -339,6 +339,7 @@ Every exception is a `zypherdb.ZypherDBError`. A failed query raises a `QueryErr
 | `WriteNotForwardedError` | 12 | a replica that forwards writes cannot forward this one ([replication](replication.md#writing-on-a-replica)) |
 | `MasterUnreachableError` | 13 | a forwarded write did not run: the master could not be reached, or turned it away |
 | `OutcomeUnknownError` | 14 | a forwarded write was sent, then the connection was lost or the time ran out: it may have run or not |
+| `IndexPopulatingError` | 15 | a [vector index](cypher.md#vector-search) is still being populated: query it once it is online, or wait with `CALL db.awaitIndexes()` |
 
 and outside queries:
 
