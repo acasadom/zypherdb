@@ -142,13 +142,12 @@ pub const IndexStorage = struct {
         return self.read(&key);
     }
 
-    pub fn distanceTo(self: *IndexStorage, query: []const f32, id: u64) StorageError!f32 {
-        return similarity_functions.distance(self.similarity, query, (try self.entity(id)).vector);
+    pub fn vectorOf(self: *IndexStorage, id: u64) StorageError![]const f32 {
+        return (try self.entity(id)).vector;
     }
 
-    pub fn distanceBetween(self: *IndexStorage, a: u64, b: u64) StorageError!f32 {
-        const first = (try self.entity(a)).vector;
-        return similarity_functions.distance(self.similarity, first, (try self.entity(b)).vector);
+    pub fn distance(self: *IndexStorage, a: []const f32, b: []const f32) f32 {
+        return similarity_functions.distance(self.similarity, a, b);
     }
 
     pub fn isLive(self: *IndexStorage, id: u64) StorageError!bool {
@@ -169,7 +168,9 @@ pub const IndexStorage = struct {
     }
 
     pub fn setNeighbours(self: *IndexStorage, id: u64, at: u8, ids: []const u64) StorageError!void {
-        const bytes = try self.arena.alloc(u8, 8 * ids.len);
+        // On the stack when it fits: the arena lives as long as the context.
+        var buffer: [8 * parameters.maxNeighbours(0)]u8 = undefined;
+        const bytes = if (8 * ids.len <= buffer.len) buffer[0 .. 8 * ids.len] else try self.arena.alloc(u8, 8 * ids.len);
         for (ids, 0..) |neighbour, i| std.mem.writeInt(u64, bytes[8 * i ..][0..8], neighbour, .little);
         const key = self.neighboursKey(id, at);
         try self.graph.store.put(&key, bytes);
@@ -198,8 +199,7 @@ pub const IndexStorage = struct {
         try self.graph.store.put(&key, &bytes);
     }
 
-    /// Stores entity `id`'s record: its level, whether it is live, its vector
-    /// (kept as it is: it must live as long as this context).
+    /// Stores entity `id`'s record: its level, whether it is live, its vector.
     fn putEntity(self: *IndexStorage, id: u64, entity_level: u8, live: bool, vector: []const f32) StorageError!void {
         const bytes = try self.arena.alloc(u8, entity_prefix_length + 4 * vector.len);
         bytes[0] = entity_level;
@@ -207,7 +207,7 @@ pub const IndexStorage = struct {
         for (vector, 0..) |element, i| std.mem.writeInt(u32, bytes[entity_prefix_length + 4 * i ..][0..4], @bitCast(element), .little);
         const key = self.entityKey(id);
         try self.graph.store.put(&key, bytes);
-        try self.entities.put(self.arena, id, .{ .level = entity_level, .live = live, .vector = vector });
+        try self.entities.put(self.arena, id, .{ .level = entity_level, .live = live, .vector = try self.arena.dupe(f32, vector) });
     }
 };
 
@@ -508,16 +508,47 @@ pub fn exist(graph: *Graph) StorageError!bool {
 /// graph that holds it: the current one, and the one a rebuild fills if
 /// the rebuild got past `id`. Nothing for a failed index.
 pub fn place(graph: *Graph, arena: Allocator, definition: fulltext.Definition, id: u64, value: ?Value) StorageError!void {
-    const generations = try keptGenerations(graph, definition.index_id) orelse return;
-    const checked = try check(arena, definition, value);
-    if (checked == .invalid) unreachable; // checked before the write
-    var storage = try IndexStorage.init(graph, arena, definition, generations.current);
-    if (try placeIn(&storage, arena, id, checked)) |header| try startRebuildIfDue(graph, definition, header);
-    const shadow = generations.shadow orelse return;
-    if (id >= shadow.below) return; // the rebuild places it when it gets there
-    var shadow_storage = try IndexStorage.init(graph, arena, definition, shadow.generation);
-    _ = try placeIn(&shadow_storage, arena, id, checked);
+    var placer = try Placer.init(graph, arena, definition) orelse return;
+    try placer.place(arena, id, value);
 }
+
+/// Places entities of index `definition` one after another, as `place`
+/// does, in the write transaction open, with one storage context per
+/// generation for all of them: what an insert reads stays decoded for the
+/// next ones. Every write of the index's keys in the transaction must go
+/// through it while it is used.
+pub const Placer = struct {
+    graph: *Graph,
+    definition: fulltext.Definition,
+    current: IndexStorage,
+    /// The generation a rebuild fills, and the entities it holds.
+    shadow: ?IndexStorage,
+    shadow_below: u64,
+
+    /// Null for a failed index. The contexts live in `arena`.
+    pub fn init(graph: *Graph, arena: Allocator, definition: fulltext.Definition) StorageError!?Placer {
+        const generations = try keptGenerations(graph, definition.index_id) orelse return null;
+        const shadow = generations.shadow;
+        return .{
+            .graph = graph,
+            .definition = definition,
+            .current = try IndexStorage.init(graph, arena, definition, generations.current),
+            .shadow = if (shadow) |kept| try IndexStorage.init(graph, arena, definition, kept.generation) else null,
+            .shadow_below = if (shadow) |kept| kept.below else 0,
+        };
+    }
+
+    /// `arena` holds the scratch of this call.
+    pub fn place(self: *Placer, arena: Allocator, id: u64, value: ?Value) StorageError!void {
+        const checked = try check(arena, self.definition, value);
+        if (checked == .invalid) unreachable; // checked before the write
+        // A rebuild it starts has placed nothing yet: no shadow to place in.
+        if (try placeIn(&self.current, arena, id, checked)) |header| try startRebuildIfDue(self.graph, self.definition, header);
+        const shadow = if (self.shadow) |*storage| storage else return;
+        if (id >= self.shadow_below) return; // the rebuild places it when it gets there
+        _ = try placeIn(shadow, arena, id, checked);
+    }
+};
 
 /// Places entity `id` in the generation `storage` is over. The header
 /// after a removal, else null.
@@ -560,12 +591,12 @@ pub fn startRebuildIfDue(graph: *Graph, definition: fulltext.Definition, header:
     graph.store.wakePopulation();
 }
 
-/// Links entity `id`, which `generation` of index `definition`'s graph
-/// does not hold, into it with `vector` (as the index keeps it).
-pub fn insertInto(graph: *Graph, arena: Allocator, definition: fulltext.Definition, generation: u8, id: u64, vector: []const f32) StorageError!void {
-    var storage = try IndexStorage.init(graph, arena, definition, generation);
+/// Links entity `id`, which the generation `storage` is over does not
+/// hold, into it with `vector` (as the index keeps it). `storage` may have
+/// placed entities before; `arena` holds the scratch of this call.
+pub fn insertWith(storage: *IndexStorage, arena: Allocator, id: u64, vector: []const f32) StorageError!void {
     try storage.putEntity(id, hnsw.levelOf(id, parameters), true, vector);
-    try Hnsw.insert(&storage, arena, parameters, id, false);
+    try Hnsw.insert(storage, arena, parameters, id, false);
 }
 
 /// Whether an entity record is live (not a tombstone).

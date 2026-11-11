@@ -63,6 +63,8 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
     // would grow with the batch.
     var entity_scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer entity_scratch.deinit();
+    // One for the batch: a populating index has no generation but its first.
+    var placer = (try vector_index.Placer.init(graph, scratch.allocator(), definition)).?;
     while (true) {
         const found = try nextEntities(graph, definition, progress.next);
         for (found.ids[0..found.count]) |id| {
@@ -73,7 +75,7 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
                     try vector_index.setState(graph, definition.index_id, .{ .failed = .{ .entity = id, .reason = reason } });
                     return .failed;
                 },
-                else => try vector_index.place(graph, arena, definition, id, value),
+                else => try placer.place(arena, id, value),
             };
             progress.examined += 1;
             progress.next = id + 1;

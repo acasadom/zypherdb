@@ -162,12 +162,14 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
     defer look_scratch.deinit();
     var entity_scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer entity_scratch.deinit();
+    // One for the batch, so that what an insert reads stays decoded.
+    var storage = try vector_index.IndexStorage.init(graph, scratch.allocator(), definition, shadow);
     while (true) {
         defer _ = look_scratch.reset(.retain_capacity);
         const found = try nextLive(graph, look_scratch.allocator(), definition, online.generation, next);
         for (found.entities[0..found.count]) |entity| {
             defer _ = entity_scratch.reset(.retain_capacity);
-            try vector_index.insertInto(graph, entity_scratch.allocator(), definition, shadow, entity.id, entity.vector);
+            try vector_index.insertWith(&storage, entity_scratch.allocator(), entity.id, entity.vector);
             next = entity.id + 1;
             placed += 1;
             if (placed >= budget.entities or now() - started >= budget.nanoseconds) {
@@ -180,7 +182,6 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
     }
     try vector_index.setState(graph, definition.index_id, .{ .online = .{ .generation = shadow } });
     // Writes may have left the new generation tombstones of its own.
-    var storage = try vector_index.IndexStorage.init(graph, scratch.allocator(), definition, shadow);
     if (try storage.header()) |header| try vector_index.startRebuildIfDue(graph, definition, header);
     return true;
 }

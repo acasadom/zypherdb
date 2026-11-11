@@ -7,8 +7,8 @@
 //!
 //! `Storage` provides (`Storage.Error` is its error set):
 //!
-//!     fn distanceTo(*Storage, query: []const f32, id: u64) Error!f32
-//!     fn distanceBetween(*Storage, a: u64, b: u64) Error!f32
+//!     fn vectorOf(*Storage, id: u64) Error![]const f32   kept while the context is
+//!     fn distance(*Storage, a: []const f32, b: []const f32) f32
 //!     fn isLive(*Storage, id: u64) Error!bool        false for a tombstone
 //!     fn level(*Storage, id: u64) Error!u8           the top level of id
 //!     fn neighbours(*Storage, arena, id: u64, level: u8) Error![]u64   a copy
@@ -97,13 +97,14 @@ pub fn Hnsw(comptime Storage: type) type {
                 for (0..@as(usize, own_level) + 1) |at| try storage.setNeighbours(id, @intCast(at), &.{});
                 return storage.setHeader(.{ .entry = id, .top_level = own_level, .live = 1, .tombstones = 0 });
             };
-            var entry = Hit{ .id = header.entry, .distance = try storage.distanceBetween(id, header.entry) };
+            const own = try storage.vectorOf(id);
+            var entry = Hit{ .id = header.entry, .distance = try distanceTo(storage, own, header.entry) };
             var at: u8 = header.top_level;
-            while (at > own_level) : (at -= 1) entry = try greedy(storage, arena, .{ .entity = id }, entry, at);
+            while (at > own_level) : (at -= 1) entry = try greedy(storage, arena, own, entry, at);
             var entries = try arena.dupe(Hit, &.{entry});
             at = @min(own_level, header.top_level);
             while (true) : (at -= 1) {
-                const found = try searchLevel(storage, arena, .{ .entity = id }, entries, parameters.ef_construction, at, false);
+                const found = try searchLevel(storage, arena, own, entries, parameters.ef_construction, at, false);
                 const chosen = try selectNeighbours(storage, arena, withoutId(found, id), parameters.maxNeighbours(at));
                 try storage.setNeighbours(id, at, try idsOf(arena, chosen));
                 for (chosen) |neighbour| try addLink(storage, arena, parameters, neighbour.id, id, at);
@@ -155,11 +156,12 @@ pub fn Hnsw(comptime Storage: type) type {
                     if (neighbour == id) continue;
                     const theirs = try storage.neighbours(arena, neighbour, at);
                     if (std.mem.indexOfScalar(u64, theirs, id) == null) continue;
+                    const owner = try storage.vectorOf(neighbour);
                     var candidates = std.ArrayList(Hit).empty;
                     for ([_][]const u64{ theirs, own }) |list| for (list) |candidate| {
                         if (candidate == id or candidate == neighbour) continue;
                         if (containsId(candidates.items, candidate)) continue;
-                        try candidates.append(arena, .{ .id = candidate, .distance = try storage.distanceBetween(neighbour, candidate) });
+                        try candidates.append(arena, .{ .id = candidate, .distance = try distanceTo(storage, owner, candidate) });
                     };
                     std.mem.sort(Hit, candidates.items, {}, Hit.lessThan);
                     const chosen = try selectNeighbours(storage, arena, candidates.items, parameters.maxNeighbours(at));
@@ -174,37 +176,28 @@ pub fn Hnsw(comptime Storage: type) type {
         pub fn search(storage: *Storage, arena: Allocator, query: []const f32, k: usize, ef: usize) Error![]const Hit {
             const header = try storage.header() orelse return &.{};
             if (k == 0 or header.live == 0) return &.{};
-            const target = Target{ .query = query };
-            var entry = Hit{ .id = header.entry, .distance = try storage.distanceTo(query, header.entry) };
+            var entry = Hit{ .id = header.entry, .distance = try distanceTo(storage, query, header.entry) };
             var at = header.top_level;
-            while (at > 0) : (at -= 1) entry = try greedy(storage, arena, target, entry, at);
-            const found = try searchLevel(storage, arena, target, &.{entry}, @max(ef, k), 0, true);
+            while (at > 0) : (at -= 1) entry = try greedy(storage, arena, query, entry, at);
+            const found = try searchLevel(storage, arena, query, &.{entry}, @max(ef, k), 0, true);
             return found[0..@min(k, found.len)];
         }
 
-        /// What a search measures distances to: a query vector, or a stored
-        /// entity (when inserting it).
-        const Target = union(enum) {
-            query: []const f32,
-            entity: u64,
-
-            fn distance(self: Target, storage: *Storage, id: u64) Storage.Error!f32 {
-                return switch (self) {
-                    .query => |query| storage.distanceTo(query, id),
-                    .entity => |entity| storage.distanceBetween(entity, id),
-                };
-            }
-        };
+        /// The distance of entity `id` to `target`: a query, or the vector
+        /// of the entity being inserted.
+        fn distanceTo(storage: *Storage, target: []const f32, id: u64) Storage.Error!f32 {
+            return storage.distance(target, try storage.vectorOf(id));
+        }
 
         /// The closest entity to `target` reachable from `entry` on level
         /// `at`, moving to a closer neighbour while there is one.
-        fn greedy(storage: *Storage, arena: Allocator, target: Target, entry: Hit, at: u8) Error!Hit {
+        fn greedy(storage: *Storage, arena: Allocator, target: []const f32, entry: Hit, at: u8) Error!Hit {
             var best = entry;
             var moved = true;
             while (moved) {
                 moved = false;
                 for (try storage.neighbours(arena, best.id, at)) |neighbour| {
-                    const candidate = Hit{ .id = neighbour, .distance = try target.distance(storage, neighbour) };
+                    const candidate = Hit{ .id = neighbour, .distance = try distanceTo(storage, target, neighbour) };
                     if (candidate.order(best) == .lt) {
                         best = candidate;
                         moved = true;
@@ -225,8 +218,10 @@ pub fn Hnsw(comptime Storage: type) type {
         /// The (up to) `ef` entities closest to `target` on level `at`,
         /// reached from `entries`, closest first. With `live_only`,
         /// tombstones route the search but are left out of the result.
-        fn searchLevel(storage: *Storage, arena: Allocator, target: Target, entries: []const Hit, ef: usize, at: u8, live_only: bool) Error![]Hit {
+        fn searchLevel(storage: *Storage, arena: Allocator, target: []const f32, entries: []const Hit, ef: usize, at: u8, live_only: bool) Error![]Hit {
             var visited = std.AutoHashMapUnmanaged(u64, void).empty;
+            // About what a search on level 0 visits: it seldom grows.
+            try visited.ensureTotalCapacity(arena, @intCast(16 * ef));
             var candidates = std.PriorityQueue(Hit, void, closerFirst).empty;
             var results = std.PriorityQueue(Hit, void, fartherFirst).empty;
             for (entries) |entry| {
@@ -238,7 +233,7 @@ pub fn Hnsw(comptime Storage: type) type {
                 if (results.count() >= ef and current.order(results.peek().?) == .gt) break;
                 for (try storage.neighbours(arena, current.id, at)) |neighbour| {
                     if ((try visited.getOrPut(arena, neighbour)).found_existing) continue;
-                    const candidate = Hit{ .id = neighbour, .distance = try target.distance(storage, neighbour) };
+                    const candidate = Hit{ .id = neighbour, .distance = try distanceTo(storage, target, neighbour) };
                     if (results.count() >= ef and candidate.order(results.peek().?) != .lt) continue;
                     try candidates.push(arena, candidate);
                     if (live_only and !try storage.isLive(neighbour)) continue;
@@ -263,12 +258,16 @@ pub fn Hnsw(comptime Storage: type) type {
         fn selectNeighbours(storage: *Storage, arena: Allocator, candidates: []const Hit, limit: usize) Error![]const Hit {
             if (candidates.len <= limit) return candidates;
             var kept = std.ArrayList(Hit).empty;
+            // The vectors of those kept, looked up once.
+            var kept_vectors = std.ArrayList([]const f32).empty;
             var left_out = std.ArrayList(Hit).empty;
             for (candidates) |candidate| {
                 if (kept.items.len == limit) break;
-                const diverse = for (kept.items) |chosen| {
-                    if (try storage.distanceBetween(candidate.id, chosen.id) < candidate.distance) break false;
+                const vector = try storage.vectorOf(candidate.id);
+                const diverse = for (kept_vectors.items) |chosen| {
+                    if (storage.distance(vector, chosen) < candidate.distance) break false;
                 } else true;
+                if (diverse) try kept_vectors.append(arena, vector);
                 try (if (diverse) &kept else &left_out).append(arena, candidate);
             }
             for (left_out.items) |candidate| {
@@ -290,11 +289,12 @@ pub fn Hnsw(comptime Storage: type) type {
                 grown[current.len] = id;
                 return storage.setNeighbours(owner, at, grown);
             }
+            const owner_vector = try storage.vectorOf(owner);
             const candidates = try arena.alloc(Hit, current.len + 1);
             for (candidates[0..current.len], current) |*candidate, neighbour| {
-                candidate.* = .{ .id = neighbour, .distance = try storage.distanceBetween(owner, neighbour) };
+                candidate.* = .{ .id = neighbour, .distance = try distanceTo(storage, owner_vector, neighbour) };
             }
-            candidates[current.len] = .{ .id = id, .distance = try storage.distanceBetween(owner, id) };
+            candidates[current.len] = .{ .id = id, .distance = try distanceTo(storage, owner_vector, id) };
             std.mem.sort(Hit, candidates, {}, Hit.lessThan);
             try storage.setNeighbours(owner, at, try idsOf(arena, try selectNeighbours(storage, arena, candidates, limit)));
         }
