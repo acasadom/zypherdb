@@ -25,10 +25,10 @@
 //! process forwards then is answered.
 //!
 //! Some seeds work on a vector index too: the master creates and drops
-//! it, and writes vectors; each process populates its own index a batch at
-//! a time, as its builder thread does, when the simulation says and only
-//! while that thread would be awake. A replica loading a copy mid-population
-//! must wake its builder. The index's keys are each process's own (they
+//! it, and writes vectors; each process populates and rebuilds its own
+//! index a batch at a time, as its builder thread does, when the simulation
+//! says and only while that thread would be awake. A replica loading a copy
+//! mid-population or mid-rebuild must wake its builder. The index's keys are each process's own (they
 //! are not logged), so the databases compare without them; at the end every
 //! index must be online and every database sound.
 //!
@@ -89,8 +89,9 @@ pub const Statistics = struct {
     forwards_unreachable: u64 = 0,
     forwards_without_copy: u64 = 0,
     vector_index_changes: u64 = 0,
-    population_batches: u64 = 0,
+    background_batches: u64 = 0,
     copies_loaded_mid_population: u64 = 0,
+    copies_loaded_mid_rebuild: u64 = 0,
 
     pub fn add(self: *Statistics, other: Statistics) void {
         inline for (@typeInfo(Statistics).@"struct".field_names) |name| @field(self, name) += @field(other, name);
@@ -300,18 +301,20 @@ const Replica = struct {
 
 /// A process's vector index builder thread, run by the simulation: woken
 /// as the thread is (population.Builder), it takes a batch when the
-/// simulation says, and sleeps once no index is left populating.
+/// simulation says, and sleeps once no background work is left.
 const SimulatedBuilder = struct {
     woken: bool = false,
 
     /// As the thread starts when its process opens `store`: told by it and
-    /// the shares made of it from now on, and woken if a population was
+    /// the shares made of it from now on, and woken if background work was
     /// cut short.
     fn open(self: *SimulatedBuilder, store: *KeyValueStore, budget: KeyValueStore.PopulationBudget) !void {
         self.* = .{};
         store.population_waker = .{ .context = self, .wake = wake };
         store.population_budget = budget;
-        if (try population.anyPopulating(store)) self.woken = true;
+        // Rebuilt after a few deletes.
+        store.vector_rebuild_tombstones = 2;
+        if (try population.anyWork(store)) self.woken = true;
     }
 
     fn wake(context: *anyopaque) void {
@@ -672,7 +675,7 @@ const Simulation = struct {
                     // holds the write lock.
                     if (vector_random.uintLessThan(u32, 4) != 0 or self.master.runner.store.active_write_transaction != null) return;
                     if (!try self.master.builder.step(&self.master.store)) return;
-                    self.statistics.population_batches += 1;
+                    self.statistics.background_batches += 1;
                     self.note("the master populates a batch", .{});
                     if (vector_random.uintLessThan(u32, 8) == 0) try self.checkGraph(&self.master.store, "the master");
                     return;
@@ -682,7 +685,7 @@ const Simulation = struct {
                 // Not while it applies a copy or a change set part by part.
                 if (replica.applier.store.active_write_transaction != null) return;
                 if (!try replica.builder.step(&replica.store)) return;
-                self.statistics.population_batches += 1;
+                self.statistics.background_batches += 1;
                 self.note("replica {d} populates a batch", .{which});
                 if (vector_random.uintLessThan(u32, 8) == 0) try self.checkIntegrity(replica);
             },
@@ -707,12 +710,12 @@ const Simulation = struct {
     /// Populates every index left, on each process whose builder is awake;
     /// then none may be left populating, and every database is sound.
     fn finishPopulations(self: *Simulation) !void {
-        while (try self.master.builder.step(&self.master.store)) self.statistics.population_batches += 1;
-        if (try population.anyPopulating(&self.master.store)) return self.fail("the master has an index populating, its builder asleep", .{});
+        while (try self.master.builder.step(&self.master.store)) self.statistics.background_batches += 1;
+        if (try population.anyWork(&self.master.store)) return self.fail("the master has background work left, its builder asleep", .{});
         try self.checkGraph(&self.master.store, "the master");
         for (self.replicas[0..self.swarm.replicas], 0..) |*replica, i| {
-            while (try replica.builder.step(&replica.store)) self.statistics.population_batches += 1;
-            if (try population.anyPopulating(&replica.store)) return self.fail("replica {d} has an index populating, its builder asleep", .{i});
+            while (try replica.builder.step(&replica.store)) self.statistics.background_batches += 1;
+            if (try population.anyWork(&replica.store)) return self.fail("replica {d} has background work left, its builder asleep", .{i});
             try self.checkIntegrity(replica);
         }
     }
@@ -943,18 +946,20 @@ const Simulation = struct {
         try self.check(replica);
     }
 
-    /// The last part of a copy: if the copy holds an index populating, the
-    /// replica's builder must be woken by the load.
+    /// The last part of a copy: if the copy holds background work (an
+    /// index populating or being rebuilt), the load must wake the replica's
+    /// builder.
     fn applyCopyEnd(self: *Simulation, replica: *Replica) !void {
         const woken = replica.builder.woken;
         replica.builder.woken = false;
         replica.applier.applyNext();
         const woken_by_load = replica.builder.woken;
         replica.builder.woken = woken or woken_by_load;
-        if (replica.applier.store.loading == null and try population.anyPopulating(&replica.store)) {
-            self.statistics.copies_loaded_mid_population += 1;
-            if (!woken_by_load) return self.fail("a replica loaded a copy with an index populating, and its builder was not woken", .{});
-            self.note("a replica loads a copy mid-population", .{});
+        if (replica.applier.store.loading == null and try population.anyWork(&replica.store)) {
+            if (try population.anyPopulating(&replica.store)) self.statistics.copies_loaded_mid_population += 1;
+            if (try population.anyRebuilding(&replica.store)) self.statistics.copies_loaded_mid_rebuild += 1;
+            if (!woken_by_load) return self.fail("a replica loaded a copy with background work left, and its builder was not woken", .{});
+            self.note("a replica loads a copy with background work left", .{});
         }
         try self.check(replica);
     }

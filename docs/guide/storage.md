@@ -443,14 +443,15 @@ algorithm (`src/vector/hnsw.zig`) is written once over a storage context (distan
 lists, header), as `std.HashMap` is over its hash context; `vector_index.zig` is the context that
 keeps it in the store, and the tests keep one in memory.
 
-Its keys, after `h` and the index number (`u32`, big-endian); the values are little-endian:
+Its keys, after `h` and the index number (`u32`, big-endian); the graph's keys are under a
+generation (u8, see the rebuild below); the values are little-endian:
 
 | Key | Value |
 | --- | --- |
-| `h \| index \| S` | its state: 0 populating, then the next id to look at and the entities looked at (u64 each); 1 online; 2 failed, then the entity (u64) and what is wrong with its value |
-| `h \| index \| H` | the header: the entry point (u64), the top level (u8), the live entities and the tombstones (u64 each) |
-| `h \| index \| E \| id` | the entity's level (u8), whether it is live (u8), its vector (f32 each) |
-| `h \| index \| N \| id \| level` | its neighbours on that level (u64 each) |
+| `h \| index` | its state: 0 populating (generation 0), then the next id to look at and the entities looked at (u64 each); 1 online, then the generation searches read (u8) and, while it is rebuilt, the next id to look at (u64); 2 failed, then the entity (u64) and what is wrong with its value |
+| `h \| index \| generation \| H` | the header: the entry point (u64), the top level (u8), the live entities and the tombstones (u64 each) |
+| `h \| index \| generation \| E \| id` | the entity's level (u8), whether it is live (u8), its vector (f32 each) |
+| `h \| index \| generation \| N \| id \| level` | its neighbours on that level (u64 each) |
 
 An entity's level comes from a hash of its id, so rebuilding gives the same levels. Writes keep it
 current as they keep the full-text postings, from the same mutators:
@@ -466,7 +467,7 @@ current as they keep the full-text postings, from the same mutators:
 - **Delete** (property removed, label removed, entity deleted): the record becomes a tombstone.
   Its neighbours are repaired as for an update; other lists may still point at it, so it keeps
   routing searches, and is never returned. When tombstones outnumber live entities (past 1024),
-  the index is rebuilt from the live ones, in the same transaction.
+  the delete marks the index for a rebuild (below); it does not rebuild it.
 
 Every key is written in the transaction of the change, so a reader sees the index as of its
 snapshot. The change log does not carry these keys: a replica moves each entity in its own
@@ -484,6 +485,20 @@ which names the entity and why; writes then leave it alone. The builder's transa
 `h` keys, which a replica allows (`KeyValueStore.beginLocalWrite`). The integrity checker
 requires a populating index to hold the entities below where it got to, and those above that
 writes placed.
+
+The same thread rebuilds an index without its tombstones (`vector_rebuild.zig`), so a delete
+that crosses the threshold costs its transaction nothing more. Each batch takes the next live
+records by id from the current generation and inserts them into the next one, storing how far
+it got in the state; writes keep the current generation, and the next one below that point.
+Searches read the current generation until the last batch makes the next one current; inserted
+in id order with levels from the ids, the new graph is the one a rebuild in one go would make.
+Keys no index needs any more are garbage, which the thread deletes first, about 20 ms of it per
+batch: those of the old generation, of a dropped index (`DROP INDEX` deletes only the
+definition) and of a failed one but its state. Index numbers are never reused, so garbage never
+mixes with a new index's keys. A rebuild only starts from an online index (a population that
+ends with too many tombstones starts one). Copies carry it as they carry a population, and each
+database rebuilds its own indexes. The checker checks both generations while a rebuild runs (the
+next one holding exactly the live entities below where it got to) and accepts garbage as it is.
 
 ## Checking integrity
 

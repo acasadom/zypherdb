@@ -144,12 +144,16 @@ pub const KeyValueStore = struct {
     /// The active write transaction writes only keys the change log does
     /// not carry (`beginLocalWrite`).
     local_write: bool = false,
-    /// Told when a vector index may have population left, to go on with it
-    /// in the background (vector_population.zig). Without one, population
-    /// goes no further than the batch its CREATE does.
+    /// Told when a vector index may have work left to do in the background
+    /// (vector_population.zig): population, a rebuild, keys to clear.
+    /// Without one, population goes no further than the batch its CREATE
+    /// does, and the rest waits for a database open with one.
     population_waker: ?PopulationWaker = null,
-    /// How much one batch of a vector index's population does.
+    /// How much one batch of a vector index's background work does.
     population_budget: PopulationBudget = .{},
+    /// The tombstones a vector index gathers before it is rebuilt without
+    /// them, at least (they must also outnumber its live entities).
+    vector_rebuild_tombstones: u64 = 1024,
 
     pub const CommitListener = struct {
         context: *anyopaque,
@@ -252,7 +256,7 @@ pub const KeyValueStore = struct {
     }
 
     /// Tells the population waker, if there is one, that a vector index may
-    /// have population left.
+    /// have work left in the background.
     pub fn wakePopulation(self: *KeyValueStore) void {
         if (self.population_waker) |waker| waker.wake(waker.context);
     }
@@ -472,7 +476,7 @@ pub const KeyValueStore = struct {
         try transaction.commit();
         // The copy's schema may have the version of the one cached.
         self.forgetSchemaDefinitions();
-        // It may hold an index populating, here to go on with.
+        // It may hold an index populating or being rebuilt, here to go on with.
         self.wakePopulation();
         return lsn;
     }
@@ -492,6 +496,7 @@ pub const KeyValueStore = struct {
             .follows_master = self.follows_master,
             .population_waker = self.population_waker,
             .population_budget = self.population_budget,
+            .vector_rebuild_tombstones = self.vector_rebuild_tombstones,
         };
     }
 

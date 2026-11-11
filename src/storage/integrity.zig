@@ -119,6 +119,7 @@ pub fn check(graph: *Graph, allocator: Allocator) StorageError!Report {
         .range => try checker.expectPropertyIndex(definition),
         .vector => try integrity_vector.expectIndex(&checker, definition),
     };
+    try integrity_vector.expectGarbage(&checker);
     try checker.checkCounters();
     try checker.compareMainTable();
     return report;

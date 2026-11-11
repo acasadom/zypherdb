@@ -146,7 +146,7 @@ fn vector(random: std.Random, allocator: Allocator) Allocator.Error!Step {
         8 => try print(allocator, "MATCH (n:{s}) WITH n LIMIT {d} SET n.v = [{s}, toFloat(id(n))]", .{ a, k, x }),
         9 => try print(allocator, "MATCH ()-[r:{s}]->() WITH r LIMIT {d} SET r.v = [toFloat(id(r)), {s}]", .{ t, k, x }),
         10 => try print(allocator, "MATCH (n:{s}) WITH n LIMIT 1 SET n.v = [1.0, 2.0, 3.0]", .{a}),
-        11 => try print(allocator, "MATCH (n:{s}) WITH n LIMIT 1 REMOVE n.v", .{a}),
+        11 => try print(allocator, "MATCH (n:{s}) WITH n LIMIT {d} REMOVE n.v", .{ a, 2 * k }),
         12 => try print(allocator, "CALL db.index.vector.queryNodes('vector_{s}', 3, [{s}, 1.0]) YIELD node, score RETURN id(node), score", .{ a, x }),
         else => return .{ .text = "populate one batch", .populate = true },
     };

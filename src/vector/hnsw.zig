@@ -78,10 +78,11 @@ pub fn levelOf(id: u64, parameters: Parameters) u8 {
     return @intFromFloat(@min(@floor(-@log(uniform) * scale), max_level));
 }
 
-/// True when tombstones outnumber live entities (and there are enough to be
-/// worth a rebuild): searches then route through more dead ends than not.
-pub fn needsRebuild(header: Header) bool {
-    return header.tombstones > 1024 and header.tombstones > header.live;
+/// True when tombstones outnumber live entities, and are more than
+/// `minimum_tombstones` (enough to be worth a rebuild): searches then route
+/// through more dead ends than not.
+pub fn needsRebuild(header: Header, minimum_tombstones: u64) bool {
+    return header.tombstones > minimum_tombstones and header.tombstones > header.live;
 }
 
 pub fn Hnsw(comptime Storage: type) type {

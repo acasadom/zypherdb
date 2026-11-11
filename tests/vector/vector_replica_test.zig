@@ -77,6 +77,9 @@ test "a replica builds its vector indexes as its master did: created over data, 
     // replica, so the two interleave writes and population alike.
     master.population_budget = .{ .nanoseconds = std.math.maxInt(u64) };
     replica.population_budget = master.population_budget;
+    // Rebuilt often; each does its rebuilds itself, in the background.
+    master.vector_rebuild_tombstones = 16;
+    replica.vector_rebuild_tombstones = 16;
     var g = Graph.init(&master, testing.allocator);
     try g.checkFormat();
     var replica_graph = Graph.init(&replica, testing.allocator);
@@ -119,6 +122,12 @@ test "a replica builds its vector indexes as its master did: created over data, 
     try replay(&master, &replica, &next);
     try expectSame(&master, &replica);
     try expectSound(&replica_graph);
+    try zypherdb.vector.population.finish(&master);
+    try zypherdb.vector.population.finish(&replica);
+    try expectSame(&master, &replica);
+    try expectSound(&replica_graph);
+    // Index docs (id 1) was rebuilt: its graph is in a later generation.
+    try testing.expectEqual(@as(usize, 0), try master.countPrefix(&.{ zypherdb.vector.index.marker, 0, 0, 0, 1, 0 }));
 
     // Dropped and created again, with writes after it, all in one group of
     // change sets.
@@ -128,6 +137,10 @@ test "a replica builds its vector indexes as its master did: created over data, 
     try expectQuery(&ast, &g, "CREATE (:Doc {id: 1000, v: [1, 2, 3, 4]})", &.{});
     try expectQuery(&ast, &g, "DROP INDEX links", &.{});
     try replayGrouped(&master, &replica, &next);
+    try expectSame(&master, &replica);
+    try expectSound(&replica_graph);
+    try zypherdb.vector.population.finish(&master);
+    try zypherdb.vector.population.finish(&replica);
     try expectSame(&master, &replica);
     try expectSound(&replica_graph);
 }
