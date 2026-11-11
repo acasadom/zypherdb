@@ -10,9 +10,15 @@
 //!     populate   the writes with no index, then CREATE VECTOR INDEX over
 //!                them and its population batch after batch, as the
 //!                builder thread does; their times and the process's peak
-//!                memory
+//!                memory, and how long a batch holds the writer: what a
+//!                write arriving meanwhile waits at most. The database is
+//!                reopened for the population with `--durability` (default
+//!                `deferred`; `full` adds the commit's wait for the disk to
+//!                each batch) and batches of `--budget-ms` (default the
+//!                store's, 20)
 //!
 //!     zig build bench-vector-insert -Doptimize=ReleaseFast -- [--nodes N] [--dimensions N] [--only MODE]
+//!         [--durability deferred|relaxed|full] [--budget-ms N]
 
 const std = @import("std");
 const zypherdb = @import("zypherdb");
@@ -26,6 +32,8 @@ const Config = struct {
     nodes: usize = 20_000,
     dimensions: usize = 128,
     only: ?Mode = null,
+    durability: KeyValueStore.Durability = .deferred,
+    budget_ms: ?u64 = null,
     dir: []const u8 = "/tmp/zypherdb-vector-insert-bench",
 };
 
@@ -98,11 +106,23 @@ fn measure(io: std.Io, out: *std.Io.Writer, config: Config, mode: Mode) !void {
         try out.flush();
     }
     if (mode == .populate) {
+        try store.sync();
+        store.deinit();
+        store = try KeyValueStore.openWithOptions(allocator, config.dir, .{ .durability = config.durability });
+        graph = Graph.init(&store, allocator);
+        if (config.budget_ms) |budget_ms| store.population_budget.nanoseconds = budget_ms * std.time.ns_per_ms;
         const start = now(io);
         try createIndex(&graph, arena.allocator(), config);
         const created: u64 = @intCast(now(io) - start);
-        var batches: usize = 0;
-        while (try zypherdb.vector.population.advanceAny(graph.store)) batches += 1;
+        var batch_durations: std.ArrayList(u64) = .empty;
+        defer batch_durations.deinit(allocator);
+        while (true) {
+            const batch_start = now(io);
+            const more = try zypherdb.vector.population.advanceAny(graph.store);
+            if (!more) break;
+            try batch_durations.append(allocator, @intCast(now(io) - batch_start));
+        }
+        const batches = batch_durations.items.len;
         const elapsed: u64 = @intCast(now(io) - start);
         const usage = std.posix.getrusage(std.posix.rusage.SELF);
         // ru_maxrss is in bytes on macOS, in KiB on Linux.
@@ -116,6 +136,17 @@ fn measure(io: std.Io, out: *std.Io.Writer, config: Config, mode: Mode) !void {
             micros(elapsed) / @as(f64, @floatFromInt(config.nodes)),
             peak_bytes >> 20,
         });
+        if (batches > 0) {
+            std.sort.pdq(u64, batch_durations.items, {}, std.sort.asc(u64));
+            try out.print("{s:<8} {s} durability, budget {d} ms: a batch holds the writer {d:.1} ms median, {d:.1} ms p95, {d:.1} ms max\n", .{
+                @tagName(mode),
+                @tagName(config.durability),
+                store.population_budget.nanoseconds / std.time.ns_per_ms,
+                micros(batch_durations.items[batches / 2]) / 1000,
+                micros(batch_durations.items[batches * 95 / 100]) / 1000,
+                micros(batch_durations.items[batches - 1]) / 1000,
+            });
+        }
         try out.flush();
     }
 }
@@ -140,6 +171,10 @@ fn parseArguments(args: []const [:0]const u8) !Config {
             config.dimensions = try std.fmt.parseInt(usize, args[i], 10);
         } else if (std.mem.eql(u8, name, "--only")) {
             config.only = std.meta.stringToEnum(Mode, args[i]) orelse return error.UnknownMode;
+        } else if (std.mem.eql(u8, name, "--durability")) {
+            config.durability = std.meta.stringToEnum(KeyValueStore.Durability, args[i]) orelse return error.UnknownDurability;
+        } else if (std.mem.eql(u8, name, "--budget-ms")) {
+            config.budget_ms = try std.fmt.parseInt(u64, args[i], 10);
         } else if (std.mem.eql(u8, name, "--dir")) {
             config.dir = args[i];
         } else return error.UnknownArgument;
