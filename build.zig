@@ -126,6 +126,11 @@ pub fn build(b: *std.Build) void {
     const crash_tests = b.addRunArtifact(fuzz);
     crash_tests.addArgs(&.{ "crash", "--seed", "100", "--seeds", "4", "--steps", "60", "--quiet" });
     test_step.dependOn(&crash_tests.step);
+    // Seeds with vector indexes populated a batch at a time (105 and 114
+    // catch a batch split in two transactions).
+    const vector_crash_tests = b.addRunArtifact(fuzz);
+    vector_crash_tests.addArgs(&.{ "crash", "--seed", "104", "--seeds", "11", "--steps", "120", "--quiet" });
+    test_step.dependOn(&vector_crash_tests.step);
 
     // Replication simulator tests: fixed seeds, among them those that found
     // a copy's misaligned integer keys (103) and the deliberate mutations
@@ -133,6 +138,11 @@ pub fn build(b: *std.Build) void {
     const replication_simulation_tests = b.addRunArtifact(fuzz);
     replication_simulation_tests.addArgs(&.{ "replication", "--seed", "100", "--seeds", "12", "--steps", "1000", "--quiet" });
     test_step.dependOn(&replication_simulation_tests.step);
+    // Seeds with a vector index, 11 of these 12 (112 catches a copy load
+    // that does not wake the builder, 116 a CREATE that does not).
+    const vector_simulation_tests = b.addRunArtifact(fuzz);
+    vector_simulation_tests.addArgs(&.{ "replication", "--seed", "112", "--seeds", "12", "--steps", "1000", "--quiet" });
+    test_step.dependOn(&vector_simulation_tests.step);
 
     // Benchmark: `zig build bench -Doptimize=ReleaseFast -- --people 100000`.
     const bench = b.addExecutable(.{

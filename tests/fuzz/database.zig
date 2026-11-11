@@ -26,6 +26,9 @@ pub const fuzz_options = KeyValueStore.Options{ .durability = .deferred };
 pub fn open(self: *Database, allocator: Allocator, path: []const u8, options: KeyValueStore.Options) !void {
     self.* = .{ .store = try KeyValueStore.openWithOptions(allocator, path, options), .graph = undefined };
     self.graph = Graph.init(&self.store, allocator);
+    // Small batches, by count only: a workload's population takes several,
+    // the same in every process that runs it.
+    self.store.population_budget = .{ .entities = 2, .nanoseconds = std.math.maxInt(u64) };
 }
 
 pub fn close(self: *Database, allocator: Allocator) void {
@@ -38,6 +41,10 @@ pub fn close(self: *Database, allocator: Allocator) void {
 /// Runs `step`'s statement (prepared, or kept from an earlier run, if
 /// `prepared`); rows and the run's memory go to `arena`.
 pub fn run(self: *Database, allocator: Allocator, arena: Allocator, step: workload.Step, prepared: bool, parameters: zypherdb.Executor.Parameters) Allocator.Error!Outcome {
+    if (step.populate) {
+        _ = zypherdb.vector.population.advanceAny(&self.store) catch |err| return failure(err);
+        return .{ .rows = &.{} };
+    }
     const rows = if (prepared) rows: {
         const statement = self.statements.get(step.text) orelse made: {
             const statement = Statement.prepare(allocator, step.text, .{ .graph = &self.graph }) catch |err| return failure(err);

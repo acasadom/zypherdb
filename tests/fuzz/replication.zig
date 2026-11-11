@@ -24,6 +24,14 @@
 //! master, and stays so for a while with no new connection; a write each
 //! process forwards then is answered.
 //!
+//! Some seeds work on a vector index too: the master creates and drops
+//! it, and writes vectors; each process populates its own index a batch at
+//! a time, as its builder thread does, when the simulation says and only
+//! while that thread would be awake. A replica loading a copy mid-population
+//! must wake its builder. The index's keys are each process's own (they
+//! are not logged), so the databases compare without them; at the end every
+//! index must be online and every database sound.
+//!
 //! Swarm testing: each seed chooses the replicas, the faults and their
 //! rates, the network's capacity and how much change log the master keeps.
 //! A run is determined by its seed: a failure prints the command that
@@ -52,6 +60,8 @@ const forwarder = zypherdb.replication_forwarder;
 const ForwardingNode = forwarder.ForwardingNode;
 const forwarding = zypherdb.replication_forwarding;
 const MapEntry = zypherdb.value.MapEntry;
+const population = zypherdb.vector.population;
+const vector_index_marker = zypherdb.vector.index.marker;
 
 pub const Options = struct {
     seed: u64,
@@ -78,6 +88,9 @@ pub const Statistics = struct {
     forwards_unknown: u64 = 0,
     forwards_unreachable: u64 = 0,
     forwards_without_copy: u64 = 0,
+    vector_index_changes: u64 = 0,
+    population_batches: u64 = 0,
+    copies_loaded_mid_population: u64 = 0,
 
     pub fn add(self: *Statistics, other: Statistics) void {
         inline for (@typeInfo(Statistics).@"struct".field_names) |name| @field(self, name) += @field(other, name);
@@ -108,6 +121,8 @@ const settle_ns = 120 * std.time.ns_per_s;
 /// connection.
 const steady_ns = 20 * heartbeat_ns;
 const store_options = KeyValueStore.Options{ .durability = .deferred };
+const create_vector_index = "CREATE VECTOR INDEX people IF NOT EXISTS FOR (n:Person) ON n.v OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'euclidean'}}";
+const drop_vector_index = "DROP INDEX people IF EXISTS";
 
 /// What each seed runs: how many replicas, how often each move happens.
 const Swarm = struct {
@@ -218,7 +233,8 @@ const SimulatedClock = struct {
 };
 
 /// What a database holds, as a digest of its keys and values (the
-/// replication bookkeeping, keys starting with '#', left out).
+/// replication bookkeeping, keys starting with '#', and each process's own
+/// vector indexes, left out).
 fn digest(store: *KeyValueStore) !u64 {
     var hasher = std.hash.Wyhash.init(0);
     try store.beginRead();
@@ -227,7 +243,7 @@ fn digest(store: *KeyValueStore) !u64 {
         var scan = if (comptime std.mem.eql(u8, table, "main")) try store.scanAll() else if (comptime std.mem.eql(u8, table, "nodes")) try store.scanNodes() else try store.scanRelationships();
         defer scan.deinit();
         while (try scan.next()) |entry| {
-            if (comptime std.mem.eql(u8, table, "main")) if (entry.key.len > 0 and entry.key[0] == '#') continue;
+            if (comptime std.mem.eql(u8, table, "main")) if (entry.key.len > 0 and (entry.key[0] == '#' or entry.key[0] == vector_index_marker)) continue;
             hasher.update(table);
             hasher.update(std.mem.asBytes(&entry.key.len));
             hasher.update(entry.key);
@@ -261,6 +277,7 @@ const Master = struct {
     copies_path: []const u8,
     /// The nodes alive, for the writes.
     nodes: std.ArrayList(u64) = .empty,
+    builder: SimulatedBuilder = .{},
 };
 
 const Replica = struct {
@@ -278,6 +295,38 @@ const Replica = struct {
     forwarding: Forwarding,
     /// False after a restart that failed to open it again.
     open: bool = false,
+    builder: SimulatedBuilder = .{},
+};
+
+/// A process's vector index builder thread, run by the simulation: woken
+/// as the thread is (population.Builder), it takes a batch when the
+/// simulation says, and sleeps once no index is left populating.
+const SimulatedBuilder = struct {
+    woken: bool = false,
+
+    /// As the thread starts when its process opens `store`: told by it and
+    /// the shares made of it from now on, and woken if a population was
+    /// cut short.
+    fn open(self: *SimulatedBuilder, store: *KeyValueStore, budget: KeyValueStore.PopulationBudget) !void {
+        self.* = .{};
+        store.population_waker = .{ .context = self, .wake = wake };
+        store.population_budget = budget;
+        if (try population.anyPopulating(store)) self.woken = true;
+    }
+
+    fn wake(context: *anyopaque) void {
+        const self: *SimulatedBuilder = @ptrCast(@alignCast(context));
+        self.woken = true;
+    }
+
+    /// One batch on `store` if awake; false if it was not, or no index was
+    /// left (it sleeps).
+    fn step(self: *SimulatedBuilder, store: *KeyValueStore) !bool {
+        if (!self.woken) return false;
+        if (try population.advanceAny(store)) return true;
+        self.woken = false;
+        return false;
+    }
 };
 
 /// A process's forwarded writes: a replica's, or the standby's.
@@ -333,10 +382,22 @@ const Simulation = struct {
     /// The partition lasts until then.
     partition_until: Instant = 0,
     statistics: Statistics = .{},
+    /// The seed works on a vector index, its choices drawn from
+    /// `vector_prng` (and a few from `prng`, in the commits).
+    vector: bool,
+    vector_prng: std.Random.DefaultPrng,
+    population_budget: KeyValueStore.PopulationBudget,
 
     fn init(self: *Simulation, allocator: Allocator, io: Io, path: []const u8, options: Options, out: *Io.Writer) !void {
         var prng = std.Random.DefaultPrng.init(options.seed);
         const swarm = Swarm.choose(prng.random());
+        // Drawn apart, so the other seeds stay as they were (the constant
+        // leaves those build.zig runs first, which found the simulator's
+        // mutations, with no vector index).
+        var vector_prng = std.Random.DefaultPrng.init(options.seed ^ 0x743215ae97b1492e);
+        const vector = vector_prng.random().boolean();
+        // By count only: a run is determined by its seed.
+        const budget = KeyValueStore.PopulationBudget{ .entities = vector_prng.random().intRangeAtMost(u64, 1, 6), .nanoseconds = std.math.maxInt(u64) };
         self.* = .{
             .allocator = allocator,
             .io = io,
@@ -350,6 +411,9 @@ const Simulation = struct {
             .master = undefined,
             .replicas = undefined,
             .standby = undefined,
+            .vector = vector,
+            .vector_prng = vector_prng,
+            .population_budget = budget,
         };
         self.encrypted_network = .init(self.network.network(), allocator, self.encryption_prng.random(), token);
         try self.openMaster(path);
@@ -394,6 +458,8 @@ const Simulation = struct {
         master.copies_path = try std.fmt.allocPrint(self.allocator, "{s}/master-copies", .{path});
         master.nodes = .empty;
         master.store = try KeyValueStore.openWithOptions(self.allocator, master_path, store_options);
+        master.builder = .{};
+        if (self.vector) try master.builder.open(&master.store, self.population_budget);
         master.store.change_log_limit = self.swarm.change_log_limit;
         try master.store.startChangeLog();
         master.store.commit_listener = .{ .context = self, .committed = committed };
@@ -443,6 +509,8 @@ const Simulation = struct {
     fn openReplica(self: *Simulation, replica: *Replica) !void {
         replica.store = try KeyValueStore.openWithOptions(self.allocator, replica.path, store_options);
         errdefer replica.store.deinit();
+        replica.builder = .{};
+        if (self.vector) try replica.builder.open(&replica.store, self.population_budget);
         replica.applied = .{};
         replica.frozen_until = 0;
         replica.checked_lsn = null;
@@ -527,6 +595,11 @@ const Simulation = struct {
     /// One move of the simulation, then every node that has something to
     /// do steps. Faults only while `faults`.
     fn move(self: *Simulation, faults: bool) !void {
+        if (self.vector and self.vector_prng.random().uintLessThan(u32, 4) == 0) {
+            try self.vectorMove();
+            _ = try self.stepNodes();
+            return;
+        }
         const chosen = self.chooseMove(faults);
         switch (chosen) {
             .commit => try self.commit(self.random().intRangeAtMost(usize, 1, 8), 0),
@@ -584,6 +657,66 @@ const Simulation = struct {
         _ = try self.stepNodes();
     }
 
+    /// The master creates or drops the vector index, or a process's
+    /// builder, if awake, takes a batch.
+    fn vectorMove(self: *Simulation) !void {
+        const vector_random = self.vector_prng.random();
+        switch (vector_random.uintLessThan(u32, 16)) {
+            0, 1 => try self.runOnMaster(create_vector_index),
+            2 => try self.runOnMaster(drop_vector_index),
+            else => {
+                const which = vector_random.uintLessThan(usize, self.swarm.replicas + 1);
+                if (which == self.swarm.replicas) {
+                    // Seldom: the copies it makes then hold an index
+                    // populating more often. Not while a forwarded write
+                    // holds the write lock.
+                    if (vector_random.uintLessThan(u32, 4) != 0 or self.master.runner.store.active_write_transaction != null) return;
+                    if (!try self.master.builder.step(&self.master.store)) return;
+                    self.statistics.population_batches += 1;
+                    self.note("the master populates a batch", .{});
+                    if (vector_random.uintLessThan(u32, 8) == 0) try self.checkGraph(&self.master.store, "the master");
+                    return;
+                }
+                const replica = &self.replicas[which];
+                if (!replica.open or replica.frozen_until > self.clock.time) return;
+                // Not while it applies a copy or a change set part by part.
+                if (replica.applier.store.active_write_transaction != null) return;
+                if (!try replica.builder.step(&replica.store)) return;
+                self.statistics.population_batches += 1;
+                self.note("replica {d} populates a batch", .{which});
+                if (vector_random.uintLessThan(u32, 8) == 0) try self.checkIntegrity(replica);
+            },
+        }
+    }
+
+    /// Runs schema command `text` on the master.
+    fn runOnMaster(self: *Simulation, text: []const u8) !void {
+        var ast = zypherdb.Ast.init(self.allocator);
+        defer ast.deinit();
+        const root = try zypherdb.parser.parse(&ast, text, null);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        defer arena.deinit();
+        var executor = zypherdb.Executor.init(&ast, &self.master.graph, arena.allocator());
+        _ = try executor.run(root);
+        const lsn = try self.lastLsn();
+        try self.digests.put(self.allocator, lsn, try digest(&self.master.store));
+        self.statistics.vector_index_changes += 1;
+        self.note("the master runs {s}: LSN {d}", .{ text[0..19], lsn });
+    }
+
+    /// Populates every index left, on each process whose builder is awake;
+    /// then none may be left populating, and every database is sound.
+    fn finishPopulations(self: *Simulation) !void {
+        while (try self.master.builder.step(&self.master.store)) self.statistics.population_batches += 1;
+        if (try population.anyPopulating(&self.master.store)) return self.fail("the master has an index populating, its builder asleep", .{});
+        try self.checkGraph(&self.master.store, "the master");
+        for (self.replicas[0..self.swarm.replicas], 0..) |*replica, i| {
+            while (try replica.builder.step(&replica.store)) self.statistics.population_batches += 1;
+            if (try population.anyPopulating(&replica.store)) return self.fail("replica {d} has an index populating, its builder asleep", .{i});
+            try self.checkIntegrity(replica);
+        }
+    }
+
     fn chooseMove(self: *Simulation, faults: bool) Move {
         const names = @typeInfo(Move).@"enum".field_names;
         var weights: [names.len]u32 = undefined;
@@ -613,7 +746,7 @@ const Simulation = struct {
         defer deleted.deinit(self.allocator);
         for (0..operations) |_| {
             const alive = master.nodes.items.len + created.items.len;
-            const choice = if (alive == 0) 0 else self.random().uintLessThan(u32, 4);
+            const choice = if (alive == 0) 0 else self.random().uintLessThan(u32, if (self.vector) 5 else 4);
             switch (choice) {
                 0 => {
                     const id = try graph.allocateNodeId();
@@ -629,6 +762,11 @@ const Simulation = struct {
                     const id = self.pickNode(created.items, deleted.items) orelse continue;
                     try graph.deleteNode(id);
                     try deleted.append(self.allocator, id);
+                },
+                4 => {
+                    const id = self.pickNode(created.items, deleted.items) orelse continue;
+                    const vector = [_]zypherdb.Value{ .{ .float = self.random().float(f64) * 10 - 5 }, .{ .float = self.random().float(f64) * 10 - 5 } };
+                    try graph.setProperty(id, "v", .{ .list = &vector });
                 },
                 else => unreachable,
             }
@@ -798,9 +936,26 @@ const Simulation = struct {
             .change_set_part => self.statistics.change_sets_applied += 1,
             .copy_part => |part| if (part.final) {
                 self.statistics.copies_loaded += 1;
+                if (self.vector) return self.applyCopyEnd(replica);
             },
         }
         replica.applier.applyNext();
+        try self.check(replica);
+    }
+
+    /// The last part of a copy: if the copy holds an index populating, the
+    /// replica's builder must be woken by the load.
+    fn applyCopyEnd(self: *Simulation, replica: *Replica) !void {
+        const woken = replica.builder.woken;
+        replica.builder.woken = false;
+        replica.applier.applyNext();
+        const woken_by_load = replica.builder.woken;
+        replica.builder.woken = woken or woken_by_load;
+        if (replica.applier.store.loading == null and try population.anyPopulating(&replica.store)) {
+            self.statistics.copies_loaded_mid_population += 1;
+            if (!woken_by_load) return self.fail("a replica loaded a copy with an index populating, and its builder was not woken", .{});
+            self.note("a replica loads a copy mid-population", .{});
+        }
         try self.check(replica);
     }
 
@@ -821,10 +976,14 @@ const Simulation = struct {
     }
 
     fn checkIntegrity(self: *Simulation, replica: *Replica) !void {
-        var graph = Graph.init(&replica.store, self.allocator);
+        try self.checkGraph(&replica.store, "a replica");
+    }
+
+    fn checkGraph(self: *Simulation, store: *KeyValueStore, who: []const u8) !void {
+        var graph = Graph.init(store, self.allocator);
         var report = try zypherdb.integrity.check(&graph, self.allocator);
         defer report.deinit();
-        if (!report.ok()) return self.fail("a replica: {f}", .{report});
+        if (!report.ok()) return self.fail("{s}: {f}", .{ who, report });
     }
 
     /// Every node with something ready or past its deadline steps, as its
@@ -915,6 +1074,7 @@ const Simulation = struct {
             if (!try self.upToDate()) return self.fail("a replica fell behind with no faults and no writes", .{});
             if (self.network.connects != connects) return self.fail("a replica connected again with no faults", .{});
         }
+        if (self.vector) try self.finishPopulations();
         for (self.replicas[0..self.swarm.replicas]) |*replica| {
             if (try digest(&replica.store) != try digest(&self.master.store)) return self.fail("a replica up to date differs from the master", .{});
             try self.checkIntegrity(replica);
