@@ -122,7 +122,8 @@ def vector_index_state(db, name):
 
 
 def wait_online(db, name):
-    deadline = time.monotonic() + 60
+    # As long as db.awaitIndexes() waits: slow CI runners take over a minute.
+    deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         state, percent, failure = vector_index_state(db, name)
         if state == "ONLINE":
