@@ -31,6 +31,8 @@ pub const max_dimensions = 4096;
 /// Lanes of the SIMD loops.
 const lanes = std.simd.suggestVectorLength(f32) orelse 4;
 const Lanes = @Vector(lanes, f32);
+/// Sums the SIMD loops keep apart.
+const chains = 4;
 
 /// The distance between two vectors of an index (or a query prepared by
 /// `prepare`), of the same length.
@@ -84,14 +86,22 @@ pub fn prepare(similarity: Similarity, numbers: []const f64, out: []f32) ?Invali
 /// a·b in f32.
 pub fn dot(a: []const f32, b: []const f32) f32 {
     std.debug.assert(a.len == b.len);
-    var sums: Lanes = @splat(0);
+    // Independent sums, so that one multiply-add need not wait for the last.
+    var sums: [chains]Lanes = @splat(@splat(0));
     var i: usize = 0;
+    while (i + chains * lanes <= a.len) : (i += chains * lanes) {
+        inline for (&sums, 0..) |*chain_sum, chain| {
+            const x: Lanes = a[i + chain * lanes ..][0..lanes].*;
+            const y: Lanes = b[i + chain * lanes ..][0..lanes].*;
+            chain_sum.* += x * y;
+        }
+    }
     while (i + lanes <= a.len) : (i += lanes) {
         const x: Lanes = a[i..][0..lanes].*;
         const y: Lanes = b[i..][0..lanes].*;
-        sums += x * y;
+        sums[0] += x * y;
     }
-    var sum = @reduce(.Add, sums);
+    var sum = @reduce(.Add, (sums[0] + sums[1]) + (sums[2] + sums[3]));
     while (i < a.len) : (i += 1) sum += a[i] * b[i];
     return sum;
 }
@@ -99,15 +109,23 @@ pub fn dot(a: []const f32, b: []const f32) f32 {
 /// |a - b|² in f32.
 pub fn squaredDistance(a: []const f32, b: []const f32) f32 {
     std.debug.assert(a.len == b.len);
-    var sums: Lanes = @splat(0);
+    var sums: [chains]Lanes = @splat(@splat(0));
     var i: usize = 0;
+    while (i + chains * lanes <= a.len) : (i += chains * lanes) {
+        inline for (&sums, 0..) |*chain_sum, chain| {
+            const x: Lanes = a[i + chain * lanes ..][0..lanes].*;
+            const y: Lanes = b[i + chain * lanes ..][0..lanes].*;
+            const difference = x - y;
+            chain_sum.* += difference * difference;
+        }
+    }
     while (i + lanes <= a.len) : (i += lanes) {
         const x: Lanes = a[i..][0..lanes].*;
         const y: Lanes = b[i..][0..lanes].*;
         const difference = x - y;
-        sums += difference * difference;
+        sums[0] += difference * difference;
     }
-    var sum = @reduce(.Add, sums);
+    var sum = @reduce(.Add, (sums[0] + sums[1]) + (sums[2] + sums[3]));
     while (i < a.len) : (i += 1) sum += (a[i] - b[i]) * (a[i] - b[i]);
     return sum;
 }

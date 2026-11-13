@@ -41,12 +41,12 @@ const MemoryStorage = struct {
         try self.live.put(self.allocator, id, live);
     }
 
-    pub fn distanceTo(self: *MemoryStorage, query: []const f32, id: u64) Error!f32 {
-        return similarity.distance(self.measure, query, self.vectors.get(id).?);
+    pub fn vectorOf(self: *MemoryStorage, id: u64) Error![]const f32 {
+        return self.vectors.get(id).?;
     }
 
-    pub fn distanceBetween(self: *MemoryStorage, a: u64, b: u64) Error!f32 {
-        return similarity.distance(self.measure, self.vectors.get(a).?, self.vectors.get(b).?);
+    pub fn distance(self: *MemoryStorage, a: []const f32, b: []const f32) f32 {
+        return similarity.distance(self.measure, a, b);
     }
 
     pub fn isLive(self: *MemoryStorage, id: u64) Error!bool {

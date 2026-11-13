@@ -109,6 +109,10 @@ test "a node index: built from what is there, kept current, queried best first" 
     }});
     try expectQuery(ast, g, "SHOW RANGE INDEXES", &.{});
     try expectQuery(ast, g, "DROP INDEX docs", &.{});
+    // Its keys are cleared in the background; sound meanwhile.
+    try testing.expect(try g.store.countPrefix(&.{zypherdb.vector.index.marker}) > 0);
+    try expectSound(g);
+    try zypherdb.vector.population.finish(g.store);
     try testing.expectEqual(@as(usize, 0), try g.store.countPrefix(&.{zypherdb.vector.index.marker}));
     try expectSound(g);
 }
@@ -295,9 +299,16 @@ test "random writes, label changes and deletes, past a rebuild: sound, and recal
     };
     try g.commitWrite();
     try expectSound(g);
-    // The rebuild dropped the tombstones of before (index 1's records).
-    const records = try g.store.countPrefix(&.{ zypherdb.vector.index.marker, 0, 0, 0, 1, 'E' });
-    try testing.expect(records < node_count * 3 / 4);
+    // The deletes only marked the index for a rebuild, done in the
+    // background into generation 1; generation 0 is then cleared.
+    const generation_0 = [_]u8{ zypherdb.vector.index.marker, 0, 0, 0, 1, 0, 'E' };
+    const generation_1 = [_]u8{ zypherdb.vector.index.marker, 0, 0, 0, 1, 1, 'E' };
+    try testing.expectEqual(@as(usize, 0), try g.store.countPrefix(&generation_1));
+    try zypherdb.vector.population.finish(g.store);
+    try expectSound(g);
+    try testing.expectEqual(@as(usize, 0), try g.store.countPrefix(&generation_0));
+    const records = try g.store.countPrefix(&generation_1);
+    try testing.expect(records > 0 and records < node_count * 3 / 4);
 
     // Recall of the 10 nearest, against every live node scored by the function.
     var found_total: usize = 0;

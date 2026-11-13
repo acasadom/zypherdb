@@ -12,7 +12,11 @@
 //!   live entities and the tombstones;
 //! - the index has a state. One populating must hold the entities below
 //!   where population got to; above, those writes placed (any of them).
-//!   One failed holds no other key.
+//!
+//! All of it for each generation of the graph writes keep: the current
+//! one, and while the index is rebuilt the next, which must hold the
+//! entities below where the rebuild got to and none above. Keys no index
+//! needs (vector_rebuild.zig) are garbage waiting to be cleared: any.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -24,6 +28,7 @@ const Value = @import("../value.zig").Value;
 const value_encoding = @import("value_encoding.zig");
 const fulltext = @import("fulltext.zig");
 const vector_index = @import("vector_index.zig");
+const vector_rebuild = @import("vector_rebuild.zig");
 const hnsw = @import("../vector/hnsw.zig");
 
 /// Records the keys vector index `definition` must hold, and reports what
@@ -34,12 +39,22 @@ pub fn expectIndex(checker: *Checker, definition: fulltext.Definition) StorageEr
         error.ReadFailed => return checker.report.add("vector index '{s}': its state is missing or malformed", .{definition.name}),
         else => |other| return other,
     };
-    const required: Required = switch (index_state) {
-        .online => .{},
-        .populating => |progress| .{ .below = progress.next },
-        .failed => return expectFailed(checker, definition),
-    };
-    var storage = try vector_index.IndexStorage.init(checker.graph, arena, definition);
+    const state_key = vector_index.indexPrefix(definition.index_id);
+    try checker.expect(try arena.dupe(u8, &state_key), null);
+    switch (index_state) {
+        .populating => |progress| try expectGeneration(checker, definition, 0, .{ .below = progress.next }),
+        .online => |online| {
+            try expectGeneration(checker, definition, online.generation, .{});
+            if (online.rebuild) |next| try expectGeneration(checker, definition, online.generation +% 1, .{ .below = next, .none_above = true });
+        },
+        .failed => {},
+    }
+}
+
+/// The checks of `expectIndex` for `generation` of the index's graph.
+fn expectGeneration(checker: *Checker, definition: fulltext.Definition, generation: u8, required: Required) StorageError!void {
+    const arena = checker.arena;
+    var storage = try vector_index.IndexStorage.init(checker.graph, arena, definition, generation);
     var live = std.AutoArrayHashMapUnmanaged(u64, void).empty;
     switch (definition.entity) {
         .nodes => for (checker.nodes.keys(), checker.nodes.values()) |id, record| {
@@ -54,13 +69,15 @@ pub fn expectIndex(checker: *Checker, definition: fulltext.Definition) StorageEr
             };
         },
     }
-    try checkGraph(checker, &storage, definition, &live);
+    try checkGraph(checker, &storage, definition, required, &live);
 }
 
 /// The entities an index must hold: those below `below` (all, once online).
-/// Above, population has not looked yet: only what writes placed is there.
+/// Above, population has not looked yet: only what writes placed is there,
+/// and in a generation a rebuild fills, nothing.
 const Required = struct {
     below: u64 = std.math.maxInt(u64),
+    none_above: bool = false,
 };
 
 fn expectEntity(checker: *Checker, storage: *vector_index.IndexStorage, definition: fulltext.Definition, required: Required, id: u64, value: Value, live: *std.AutoArrayHashMapUnmanaged(u64, void)) StorageError!void {
@@ -86,7 +103,7 @@ fn expectEntity(checker: *Checker, storage: *vector_index.IndexStorage, definiti
 
 /// Scans the index's keys: the tombstones, the neighbour lists and the
 /// header are expected with any value once they pass the checks.
-fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition: fulltext.Definition, live: *const std.AutoArrayHashMapUnmanaged(u64, void)) StorageError!void {
+fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition: fulltext.Definition, required: Required, live: *const std.AutoArrayHashMapUnmanaged(u64, void)) StorageError!void {
     const arena = checker.arena;
     const report = checker.report;
     const name = definition.name;
@@ -97,22 +114,19 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
     var header_value: ?[]const u8 = null; // its checks follow the scan
     var tombstones: u64 = 0;
     {
-        var prefix: [5]u8 = undefined;
-        prefix[0] = vector_index.marker;
-        std.mem.writeInt(u32, prefix[1..5], definition.index_id, .big);
+        const prefix = vector_index.generationPrefix(definition.index_id, storage.generation);
         var keys = try checker.graph.store.scanPrefix(&prefix);
         defer keys.deinit();
         while (try keys.next()) |entry| {
             const key = try arena.dupe(u8, entry.key);
-            const rest = key[5..];
-            if (rest.len == 1 and rest[0] == 'S') {
-                try checker.expect(key, null); // read by `expectIndex`
-            } else if (rest.len == 1 and rest[0] == 'H') {
+            const rest = key[prefix.len..];
+            if (rest.len == 1 and rest[0] == 'H') {
                 header_value = try arena.dupe(u8, entry.value);
                 try checker.expect(key, null);
             } else if (rest.len == 9 and rest[0] == 'E' and entry.value.len == 2 + 4 * @as(usize, definition.dimensions)) {
                 const id = std.mem.readInt(u64, rest[1..9], .big);
                 try levels.put(arena, id, entry.value[0]);
+                if (required.none_above and id >= required.below) try report.add("vector index '{s}': the generation being rebuilt holds entity {d}, past where the rebuild got to ({d})", .{ name, id, required.below });
                 if (entry.value[1] != 1) {
                     tombstones += 1;
                     try checker.expect(key, null);
@@ -167,18 +181,25 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
     }
 }
 
-/// A failed index keeps its state, and nothing else.
-fn expectFailed(checker: *Checker, definition: fulltext.Definition) StorageError!void {
+/// Expects, with any value, every key under the vector marker that no
+/// index needs: garbage, cleared in the background.
+pub fn expectGarbage(checker: *Checker) StorageError!void {
     const arena = checker.arena;
-    var prefix: [5]u8 = undefined;
-    prefix[0] = vector_index.marker;
-    std.mem.writeInt(u32, prefix[1..5], definition.index_id, .big);
-    var keys = try checker.graph.store.scanPrefix(&prefix);
+    const marker = [1]u8{vector_index.marker};
+    var keys = try checker.graph.store.scanPrefix(&marker);
     defer keys.deinit();
+    var index_id: ?u32 = null;
+    var index_needs: vector_rebuild.Needed = .nothing;
     while (try keys.next()) |entry| {
-        const key = try arena.dupe(u8, entry.key);
-        try checker.expect(key, null);
-        if (key.len == 6 and key[5] == 'S') continue;
-        try checker.report.add("vector index '{s}' failed, and still has key {f}", .{ definition.name, Bytes{ .bytes = key } });
+        if (entry.key.len < 5) continue; // reported as unexpected
+        const id = std.mem.readInt(u32, entry.key[1..5], .big);
+        if (index_id != id) {
+            index_id = id;
+            index_needs = vector_rebuild.needed(checker.graph, arena, checker.definitions, id) catch |err| switch (err) {
+                error.ReadFailed => .nothing, // `expectIndex` reports it
+                else => |other| return other,
+            };
+        }
+        if (!index_needs.has(entry.key)) try checker.expect(try arena.dupe(u8, entry.key), null);
     }
 }

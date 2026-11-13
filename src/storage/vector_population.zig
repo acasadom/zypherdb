@@ -14,9 +14,12 @@
 //! batch going on from the progress it reads.
 //!
 //! An entity whose property is not a vector the index takes fails the
-//! index: its keys are dropped and its state names the entity and why.
-//! Writes no longer keep or check it, and queries on it are refused, until
-//! it is dropped (and, the data corrected, created again).
+//! index: its state names the entity and why, and its other keys are left
+//! to be cleared. Writes no longer keep or check it, and queries on it are
+//! refused, until it is dropped (and, the data corrected, created again).
+//!
+//! The same builder rebuilds indexes and clears the keys no index needs
+//! (vector_rebuild.zig), in batches of the same budget.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -29,6 +32,7 @@ const key_encoding = @import("key_encoding.zig");
 const value_encoding = @import("value_encoding.zig");
 const fulltext = @import("fulltext.zig");
 const vector_index = @import("vector_index.zig");
+const vector_rebuild = @import("vector_rebuild.zig");
 
 const Budget = KeyValueStore.PopulationBudget;
 
@@ -37,7 +41,8 @@ const Budget = KeyValueStore.PopulationBudget;
 /// there is more (it waits for the transaction to commit).
 pub fn start(graph: *Graph, definition: fulltext.Definition) StorageError!void {
     try vector_index.setState(graph, definition.index_id, .{ .populating = .{} });
-    if (try advance(graph, definition, graph.store.population_budget) == .populating) graph.store.wakePopulation();
+    // A failed index has keys to clear.
+    if (try advance(graph, definition, graph.store.population_budget) != .online) graph.store.wakePopulation();
 }
 
 pub const Outcome = enum { populating, online, failed };
@@ -58,6 +63,8 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
     // would grow with the batch.
     var entity_scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer entity_scratch.deinit();
+    // One for the batch: a populating index has no generation but its first.
+    var placer = (try vector_index.Placer.init(graph, scratch.allocator(), definition)).?;
     while (true) {
         const found = try nextEntities(graph, definition, progress.next);
         for (found.ids[0..found.count]) |id| {
@@ -65,11 +72,10 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
             const arena = entity_scratch.allocator();
             if (try valueOf(graph, arena, definition, id)) |value| switch (try vector_index.check(arena, definition, value)) {
                 .invalid => |reason| {
-                    try vector_index.clear(graph, definition.index_id);
                     try vector_index.setState(graph, definition.index_id, .{ .failed = .{ .entity = id, .reason = reason } });
                     return .failed;
                 },
-                else => try vector_index.place(graph, arena, definition, id, value),
+                else => try placer.place(arena, id, value),
             };
             progress.examined += 1;
             progress.next = id + 1;
@@ -80,28 +86,43 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
             }
         }
         if (found.last) {
-            try vector_index.setState(graph, definition.index_id, .online);
+            try vector_index.setState(graph, definition.index_id, .{ .online = .{} });
+            // Writes may have removed enough entities meanwhile.
+            var storage = try vector_index.IndexStorage.init(graph, scratch.allocator(), definition, 0);
+            if (try storage.header()) |header| try vector_index.startRebuildIfDue(graph, definition, header);
             return .online;
         }
         progress.next = found.next;
     }
 }
 
-/// One batch of the first index populating, if there is one, in a write
-/// transaction of its own on `store` (allowed on a replica: it writes only
-/// the index's keys). False if no index was populating.
+/// One batch of background work on the database `store` opened, in a
+/// write transaction of its own (allowed on a replica: it writes only the
+/// indexes' keys): clearing keys no index needs first, else rebuilding the
+/// first index being rebuilt, else populating the first one populating.
+/// False if there was nothing to do.
 pub fn advanceAny(store: *KeyValueStore) StorageError!bool {
     try store.beginLocalWrite();
     errdefer store.abortWrite();
     var graph = Graph.init(store, store.allocator);
     var scratch = std.heap.ArenaAllocator.init(store.allocator);
     defer scratch.deinit();
-    const definition = try firstPopulating(&graph, scratch.allocator()) orelse {
+    const arena = scratch.allocator();
+    const budget = store.population_budget;
+    const done = try vector_rebuild.clearGarbage(&graph, budget) or
+        try vector_rebuild.advanceAny(&graph, arena, budget) or
+        try populateFirst(&graph, arena, budget);
+    if (!done) {
         store.abortWrite();
         return false;
-    };
-    _ = try advance(&graph, definition, store.population_budget);
+    }
     try store.commitWrite();
+    return true;
+}
+
+fn populateFirst(graph: *Graph, arena: Allocator, budget: Budget) StorageError!bool {
+    const definition = try firstPopulating(graph, arena) orelse return false;
+    _ = try advance(graph, definition, budget);
     return true;
 }
 
@@ -115,6 +136,30 @@ pub fn anyPopulating(store: *KeyValueStore) StorageError!bool {
     return try firstPopulating(&graph, scratch.allocator()) != null;
 }
 
+/// Whether some index of the database `store` opened is being rebuilt.
+pub fn anyRebuilding(store: *KeyValueStore) StorageError!bool {
+    try store.beginRead();
+    defer store.abortRead();
+    var graph = Graph.init(store, store.allocator);
+    var scratch = std.heap.ArenaAllocator.init(store.allocator);
+    defer scratch.deinit();
+    return vector_rebuild.anyRebuilding(&graph, scratch.allocator());
+}
+
+/// Whether the database `store` opened has background work left: an
+/// index populating or being rebuilt, or keys to clear.
+pub fn anyWork(store: *KeyValueStore) StorageError!bool {
+    try store.beginRead();
+    defer store.abortRead();
+    var graph = Graph.init(store, store.allocator);
+    var scratch = std.heap.ArenaAllocator.init(store.allocator);
+    defer scratch.deinit();
+    const arena = scratch.allocator();
+    return try firstPopulating(&graph, arena) != null or
+        try vector_rebuild.anyRebuilding(&graph, arena) or
+        try vector_rebuild.anyGarbage(&graph, arena);
+}
+
 fn firstPopulating(graph: *Graph, arena: Allocator) StorageError!?fulltext.Definition {
     for (try fulltext.all(graph, arena)) |definition| {
         if (definition.kind != .vector) continue;
@@ -123,8 +168,8 @@ fn firstPopulating(graph: *Graph, arena: Allocator) StorageError!?fulltext.Defin
     return null;
 }
 
-/// Populates every index populating to the end, batch after batch (what
-/// the builder does, for code that has none).
+/// Does all the background work left, batch after batch (what the
+/// builder does, for code that has none).
 pub fn finish(store: *KeyValueStore) StorageError!void {
     while (try advanceAny(store)) {}
 }
@@ -205,10 +250,11 @@ fn now() u64 {
 
 // --- The builder ------------------------------------------------------------------
 
-/// The thread that populates the vector indexes of one open database, on a
-/// store of its own. It runs while an index is populating: from the open of
-/// a database with one, and from each `KeyValueStore.wakePopulation`; it
-/// ends when none is left. A batch at a time, so stopping waits for one.
+/// The thread that does the background work of the vector indexes of one
+/// open database, on a store of its own. It runs while there is some: from
+/// the open of a database with some, and from each
+/// `KeyValueStore.wakePopulation`; it ends when none is left. A batch at a
+/// time, so stopping waits for one.
 pub const Builder = struct {
     allocator: Allocator,
     threaded: Io.Threaded,
@@ -235,11 +281,11 @@ pub const Builder = struct {
         errdefer self.threaded.deinit();
         self.store = try owner.share();
         errdefer self.store.deinit();
-        // A population a crash or a close cut short goes on.
-        const populating = try anyPopulating(&self.store);
+        // Work a crash or a close cut short goes on.
+        const work_left = try anyWork(&self.store);
         owner.population_waker = .{ .context = self, .wake = wake };
         self.store.population_waker = owner.population_waker;
-        if (populating) wake(self);
+        if (work_left) wake(self);
         return self;
     }
 

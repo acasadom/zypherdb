@@ -294,3 +294,25 @@ behind); with the replica at `durability="deferred"` the master is back to 6-8 m
 
 A process idle for a few seconds reads 2-3 times slower at first on macOS (its core slows down,
 or it is moved): the benchmark keeps each process busy for 0.3 s before measuring its reads.
+
+## How long a vector index population batch holds the writer (November 2026)
+
+A vector index is populated in the background in batches, each a write transaction of its own
+that stops after a time budget (20 ms). The builder runs them one after another, so a write
+arriving meanwhile waits for the batch under way: half a batch on average, a whole one at most.
+A larger budget means fewer commits, so a faster build, but a longer wait for those writes.
+
+`zig build bench-vector-insert -Doptimize=ReleaseFast -- --nodes 10000 --only populate
+--durability full --budget-ms N` on an Apple M5 laptop (10 cores), 10,000 random vectors of 128
+dimensions; two alternating rounds, identical:
+
+| Budget | Build | Batches | A batch holds the writer (median) |
+| ---: | ---: | ---: | ---: |
+| 20 ms (default) | 4.54 s | 148 | 30 ms |
+| 50 ms | 3.40 s | 55 | 61 ms |
+| 100 ms | 3.06 s | 27 | 110 ms |
+| 200 ms | 2.88 s | 13 | 211 ms |
+
+A batch takes its budget plus about 10 ms for its commit, nearly all of it the wait for the
+disk. The budget stays at 20 ms for now: 50 ms would build 25% faster for twice the wait, and
+beyond that the build gains little (about 2.8 s of it is the index work itself).

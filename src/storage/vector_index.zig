@@ -16,16 +16,25 @@
 //! data holds something that is not a vector fails: it is no longer kept
 //! or checked, and queries on it are refused until it is dropped.
 //!
+//! An entity that leaves the index stays in its graph as a tombstone, which
+//! routes searches. Once tombstones outnumber the live entities, the index
+//! is rebuilt without them in the background (vector_rebuild.zig), into
+//! the next generation of its graph: searches read the current one until
+//! the rebuild is done. Keys no generation needs any more, and those of a
+//! dropped or failed index, are cleared in the background too.
+//!
 //! Keys, after the marker `h` and the index id (u32, big-endian); the
 //! values' integers and floats are little-endian:
 //!
-//!     S                       state: 0 populating, next id (u64),
-//!                             entities examined (u64); 1 online; 2 failed,
-//!                             entity (u64), reason (the rest)
-//!     H                       header: entry (u64), top level (u8),
+//!     (none)                  state: 0 populating (generation 0), next id
+//!                             (u64), entities examined (u64); 1 online,
+//!                             generation (u8), and while rebuilding the
+//!                             next id (u64); 2 failed, entity (u64),
+//!                             reason (the rest)
+//!     generation(u8) H        header: entry (u64), top level (u8),
 //!                             live (u64), tombstones (u64)
-//!     E entity                level (u8), live (u8), the vector (f32 each)
-//!     N entity level(u8)      neighbours on that level (u64 each)
+//!     generation E entity     level (u8), live (u8), the vector (f32 each)
+//!     generation N entity level(u8)   neighbours on that level (u64 each)
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -45,9 +54,8 @@ pub const Similarity = similarity_functions.Similarity;
 pub const marker: u8 = 'h';
 pub const parameters = hnsw.Parameters{};
 
-const state_tag: u8 = 'S';
 const header_tag: u8 = 'H';
-const entity_tag: u8 = 'E';
+pub const entity_tag: u8 = 'E';
 const neighbours_tag: u8 = 'N';
 
 /// Bytes of an entity record before its vector.
@@ -62,6 +70,7 @@ pub const IndexStorage = struct {
     graph: *Graph,
     arena: Allocator,
     index_id: u32,
+    generation: u8,
     similarity: Similarity,
     dimensions: usize,
     /// The records read or written through this context, by entity id.
@@ -69,11 +78,13 @@ pub const IndexStorage = struct {
 
     pub const Error = StorageError;
 
-    pub fn init(graph: *Graph, arena: Allocator, definition: fulltext.Definition) Allocator.Error!IndexStorage {
+    /// The context over `generation` of index `definition`'s graph.
+    pub fn init(graph: *Graph, arena: Allocator, definition: fulltext.Definition, generation: u8) Allocator.Error!IndexStorage {
         return .{
             .graph = graph,
             .arena = arena,
             .index_id = definition.index_id,
+            .generation = generation,
             .similarity = definition.similarity,
             .dimensions = definition.dimensions,
         };
@@ -86,22 +97,25 @@ pub const IndexStorage = struct {
         vector: []const f32,
     };
 
-    fn prefix(self: *const IndexStorage, tag: u8) [6]u8 {
-        return tagKey(self.index_id, tag);
-    }
-
-    pub fn entityKey(self: *const IndexStorage, id: u64) [14]u8 {
-        var key: [14]u8 = undefined;
-        key[0..6].* = self.prefix(entity_tag);
-        std.mem.writeInt(u64, key[6..14], id, .big);
+    pub fn prefix(self: *const IndexStorage, tag: u8) [7]u8 {
+        var key: [7]u8 = undefined;
+        key[0..6].* = generationPrefix(self.index_id, self.generation);
+        key[6] = tag;
         return key;
     }
 
-    fn neighboursKey(self: *const IndexStorage, id: u64, at: u8) [15]u8 {
+    pub fn entityKey(self: *const IndexStorage, id: u64) [15]u8 {
         var key: [15]u8 = undefined;
-        key[0..6].* = self.prefix(neighbours_tag);
-        std.mem.writeInt(u64, key[6..14], id, .big);
-        key[14] = at;
+        key[0..7].* = self.prefix(entity_tag);
+        std.mem.writeInt(u64, key[7..15], id, .big);
+        return key;
+    }
+
+    fn neighboursKey(self: *const IndexStorage, id: u64, at: u8) [16]u8 {
+        var key: [16]u8 = undefined;
+        key[0..7].* = self.prefix(neighbours_tag);
+        std.mem.writeInt(u64, key[7..15], id, .big);
+        key[15] = at;
         return key;
     }
 
@@ -128,13 +142,12 @@ pub const IndexStorage = struct {
         return self.read(&key);
     }
 
-    pub fn distanceTo(self: *IndexStorage, query: []const f32, id: u64) StorageError!f32 {
-        return similarity_functions.distance(self.similarity, query, (try self.entity(id)).vector);
+    pub fn vectorOf(self: *IndexStorage, id: u64) StorageError![]const f32 {
+        return (try self.entity(id)).vector;
     }
 
-    pub fn distanceBetween(self: *IndexStorage, a: u64, b: u64) StorageError!f32 {
-        const first = (try self.entity(a)).vector;
-        return similarity_functions.distance(self.similarity, first, (try self.entity(b)).vector);
+    pub fn distance(self: *IndexStorage, a: []const f32, b: []const f32) f32 {
+        return similarity_functions.distance(self.similarity, a, b);
     }
 
     pub fn isLive(self: *IndexStorage, id: u64) StorageError!bool {
@@ -155,7 +168,9 @@ pub const IndexStorage = struct {
     }
 
     pub fn setNeighbours(self: *IndexStorage, id: u64, at: u8, ids: []const u64) StorageError!void {
-        const bytes = try self.arena.alloc(u8, 8 * ids.len);
+        // On the stack when it fits: the arena lives as long as the context.
+        var buffer: [8 * parameters.maxNeighbours(0)]u8 = undefined;
+        const bytes = if (8 * ids.len <= buffer.len) buffer[0 .. 8 * ids.len] else try self.arena.alloc(u8, 8 * ids.len);
         for (ids, 0..) |neighbour, i| std.mem.writeInt(u64, bytes[8 * i ..][0..8], neighbour, .little);
         const key = self.neighboursKey(id, at);
         try self.graph.store.put(&key, bytes);
@@ -184,8 +199,7 @@ pub const IndexStorage = struct {
         try self.graph.store.put(&key, &bytes);
     }
 
-    /// Stores entity `id`'s record: its level, whether it is live, its vector
-    /// (kept as it is: it must live as long as this context).
+    /// Stores entity `id`'s record: its level, whether it is live, its vector.
     fn putEntity(self: *IndexStorage, id: u64, entity_level: u8, live: bool, vector: []const f32) StorageError!void {
         const bytes = try self.arena.alloc(u8, entity_prefix_length + 4 * vector.len);
         bytes[0] = entity_level;
@@ -193,26 +207,46 @@ pub const IndexStorage = struct {
         for (vector, 0..) |element, i| std.mem.writeInt(u32, bytes[entity_prefix_length + 4 * i ..][0..4], @bitCast(element), .little);
         const key = self.entityKey(id);
         try self.graph.store.put(&key, bytes);
-        try self.entities.put(self.arena, id, .{ .level = entity_level, .live = live, .vector = vector });
+        try self.entities.put(self.arena, id, .{ .level = entity_level, .live = live, .vector = try self.arena.dupe(f32, vector) });
     }
 };
 
-fn tagKey(index_id: u32, tag: u8) [6]u8 {
-    var key: [6]u8 = undefined;
+/// The prefix of every key of index `index_id`, and its state's key.
+pub fn indexPrefix(index_id: u32) [5]u8 {
+    var key: [5]u8 = undefined;
     key[0] = marker;
     std.mem.writeInt(u32, key[1..5], index_id, .big);
-    key[5] = tag;
+    return key;
+}
+
+/// The prefix of the keys of `generation` of index `index_id`'s graph.
+pub fn generationPrefix(index_id: u32, generation: u8) [6]u8 {
+    var key: [6]u8 = undefined;
+    key[0..5].* = indexPrefix(index_id);
+    key[5] = generation;
     return key;
 }
 
 // --- State ----------------------------------------------------------------------
 
 /// Where an index is in its life. Kept per database, not in the change
-/// log: a replica populates its own indexes.
+/// log: a replica populates and rebuilds its own indexes.
 pub const State = union(enum) {
     populating: Progress,
-    online,
+    online: Online,
     failed: Failure,
+
+    /// The generations of the graph writes keep: none for a failed index.
+    pub fn kept(self: State) ?Generations {
+        return switch (self) {
+            .populating => .{ .current = 0 },
+            .online => |online| .{
+                .current = online.generation,
+                .shadow = if (online.rebuild) |next| .{ .generation = online.generation +% 1, .below = next } else null,
+            },
+            .failed => null,
+        };
+    }
 };
 
 pub const Progress = struct {
@@ -222,6 +256,14 @@ pub const Progress = struct {
     examined: u64 = 0,
 };
 
+pub const Online = struct {
+    /// The generation of the graph searches read.
+    generation: u8 = 0,
+    /// While the index is rebuilt into the next generation: the entities
+    /// with a smaller id are in it.
+    rebuild: ?u64 = null,
+};
+
 pub const Failure = struct {
     entity: u64,
     /// What is wrong with the entity's value, a phrase whose subject is
@@ -229,20 +271,43 @@ pub const Failure = struct {
     reason: []const u8,
 };
 
+/// The generations of an index's graph that hold its entities.
+pub const Generations = struct {
+    current: u8,
+    /// The one a rebuild fills, holding the entities below `below`.
+    shadow: ?struct { generation: u8, below: u64 } = null,
+
+    pub fn has(self: Generations, generation: u8) bool {
+        if (self.shadow) |shadow| if (shadow.generation == generation) return true;
+        return self.current == generation;
+    }
+};
+
 /// Index `index_id`'s state (its strings in `arena`).
 pub fn state(graph: *Graph, arena: Allocator, index_id: u32) StorageError!State {
-    const key = tagKey(index_id, state_tag);
+    const key = indexPrefix(index_id);
     const bytes = try readIn(graph, arena, &key) orelse return error.ReadFailed;
+    var decoded = try decodeState(bytes);
+    if (decoded == .failed) decoded.failed.reason = try arena.dupe(u8, decoded.failed.reason);
+    return decoded;
+}
+
+/// The state stored as `bytes`; a failure's reason is a view into them.
+fn decodeState(bytes: []const u8) StorageError!State {
     if (bytes.len == 0) return error.ReadFailed;
     switch (bytes[0]) {
         0 => {
             if (bytes.len != 17) return error.ReadFailed;
             return .{ .populating = .{ .next = std.mem.readInt(u64, bytes[1..9], .little), .examined = std.mem.readInt(u64, bytes[9..17], .little) } };
         },
-        1 => return if (bytes.len == 1) .online else error.ReadFailed,
+        1 => return switch (bytes.len) {
+            2 => .{ .online = .{ .generation = bytes[1] } },
+            10 => .{ .online = .{ .generation = bytes[1], .rebuild = std.mem.readInt(u64, bytes[2..10], .little) } },
+            else => error.ReadFailed,
+        },
         2 => {
             if (bytes.len < 9) return error.ReadFailed;
-            return .{ .failed = .{ .entity = std.mem.readInt(u64, bytes[1..9], .little), .reason = try arena.dupe(u8, bytes[9..]) } };
+            return .{ .failed = .{ .entity = std.mem.readInt(u64, bytes[1..9], .little), .reason = bytes[9..] } };
         },
         else => return error.ReadFailed,
     }
@@ -250,7 +315,7 @@ pub fn state(graph: *Graph, arena: Allocator, index_id: u32) StorageError!State 
 
 pub fn setState(graph: *Graph, index_id: u32, value: State) StorageError!void {
     var buffer: [17]u8 = undefined;
-    const key = tagKey(index_id, state_tag);
+    const key = indexPrefix(index_id);
     switch (value) {
         .populating => |progress| {
             buffer[0] = 0;
@@ -258,7 +323,13 @@ pub fn setState(graph: *Graph, index_id: u32, value: State) StorageError!void {
             std.mem.writeInt(u64, buffer[9..17], progress.examined, .little);
             try graph.store.put(&key, &buffer);
         },
-        .online => try graph.store.put(&key, &.{1}),
+        .online => |online| {
+            buffer[0] = 1;
+            buffer[1] = online.generation;
+            const next = online.rebuild orelse return graph.store.put(&key, buffer[0..2]);
+            std.mem.writeInt(u64, buffer[2..10], next, .little);
+            try graph.store.put(&key, buffer[0..10]);
+        },
         .failed => |failure| {
             var scratch = std.heap.ArenaAllocator.init(graph.allocator);
             defer scratch.deinit();
@@ -271,9 +342,17 @@ pub fn setState(graph: *Graph, index_id: u32, value: State) StorageError!void {
     }
 }
 
+/// The generations writes keep of index `index_id`, null for a failed
+/// one. In a transaction.
+pub fn keptGenerations(graph: *Graph, index_id: u32) StorageError!?Generations {
+    const key = indexPrefix(index_id);
+    const bytes = try graph.store.view(&key) orelse return error.ReadFailed;
+    return (try decodeState(bytes)).kept();
+}
+
 /// Whether writes keep index `index_id` (all but a failed one).
 fn isKept(graph: *Graph, index_id: u32) StorageError!bool {
-    const key = tagKey(index_id, state_tag);
+    const key = indexPrefix(index_id);
     const bytes = try graph.store.view(&key) orelse return error.ReadFailed;
     return bytes.len == 0 or bytes[0] != 2;
 }
@@ -425,88 +504,112 @@ pub fn exist(graph: *Graph) StorageError!bool {
 }
 
 /// Puts entity `id` where `value` (checked) puts it in index `definition`:
-/// in with its vector, or out (a tombstone).
+/// in with its vector, or out (a tombstone). In every generation of its
+/// graph that holds it: the current one, and the one a rebuild fills if
+/// the rebuild got past `id`. Nothing for a failed index.
 pub fn place(graph: *Graph, arena: Allocator, definition: fulltext.Definition, id: u64, value: ?Value) StorageError!void {
-    var storage = try IndexStorage.init(graph, arena, definition);
+    var placer = try Placer.init(graph, arena, definition) orelse return;
+    try placer.place(arena, id, value);
+}
+
+/// Places entities of index `definition` one after another, as `place`
+/// does, in the write transaction open, with one storage context per
+/// generation for all of them: what an insert reads stays decoded for the
+/// next ones. Every write of the index's keys in the transaction must go
+/// through it while it is used.
+pub const Placer = struct {
+    graph: *Graph,
+    definition: fulltext.Definition,
+    current: IndexStorage,
+    /// The generation a rebuild fills, and the entities it holds.
+    shadow: ?IndexStorage,
+    shadow_below: u64,
+
+    /// Null for a failed index. The contexts live in `arena`.
+    pub fn init(graph: *Graph, arena: Allocator, definition: fulltext.Definition) StorageError!?Placer {
+        const generations = try keptGenerations(graph, definition.index_id) orelse return null;
+        const shadow = generations.shadow;
+        return .{
+            .graph = graph,
+            .definition = definition,
+            .current = try IndexStorage.init(graph, arena, definition, generations.current),
+            .shadow = if (shadow) |kept| try IndexStorage.init(graph, arena, definition, kept.generation) else null,
+            .shadow_below = if (shadow) |kept| kept.below else 0,
+        };
+    }
+
+    /// `arena` holds the scratch of this call.
+    pub fn place(self: *Placer, arena: Allocator, id: u64, value: ?Value) StorageError!void {
+        const checked = try check(arena, self.definition, value);
+        if (checked == .invalid) unreachable; // checked before the write
+        // A rebuild it starts has placed nothing yet: no shadow to place in.
+        if (try placeIn(&self.current, arena, id, checked)) |header| try startRebuildIfDue(self.graph, self.definition, header);
+        const shadow = if (self.shadow) |*storage| storage else return;
+        if (id >= self.shadow_below) return; // the rebuild places it when it gets there
+        _ = try placeIn(shadow, arena, id, checked);
+    }
+};
+
+/// Places entity `id` in the generation `storage` is over. The header
+/// after a removal, else null.
+fn placeIn(storage: *IndexStorage, arena: Allocator, id: u64, checked: Checked) StorageError!?hnsw.Header {
     const stored = try storage.entityRecord(id);
     const was_live = if (stored) |record| record[1] == 1 else false;
-    switch (try check(arena, definition, value)) {
-        .invalid => unreachable, // checked before the write
+    switch (checked) {
+        .invalid => unreachable,
         .absent => {
-            if (!was_live) return;
+            if (!was_live) return null;
             const record = try arena.dupe(u8, stored.?);
             try storage.putEntity(id, record[0], false, try vectorOfRecord(arena, record));
-            try Hnsw.remove(&storage, arena, parameters, id);
-            if (hnsw.needsRebuild((try storage.header()).?)) try rebuild(graph, arena, definition);
+            try Hnsw.remove(storage, arena, parameters, id);
+            return (try storage.header()).?;
         },
         .vector => |vector| {
             if (was_live) {
-                if (std.mem.eql(f32, try vectorOfRecord(arena, stored.?), vector)) return;
+                if (std.mem.eql(f32, try vectorOfRecord(arena, stored.?), vector)) return null;
                 try storage.putEntity(id, stored.?[0], true, vector);
-                return Hnsw.update(&storage, arena, parameters, id);
+                try Hnsw.update(storage, arena, parameters, id);
+                return null;
             }
             const was_tombstone = stored != null;
             try storage.putEntity(id, hnsw.levelOf(id, parameters), true, vector);
-            try Hnsw.insert(&storage, arena, parameters, id, was_tombstone);
+            try Hnsw.insert(storage, arena, parameters, id, was_tombstone);
+            return null;
         },
     }
 }
 
-fn vectorOfRecord(arena: Allocator, record: []const u8) Allocator.Error![]f32 {
+/// Starts rebuilding index `definition` into the next generation, if it
+/// is online, not being rebuilt, and the tombstones of `header` (its
+/// current generation's) call for it. The builder does the work.
+pub fn startRebuildIfDue(graph: *Graph, definition: fulltext.Definition, header: hnsw.Header) StorageError!void {
+    if (!hnsw.needsRebuild(header, graph.store.vector_rebuild_tombstones)) return;
+    const key = indexPrefix(definition.index_id);
+    const current = try decodeState(try graph.store.view(&key) orelse return error.ReadFailed);
+    if (current != .online or current.online.rebuild != null) return;
+    try setState(graph, definition.index_id, .{ .online = .{ .generation = current.online.generation, .rebuild = 0 } });
+    graph.store.wakePopulation();
+}
+
+/// Links entity `id`, which the generation `storage` is over does not
+/// hold, into it with `vector` (as the index keeps it). `storage` may have
+/// placed entities before; `arena` holds the scratch of this call.
+pub fn insertWith(storage: *IndexStorage, arena: Allocator, id: u64, vector: []const f32) StorageError!void {
+    try storage.putEntity(id, hnsw.levelOf(id, parameters), true, vector);
+    try Hnsw.insert(storage, arena, parameters, id, false);
+}
+
+/// Whether an entity record is live (not a tombstone).
+pub fn isLiveRecord(record: []const u8) bool {
+    return record.len >= entity_prefix_length and record[1] == 1;
+}
+
+/// The vector of an entity record, in `arena`.
+pub fn vectorOfRecord(arena: Allocator, record: []const u8) Allocator.Error![]f32 {
     const bytes = record[entity_prefix_length..];
     const vector = try arena.alloc(f32, bytes.len / 4);
     for (vector, 0..) |*element, i| element.* = @bitCast(std.mem.readInt(u32, bytes[4 * i ..][0..4], .little));
     return vector;
-}
-
-/// Builds the index anew from its live entities, dropping its tombstones.
-fn rebuild(graph: *Graph, arena: Allocator, definition: fulltext.Definition) StorageError!void {
-    var storage = try IndexStorage.init(graph, arena, definition);
-    const Live = struct { id: u64, vector: []const f32 };
-    var live = std.ArrayList(Live).empty;
-    {
-        const entities = storage.prefix(entity_tag);
-        var keys = try graph.store.scanPrefix(&entities);
-        defer keys.deinit();
-        while (try keys.next()) |entry| {
-            if (entry.value[1] != 1) continue;
-            const id = std.mem.readInt(u64, entry.key[6..14], .big);
-            try live.append(arena, .{ .id = id, .vector = try vectorOfRecord(arena, entry.value) });
-        }
-    }
-    // The state stays: a rebuild can come while the index is populating.
-    const state_key = tagKey(definition.index_id, state_tag);
-    const kept_state = try arena.dupe(u8, try graph.store.view(&state_key) orelse return error.ReadFailed);
-    try clear(graph, definition.index_id);
-    try graph.store.put(&state_key, kept_state);
-    // The scratch of one insert, dropped after it: kept for all of them, it
-    // would grow with the index.
-    var insert_scratch = std.heap.ArenaAllocator.init(graph.allocator);
-    defer insert_scratch.deinit();
-    for (live.items) |entity| {
-        defer _ = insert_scratch.reset(.retain_capacity);
-        const insert_arena = insert_scratch.allocator();
-        var insert_storage = try IndexStorage.init(graph, insert_arena, definition);
-        try insert_storage.putEntity(entity.id, hnsw.levelOf(entity.id, parameters), true, entity.vector);
-        try Hnsw.insert(&insert_storage, insert_arena, parameters, entity.id, false);
-    }
-}
-
-/// Removes every key of index `index_id` (its definition is removed by the caller).
-pub fn clear(graph: *Graph, index_id: u32) StorageError!void {
-    var scratch = std.heap.ArenaAllocator.init(graph.allocator);
-    defer scratch.deinit();
-    const arena = scratch.allocator();
-    var prefix: [5]u8 = undefined;
-    prefix[0] = marker;
-    std.mem.writeInt(u32, prefix[1..5], index_id, .big);
-    var stale = std.ArrayList([]const u8).empty;
-    {
-        var keys = try graph.store.scanPrefix(&prefix);
-        defer keys.deinit();
-        while (try keys.next()) |entry| try stale.append(arena, try arena.dupe(u8, entry.key));
-    }
-    for (stale.items) |key| try graph.store.del(key);
 }
 
 // --- Searching ----------------------------------------------------------------
@@ -520,7 +623,8 @@ pub const min_search_breadth = 100;
 /// The `k` entities of index `definition` closest to `query` (checked by
 /// the caller with `check`), best score first, ties by id. In `arena`.
 pub fn search(graph: *Graph, arena: Allocator, definition: fulltext.Definition, query: []const f32, k: usize) StorageError![]const Hit {
-    var storage = try IndexStorage.init(graph, arena, definition);
+    const generations = (try state(graph, arena, definition.index_id)).kept() orelse return error.ReadFailed;
+    var storage = try IndexStorage.init(graph, arena, definition, generations.current);
     const found = try Hnsw.search(&storage, arena, query, k, @max(k, min_search_breadth));
     const hits = try arena.alloc(Hit, found.len);
     for (hits, found) |*hit, entity| hit.* = .{ .id = entity.id, .score = similarity_functions.score(definition.similarity, entity.distance) };

@@ -506,6 +506,10 @@ RETURN node.title, score
   data, then `DROP INDEX` and create it again; `db.awaitIndexes()` meeting a failed index is that
   error too. A replica populates its own copy of each index the
   same way, so it can be `ONLINE` on the master and still `POPULATING` on a replica.
+- **Rebuilt in the background.** Removed entities stay in the graph as dead ends until they
+  outnumber the live ones; the index is then rebuilt without them by the same thread, in
+  batches, while queries keep using it as it was and it stays `ONLINE`. `DROP INDEX` returns at
+  once too: the index's storage is freed by that thread afterwards.
 - The index keeps each vector as 32-bit floats (normalized under cosine); the property keeps the
   numbers as they were written.
 - **Scores** are Neo4j's, between 0 and 1, higher is closer: cosine `(1 + cos(a, b)) / 2`,

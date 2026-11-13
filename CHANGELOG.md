@@ -15,7 +15,9 @@
   `ONLINE` or `FAILED`), `populationPercent` and `failureMessage`. Querying an index still being
   populated fails with error code 15 (`IndexPopulatingError` in Python); `CALL db.awaitIndexes()`
   waits until none is (300 seconds at most, or the seconds given). A value in the data that is not
-  a vector fails the index, naming the entity. `vector.similarity.cosine` and
+  a vector fails the index, naming the entity. Once removed entities outnumber the live ones, the
+  index is rebuilt without them in the background, and stays queryable meanwhile; `DROP INDEX`
+  of a vector index also returns at once. `vector.similarity.cosine` and
   `vector.similarity.euclidean` score two lists with no index. See "Vector search" in
   `docs/guide/cypher.md`.
 

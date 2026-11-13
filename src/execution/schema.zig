@@ -94,8 +94,9 @@ fn drop(executor: *Executor, root: Index, comptime what: []const u8) ExecutionEr
     }
     if (found.kind == .fulltext) try fulltext_postings.clear(graph, command.name);
     if (found.hasPropertyIndex()) try property_indexes.clear(graph, found.index_id);
-    if (found.kind == .vector) try vector_index.clear(graph, found.index_id);
     _ = try fulltext.drop(graph, command.name);
+    // A vector index's keys are cleared in the background.
+    if (found.kind == .vector) graph.store.wakePopulation();
 }
 
 fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!void {

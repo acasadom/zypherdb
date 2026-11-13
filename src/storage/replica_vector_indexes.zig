@@ -8,7 +8,8 @@
 //! definition starts populating it from the data there, as the master's
 //! CREATE did, and in the background (vector_population.zig) the same way:
 //! where population and writes interleave differently, the replica's graph
-//! differs from its master's, each sound. Applying its removal drops its keys.
+//! differs from its master's, each sound. Rebuilds also run in its own
+//! background. Applying its removal leaves its keys to be cleared there.
 
 const std = @import("std");
 
@@ -31,8 +32,8 @@ pub const Observer = struct {
     scratch: std.heap.ArenaAllocator,
     /// The node's record before a write to it.
     old_record: NodeRecord = .empty,
-    /// The id of the vector index whose definition a write removes.
-    dropped_index: ?u32 = null,
+    /// The write removes a vector index's definition.
+    drops_vector_index: bool = false,
 
     pub fn init(store: *KeyValueStore) Observer {
         return .{ .graph = Graph.init(store, store.allocator), .scratch = .init(store.allocator) };
@@ -45,7 +46,7 @@ pub const Observer = struct {
     pub fn before(self: *Observer, change: change_log.Change) StorageError!void {
         _ = self.scratch.reset(.retain_capacity);
         self.old_record = .empty;
-        self.dropped_index = null;
+        self.drops_vector_index = false;
         switch (change.table) {
             .nodes => {
                 if (!try vector_index.exist(&self.graph)) return;
@@ -56,7 +57,7 @@ pub const Observer = struct {
                 if (change.operation != .delete or !isDefinition(change.key)) return;
                 const old = try self.graph.store.view(change.key) orelse return;
                 const definition = try fulltext.Definition.decode(change.key[1..], old, self.scratch.allocator());
-                if (definition.kind == .vector) self.dropped_index = definition.index_id;
+                self.drops_vector_index = definition.kind == .vector;
             },
             else => {},
         }
@@ -83,7 +84,7 @@ pub const Observer = struct {
             return;
         }
         if (isDefinition(change.key)) {
-            if (self.dropped_index) |index_id| return vector_index.clear(&self.graph, index_id);
+            if (self.drops_vector_index) return store.wakePopulation();
             if (change.operation != .put) return;
             const definition = try fulltext.Definition.decode(change.key[1..], change.value, self.scratch.allocator());
             if (definition.kind == .vector) try vector_population.start(&self.graph, definition);
