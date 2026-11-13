@@ -314,6 +314,8 @@ const SimulatedBuilder = struct {
         store.population_budget = budget;
         // Rebuilt after a few deletes.
         store.vector_rebuild_tombstones = 2;
+        // A few entries: the cache evicts between most transactions.
+        store.vector_cache.limit = 512;
         if (try population.anyWork(store)) self.woken = true;
     }
 

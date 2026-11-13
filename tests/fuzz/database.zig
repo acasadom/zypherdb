@@ -30,6 +30,8 @@ pub fn open(self: *Database, allocator: Allocator, path: []const u8, options: Ke
     // the same in every process that runs it. Rebuilt after a few removals.
     self.store.population_budget = .{ .entities = 2, .nanoseconds = std.math.maxInt(u64) };
     self.store.vector_rebuild_tombstones = 2;
+    // A few entries: the cache evicts between most transactions.
+    self.store.vector_cache.limit = 512;
 }
 
 pub fn close(self: *Database, allocator: Allocator) void {

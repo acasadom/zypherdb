@@ -153,6 +153,10 @@ pub const Transaction = struct {
         c.mdb_txn_abort(self.handle);
     }
 
+    pub fn id(self: Transaction) u64 {
+        return c.mdb_txn_id(self.handle);
+    }
+
     pub fn get(self: Transaction, table: Table, key: []const u8) Error!?[]const u8 {
         var key_val = makeVal(key);
         var data_val = empty_val;

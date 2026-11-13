@@ -10,8 +10,11 @@
 //!   the level's maximum, naming other recorded entities, once each;
 //! - the header names a recorded entity on the top level, and counts the
 //!   live entities and the tombstones;
+//! - a generation with entries has a version;
 //! - the index has a state. One populating must hold the entities below
-//!   where population got to; above, those writes placed (any of them).
+//!   where population got to; above, those writes placed (any of them);
+//! - what the store's cache holds of a generation, at the version the
+//!   snapshot has, is what the generation holds (vector_cache.zig).
 //!
 //! All of it for each generation of the graph writes keep: the current
 //! one, and while the index is rebuilt the next, which must hold the
@@ -54,7 +57,7 @@ pub fn expectIndex(checker: *Checker, definition: fulltext.Definition) StorageEr
 /// The checks of `expectIndex` for `generation` of the index's graph.
 fn expectGeneration(checker: *Checker, definition: fulltext.Definition, generation: u8, required: Required) StorageError!void {
     const arena = checker.arena;
-    var storage = try vector_index.IndexStorage.init(checker.graph, arena, definition, generation);
+    var storage = vector_index.IndexStorage.initUncached(checker.graph, arena, definition, generation);
     var live = std.AutoArrayHashMapUnmanaged(u64, void).empty;
     switch (definition.entity) {
         .nodes => for (checker.nodes.keys(), checker.nodes.values()) |id, record| {
@@ -112,6 +115,7 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
     const List = struct { key: []const u8, id: u64, level: u8, neighbours: []const u8 };
     var lists = std.ArrayList(List).empty;
     var header_value: ?[]const u8 = null; // its checks follow the scan
+    var version: ?u64 = null;
     var tombstones: u64 = 0;
     {
         const prefix = vector_index.generationPrefix(definition.index_id, storage.generation);
@@ -122,6 +126,9 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
             const rest = key[prefix.len..];
             if (rest.len == 1 and rest[0] == 'H') {
                 header_value = try arena.dupe(u8, entry.value);
+                try checker.expect(key, null);
+            } else if (vector_index.isVersionKey(key) and entry.value.len == 8) {
+                version = std.mem.readInt(u64, entry.value[0..8], .little);
                 try checker.expect(key, null);
             } else if (rest.len == 9 and rest[0] == 'E' and entry.value.len == 2 + 4 * @as(usize, definition.dimensions)) {
                 const id = std.mem.readInt(u64, rest[1..9], .big);
@@ -140,6 +147,10 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
             }
         }
     }
+    if (version == null and (levels.count() > 0 or lists.items.len > 0 or header_value != null)) {
+        try report.add("vector index '{s}': generation {d} has entries and no version", .{ name, storage.generation });
+    }
+    if (version) |current| try checkCache(checker, definition, storage.generation, current);
     var lists_per_entity = std.AutoArrayHashMapUnmanaged(u64, usize).empty;
     for (lists.items) |list| {
         const level = levels.get(list.id) orelse {
@@ -178,6 +189,35 @@ fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition
     const entry_level = levels.get(header.entry) orelse return report.add("vector index '{s}': the entry point {d} has no record", .{ name, header.entry });
     if (entry_level != header.top_level or header.top_level != top_level) {
         try report.add("vector index '{s}': the entry point {d} is on level {d}, the header says {d}, the top level is {d}", .{ name, header.entry, entry_level, header.top_level, top_level });
+    }
+}
+
+/// Reports what the store's cache holds of `generation` at `version`
+/// (what the snapshot has) and the generation does not.
+fn checkCache(checker: *Checker, definition: fulltext.Definition, generation: u8, version: u64) StorageError!void {
+    const cache = &checker.graph.store.vector_cache;
+    const kept = cache.generations.get(.{ .index_id = definition.index_id, .generation = generation }) orelse return;
+    if (kept.version != version) return;
+    var storage = vector_index.IndexStorage.initUncached(checker.graph, checker.arena, definition, generation);
+    const name = definition.name;
+    for (kept.entities.keys(), kept.entities.values()) |id, entity| {
+        const record = try storage.entityRecord(id) orelse {
+            try checker.report.add("vector index '{s}': the cache holds entity {d}, which has no record", .{ name, id });
+            continue;
+        };
+        const same = record.len == 2 + 4 * entity.vector.len and record[0] == entity.level and (record[1] == 1) == entity.live and
+            std.mem.eql(f32, try vector_index.vectorOfRecord(checker.arena, record), entity.vector);
+        if (!same) try checker.report.add("vector index '{s}': the cache holds entity {d} other than its record", .{ name, id });
+    }
+    for (kept.neighbours.keys(), kept.neighbours.values()) |key, neighbours| {
+        const stored = storage.neighbours(checker.arena, key.id, key.at) catch |err| switch (err) {
+            error.ReadFailed => {
+                try checker.report.add("vector index '{s}': the cache holds a neighbour list of entity {d} on level {d}, which is not stored", .{ name, key.id, key.at });
+                continue;
+            },
+            else => |other| return other,
+        };
+        if (!std.mem.eql(u64, stored, neighbours.ids)) try checker.report.add("vector index '{s}': the cache holds the neighbours of entity {d} on level {d} other than stored", .{ name, key.id, key.at });
     }
 }
 

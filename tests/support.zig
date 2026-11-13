@@ -45,6 +45,8 @@ pub fn testPath(tmp: *testing.TmpDir, buffer: []u8) []const u8 {
 
 /// A digest of every key and value of the graph's tables (not the log's,
 /// nor the engine's catalog of tables in the main one), and how many there are.
+/// A vector index generation's version is a transaction id of the database
+/// it is in: only its key counts.
 pub const Contents = struct { digest: u64, entries: usize };
 
 pub fn contents(store: *KeyValueStore) !Contents {
@@ -60,6 +62,10 @@ pub fn contents(store: *KeyValueStore) !Contents {
             hasher.update(table);
             hasher.update(std.mem.asBytes(&entry.key.len));
             hasher.update(entry.key);
+            if (comptime std.mem.eql(u8, table, "main")) if (zypherdb.vector.index.isVersionKey(entry.key)) {
+                entries += 1;
+                continue;
+            };
             hasher.update(std.mem.asBytes(&entry.value.len));
             hasher.update(entry.value);
             entries += 1;

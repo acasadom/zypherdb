@@ -100,6 +100,7 @@ pub extern "c" fn mdbx_reader_check(env: *MDBX_env, dead: ?*c_int) c_int;
 pub extern "c" fn mdbx_txn_begin(env: *MDBX_env, parent: ?*MDBX_txn, flags: c_uint, txn: *?*MDBX_txn) c_int;
 pub extern "c" fn mdbx_txn_commit(txn: *MDBX_txn) c_int;
 pub extern "c" fn mdbx_txn_abort(txn: *MDBX_txn) c_int;
+pub extern "c" fn mdbx_txn_id(txn: *const MDBX_txn) u64;
 /// Ends a read transaction but keeps its handle (and reader slot) for
 /// `mdbx_txn_renew`, which starts it again on the latest snapshot.
 pub extern "c" fn mdbx_txn_reset(txn: *MDBX_txn) c_int;

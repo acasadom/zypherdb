@@ -176,6 +176,10 @@ pub fn Wrap(comptime Inner: type) type {
                 self.inner.abort();
             }
 
+            pub fn id(self: Transaction) u64 {
+                return self.inner.id();
+            }
+
             pub fn get(self: Transaction, table: Table, key: []const u8) Error!?[]const u8 {
                 if (faults.fails(.get, self.writes)) return error.ReadFailed;
                 return self.inner.get(table, key);
