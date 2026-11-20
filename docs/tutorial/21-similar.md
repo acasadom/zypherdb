@@ -74,13 +74,13 @@ direction, lower the further apart.
 for name, score in db.query("""
     MATCH (chen:Person {name: 'Chen Wei'})
     CALL db.index.vector.queryNodes('access_profiles', 4, chen.access_profile) YIELD node, score
-    RETURN node.name, score
+    RETURN node.name, round(score, 3)
 """):
-    print(f"{name:<16} {score:.3f}")
+    print(f"{name:<16} {score}")
 ```
 
 ```text
-Chen Wei         1.000
+Chen Wei         1.0
 Emeka Nwosu      0.992
 Bruno Lindqvist  0.932
 Ada Okafor       0.884
@@ -102,9 +102,9 @@ for name, team, score in db.query("""
     MATCH (p:Employee)-[:MEMBER_OF]->(team:Team)
     WHERE team <> virology
     SEARCH p IN (VECTOR INDEX access_profiles FOR joon.access_profile LIMIT 2) SCORE AS score
-    RETURN p.name, team.name, score
+    RETURN p.name, team.name, round(score, 3)
 """):
-    print(f"{name:<16} {team:<12} {score:.3f}")
+    print(f"{name:<16} {team:<12} {score}")
 ```
 
 ```text
@@ -129,9 +129,9 @@ for name, team, mate, score in db.query("""
     MATCH (mate:Employee)-[:MEMBER_OF]->(team)
     WHERE mate <> p
     SEARCH mate IN (VECTOR INDEX access_profiles FOR p.access_profile LIMIT 1) SCORE AS score
-    RETURN p.name, team.name, mate.name, score ORDER BY score, p.name
+    RETURN p.name, team.name, mate.name, round(score, 3) ORDER BY score, p.name
 """):
-    print(f"{name:<16} {team:<12} {mate:<16} {score:.3f}")
+    print(f"{name:<16} {team:<12} {mate:<16} {score}")
 ```
 
 ```text
