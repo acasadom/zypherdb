@@ -146,6 +146,7 @@ fn create(executor: *Executor, root: Index, kind: fulltext.Kind) ExecutionError!
         const config = try vectorOptions(executor, options);
         definition.dimensions = config.dimensions;
         definition.similarity = config.similarity;
+        definition.ef_search = config.ef_search;
     }
     const stored = try fulltext.create(executor.graph, definition);
     // A constraint the graph already breaks is refused (the transaction is
@@ -252,10 +253,12 @@ fn evaluateOptions(executor: *Executor, options_expression: Index) ExecutionErro
     return expressions.evaluate(executor, options_expression, &empty);
 }
 
-/// `OPTIONS {indexConfig: {`vector.dimensions`: N, `vector.similarity_function`: 'cosine'}}`:
-/// the dimensions are required, the similarity is cosine unless named.
-fn vectorOptions(executor: *Executor, options: ?Value) ExecutionError!struct { dimensions: u16, similarity: similarity.Similarity } {
+/// `OPTIONS {indexConfig: {`vector.dimensions`: N, `vector.similarity_function`: 'cosine',
+/// `vector.hnsw.ef_search`: ef}}`: the dimensions are required, the similarity is
+/// cosine unless named, the search breadth the default unless given (0 in the definition).
+fn vectorOptions(executor: *Executor, options: ?Value) ExecutionError!struct { dimensions: u16, similarity: similarity.Similarity, ef_search: u32 } {
     var dimensions: ?i64 = null;
+    var ef_search: u32 = 0;
     var chosen: similarity.Similarity = .cosine;
     if (options) |map| for (map.map) |option| {
         if (!std.mem.eql(u8, option.key, "indexConfig") or option.value != .map) return unknownVectorOption(executor, option.key);
@@ -268,6 +271,13 @@ fn vectorOptions(executor: *Executor, options: ?Value) ExecutionError!struct { d
                     executor.fail(.invalid_expression, "unknown vector similarity function '{s}' (available: cosine, euclidean)", .{setting.value.string});
                     return error.InvalidExpression;
                 } else return unknownVectorOption(executor, setting.key);
+            } else if (std.mem.eql(u8, setting.key, "vector.hnsw.ef_search")) {
+                if (setting.value != .int) return unknownVectorOption(executor, setting.key);
+                if (setting.value.int < 1 or setting.value.int > std.math.maxInt(u32)) {
+                    executor.fail(.invalid_expression, "`vector.hnsw.ef_search` must be between 1 and {d}, not {d}", .{ std.math.maxInt(u32), setting.value.int });
+                    return error.InvalidExpression;
+                }
+                ef_search = @intCast(setting.value.int);
             } else {
                 return unknownVectorOption(executor, setting.key);
             }
@@ -281,11 +291,11 @@ fn vectorOptions(executor: *Executor, options: ?Value) ExecutionError!struct { d
         executor.fail(.invalid_expression, "`vector.dimensions` must be between 1 and {d}, not {d}", .{ similarity.max_dimensions, count });
         return error.InvalidExpression;
     }
-    return .{ .dimensions = @intCast(count), .similarity = chosen };
+    return .{ .dimensions = @intCast(count), .similarity = chosen, .ef_search = ef_search };
 }
 
 fn unknownVectorOption(executor: *Executor, key: []const u8) ExecutionError {
-    executor.fail(.invalid_expression, "unknown index option '{s}' (expected indexConfig: {{`vector.dimensions`: N, `vector.similarity_function`: 'cosine' or 'euclidean'}})", .{key});
+    executor.fail(.invalid_expression, "unknown index option '{s}' (expected indexConfig: {{`vector.dimensions`: N, `vector.similarity_function`: 'cosine' or 'euclidean', `vector.hnsw.ef_search`: ef}})", .{key});
     return error.InvalidExpression;
 }
 
@@ -354,6 +364,7 @@ fn showIndexes(executor: *Executor, which: @FieldType(@import("../query/ast.zig"
             .vector => try allocator.dupe(MapEntry, &.{
                 .{ .key = "vector.dimensions", .value = .{ .int = definition.dimensions } },
                 .{ .key = "vector.similarity_function", .value = .{ .string = definition.similarity.name() } },
+                .{ .key = "vector.hnsw.ef_search", .value = .{ .int = definition.searchBreadth() } },
             }),
             .range, .unique => &.{},
         };

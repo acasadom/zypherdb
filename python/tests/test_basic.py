@@ -104,6 +104,16 @@ def test_vector_index(db):
     )
     assert [name for name, _ in rows] == ["b", "a"]
     assert rows[0][1] == pytest.approx(1 / (1 + 0.01))
+    # SEARCH keeps the closest among those that match, with the vector as a parameter.
+    rows = db.query(
+        "MATCH (d:Doc) WHERE d.name <> 'b' "
+        "SEARCH d IN (VECTOR INDEX docs FOR $q LIMIT 2 OPTIONS {ef: 10}) SCORE AS s RETURN d.name, s",
+        q=[0.9, 0.0, 0.0],
+    )
+    assert [name for name, _ in rows] == ["a", "c"]
+    assert rows[0][1] == pytest.approx(1 / (1 + 0.81))
+    with pytest.raises(InvalidExpressionError):
+        db.query("MATCH (d:Doc) SEARCH d IN (VECTOR INDEX nothing FOR $q LIMIT 1) RETURN d", q=[0.0, 0.0, 0.0])
     # A vector of another length is refused, through the direct API too.
     with pytest.raises(ConstraintViolationError, match="docs") as caught:
         db.query("CREATE (:Doc {embedding: [1.0, 2.0]})")

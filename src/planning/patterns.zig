@@ -81,7 +81,18 @@ pub fn plan(context: Context, pattern: Index, where: ?Index, before: *const Scop
     for (planner.nodes.items, 0..) |node, node_index| {
         if (node.node.bound) try operators.append(allocator, .{ .bound_node = .{ .pattern = index, .node = @intCast(node_index) } });
     }
-    if (planner.shouldEdgeAnchor()) {
+    if (planner.boundEdge(before)) |edge| {
+        // Both ends come from the relationship: expand outwards from them.
+        try operators.append(allocator, .{ .bound_edge = .{ .pattern = index, .edge = @intCast(edge) } });
+        var position: usize = edge + 1;
+        while (position + 1 < planner.nodes.items.len) : (position += 1) {
+            try operators.append(allocator, .{ .expand = .{ .pattern = index, .from = @intCast(position), .to = @intCast(position + 1) } });
+        }
+        position = edge;
+        while (position > 0) : (position -= 1) {
+            try operators.append(allocator, .{ .expand = .{ .pattern = index, .from = @intCast(position), .to = @intCast(position - 1) } });
+        }
+    } else if (planner.shouldEdgeAnchor()) {
         try operators.append(allocator, .{ .edge_index_scan = .{ .pattern = index, .edge = 0 } });
     } else {
         const anchor = try planner.chooseAnchor();
@@ -231,6 +242,16 @@ const Planner = struct {
     /// Uses the relationship index as the anchor when the pattern is a
     /// single edge with an indexed seek and both endpoints are unbound and
     /// unselective.
+    /// The single-hop edge bound before the pattern to anchor at, when no
+    /// node is: reading its two ends beats scanning nodes.
+    fn boundEdge(self: *const Planner, before: *const Scope) ?usize {
+        for (self.nodes.items) |draft| if (draft.node.bound) return null;
+        for (self.edges.items, 0..) |draft, position| {
+            if (!draft.edge.variable_length and before.contains(draft.edge.variable_name)) return position;
+        }
+        return null;
+    }
+
     fn shouldEdgeAnchor(self: *const Planner) bool {
         if (self.nodes.items.len != 2 or self.edges.items.len != 1) return false;
         const edge = self.edges.items[0];

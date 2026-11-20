@@ -32,6 +32,7 @@ test {
     _ = @import("vector/vector_population_test.zig");
     _ = @import("vector/vector_rebuild_test.zig");
     _ = @import("vector/vector_replica_test.zig");
+    _ = @import("vector/vector_search_test.zig");
     _ = @import("text/analyzer_test.zig");
     _ = @import("text/case_test.zig");
     _ = @import("text/query_test.zig");

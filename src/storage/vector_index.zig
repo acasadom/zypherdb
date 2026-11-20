@@ -694,16 +694,45 @@ pub fn vectorOfRecord(arena: Allocator, record: []const u8) Allocator.Error![]f3
 
 pub const Hit = struct { id: u64, score: f64 };
 
-/// How many entities a search looks at for each one it returns, at least
-/// (the HNSW's ef is the larger of this and k).
-pub const min_search_breadth = 100;
+/// The current generation of an index, for a SEARCH: the distance of
+/// any entity it holds, and the HNSW's search among those a filter keeps.
+pub const Searcher = struct {
+    storage: IndexStorage,
+    /// How many live entities the index holds.
+    live: u64,
+
+    pub fn init(graph: *Graph, arena: Allocator, definition: fulltext.Definition) StorageError!Searcher {
+        const generations = (try state(graph, arena, definition.index_id)).kept() orelse return error.ReadFailed;
+        var storage = try IndexStorage.init(graph, arena, definition, generations.current);
+        const header = try storage.header();
+        return .{ .storage = storage, .live = if (header) |value| value.live else 0 };
+    }
+
+    /// The distance from `query` (prepared by `check`) to entity `id`, or
+    /// null if the index does not hold it (no vector).
+    pub fn distanceOf(self: *Searcher, query: []const f32, id: u64) StorageError!?f32 {
+        const record = try self.storage.entityRecord(id) orelse return null;
+        if (!isLiveRecord(record)) return null;
+        return self.storage.distance(query, try self.storage.vectorOf(id));
+    }
+
+    /// The `k` (at most) entities closest to `query` that `filter` keeps
+    /// (see `Hnsw.searchFiltered`), closest first.
+    pub fn search(self: *Searcher, arena: Allocator, query: []const f32, k: usize, ef: usize, filter: anytype) ![]const hnsw.Hit {
+        return Hnsw.searchFiltered(&self.storage, arena, query, k, ef, filter);
+    }
+
+    pub fn score(self: *const Searcher, distance: f32) f64 {
+        return similarity_functions.score(self.storage.similarity, distance);
+    }
+};
 
 /// The `k` entities of index `definition` closest to `query` (checked by
 /// the caller with `check`), best score first, ties by id. In `arena`.
 pub fn search(graph: *Graph, arena: Allocator, definition: fulltext.Definition, query: []const f32, k: usize) StorageError![]const Hit {
     const generations = (try state(graph, arena, definition.index_id)).kept() orelse return error.ReadFailed;
     var storage = try IndexStorage.init(graph, arena, definition, generations.current);
-    const found = try Hnsw.search(&storage, arena, query, k, @max(k, min_search_breadth));
+    const found = try Hnsw.search(&storage, arena, query, k, @max(k, definition.searchBreadth()));
     const hits = try arena.alloc(Hit, found.len);
     for (hits, found) |*hit, entity| hit.* = .{ .id = entity.id, .score = similarity_functions.score(definition.similarity, entity.distance) };
     return hits;

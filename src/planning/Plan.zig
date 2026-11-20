@@ -82,6 +82,9 @@ pub const Operator = union(enum) {
     node_index_range_count: NodeReference,
     /// Binds both ends of a single-edge pattern from the edge-property index.
     edge_index_scan: EdgeReference,
+    /// A relationship of the pattern bound before it: binds its two ends
+    /// (both ways round for an undirected one) and checks it.
+    bound_edge: EdgeReference,
     /// Follows the edge between pattern nodes `from` (matched) and `to`.
     expand: Expand,
     /// Binds the pattern's path variable (`p = ...`).
@@ -91,6 +94,10 @@ pub const Operator = union(enum) {
     /// OPTIONAL MATCH: the rows of `chain` run from each row, or the row
     /// with the clause's new variables null when there is none.
     optional: Optional,
+    /// A MATCH (or OPTIONAL MATCH) and the SEARCH after it: from each row,
+    /// the rows of the k entities closest to the vector among those the
+    /// MATCH and the SEARCH's WHERE keep (vector_search.zig).
+    search: Search,
     unwind: Index,
     load_csv: Index,
     procedure_call: ProcedureCall,
@@ -152,6 +159,21 @@ pub const Filter = struct {
 };
 
 pub const Optional = struct { clause: Index, chain: ChainIndex };
+
+pub const Search = struct {
+    /// The `search_clause`, and the MATCH or OPTIONAL MATCH before it.
+    clause: Index,
+    match_clause: Index,
+    /// Every row of the MATCH whose entity passes the SEARCH's WHERE.
+    candidates: ChainIndex,
+    /// The same rows for one entity: the chain run with its variable bound.
+    rows_of: ChainIndex,
+    /// The searched variable and the score's (`no_slot` without SCORE AS).
+    entity_slot: Slot,
+    score_slot: Slot,
+    /// The entity is a relationship (else a node).
+    relationships: bool,
+};
 
 pub const ProcedureCall = struct {
     clause: Index,

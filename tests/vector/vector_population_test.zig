@@ -73,6 +73,7 @@ test "population goes in batches, kept by writes meanwhile, and resumes after a 
     const config = [_]zypherdb.value.MapEntry{
         .{ .key = "vector.dimensions", .value = int(4) },
         .{ .key = "vector.similarity_function", .value = .{ .string = "cosine" } },
+        .{ .key = "vector.hnsw.ef_search", .value = int(100) },
     };
     const options = [_]zypherdb.value.MapEntry{.{ .key = "indexConfig", .value = .{ .map = &config } }};
     try expectQuery(&ast, &g, "SHOW VECTOR INDEXES", &.{&.{

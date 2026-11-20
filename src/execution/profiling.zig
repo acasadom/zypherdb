@@ -18,6 +18,7 @@ const explain = @import("../planning/explain.zig");
 const Statistics = @import("../planning/statistics.zig").Statistics;
 const Value = @import("../value.zig").Value;
 
+const vector_search = @import("vector_search.zig");
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const Row = Executor.Row;
@@ -31,6 +32,8 @@ pub const Profile = struct {
     /// RETURN, a collecting WITH, a stage, a CALL that ends the query.
     returned: []u64,
     nanoseconds: []u64,
+    /// How a SEARCH operator found its rows (unused for the others).
+    search_ways: []vector_search.Ways,
     /// The operator the time goes to now, and since when.
     active: ?OperatorIndex = null,
     since: i96 = 0,
@@ -38,10 +41,13 @@ pub const Profile = struct {
     pub fn init(allocator: std.mem.Allocator, operator_count: usize) std.mem.Allocator.Error!Profile {
         const counters = try allocator.alloc(u64, operator_count * 3);
         @memset(counters, 0);
+        const search_ways = try allocator.alloc(vector_search.Ways, operator_count);
+        @memset(search_ways, .{});
         return .{
             .rows_in = counters[0..operator_count],
             .returned = counters[operator_count .. 2 * operator_count],
             .nanoseconds = counters[2 * operator_count ..],
+            .search_ways = search_ways,
             .since = now(),
         };
     }
@@ -104,10 +110,15 @@ fn rows(executor: *Executor, plan: *const Plan, plan_lines: []const explain.Line
     const output = try allocator.alloc(Row, plan_lines.len);
     for (output, plan_lines) |*row, line| {
         row.* = .empty;
+        var details = line.details;
+        if (profile) |measured| if (line.operator) |operator| if (plan.operators[operator] == .search) {
+            const ways = measured.search_ways[operator];
+            details = try std.fmt.allocPrint(allocator, "{s} (rows searched exactly: {d}, with the HNSW: {d}, with the HNSW then exactly: {d})", .{ details, ways.exact, ways.hnsw, ways.hnsw_then_exact });
+        };
         try row.appendSlice(allocator, &.{
             .{ .int = line.depth },
             .{ .string = line.name },
-            .{ .string = line.details },
+            .{ .string = details },
             if (line.estimated_rows) |estimate| .{ .int = @intFromFloat(@round(@min(estimate, 9.0e18))) } else .null,
         });
         const measured = profile orelse {

@@ -204,6 +204,25 @@ fn queryIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, ar
     }
 }
 
+/// Fails unless vector index `definition` can be searched: ONLINE, not
+/// still populating nor failed.
+pub fn requireOnline(executor: *Executor, definition: fulltext.Definition) ExecutionError!void {
+    const index_name = definition.name;
+    switch (try vector_index.state(executor.graph, executor.allocator, definition.index_id)) {
+        .online => {},
+        .populating => |progress| {
+            const percent = try schema.populationPercent(executor.graph, definition, progress);
+            executor.fail(.index_populating, "vector index '{s}' is still being populated ({d:.1}% done): query it once SHOW VECTOR INDEXES shows it ONLINE, or wait for it with CALL db.awaitIndexes()", .{ index_name, percent });
+            return error.IndexPopulating;
+        },
+        .failed => |failure| {
+            const message = try schema.vectorFailureMessage(executor.allocator, definition, failure);
+            executor.fail(.invalid_expression, "vector index '{s}' failed ({s}): correct the data, then drop it and create it again", .{ index_name, message });
+            return error.InvalidExpression;
+        },
+    }
+}
+
 /// `db.index.vector.queryNodes(index, k, vector)` and its relationship
 /// twin: the k entities closest to the vector, best first, with their scores.
 fn queryVectorIndex(executor: *Executor, name: []const u8, entity: fulltext.Entity, arguments: []const Value, emit: Emit) ExecutionError!void {
@@ -221,19 +240,7 @@ fn queryVectorIndex(executor: *Executor, name: []const u8, entity: fulltext.Enti
         executor.fail(.invalid_expression, "'{s}' indexes {s}: use db.index.vector.{s}", .{ index_name, @tagName(definition.entity), if (definition.entity == .nodes) "queryNodes" else "queryRelationships" });
         return error.InvalidExpression;
     }
-    switch (try vector_index.state(executor.graph, executor.allocator, definition.index_id)) {
-        .online => {},
-        .populating => |progress| {
-            const percent = try schema.populationPercent(executor.graph, definition, progress);
-            executor.fail(.index_populating, "vector index '{s}' is still being populated ({d:.1}% done): query it once SHOW VECTOR INDEXES shows it ONLINE, or wait for it with CALL db.awaitIndexes()", .{ index_name, percent });
-            return error.IndexPopulating;
-        },
-        .failed => |failure| {
-            const message = try schema.vectorFailureMessage(executor.allocator, definition, failure);
-            executor.fail(.invalid_expression, "vector index '{s}' failed ({s}): correct the data, then drop it and create it again", .{ index_name, message });
-            return error.InvalidExpression;
-        },
-    }
+    try requireOnline(executor, definition);
     if (arguments[1].int < 1) {
         executor.fail(.invalid_expression, "{s}() needs a number of results of at least 1, not {d}", .{ name, arguments[1].int });
         return error.InvalidExpression;
