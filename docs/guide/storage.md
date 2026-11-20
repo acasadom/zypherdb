@@ -452,6 +452,7 @@ generation (u8, see the rebuild below); the values are little-endian:
 | `h \| index \| generation \| H` | the header: the entry point (u64), the top level (u8), the live entities and the tombstones (u64 each) |
 | `h \| index \| generation \| E \| id` | the entity's level (u8), whether it is live (u8), its vector (f32 each) |
 | `h \| index \| generation \| N \| id \| level` | its neighbours on that level (u64 each) |
+| `h \| index \| generation \| V` | its version: the id of the write transaction that last wrote the generation (u64) |
 
 An entity's level comes from a hash of its id, so rebuilding gives the same levels. Writes keep it
 current as they keep the full-text postings, from the same mutators:
@@ -468,6 +469,17 @@ current as they keep the full-text postings, from the same mutators:
   Its neighbours are repaired as for an update; other lists may still point at it, so it keeps
   routing searches, and is never returned. When tombstones outnumber live entities (past 1024),
   the delete marks the index for a rebuild (below); it does not rebuild it.
+
+Each store (one per thread) keeps the records and lists it decoded across transactions
+(`vector_cache.zig`), so an insert or a search does not read again the thousands of entities it
+visits. A generation's version says whether they are current: each write transaction that writes
+a generation stores its own id there, and a store's next look at the generation drops what it
+kept if the version it sees is another. A write transaction that ends without its commit drops the
+store's cache (the engine may hand its id out again), and loading a copy gives each generation the
+loading transaction's id (the master's ids mean nothing here). At most 64 MiB stays kept between
+transactions, evicted by the clock algorithm; a transaction may go above it, as what it reads stays
+valid until it ends. A store that searches while another writes the same index drops its entries
+of that index at each write it sees.
 
 Every key is written in the transaction of the change, so a reader sees the index as of its
 snapshot. The change log does not carry these keys: a replica moves each entity in its own
@@ -514,8 +526,9 @@ that each record and value is well formed (`layout.zig`), and that the main tabl
 any other kind. An HNSW graph depends on the order of the writes that built it, so a vector index
 is not rebuilt but checked: each entity it must hold has its record exactly (level, live, vector),
 every other record is a tombstone, each record has a list on each of its levels naming recorded
-entities once each and at most the level's maximum, and the header's entry point and counts
-agree. It returns a `Report` with the first problems found, described, and their count.
+entities once each and at most the level's maximum, the header's entry point and counts
+agree, a generation with entries has a version, and what the store's cache keeps of a
+generation at the version it reads is what the generation holds. It returns a `Report` with the first problems found, described, and their count.
 
 The same layout functions guard the storage boundary in Debug and ReleaseSafe builds: the writer
 asserts the bytes it is about to store, and the reader the bytes it is about to trust (pair

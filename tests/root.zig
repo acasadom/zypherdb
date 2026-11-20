@@ -27,6 +27,7 @@ test {
     _ = @import("storage/fuzz_test.zig");
     _ = @import("query/ast_test.zig");
     _ = @import("vector/hnsw_test.zig");
+    _ = @import("vector/vector_cache_test.zig");
     _ = @import("vector/vector_index_test.zig");
     _ = @import("vector/vector_population_test.zig");
     _ = @import("vector/vector_rebuild_test.zig");

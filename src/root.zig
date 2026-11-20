@@ -50,6 +50,7 @@ pub const vector = struct {
     pub const similarity = @import("vector/similarity.zig");
     pub const index = @import("storage/vector_index.zig");
     pub const population = @import("storage/vector_population.zig");
+    pub const cache = @import("storage/vector_cache.zig");
 };
 
 /// The layout of stored bytes, checked; and which names can be stored.

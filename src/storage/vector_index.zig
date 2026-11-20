@@ -33,6 +33,10 @@
 //!                             reason (the rest)
 //!     generation(u8) H        header: entry (u64), top level (u8),
 //!                             live (u64), tombstones (u64)
+//!     generation V            version: the id of the write transaction
+//!                             that last wrote the generation (u64), so a
+//!                             store's cache knows its entries are current
+//!                             (vector_cache.zig)
 //!     generation E entity     level (u8), live (u8), the vector (f32 each)
 //!     generation N entity level(u8)   neighbours on that level (u64 each)
 
@@ -49,6 +53,7 @@ const value_encoding = @import("value_encoding.zig");
 const fulltext = @import("fulltext.zig");
 const similarity_functions = @import("../vector/similarity.zig");
 const hnsw = @import("../vector/hnsw.zig");
+const VectorCache = @import("vector_cache.zig").VectorCache;
 
 pub const Similarity = similarity_functions.Similarity;
 pub const marker: u8 = 'h';
@@ -57,6 +62,7 @@ pub const parameters = hnsw.Parameters{};
 const header_tag: u8 = 'H';
 pub const entity_tag: u8 = 'E';
 const neighbours_tag: u8 = 'N';
+const version_tag: u8 = 'V';
 
 /// Bytes of an entity record before its vector.
 const entity_prefix_length = 2;
@@ -64,8 +70,10 @@ const entity_prefix_length = 2;
 const Hnsw = hnsw.Hnsw(IndexStorage);
 
 /// The HNSW storage context over one index's keys (see hnsw.zig).
-/// An entity's record is read and decoded once per context: an insert
-/// measures thousands of distances among a few hundred entities.
+/// An entity's record and its neighbour lists are read and decoded once
+/// per store, while no one else writes the generation (vector_cache.zig):
+/// an insert measures thousands of distances among a few hundred
+/// entities. Outside a transaction, once per context.
 pub const IndexStorage = struct {
     graph: *Graph,
     arena: Allocator,
@@ -73,13 +81,29 @@ pub const IndexStorage = struct {
     generation: u8,
     similarity: Similarity,
     dimensions: usize,
-    /// The records read or written through this context, by entity id.
+    /// The store's entries of this generation, inside a transaction.
+    cached: ?*VectorCache.Generation = null,
+    /// Without them, the records read or written through this context.
     entities: std.AutoHashMapUnmanaged(u64, Entity) = .empty,
+    /// Without them, the write transaction this context stored the
+    /// generation's version in.
+    stamped: ?u64 = null,
 
     pub const Error = StorageError;
 
     /// The context over `generation` of index `definition`'s graph.
-    pub fn init(graph: *Graph, arena: Allocator, definition: fulltext.Definition, generation: u8) Allocator.Error!IndexStorage {
+    pub fn init(graph: *Graph, arena: Allocator, definition: fulltext.Definition, generation: u8) StorageError!IndexStorage {
+        var storage = initUncached(graph, arena, definition, generation);
+        if (!graph.store.inTransaction()) return storage;
+        const key = storage.prefix(version_tag);
+        const version = if (try storage.read(&key)) |bytes| try decodeVersion(bytes) else 0;
+        storage.cached = try graph.store.vector_cache.generation(.{ .index_id = definition.index_id, .generation = generation }, version);
+        return storage;
+    }
+
+    /// A context that reads what the store holds, not what its cache
+    /// does (the integrity checker's).
+    pub fn initUncached(graph: *Graph, arena: Allocator, definition: fulltext.Definition, generation: u8) IndexStorage {
         return .{
             .graph = graph,
             .arena = arena,
@@ -126,14 +150,43 @@ pub const IndexStorage = struct {
 
     /// Entity `id`'s record, which must be there.
     fn entity(self: *IndexStorage, id: u64) StorageError!Entity {
+        if (self.cached) |kept| {
+            const cache = &self.graph.store.vector_cache;
+            if (cache.findEntity(kept, id)) |found| return .{ .level = found.level, .live = found.live, .vector = found.vector };
+            const record = try self.storedEntity(id);
+            const found = try cache.keepEntity(kept, id, record[0], record[1] == 1, try vectorOfRecord(self.arena, record));
+            return .{ .level = found.level, .live = found.live, .vector = found.vector };
+        }
         const slot = try self.entities.getOrPut(self.arena, id);
         if (slot.found_existing) return slot.value_ptr.*;
         errdefer _ = self.entities.remove(id);
+        const record = try self.storedEntity(id);
+        slot.value_ptr.* = .{ .level = record[0], .live = record[1] == 1, .vector = try vectorOfRecord(self.arena, record) };
+        return slot.value_ptr.*;
+    }
+
+    fn storedEntity(self: *IndexStorage, id: u64) StorageError![]const u8 {
         const key = self.entityKey(id);
         const record = try self.read(&key) orelse return error.ReadFailed;
         if (record.len != entity_prefix_length + 4 * self.dimensions) return error.ReadFailed;
-        slot.value_ptr.* = .{ .level = record[0], .live = record[1] == 1, .vector = try vectorOfRecord(self.arena, record) };
-        return slot.value_ptr.*;
+        return record;
+    }
+
+    /// Stores the generation's version, the write transaction's id, at its
+    /// first write in the transaction. Only in a write transaction: a write
+    /// committed alone would leave the version behind.
+    fn noteWrite(self: *IndexStorage) StorageError!void {
+        const id = self.graph.store.writeTransactionId() orelse return error.WriteFailed;
+        if (self.cached) |kept| {
+            if (kept.written_by == id) return;
+            kept.version = id;
+            kept.written_by = id;
+        } else {
+            if (self.stamped == id) return;
+            self.stamped = id;
+        }
+        const key = self.prefix(version_tag);
+        try self.graph.store.put(&key, &encodeVersion(id));
     }
 
     /// The entity's record if it has one (live or a tombstone).
@@ -159,21 +212,26 @@ pub const IndexStorage = struct {
     }
 
     pub fn neighbours(self: *IndexStorage, arena: Allocator, id: u64, at: u8) StorageError![]u64 {
+        const cache = &self.graph.store.vector_cache;
+        if (self.cached) |kept| if (cache.findNeighbours(kept, id, at)) |found| return arena.dupe(u64, found);
         const key = self.neighboursKey(id, at);
         const bytes = try self.read(&key) orelse return error.ReadFailed;
         if (bytes.len % 8 != 0) return error.ReadFailed;
         const ids = try arena.alloc(u64, bytes.len / 8);
         for (ids, 0..) |*neighbour, i| neighbour.* = std.mem.readInt(u64, bytes[8 * i ..][0..8], .little);
+        if (self.cached) |kept| try cache.keepNeighbours(kept, id, at, ids);
         return ids;
     }
 
     pub fn setNeighbours(self: *IndexStorage, id: u64, at: u8, ids: []const u64) StorageError!void {
+        try self.noteWrite();
         // On the stack when it fits: the arena lives as long as the context.
         var buffer: [8 * parameters.maxNeighbours(0)]u8 = undefined;
         const bytes = if (8 * ids.len <= buffer.len) buffer[0 .. 8 * ids.len] else try self.arena.alloc(u8, 8 * ids.len);
         for (ids, 0..) |neighbour, i| std.mem.writeInt(u64, bytes[8 * i ..][0..8], neighbour, .little);
         const key = self.neighboursKey(id, at);
         try self.graph.store.put(&key, bytes);
+        if (self.cached) |kept| try self.graph.store.vector_cache.keepNeighbours(kept, id, at, ids);
     }
 
     pub fn header(self: *IndexStorage) StorageError!?hnsw.Header {
@@ -189,6 +247,7 @@ pub const IndexStorage = struct {
     }
 
     pub fn setHeader(self: *IndexStorage, value: ?hnsw.Header) StorageError!void {
+        try self.noteWrite();
         const key = self.prefix(header_tag);
         const header_value = value orelse return self.graph.store.del(&key);
         var bytes: [25]u8 = undefined;
@@ -201,15 +260,34 @@ pub const IndexStorage = struct {
 
     /// Stores entity `id`'s record: its level, whether it is live, its vector.
     fn putEntity(self: *IndexStorage, id: u64, entity_level: u8, live: bool, vector: []const f32) StorageError!void {
+        try self.noteWrite();
         const bytes = try self.arena.alloc(u8, entity_prefix_length + 4 * vector.len);
         bytes[0] = entity_level;
         bytes[1] = @intFromBool(live);
         for (vector, 0..) |element, i| std.mem.writeInt(u32, bytes[entity_prefix_length + 4 * i ..][0..4], @bitCast(element), .little);
         const key = self.entityKey(id);
         try self.graph.store.put(&key, bytes);
-        try self.entities.put(self.arena, id, .{ .level = entity_level, .live = live, .vector = try self.arena.dupe(f32, vector) });
+        if (self.cached) |kept| {
+            _ = try self.graph.store.vector_cache.keepEntity(kept, id, entity_level, live, vector);
+        } else try self.entities.put(self.arena, id, .{ .level = entity_level, .live = live, .vector = try self.arena.dupe(f32, vector) });
     }
 };
+
+/// Whether `key` is a generation's version (see the key table above).
+pub fn isVersionKey(key: []const u8) bool {
+    return key.len == 7 and key[0] == marker and key[6] == version_tag;
+}
+
+pub fn encodeVersion(version: u64) [8]u8 {
+    var bytes: [8]u8 = undefined;
+    std.mem.writeInt(u64, &bytes, version, .little);
+    return bytes;
+}
+
+fn decodeVersion(bytes: []const u8) StorageError!u64 {
+    if (bytes.len != 8) return error.ReadFailed;
+    return std.mem.readInt(u64, bytes[0..8], .little);
+}
 
 /// The prefix of every key of index `index_id`, and its state's key.
 pub fn indexPrefix(index_id: u32) [5]u8 {
