@@ -281,7 +281,17 @@ pub const Parser = struct {
                 else
                     try self.parseUnwindClause();
                 try clauses.append(self.ast.allocator, clause);
+                if (self.atKeyword("SEARCH")) {
+                    if (self.ast.kind(clause) != .match_clause and self.ast.kind(clause) != .optional_match_clause) {
+                        self.fail("SEARCH must follow a MATCH or OPTIONAL MATCH", .{});
+                        return error.UnexpectedToken;
+                    }
+                    try clauses.append(self.ast.allocator, try self.parseSearchClause());
+                }
                 last_reads = true;
+            } else if (self.atKeyword("SEARCH")) {
+                self.fail("SEARCH must follow a MATCH or OPTIONAL MATCH", .{});
+                return error.UnexpectedToken;
             } else if (self.atKeyword("CALL") and (self.peekAhead(1).kind == .left_brace or self.peekAhead(1).kind == .left_paren)) {
                 const clause = try self.parseCallSubquery();
                 const subquery = self.ast.nodeChildren(clause)[0];
@@ -466,6 +476,48 @@ pub const Parser = struct {
         _ = self.advance(); // OPTIONAL
         try self.expectKeyword("MATCH");
         return self.parseMatchBody(.optional_match_clause);
+    }
+
+    /// `SEARCH x IN (VECTOR INDEX name FOR vector [WHERE predicate] LIMIT k
+    /// [OPTIONS {...}]) [SCORE AS alias] [WHERE predicate]`, after the MATCH
+    /// that binds x.
+    fn parseSearchClause(self: *Parser) ParseError!Index {
+        _ = self.advance(); // SEARCH
+        const variable_name = try self.internIdentifier();
+        try self.expectKeyword("IN");
+        try self.expect(.left_paren);
+        if (self.atKeyword("FULLTEXT")) {
+            self.fail("SEARCH reads vector indexes only: for a full-text index use CALL db.index.fulltext.queryNodes", .{});
+            return error.UnexpectedToken;
+        }
+        try self.expectKeyword("VECTOR");
+        try self.expectKeyword("INDEX");
+        const index_name = try self.internIdentifier();
+        try self.expectKeyword("FOR");
+        const vector = try expression_parser.parseExpression(self);
+        const filter = try self.parseOptionalWhere();
+        if (!self.atKeyword("LIMIT")) {
+            self.fail("SEARCH needs LIMIT k: how many entities to return", .{});
+            return error.UnexpectedToken;
+        }
+        _ = self.advance();
+        const limit = try expression_parser.parseExpression(self);
+        const options = if (self.atKeyword("OPTIONS")) options: {
+            _ = self.advance();
+            if (!self.at(.left_brace)) {
+                self.fail("OPTIONS takes a map: OPTIONS {{ef: 400}}", .{});
+                return error.UnexpectedToken;
+            }
+            break :options try expression_parser.parseExpression(self);
+        } else try self.ast.addNode(.null_literal, .{ .none = {} }, &.{});
+        try self.expect(.right_paren);
+        const score_alias = if (self.atKeyword("SCORE")) alias: {
+            _ = self.advance();
+            try self.expectKeyword("AS");
+            break :alias try self.internIdentifier();
+        } else "";
+        const post_filter = try self.parseOptionalWhere();
+        return self.ast.addNode(.search_clause, .{ .search = .{ .variable_name = variable_name, .index_name = index_name, .score_alias = score_alias } }, &.{ vector, filter, limit, options, post_filter });
     }
 
     /// `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR 't']`.
@@ -997,7 +1049,7 @@ pub const Parser = struct {
 /// Whether `t` is an unquoted keyword that starts a clause or a part of one.
 fn isClauseKeyword(t: Token) bool {
     if (t.kind != .identifier or t.quoted) return false;
-    const keywords = [_][]const u8{ "MATCH", "OPTIONAL", "WHERE", "WITH", "RETURN", "CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE", "UNWIND", "CALL", "FOREACH", "UNION", "ORDER", "SKIP", "LIMIT", "LOAD" };
+    const keywords = [_][]const u8{ "MATCH", "OPTIONAL", "WHERE", "WITH", "RETURN", "CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE", "UNWIND", "CALL", "FOREACH", "UNION", "ORDER", "SKIP", "LIMIT", "LOAD", "SEARCH" };
     for (keywords) |keyword| {
         if (std.ascii.eqlIgnoreCase(t.text, keyword)) return true;
     }

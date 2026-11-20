@@ -104,7 +104,7 @@ pub fn Hnsw(comptime Storage: type) type {
             var entries = try arena.dupe(Hit, &.{entry});
             at = @min(own_level, header.top_level);
             while (true) : (at -= 1) {
-                const found = try searchLevel(storage, arena, own, entries, parameters.ef_construction, at, false);
+                const found = try searchLevel(storage, arena, own, entries, parameters.ef_construction, at, null);
                 const chosen = try selectNeighbours(storage, arena, withoutId(found, id), parameters.maxNeighbours(at));
                 try storage.setNeighbours(id, at, try idsOf(arena, chosen));
                 for (chosen) |neighbour| try addLink(storage, arena, parameters, neighbour.id, id, at);
@@ -174,14 +174,30 @@ pub fn Hnsw(comptime Storage: type) type {
         /// index keeps vectors), closest first; `ef` (at least k) trades
         /// time for recall.
         pub fn search(storage: *Storage, arena: Allocator, query: []const f32, k: usize, ef: usize) Error![]const Hit {
+            return searchFiltered(storage, arena, query, k, ef, &every_entity);
+        }
+
+        /// As `search`, among the live entities `filter` keeps: `filter`
+        /// points to a value with `fn accepts(self, id: u64) !bool`, asked
+        /// once for each entity that would enter the results. Those it
+        /// leaves out still route the search, as tombstones do, so a
+        /// selective filter visits more entities, never fewer results.
+        pub fn searchFiltered(storage: *Storage, arena: Allocator, query: []const f32, k: usize, ef: usize, filter: anytype) ![]const Hit {
             const header = try storage.header() orelse return &.{};
             if (k == 0 or header.live == 0) return &.{};
             var entry = Hit{ .id = header.entry, .distance = try distanceTo(storage, query, header.entry) };
             var at = header.top_level;
             while (at > 0) : (at -= 1) entry = try greedy(storage, arena, query, entry, at);
-            const found = try searchLevel(storage, arena, query, &.{entry}, @max(ef, k), 0, true);
+            const found = try searchLevel(storage, arena, query, &.{entry}, @max(ef, k), 0, filter);
             return found[0..@min(k, found.len)];
         }
+
+        const EveryEntity = struct {
+            fn accepts(_: *const EveryEntity, _: u64) Error!bool {
+                return true;
+            }
+        };
+        const every_entity = EveryEntity{};
 
         /// The distance of entity `id` to `target`: a query, or the vector
         /// of the entity being inserted.
@@ -207,6 +223,14 @@ pub fn Hnsw(comptime Storage: type) type {
             return best;
         }
 
+        /// Whether entity `id` may be a result of a search level: always
+        /// without a filter (`null`), else if live and kept by the filter.
+        inline fn isResult(storage: *Storage, filter: anytype, id: u64) !bool {
+            if (@TypeOf(filter) == @TypeOf(null)) return true;
+            if (!try storage.isLive(id)) return false;
+            return filter.accepts(id);
+        }
+
         fn closerFirst(_: void, a: Hit, b: Hit) std.math.Order {
             return a.order(b);
         }
@@ -216,9 +240,10 @@ pub fn Hnsw(comptime Storage: type) type {
         }
 
         /// The (up to) `ef` entities closest to `target` on level `at`,
-        /// reached from `entries`, closest first. With `live_only`,
-        /// tombstones route the search but are left out of the result.
-        fn searchLevel(storage: *Storage, arena: Allocator, target: []const f32, entries: []const Hit, ef: usize, at: u8, live_only: bool) Error![]Hit {
+        /// reached from `entries`, closest first. With a `filter` (see
+        /// `searchFiltered`), tombstones and the entities it leaves out
+        /// route the search but are left out of the result.
+        fn searchLevel(storage: *Storage, arena: Allocator, target: []const f32, entries: []const Hit, ef: usize, at: u8, filter: anytype) ![]Hit {
             var visited = std.AutoHashMapUnmanaged(u64, void).empty;
             // About what a search on level 0 visits: it seldom grows.
             try visited.ensureTotalCapacity(arena, @intCast(16 * ef));
@@ -227,7 +252,7 @@ pub fn Hnsw(comptime Storage: type) type {
             for (entries) |entry| {
                 if ((try visited.getOrPut(arena, entry.id)).found_existing) continue;
                 try candidates.push(arena, entry);
-                if (!live_only or try storage.isLive(entry.id)) try results.push(arena, entry);
+                if (try isResult(storage, filter, entry.id)) try results.push(arena, entry);
             }
             while (candidates.pop()) |current| {
                 if (results.count() >= ef and current.order(results.peek().?) == .gt) break;
@@ -236,7 +261,7 @@ pub fn Hnsw(comptime Storage: type) type {
                     const candidate = Hit{ .id = neighbour, .distance = try distanceTo(storage, target, neighbour) };
                     if (results.count() >= ef and candidate.order(results.peek().?) != .lt) continue;
                     try candidates.push(arena, candidate);
-                    if (live_only and !try storage.isLive(neighbour)) continue;
+                    if (!try isResult(storage, filter, neighbour)) continue;
                     try results.push(arena, candidate);
                     if (results.count() > ef) _ = results.pop();
                 }

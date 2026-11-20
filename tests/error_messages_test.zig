@@ -226,6 +226,60 @@ test "constraint violations name the constraint and the value" {
     ));
 }
 
+test "SEARCH names what is missing or misplaced" {
+    try expectErrors("", &.{
+        "SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "UNWIND [1] AS x SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH (m) SEARCH m IN (FULLTEXT INDEX plots FOR 'a' LIMIT 1) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1]) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS 4) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE s RETURN m",
+        "MATCH (m) SEARCH x IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH (m) WITH m MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH p = (m) SEARCH p IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH ()-[r*]->() SEARCH r IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN r",
+        "MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR g.embedding LIMIT 1) RETURN m",
+        "MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT g.k) RETURN m",
+        "MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS {ef: g.ef}) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] WHERE z > 1 LIMIT 1) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS m RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS s WHERE count(s) > 1 RETURN m",
+    }, snap(@src(),
+        \\SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  parse: SEARCH must follow a MATCH or OPTIONAL MATCH
+        \\UNWIND [1] AS x SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  parse: SEARCH must follow a MATCH or OPTIONAL MATCH
+        \\MATCH (m) SEARCH m IN (FULLTEXT INDEX plots FOR 'a' LIMIT 1) RETURN m
+        \\  parse: SEARCH reads vector indexes only: for a full-text index use CALL db.index.fulltext.queryNodes
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1]) RETURN m
+        \\  parse: SEARCH needs LIMIT k: how many entities to return
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS 4) RETURN m
+        \\  parse: OPTIONS takes a map: OPTIONS {ef: 400}
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE s RETURN m
+        \\  parse: expected keyword AS
+        \\MATCH (m) SEARCH x IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  invalid_expression: SEARCH needs 'x' to be a node or a relationship its MATCH binds
+        \\MATCH (m) WITH m MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  invalid_expression: SEARCH needs 'm' to be a node or a relationship its MATCH binds
+        \\MATCH p = (m) SEARCH p IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  invalid_expression: SEARCH needs 'p' to be a node or a relationship its MATCH binds
+        \\MATCH ()-[r*]->() SEARCH r IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN r
+        \\  invalid_expression: SEARCH needs 'r' to be a node or a relationship its MATCH binds
+        \\MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR g.embedding LIMIT 1) RETURN m
+        \\  invalid_expression: the SEARCH vector cannot read 'g', which its MATCH binds
+        \\MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT g.k) RETURN m
+        \\  invalid_expression: the SEARCH LIMIT cannot read 'g', which its MATCH binds
+        \\MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS {ef: g.ef}) RETURN m
+        \\  invalid_expression: the SEARCH OPTIONS cannot read 'g', which its MATCH binds
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] WHERE z > 1 LIMIT 1) RETURN m
+        \\  unknown_variable: unknown variable 'z'
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS m RETURN m
+        \\  invalid_expression: SCORE AS binds 'm', which is already bound
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS s WHERE count(s) > 1 RETURN m
+        \\  invalid_expression: an aggregate cannot be used in WHERE; aggregate in a WITH, then filter
+    ));
+}
+
 test "vector indexes name the index, the entity and what is wrong with the vector" {
     try expectErrors("CREATE VECTOR INDEX docs FOR (d:Doc) ON d.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}", &.{
         "CREATE (:Doc {embedding: [1.0, 2.0]})",

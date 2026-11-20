@@ -16,6 +16,11 @@
 //!   more comma-separated patterns followed by the `WHERE` (a missing `WHERE`
 //!   is `bool_literal(true)`).
 //! - `optional_match_clause` children are the same shape as `match_clause`.
+//! - `search_clause` follows the `match_clause` (or `optional_match_clause`)
+//!   that binds its variable; children are `[vector, where, limit, options,
+//!   post_where]`: the `WHERE` inside the parentheses and the one after
+//!   `SCORE AS` (each `bool_literal(true)` if absent), the OPTIONS map (a
+//!   `null_literal` if absent); names in the `search` payload.
 //! - `create_clause` children are its patterns, `[pattern, ...]`.
 //! - `set_clause` children are `set_item`s.
 //! - `delete_clause` children are `delete_item`s; `detach` is in the `delete`
@@ -158,6 +163,9 @@ pub const NodeKind = enum {
     projection_item,
     match_clause,
     optional_match_clause,
+    /// `SEARCH x IN (VECTOR INDEX ...) SCORE AS s`: data.search; see the
+    /// conventions above.
+    search_clause,
     create_clause,
     merge_clause,
     set_clause,
@@ -261,6 +269,8 @@ pub const Data = union(enum) {
     with_: struct { distinct: bool },
     unwind: struct { variable_name: []const u8 },
     load_csv: struct { variable_name: []const u8, with_headers: bool },
+    /// `score_alias` is "" without `SCORE AS`.
+    search: struct { variable_name: []const u8, index_name: []const u8, score_alias: []const u8 },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
     quantifier: struct { kind: QuantifierKind, variable_name: []const u8 },

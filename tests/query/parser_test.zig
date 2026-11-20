@@ -278,6 +278,44 @@ test "parses write clauses (CREATE, SET, DELETE)" {
     try testing.expectEqualStrings("born", r.ast.data(set_item_children[0]).text);
 }
 
+test "parses SEARCH after its MATCH, with both WHERE, OPTIONS and SCORE AS" {
+    var r = try parseString(
+        "MATCH (m:Movie) SEARCH m IN (VECTOR INDEX plots FOR $v WHERE m.year > 2000 LIMIT 10 OPTIONS {ef: 400}) SCORE AS s WHERE s > 0.8 RETURN m, s",
+    );
+    defer r.ast.deinit();
+
+    const clauses = r.ast.nodeChildren(r.root);
+    try testing.expectEqual(@as(usize, 3), clauses.len);
+    try testing.expectEqual(NodeKind.match_clause, r.ast.kind(clauses[0]));
+    try testing.expectEqual(NodeKind.search_clause, r.ast.kind(clauses[1]));
+    const search = r.ast.data(clauses[1]).search;
+    try testing.expectEqualStrings("m", search.variable_name);
+    try testing.expectEqualStrings("plots", search.index_name);
+    try testing.expectEqualStrings("s", search.score_alias);
+
+    // search_clause -> [vector, where, limit, options, post_where]
+    const children = r.ast.nodeChildren(clauses[1]);
+    try testing.expectEqual(@as(usize, 5), children.len);
+    try testing.expectEqual(NodeKind.parameter, r.ast.kind(children[0]));
+    try testing.expectEqual(NodeKind.binary_operation, r.ast.kind(children[1]));
+    try testing.expectEqual(NodeKind.integer_literal, r.ast.kind(children[2]));
+    try testing.expectEqual(NodeKind.map_literal, r.ast.kind(children[3]));
+    try testing.expectEqual(NodeKind.binary_operation, r.ast.kind(children[4]));
+}
+
+test "SEARCH without WHERE, OPTIONS or SCORE AS" {
+    var r = try parseString("OPTIONAL MATCH (m:Movie) SEARCH m IN (VECTOR INDEX plots FOR [1, 2] LIMIT 3) RETURN m");
+    defer r.ast.deinit();
+
+    const clauses = r.ast.nodeChildren(r.root);
+    try testing.expectEqual(NodeKind.optional_match_clause, r.ast.kind(clauses[0]));
+    try testing.expectEqualStrings("", r.ast.data(clauses[1]).search.score_alias);
+    const children = r.ast.nodeChildren(clauses[1]);
+    try testing.expect(r.ast.data(children[1]).boolean);
+    try testing.expectEqual(NodeKind.null_literal, r.ast.kind(children[3]));
+    try testing.expect(r.ast.data(children[4]).boolean);
+}
+
 test "reports unterminated string" {
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();

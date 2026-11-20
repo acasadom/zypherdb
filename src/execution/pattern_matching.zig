@@ -149,6 +149,25 @@ pub fn scanEdgeIndex(self: *Executor, reference: Plan.EdgeReference, next: Opera
     }
 }
 
+/// A relationship of the pattern bound before it: binds its ends to the
+/// edge's pattern nodes (both ways round for an undirected edge), checks
+/// them and follows it.
+pub fn checkBoundEdge(self: *Executor, reference: Plan.EdgeReference, next: OperatorIndex, bindings: *Bindings) ExecutionError!void {
+    const pattern = patternOf(self, reference.pattern);
+    const edge = pattern.edges[reference.edge];
+    const ref = switch (bindings.get(edge.slot) orelse return) {
+        .relationship => |relationship| relationship,
+        else => return,
+    };
+    if (!edge.allowsType(ref.edge_type)) return;
+    // Deleted by an earlier clause of the query: no longer matches.
+    if (try self.graph.relationship(ref.id, self.allocator) == null) return;
+    const forward = edge.undirected or edge.forward_direction == .out;
+    const backward = (edge.undirected and ref.src != ref.dst) or edge.forward_direction == .in;
+    if (forward) try bindEdgeEndpoints(self, pattern, reference.edge, ref, ref.src, ref.dst, next, bindings);
+    if (backward) try bindEdgeEndpoints(self, pattern, reference.edge, ref, ref.dst, ref.src, next, bindings);
+}
+
 fn bindEdgeEndpoints(self: *Executor, pattern: *const PatternPlan, edge_index: usize, ref: Relationship, left_id: NodeId, right_id: NodeId, next: OperatorIndex, bindings: *Bindings) ExecutionError!void {
     const saved = bindings.mark();
     defer bindings.restore(saved);
@@ -158,6 +177,7 @@ fn bindEdgeEndpoints(self: *Executor, pattern: *const PatternPlan, edge_index: u
     if (!try bindings.bindNode(self.allocator, right.slot, right_id)) return;
     setNode(self, pattern, edge_index, left_id);
     setNode(self, pattern, edge_index + 1, right_id);
+    if (!try hasAllLabels(self, left_id, left.labels) or !try hasAllLabels(self, right_id, right.labels)) return;
     if (!try nodeSeeksMatch(self, left, left_id, bindings)) return;
     if (!try nodeSeeksMatch(self, right, right_id, bindings)) return;
     try followEdge(self, pattern, edge_index, ref, next, bindings);

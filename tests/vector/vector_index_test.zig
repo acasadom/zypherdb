@@ -93,6 +93,7 @@ test "a node index: built from what is there, kept current, queried best first" 
     const config = [_]zypherdb.value.MapEntry{
         .{ .key = "vector.dimensions", .value = int(2) },
         .{ .key = "vector.similarity_function", .value = string("cosine") },
+        .{ .key = "vector.hnsw.ef_search", .value = int(100) },
     };
     const options = [_]zypherdb.value.MapEntry{.{ .key = "indexConfig", .value = .{ .map = &config } }};
     try expectQuery(ast, g, "SHOW VECTOR INDEXES", &.{&.{

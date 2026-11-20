@@ -13,7 +13,8 @@
 //!     labels or types: u16 count, each u16 length, bytes
 //!     properties: u16 count, each u16 length, bytes
 //!     index id: u32              the property or vector index's keys (0 for full-text)
-//!     dimensions: u16, similarity: u8   only for vector indexes
+//!     dimensions: u16, similarity: u8, ef_search: u32   only for vector indexes
+//!                                (ef_search 0: the default breadth)
 //!
 //! The key `!schema` counts the changes to the definitions, so a process that
 //! keeps them in memory knows when to read them again.
@@ -27,6 +28,8 @@ const Similarity = @import("../vector/similarity.zig").Similarity;
 
 pub const definition_marker: u8 = 'i';
 pub const schema_version_key: []const u8 = "!schema";
+/// A vector index's search breadth when its definition names none.
+pub const default_search_breadth: u32 = 100;
 /// The last property index id handed out (u32; ids start at 1).
 pub const index_id_key: []const u8 = "!index_id";
 
@@ -53,6 +56,16 @@ pub const Definition = struct {
     /// A vector index's vectors: their length, and how they are compared.
     dimensions: u16 = 0,
     similarity: Similarity = .cosine,
+    /// A vector index's default search breadth (`vector.hnsw.ef_search`),
+    /// 0 if not given: see `searchBreadth`.
+    ef_search: u32 = 0,
+
+    /// How many entities a search of this vector index looks at for each
+    /// one it returns, unless the query says (`vector.hnsw.ef_search`, else
+    /// `default_search_breadth`); the HNSW's ef is the larger of this and k.
+    pub fn searchBreadth(self: Definition) u32 {
+        return if (self.ef_search == 0) default_search_breadth else self.ef_search;
+    }
 
     /// True if the definition owns a property index (property_indexes.zig).
     pub fn hasPropertyIndex(self: Definition) bool {
@@ -79,6 +92,9 @@ pub const Definition = struct {
         if (self.kind == .vector) {
             try appendCount(&bytes, allocator, self.dimensions);
             try bytes.append(allocator, @backingInt(self.similarity));
+            var breadth: [4]u8 = undefined;
+            std.mem.writeInt(u32, &breadth, self.ef_search, .big);
+            try bytes.appendSlice(allocator, &breadth);
         }
         return bytes.items;
     }
@@ -101,6 +117,8 @@ pub const Definition = struct {
         if (kind == .vector) {
             definition.dimensions = @intCast(reader.count());
             definition.similarity = @fromBackingInt(reader.byte());
+            definition.ef_search = std.mem.readInt(u32, bytes[reader.position..][0..4], .big);
+            reader.position += 4;
         }
         return definition;
     }

@@ -35,6 +35,7 @@ const index_counts = @import("index_counts.zig");
 const procedures = @import("procedures.zig");
 const projection = @import("projection.zig");
 const writes = @import("writes.zig");
+const vector_search = @import("vector_search.zig");
 const profiling = @import("profiling.zig");
 
 /// Where the rows of a chain run by an operator or an expression go.
@@ -211,6 +212,8 @@ inline fn run(executor: *Executor, index: Plan.OperatorIndex, row: *Bindings) Ex
         .node_scan => |reference| try pattern_matching.scanNodes(executor, reference, next, row),
         .node_index_range_count => |reference| try index_counts.countNodes(executor, reference, next, row),
         .edge_index_scan => |reference| try pattern_matching.scanEdgeIndex(executor, reference, next, row),
+        .bound_edge => |reference| try pattern_matching.checkBoundEdge(executor, reference, next, row),
+        .search => |search| try vector_search.run(executor, search, next, row),
         .expand => |expand| try pattern_matching.expand(executor, expand, next, row),
         .project_path => |pattern| try pattern_matching.projectPath(executor, pattern, next, row),
         .filter => |filter| {

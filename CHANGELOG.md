@@ -20,6 +20,17 @@
   of a vector index also returns at once. `vector.similarity.cosine` and
   `vector.similarity.euclidean` score two lists with no index. See "Vector search" in
   `docs/guide/cypher.md`.
+- **The SEARCH clause.** `MATCH … SEARCH x IN (VECTOR INDEX name FOR vector [WHERE condition]
+  LIMIT k [OPTIONS {ef: n}]) [SCORE AS s] [WHERE condition]` keeps, for each row, the `k`
+  entities closest to the vector among those the `MATCH` pattern, its `WHERE` and the `WHERE`
+  inside `SEARCH` give, so `k` come out whenever `k` match. The condition can be any predicate,
+  on any variable in scope; nodes and relationships. Unlike Neo4j, where the pattern and the
+  `MATCH`'s `WHERE` filter after the search, a query written for Neo4j returns here the same rows
+  plus those missing up to `k`. A `WHERE` after `SCORE AS` filters after the search. When few
+  entities match, the answer is exact; otherwise the HNSW is searched with the condition and
+  completed exactly if it finds fewer than `k`. `PROFILE` says which way each row took. A new
+  index option, `vector.hnsw.ef_search` (100 by default), sets how many candidates a search looks
+  at; `OPTIONS {ef: n}` overrides it for one search.
 
 ### Changed
 

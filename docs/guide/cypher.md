@@ -35,6 +35,7 @@ its own rows on; the first clause receives one empty row.
 | --- | --- |
 | `MATCH pattern, … [WHERE condition]` | extends each row with every match of the patterns that passes the condition; comma-separated patterns are matched together |
 | `OPTIONAL MATCH …` | like `MATCH`, but keeps a row that has no match, with its new variables set to `null` (an outer join) |
+| `MATCH … SEARCH x IN (VECTOR INDEX name FOR vector [WHERE condition] LIMIT k [OPTIONS {ef: n}]) [SCORE AS s] [WHERE condition]` | for each row, keeps the `k` entities `x` closest to `vector` among those the `MATCH` (and the `WHERE`s before `SCORE AS`) give: see [Vector search](#vector-search) |
 | `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
 | `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR ';']` | one row per record of a CSV file: a list of strings, or with headers a map from each header to its field; an empty field is `null`, a quoted one (`""`) the empty string. It reads only from the **import directory** the database was opened with (off without one): `file:///people.csv` is `people.csv` in it, and `..` or a symbolic link out of it is refused, as is any other scheme (`http`). Values are strings: convert them (`toInteger(row.card)`). A failure is error code 11 (`ExternalResourceError` in Python). `linenumber()` and `file()` are not supported |
 | `CALL procedure(arguments) [YIELD column [AS name], … \| *] [WHERE condition]` | runs a [procedure](#procedures) for each row; each row it returns extends the row with the yielded columns |
@@ -361,7 +362,8 @@ CREATE [RANGE | TEXT] INDEX [name] [IF NOT EXISTS]
 
 CREATE VECTOR INDEX [name] [IF NOT EXISTS]
   FOR (n:Label) ON n.property               -- or FOR ()-[r:TYPE]-() ON r.property
-  OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'cosine'}}
+  OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'cosine',
+                         `vector.hnsw.ef_search`: 100}}
 
 CREATE CONSTRAINT [name] [IF NOT EXISTS]
   FOR (n:Label) REQUIRE n.property IS UNIQUE  -- or REQUIRE (n.a, n.b) IS UNIQUE
@@ -481,8 +483,21 @@ CALL db.index.vector.queryNodes('documents', 10, $question_embedding) YIELD node
 RETURN node.title, score
 ```
 
+Or, inside a query, with the `SEARCH` clause, which keeps the closest **among the entities that
+match** a pattern and any condition:
+
+```cypher
+MATCH (a:Author {name: $author})-[:WROTE]->(d:Document)
+WHERE d.year >= 2020
+SEARCH d IN (VECTOR INDEX documents FOR $question_embedding WHERE d.language = 'es' LIMIT 10)
+SCORE AS score
+RETURN d.title, score
+```
+
 - `vector.dimensions` (1 to 4096) is required: how many numbers each vector has.
   `vector.similarity_function` is `'cosine'` (the default) or `'euclidean'`, in any case.
+  `vector.hnsw.ef_search` (at least 1, 100 by default) is how many candidates a search looks at:
+  more finds more of the true nearest, and costs more.
 - **A wrong vector is an error, not a skip.** A write that would give an indexed node (one with
   the label) or relationship (of the type) something else in the property fails with a
   constraint violation (`ConstraintViolationError` in Python, error code 10) and writes nothing:
@@ -516,9 +531,30 @@ RETURN node.title, score
   euclidean `1 / (1 + d²)`, where `d` is the distance. Results come best first; equal scores by
   id.
 - The search is approximate (an HNSW graph, as in Neo4j, Memgraph and FalkorDB): it looks at
-  `max(k, 100)` candidates and finds nearly all of the true `k` nearest. The index follows every
+  `max(k, ef)` candidates, `ef` being the index's `vector.hnsw.ef_search`, and finds nearly all
+  of the true `k` nearest. The index follows every
   write in the transaction that makes it, as the other indexes do. Replicas keep their own: each
   moves an entity in its indexes as it applies the write that changed it.
+- **`SEARCH`** follows a `MATCH` or `OPTIONAL MATCH` (and its `WHERE`). Its variable is a node
+  or relationship that this `MATCH` binds, of the index's label or type; for each row of the
+  clauses before the `MATCH`, it keeps the `k` entities closest to the vector among those the
+  pattern, the `MATCH`'s `WHERE` and the `WHERE` inside `SEARCH` give, best first, and every row
+  of the `MATCH` with one of them goes on. So `k` come out whenever at least `k` match: the
+  condition chooses among the candidates, it does not remove results after the search. Any
+  condition works, on any variable in scope. `SCORE AS s` binds the score. A `WHERE` after
+  `SCORE AS` filters the rows after the search (it can use the score), so fewer than `k` may be
+  left. With `OPTIONAL MATCH`, a row that keeps no entity goes on once, with nulls.
+- The vector, `LIMIT` and `OPTIONS` are evaluated for each row, from the variables before the
+  `MATCH` (or parameters). The vector is checked like a written one; `null` is an error.
+  `OPTIONS {ef: 400}` overrides the index's `vector.hnsw.ef_search` for this search.
+- When few entities match (up to about `10 × ef`, more on a large index), `SEARCH` measures
+  each one: the answer is exact. When many match, it searches the HNSW graph, checking each
+  entity it meets, and if that leaves fewer than `k` it measures all those that match. `PROFILE`
+  says how many rows took each way. Deciding means listing the matches up to that bound, so a
+  condition no index answers reads entities of the label until it reaches it.
+- Neo4j's `SEARCH` applies the pattern and the `MATCH`'s `WHERE` after the search, so it may
+  return fewer than `k`, and its inner `WHERE` only takes properties named when the index was
+  created. A query written for Neo4j returns here the same rows plus those missing up to `k`.
 - `vector.similarity.cosine(a, b)` and `vector.similarity.euclidean(a, b)` score two lists of
   numbers of the same length the same way, with no index. They return `null` if either is
   `null`, or under cosine if one is all zeros; lists of other lengths, empty lists, or elements
@@ -589,8 +625,9 @@ ZypherDB does not implement these parts of openCypher (and of common Neo4j exten
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
   inside `CALL { … }`; `LOAD CSV` from URLs other than `file:` in the import directory;
 - constraints other than uniqueness on nodes (`IS NOT NULL`, `IS NODE KEY`, relationship
-  constraints); `TEXT`, `POINT`, `VECTOR` and `LOOKUP` indexes (`CREATE INDEX` makes a range
-  index, `CREATE FULLTEXT INDEX` a full-text one).
+  constraints); `TEXT`, `POINT` and `LOOKUP` indexes (`CREATE INDEX` makes a range
+  index, `CREATE FULLTEXT INDEX` a full-text one); `SEARCH` over a full-text index (use
+  `db.index.fulltext.queryNodes`).
 
 The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`
 gives the current pass rate per area.
