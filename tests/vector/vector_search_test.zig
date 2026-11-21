@@ -309,3 +309,18 @@ test "EXPLAIN shows the SEARCH over its MATCH" {
     }
     try testing.expectEqualStrings("Return VectorSearch NodeByLabelScan ", names.items);
 }
+
+test "a huge number of results or search breadth returns what the index holds" {
+    var f: Fixture = .{ .tmp = undefined };
+    try f.init();
+    defer f.deinit();
+    try expectQuery(&f.ast, &f.graph, "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.v OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'cosine'}}", &.{});
+    try expectQuery(&f.ast, &f.graph, "CREATE VECTOR INDEX wide FOR (w:Wide) ON w.v OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.hnsw.ef_search`: 4294967295}}", &.{});
+    try expectQuery(&f.ast, &f.graph, "CREATE (:Doc:Wide {v: [1.0, 0.0]}), (:Doc:Wide {v: [0.0, 1.0]})", &.{});
+    try expectQuery(&f.ast, &f.graph, "CALL db.index.vector.queryNodes('docs', 300000000, [1.0, 0.0]) YIELD score RETURN count(*)", &.{&.{int(2)}});
+    try expectQuery(&f.ast, &f.graph, "CALL db.index.vector.queryNodes('docs', 9223372036854775807, [1.0, 0.0]) YIELD score RETURN count(*)", &.{&.{int(2)}});
+    try expectQuery(&f.ast, &f.graph, "CALL db.index.vector.queryNodes('wide', 1, [1.0, 0.0]) YIELD score RETURN count(*)", &.{&.{int(1)}});
+    try expectQuery(&f.ast, &f.graph, "MATCH (d:Doc) SEARCH d IN (VECTOR INDEX docs FOR [1.0, 0.0] LIMIT 1 OPTIONS {ef: 4611686018427387904}) RETURN count(*)", &.{&.{int(1)}});
+    try expectQuery(&f.ast, &f.graph, "MATCH (d:Doc) SEARCH d IN (VECTOR INDEX docs FOR [1.0, 0.0] LIMIT 9223372036854775807) RETURN count(*)", &.{&.{int(2)}});
+    try expectQuery(&f.ast, &f.graph, "MATCH (w:Wide) SEARCH w IN (VECTOR INDEX wide FOR [1.0, 0.0] LIMIT 1) RETURN count(*)", &.{&.{int(1)}});
+}

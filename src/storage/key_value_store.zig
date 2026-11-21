@@ -389,6 +389,8 @@ pub const KeyValueStore = struct {
             self.application = try change_log.Application.begin(self.active_write_transaction.?, lsn);
         } else {
             if (self.inTransaction()) return error.WriteFailed;
+            // As every write does: an applier serves no reads to evict it.
+            self.vector_cache.evict();
             const transaction = try self.environment.beginWrite();
             errdefer transaction.abort();
             if (try change_log.readState(transaction) != null) return error.WriteFailed;

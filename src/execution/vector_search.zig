@@ -93,7 +93,7 @@ fn closest(executor: *Executor, search: Plan.Search, index: Plan.OperatorIndex, 
 /// to find those that match (the two costs meet at sqrt(ef x live)).
 fn exactLimit(request: Request, live: u64) usize {
     const breadth: u64 = request.ef;
-    return @intCast(@max(10 * breadth, std.math.sqrt(breadth *| live)));
+    return @intCast(@max(10 *| breadth, std.math.sqrt(breadth *| live)));
 }
 
 /// The entities of the MATCH's rows from `row`, with their rows, or null

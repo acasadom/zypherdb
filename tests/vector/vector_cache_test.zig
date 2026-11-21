@@ -224,3 +224,47 @@ test "an entry read since the clock last passed it outlives one that was not" {
     try testing.expectEqual(@as(usize, 0), again.entities.count());
     try testing.expectEqual(@as(usize, 0), cache.bytes);
 }
+
+test "a replica applying change sets keeps its cache within its limit" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var master = try openStore(&tmp, &master_path);
+    defer master.deinit();
+    try master.startChangeLog();
+    var g = Graph.init(&master, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+    try createDocs(&ast, &g, 200);
+    try expectQuery(&ast, &g, node_index, &.{});
+    try population.finish(&master);
+
+    var replica_base: [128]u8 = undefined;
+    var replica_path: [256]u8 = undefined;
+    try tmp.dir.createDirPath(testing.io, "replica");
+    var replica = try KeyValueStore.open(testing.allocator, try std.fmt.bufPrint(&replica_path, "{s}/replica", .{testPath(&tmp, &replica_base)}));
+    defer replica.deinit();
+    replica.vector_cache.limit = 4096;
+    var copy: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer copy.deinit();
+    var next = try master.writeCopy(&copy.writer) + 1;
+    _ = try replica.applyCopyPart(copy.written(), true);
+
+    // Writes that read many entries, then one that reads none: the cache
+    // the replica keeps is what the clock left before that last one.
+    for (0..20) |i| {
+        var text: [120]u8 = undefined;
+        const query = try std.fmt.bufPrint(&text, "MATCH (d:Doc {{id: {d}}}) SET d.v = [0.0, 1.0, {d}.0, 1.0]", .{ i * 10, i });
+        try expectQuery(&ast, &g, query, &.{});
+    }
+    try expectQuery(&ast, &g, "CREATE (:Plain)", &.{});
+    const end = (try master.changeLogState()).?.next_lsn;
+    while (next < end) : (next += 1) {
+        const bytes = (try master.changeSet(next)).?;
+        defer testing.allocator.free(bytes);
+        try testing.expectEqual(.applied, try replica.applyChangeSet(next, bytes));
+    }
+    try testing.expect(replica.vector_cache.bytes <= replica.vector_cache.limit);
+    var replica_graph = Graph.init(&replica, testing.allocator);
+    try expectSound(&replica_graph);
+}

@@ -315,3 +315,77 @@ fn waitOnline(g: *Graph, name: []const u8) !void {
     }
     return error.TestTimeout;
 }
+
+test "a node an index is still populating over keeps its bad vector: writes on it are refused, a replica applying them fails the index" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var master_path: [256]u8 = undefined;
+    var master = try openAt(&tmp, "master", &master_path);
+    defer master.deinit();
+    try master.startChangeLog();
+    master.population_budget = .{ .entities = 1, .nanoseconds = std.math.maxInt(u64) };
+    var replica_path: [256]u8 = undefined;
+    var replica = try openAt(&tmp, "replica", &replica_path);
+    defer replica.deinit();
+    replica.population_budget = master.population_budget;
+    var g = Graph.init(&master, testing.allocator);
+    var replica_graph = Graph.init(&replica, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (:Doc {id: 0, v: [1.0, 1.0, 0.0, 0.0]})", &.{});
+    try expectQuery(&ast, &g, "CREATE (:Doc:Other {id: 1, v: 'bad'})", &.{});
+    try expectQuery(&ast, &g, node_index, &.{});
+    try expectPopulating(&g, "docs", 1);
+    var copy: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer copy.deinit();
+    var next = try master.writeCopy(&copy.writer) + 1;
+    _ = (try replica.applyCopyPart(copy.written(), true)).?;
+    try expectPopulating(&replica_graph, "docs", 1);
+
+    try expectQueryError(&ast, &g, "MATCH (d:Other) REMOVE d:Other", error.ConstraintViolation);
+    try expectQueryError(&ast, &g, "MATCH (d:Other) REMOVE d.id", error.ConstraintViolation);
+    try expectQueryError(&ast, &g, "MATCH (d:Other) SET d.id = 2", error.ConstraintViolation);
+    try expectPopulating(&g, "docs", 1);
+    try expectSound(&g);
+
+    // The master's index fails when its population gets to the node; its
+    // writes are no longer checked, and the replica's index fails on them.
+    try population.finish(&master);
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    try testing.expect(try stateOf(&g, arena.allocator(), "docs") == .failed);
+    try expectQuery(&ast, &g, "MATCH (d:Other) REMOVE d:Other", &.{});
+    try replay(&master, &replica, &next);
+    const failed = try stateOf(&replica_graph, arena.allocator(), "docs");
+    try testing.expectEqual(@as(u64, 1), failed.failed.entity);
+    try expectSound(&replica_graph);
+    try population.finish(&replica);
+    try expectSound(&replica_graph);
+}
+
+test "a batch over relationships of other types ends within its time" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buffer: [256]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    store.population_budget = .{ .entities = std.math.maxInt(u64), .nanoseconds = 1 };
+    var g = Graph.init(&store, testing.allocator);
+    var ast = Ast.init(testing.allocator);
+    defer ast.deinit();
+
+    try expectQuery(&ast, &g, "CREATE (a:A), (b:B) WITH a, b UNWIND range(1, 10000) AS i CREATE (a)-[:OTHER]->(b)", &.{});
+    try expectQuery(&ast, &g, "MATCH (a:A), (b:B) UNWIND range(1, 10) AS i CREATE (a)-[:LINK {v: [toFloat(i), 0.0]}]->(b)", &.{});
+    try expectQuery(&ast, &g, "CREATE VECTOR INDEX links FOR ()-[r:LINK]-() ON r.v OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'euclidean'}}", &.{});
+    // One look of the first batch, not the whole table of OTHER.
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const progress = (try stateOf(&g, arena.allocator(), "links")).populating;
+    try testing.expect(progress.next <= 4096);
+    try testing.expectEqual(@as(u64, 0), progress.examined);
+    try population.finish(&store);
+    try expectOnline(&g, "links");
+    try expectQuery(&ast, &g, "CALL db.index.vector.queryRelationships('links', 50, [0, 0]) YIELD relationship RETURN count(relationship)", &.{&.{int(10)}});
+    try expectSound(&g);
+}
