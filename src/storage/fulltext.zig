@@ -1,17 +1,20 @@
 //! Schema definitions: full-text indexes (whose postings live in the same
 //! keys' space, fulltext_postings.zig), property indexes
-//! (property_indexes.zig), and uniqueness constraints (constraints.zig),
-//! each of which owns a property index. One namespace for their names, as
+//! (property_indexes.zig), uniqueness constraints (constraints.zig),
+//! each of which owns a property index, and vector indexes
+//! (vector_index.zig). One namespace for their names, as
 //! in Neo4j.
 //!
 //! A definition is stored under `i | name`:
 //!
-//!     kind: u8                   0 full-text, 1 range (declared), 2 unique
+//!     kind: u8                   0 full-text, 1 range (declared), 2 unique, 3 vector
 //!     entity: u8                 0 nodes, 1 relationships
 //!     analyzer: u16 length, bytes (empty but for full-text)
 //!     labels or types: u16 count, each u16 length, bytes
 //!     properties: u16 count, each u16 length, bytes
-//!     index id: u32              the property index's keys (0 for full-text)
+//!     index id: u32              the property or vector index's keys (0 for full-text)
+//!     dimensions: u16, similarity: u8, ef_search: u32   only for vector indexes
+//!                                (ef_search 0: the default breadth)
 //!
 //! The key `!schema` counts the changes to the definitions, so a process that
 //! keeps them in memory knows when to read them again.
@@ -21,9 +24,12 @@ const Allocator = std.mem.Allocator;
 
 const Graph = @import("graph.zig").Graph;
 const StorageError = @import("key_value_store.zig").StorageError;
+const Similarity = @import("../vector/similarity.zig").Similarity;
 
 pub const definition_marker: u8 = 'i';
 pub const schema_version_key: []const u8 = "!schema";
+/// A vector index's search breadth when its definition names none.
+pub const default_search_breadth: u32 = 100;
 /// The last property index id handed out (u32; ids start at 1).
 pub const index_id_key: []const u8 = "!index_id";
 
@@ -35,7 +41,7 @@ pub const max_fulltext_properties = 256;
 
 pub const Entity = enum(u8) { nodes = 0, relationships = 1 };
 
-pub const Kind = enum(u8) { fulltext = 0, range = 1, unique = 2 };
+pub const Kind = enum(u8) { fulltext = 0, range = 1, unique = 2, vector = 3 };
 
 pub const Definition = struct {
     name: []const u8,
@@ -44,12 +50,30 @@ pub const Definition = struct {
     analyzer: []const u8,
     labels_or_types: []const []const u8,
     properties: []const []const u8,
-    /// The property index's id in its keys (range and unique; 0 for
-    /// full-text), given by `create`.
+    /// The property or vector index's id in its keys (0 for full-text),
+    /// given by `create`.
     index_id: u32 = 0,
+    /// A vector index's vectors: their length, and how they are compared.
+    dimensions: u16 = 0,
+    similarity: Similarity = .cosine,
+    /// A vector index's default search breadth (`vector.hnsw.ef_search`),
+    /// 0 if not given: see `searchBreadth`.
+    ef_search: u32 = 0,
+
+    /// How many entities a search of this vector index looks at for each
+    /// one it returns, unless the query says (`vector.hnsw.ef_search`, else
+    /// `default_search_breadth`); the HNSW's ef is the larger of this and k.
+    pub fn searchBreadth(self: Definition) u32 {
+        return if (self.ef_search == 0) default_search_breadth else self.ef_search;
+    }
 
     /// True if the definition owns a property index (property_indexes.zig).
     pub fn hasPropertyIndex(self: Definition) bool {
+        return self.kind == .range or self.kind == .unique;
+    }
+
+    /// True if its keys are named by an index id (`index_id_key`).
+    fn hasIndexId(self: Definition) bool {
         return self.kind != .fulltext;
     }
 
@@ -65,11 +89,18 @@ pub const Definition = struct {
         var id: [4]u8 = undefined;
         std.mem.writeInt(u32, &id, self.index_id, .big);
         try bytes.appendSlice(allocator, &id);
+        if (self.kind == .vector) {
+            try appendCount(&bytes, allocator, self.dimensions);
+            try bytes.append(allocator, @backingInt(self.similarity));
+            var breadth: [4]u8 = undefined;
+            std.mem.writeInt(u32, &breadth, self.ef_search, .big);
+            try bytes.appendSlice(allocator, &breadth);
+        }
         return bytes.items;
     }
 
     /// The definition `name` stored as `bytes`, its strings copied with `allocator`.
-    fn decode(name: []const u8, bytes: []const u8, allocator: Allocator) Allocator.Error!Definition {
+    pub fn decode(name: []const u8, bytes: []const u8, allocator: Allocator) Allocator.Error!Definition {
         var reader = Reader{ .bytes = bytes };
         const kind: Kind = @fromBackingInt(@intCast(reader.byte()));
         const entity: Entity = @fromBackingInt(@intCast(reader.byte()));
@@ -81,7 +112,15 @@ pub const Definition = struct {
             list.* = items;
         }
         const index_id = std.mem.readInt(u32, bytes[reader.position..][0..4], .big);
-        return .{ .name = try allocator.dupe(u8, name), .kind = kind, .entity = entity, .analyzer = analyzer, .labels_or_types = lists[0], .properties = lists[1], .index_id = index_id };
+        reader.position += 4;
+        var definition = Definition{ .name = try allocator.dupe(u8, name), .kind = kind, .entity = entity, .analyzer = analyzer, .labels_or_types = lists[0], .properties = lists[1], .index_id = index_id };
+        if (kind == .vector) {
+            definition.dimensions = @intCast(reader.count());
+            definition.similarity = @fromBackingInt(reader.byte());
+            definition.ef_search = std.mem.readInt(u32, bytes[reader.position..][0..4], .big);
+            reader.position += 4;
+        }
+        return definition;
     }
 };
 
@@ -139,7 +178,8 @@ pub fn create(graph: *Graph, definition: Definition) StorageError!Definition {
     var scratch = std.heap.ArenaAllocator.init(graph.allocator);
     defer scratch.deinit();
     var stored = definition;
-    if (definition.hasPropertyIndex()) stored.index_id = try nextIndexId(graph);
+    if (definition.hasIndexId()) stored.index_id = try nextIndexId(graph);
+    if (definition.kind == .vector) try graph.raiseFormat(Graph.vector_format);
     var key = std.ArrayList(u8).empty;
     try appendDefinitionKey(&key, scratch.allocator(), definition.name);
     try graph.store.put(key.items, try stored.encode(scratch.allocator()));
@@ -147,7 +187,7 @@ pub fn create(graph: *Graph, definition: Definition) StorageError!Definition {
     return stored;
 }
 
-/// Hands out a property index id never used before (a counter, so the keys
+/// Hands out an index id never used before (a counter, so the keys
 /// of a dropped index are never read as another's).
 fn nextIndexId(graph: *Graph) StorageError!u32 {
     const last: u32 = if (try graph.store.get(index_id_key)) |raw| last: {

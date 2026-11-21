@@ -44,6 +44,7 @@ const Executor = zypherdb.Executor;
 const Diagnostic = zypherdb.Diagnostic;
 const Statement = zypherdb.Statement;
 const Replication = zypherdb.replication.Replication;
+const PopulationBuilder = zypherdb.vector.population.Builder;
 const replica_writes = zypherdb.replication_replica_writes;
 const EntitySnapshot = @FieldType(Executor, "entities");
 
@@ -65,6 +66,8 @@ const Shared = struct {
     import_directory: ?[]u8 = null,
     /// Replication, on a database opened with a role.
     replication: ?*Replication = null,
+    /// Populates new vector indexes in the background.
+    population: ?*PopulationBuilder = null,
     /// The sessions open on the database; the last one closed closes it.
     sessions: std.atomic.Value(usize) = .init(0),
 };
@@ -108,6 +111,7 @@ fn release(database: *Database) void {
 
 fn releaseShared(shared: *Shared) void {
     if (shared.replication) |replication| replication.stop();
+    if (shared.population) |builder| builder.stop();
     shared.store.deinit();
     shared.procedure_arena.deinit();
     if (shared.import_directory) |directory| allocator.free(directory);
@@ -595,6 +599,10 @@ fn open(_: ?*py.PyObject, args: ?*py.PyObject) callconv(.c) ?*py.PyObject {
     graph.checkFormat() catch |err| {
         releaseShared(shared);
         if (err == error.IncompatibleFormat) return raise(classes.storage_error, "the database at {s} was written in another storage format", .{path});
+        return raise(classes.storage_error, "could not open the database at {s}", .{path});
+    };
+    shared.population = PopulationBuilder.start(allocator, &shared.store) catch {
+        releaseShared(shared);
         return raise(classes.storage_error, "could not open the database at {s}", .{path});
     };
     const database = openSession(shared) orelse {

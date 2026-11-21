@@ -17,6 +17,9 @@ const Definition = @import("fulltext.zig").Definition;
 const layout = @import("layout.zig");
 const change_log = @import("change_log.zig");
 const database_copy = @import("copy.zig");
+const vector_index_marker = @import("vector_index.zig").marker;
+const ReplicaVectorIndexes = @import("replica_vector_indexes.zig").Observer;
+const VectorCache = @import("vector_cache.zig").VectorCache;
 
 const Table = engine.Table;
 
@@ -139,10 +142,37 @@ pub const KeyValueStore = struct {
     /// The copy being loaded part by part, in the active write transaction
     /// (`applyCopyPart`).
     loading: ?database_copy.Loading = null,
+    /// The active write transaction writes only keys the change log does
+    /// not carry (`beginLocalWrite`).
+    local_write: bool = false,
+    /// Told when a vector index may have work left to do in the background
+    /// (vector_population.zig): population, a rebuild, keys to clear.
+    /// Without one, population goes no further than the batch its CREATE
+    /// does, and the rest waits for a database open with one.
+    population_waker: ?PopulationWaker = null,
+    /// How much one batch of a vector index's background work does.
+    population_budget: PopulationBudget = .{},
+    /// The tombstones a vector index gathers before it is rebuilt without
+    /// them, at least (they must also outnumber its live entities).
+    vector_rebuild_tombstones: u64 = 1024,
+    /// Vector index entries decoded, kept across transactions (see
+    /// vector_cache.zig). Every write transaction that ends without its
+    /// commit drops them: the engine may hand its id out again.
+    vector_cache: VectorCache,
 
     pub const CommitListener = struct {
         context: *anyopaque,
         committed: *const fn (context: *anyopaque, lsn: u64) void,
+    };
+
+    pub const PopulationWaker = struct {
+        context: *anyopaque,
+        wake: *const fn (context: *anyopaque) void,
+    };
+
+    pub const PopulationBudget = struct {
+        entities: u64 = std.math.maxInt(u64),
+        nanoseconds: u64 = 20 * std.time.ns_per_ms,
     };
 
     pub const SchemaDefinitions = struct {
@@ -164,7 +194,7 @@ pub const KeyValueStore = struct {
         errdefer environment.close();
         const records = allocator.create(RecordCache) catch return error.OutOfMemory;
         records.* = .{};
-        return .{ .environment = environment, .allocator = allocator, .records = records };
+        return .{ .environment = environment, .allocator = allocator, .records = records, .vector_cache = .init(allocator) };
     }
 
     /// Writes every commit so far to disk (what `full` durability does at
@@ -182,6 +212,7 @@ pub const KeyValueStore = struct {
     pub fn deinit(self: *KeyValueStore) void {
         self.abandonChangeSet();
         self.forgetSchemaDefinitions();
+        self.vector_cache.deinit();
         self.stopRecording();
         self.environment.close();
         self.allocator.destroy(self.records);
@@ -192,6 +223,7 @@ pub const KeyValueStore = struct {
     /// its uncommitted writes). Not reentrant (there is a single writer anyway).
     pub fn beginWrite(self: *KeyValueStore) StorageError!void {
         if (self.inTransaction()) return error.WriteFailed;
+        self.vector_cache.evict();
         const transaction = try self.environment.beginWrite();
         errdefer transaction.abort();
         try self.refuseOnReplica(transaction);
@@ -213,11 +245,28 @@ pub const KeyValueStore = struct {
         };
         self.active_write_transaction = null;
         self.write_transaction_memo = .{};
-        try transaction.commit();
+        try self.commitTransaction(transaction);
         const recorder = self.change_recorder orelse return;
         if (recorder.chunks == 0) return;
         self.last_committed_lsn = recorder.state.next_lsn - 1;
         if (self.commit_listener) |listener| listener.committed(listener.context, recorder.state.next_lsn - 1);
+    }
+
+    /// Begins a write transaction of keys the change log does not carry (a
+    /// vector index's, vector_population.zig), on a replica too: any other
+    /// write in it fails. Ended by `commitWrite`/`abortWrite`.
+    pub fn beginLocalWrite(self: *KeyValueStore) StorageError!void {
+        if (self.inTransaction()) return error.WriteFailed;
+        self.vector_cache.evict();
+        self.active_write_transaction = try self.environment.beginWrite();
+        self.write_transaction_memo = .{};
+        self.local_write = true;
+    }
+
+    /// Tells the population waker, if there is one, that a vector index may
+    /// have work left in the background.
+    pub fn wakePopulation(self: *KeyValueStore) void {
+        if (self.population_waker) |waker| waker.wake(waker.context);
     }
 
     pub fn abortWrite(self: *KeyValueStore) void {
@@ -227,13 +276,24 @@ pub const KeyValueStore = struct {
         }
         self.stopRecording();
         self.write_transaction_memo = .{};
-        // They may hold a schema change that never happened.
+        // They may hold a schema change, or vector index entries, that never happened.
         self.forgetSchemaDefinitions();
+        self.vector_cache.clear();
+    }
+
+    /// Commits write transaction `transaction`: on a failure it is aborted,
+    /// and the vector cache dropped.
+    fn commitTransaction(self: *KeyValueStore, transaction: engine.Transaction) StorageError!void {
+        transaction.commit() catch |err| {
+            self.vector_cache.clear();
+            return err;
+        };
     }
 
     fn stopRecording(self: *KeyValueStore) void {
         if (self.change_recorder) |*recorder| recorder.deinit(self.allocator);
         self.change_recorder = null;
+        self.local_write = false;
     }
 
     fn refuseOnReplica(self: *KeyValueStore, transaction: engine.Transaction) StorageError!void {
@@ -249,6 +309,7 @@ pub const KeyValueStore = struct {
     /// Records a write the active write transaction has just made, if the
     /// change log is started.
     fn recordChange(self: *KeyValueStore, transaction: engine.Transaction, change: change_log.Change) StorageError!void {
+        if (self.local_write) return error.WriteFailed;
         if (self.change_recorder) |*recorder| try recorder.record(self.allocator, transaction, change);
     }
 
@@ -328,15 +389,20 @@ pub const KeyValueStore = struct {
             self.application = try change_log.Application.begin(self.active_write_transaction.?, lsn);
         } else {
             if (self.inTransaction()) return error.WriteFailed;
+            // As every write does: an applier serves no reads to evict it.
+            self.vector_cache.evict();
             const transaction = try self.environment.beginWrite();
             errdefer transaction.abort();
             if (try change_log.readState(transaction) != null) return error.WriteFailed;
             self.application = try change_log.Application.begin(transaction, lsn);
             self.active_write_transaction = transaction;
+            self.write_transaction_memo = .{};
         }
         const transaction = self.active_write_transaction.?;
         const application = &self.application.?;
-        try application.add(self.allocator, transaction, bytes);
+        var observer = ReplicaVectorIndexes.init(self);
+        defer observer.deinit();
+        try application.add(self.allocator, transaction, bytes, &observer);
         if (!final) return null;
         const applied = try application.finish(transaction);
         application.deinit(self.allocator);
@@ -348,7 +414,11 @@ pub const KeyValueStore = struct {
         const held = self.held_lsn != null;
         self.held_lsn = null;
         self.active_write_transaction = null;
-        if (applied == .already_applied and !held) transaction.abort() else try transaction.commit();
+        self.write_transaction_memo = .{};
+        if (applied == .already_applied and !held) {
+            transaction.abort();
+            self.vector_cache.clear();
+        } else try self.commitTransaction(transaction);
         return applied;
     }
 
@@ -360,7 +430,8 @@ pub const KeyValueStore = struct {
         const transaction = self.active_write_transaction.?;
         self.held_lsn = null;
         self.active_write_transaction = null;
-        try transaction.commit();
+        self.write_transaction_memo = .{};
+        try self.commitTransaction(transaction);
         return lsn;
     }
 
@@ -377,6 +448,10 @@ pub const KeyValueStore = struct {
         self.held_lsn = null;
         self.active_write_transaction.?.abort();
         self.active_write_transaction = null;
+        // They may hold a schema change, or vector index entries, that never happened.
+        self.write_transaction_memo = .{};
+        self.forgetSchemaDefinitions();
+        self.vector_cache.clear();
     }
 
     /// Applies change set `lsn` whole, `bytes` (see `applyChangeSetPart`).
@@ -422,9 +497,13 @@ pub const KeyValueStore = struct {
         loading.deinit(self.allocator);
         self.loading = null;
         self.active_write_transaction = null;
+        // The copy replaces every vector index entry kept.
+        self.vector_cache.clear();
         try transaction.commit();
         // The copy's schema may have the version of the one cached.
         self.forgetSchemaDefinitions();
+        // It may hold an index populating or being rebuilt, here to go on with.
+        self.wakePopulation();
         return lsn;
     }
 
@@ -441,6 +520,10 @@ pub const KeyValueStore = struct {
             .change_log_limit = self.change_log_limit,
             .commit_listener = self.commit_listener,
             .follows_master = self.follows_master,
+            .population_waker = self.population_waker,
+            .population_budget = self.population_budget,
+            .vector_rebuild_tombstones = self.vector_rebuild_tombstones,
+            .vector_cache = .{ .allocator = self.allocator, .limit = self.vector_cache.limit },
         };
     }
 
@@ -475,6 +558,7 @@ pub const KeyValueStore = struct {
     /// (snapshot isolation), not writes committed afterwards.
     pub fn beginRead(self: *KeyValueStore) StorageError!void {
         if (self.inTransaction()) return error.ReadFailed;
+        self.vector_cache.evict();
         self.active_read_transaction = try self.environment.beginRead();
         self.read_transaction_number += 1;
         self.records.startTransaction();
@@ -530,6 +614,16 @@ pub const KeyValueStore = struct {
         try self.autocommit(operation, arguments);
     }
 
+    /// The id of the active transaction (see engine/contract.zig), if any.
+    pub fn transactionId(self: *const KeyValueStore) ?u64 {
+        return (self.activeTransaction() orelse return null).id();
+    }
+
+    /// The id of the active write transaction, if any.
+    pub fn writeTransactionId(self: *const KeyValueStore) ?u64 {
+        return (self.active_write_transaction orelse return null).id();
+    }
+
     /// The write transaction, or null if a new one must be made for one change.
     fn writer(self: *const KeyValueStore) ?engine.Transaction {
         return self.active_write_transaction;
@@ -543,7 +637,7 @@ pub const KeyValueStore = struct {
         const transaction = self.writer() orelse return self.commitAlone(put, .{ self, key, value });
         try checkLength(value);
         try transaction.put(.main, key, value);
-        try self.recordChange(transaction, .{ .operation = .put, .table = .main, .key = key, .value = value });
+        if (isLogged(key)) try self.recordChange(transaction, .{ .operation = .put, .table = .main, .key = key, .value = value });
     }
 
     /// Idempotent: deleting a missing key is a success. Commits at once
@@ -551,7 +645,13 @@ pub const KeyValueStore = struct {
     pub fn del(self: *KeyValueStore, key: []const u8) StorageError!void {
         const transaction = self.writer() orelse return self.commitAlone(del, .{ self, key });
         try transaction.delete(.main, key);
-        try self.recordChange(transaction, .{ .operation = .delete, .table = .main, .key = key });
+        if (isLogged(key)) try self.recordChange(transaction, .{ .operation = .delete, .table = .main, .key = key });
+    }
+
+    /// Whether the change log carries a write to `key` of the main table: all
+    /// but a vector index's (replicas keep their own, replica_vector_indexes.zig).
+    fn isLogged(key: []const u8) bool {
+        return key.len == 0 or key[0] != vector_index_marker;
     }
 
     /// An absent key is a normal result: `null`, not an error.
@@ -706,6 +806,11 @@ pub const KeyValueStore = struct {
     /// are the ids in native byte order, the values their records).
     pub fn scanRelationships(self: *KeyValueStore) StorageError!PrefixIterator {
         return self.scan(.relationships, "", "", null);
+    }
+
+    /// As `scanRelationships`, from id `first` on.
+    pub fn scanRelationshipsFrom(self: *KeyValueStore, first: u64) StorageError!PrefixIterator {
+        return self.scan(.relationships, "", std.mem.asBytes(&first), null);
     }
 
     /// Iterates every key of the main table, in key order.

@@ -96,7 +96,10 @@ const Builder = struct {
     fn declarePattern(self: *Builder, pattern: Index, scope: *Scope) Allocator.Error!void {
         const ast = self.context.ast;
         const path_variable = ast.data(pattern).text;
-        if (path_variable.len > 0) _ = try self.declare(scope, path_variable, pattern);
+        // In scope only when a SEARCH plans its MATCH again (`planSearch`).
+        if (scope.slotOf(path_variable)) |slot| {
+            self.slot_of[pattern] = slot;
+        } else if (path_variable.len > 0) _ = try self.declare(scope, path_variable, pattern);
         for (ast.nodeChildren(pattern)) |element| {
             const name = switch (ast.kind(element)) {
                 .node_pattern => ast.data(element).node_pattern.variable_name,
@@ -110,6 +113,22 @@ const Builder = struct {
         }
     }
 
+    /// Adds the variables of `pattern` to `names`, with their slots in `scope`.
+    fn bindPatternNames(self: *Builder, pattern: Index, scope: *const Scope, names: *Scope) Allocator.Error!void {
+        const ast = self.context.ast;
+        const allocator = self.context.allocator;
+        const path_variable = ast.data(pattern).text;
+        if (scope.slotOf(path_variable)) |slot| try names.bind(allocator, path_variable, slot);
+        for (ast.nodeChildren(pattern)) |element| {
+            const name = switch (ast.kind(element)) {
+                .node_pattern => ast.data(element).node_pattern.variable_name,
+                .edge_pattern => ast.data(element).edge_pattern.variable_name,
+                else => continue,
+            };
+            if (scope.slotOf(name)) |slot| try names.bind(allocator, name, slot);
+        }
+    }
+
     /// The chain of the clauses of `query`, from the variables in `scope`.
     fn buildChain(self: *Builder, query: Index, initial_scope: Scope, kind: ChainKind) Allocator.Error!ChainIndex {
         const ast = self.context.ast;
@@ -119,7 +138,14 @@ const Builder = struct {
         const clauses = ast.nodeChildren(query);
         const first_pattern = self.patterns.items.len;
         for (clauses, 0..) |clause, position| {
+            // Planned with the MATCH before it.
+            if (ast.kind(clause) == .search_clause) continue;
             if (writes and position > 0) try operators.append(self.context.allocator, .eager);
+            const following = if (position + 1 < clauses.len and ast.kind(clauses[position + 1]) == .search_clause) clauses[position + 1] else null;
+            if (following) |search| {
+                try self.planSearch(clause, search, &scope, &operators);
+                continue;
+            }
             try self.planClause(clause, &scope, &operators, kind, position + 1 == clauses.len);
         }
         // Counting from an index goes first; the rest of the chain is what
@@ -156,7 +182,7 @@ const Builder = struct {
         const allocator = self.context.allocator;
         const children = ast.nodeChildren(clause_index);
         switch (ast.kind(clause_index)) {
-            .match_clause => try self.patternOperators(matchPatterns(ast, clause_index), whereOf(ast, children[children.len - 1]), scope, operators),
+            .match_clause => try self.patternOperators(matchPatterns(ast, clause_index), whereOf(ast, children[children.len - 1]), scope, null, operators),
             .optional_match_clause => {
                 // Its chain binds the clause's variables, in the slots the
                 // rest of the query reads.
@@ -220,15 +246,72 @@ const Builder = struct {
         }
     }
 
+    /// A MATCH or OPTIONAL MATCH and the SEARCH after it: one operator,
+    /// which runs the MATCH (with the SEARCH's WHERE) as two chains, from
+    /// the row and from the row with the entity bound. The scope gains the
+    /// MATCH's variables and the score.
+    fn planSearch(self: *Builder, match_clause: Index, search_clause: Index, scope: *Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
+        const ast = self.context.ast;
+        const allocator = self.context.allocator;
+        const search = ast.data(search_clause).search;
+        const parts = ast.nodeChildren(search_clause); // vector, where, limit, options, post where
+        // The vector, k and the options read the row before the MATCH.
+        for ([_]Index{ parts[0], parts[2], parts[3] }) |expression| try self.planExpressions(expression, scope);
+        const pattern_list = matchPatterns(ast, match_clause);
+        const match_children = ast.nodeChildren(match_clause);
+        const where = whereOf(ast, match_children[match_children.len - 1]);
+
+        var after = try scope.clone(allocator);
+        var chain_operators = std.ArrayList(Operator).empty;
+        try self.patternOperators(pattern_list, where, &after, null, &chain_operators);
+        try self.searchFilter(parts[1], &after, &chain_operators);
+        const candidates = try self.finish(&chain_operators, .inner);
+        const entity_slot = after.slotOf(search.variable_name).?; // checked: the MATCH binds it
+
+        var bound = try scope.clone(allocator);
+        try bound.bind(allocator, search.variable_name, entity_slot);
+        var same_slots = try after.clone(allocator);
+        chain_operators = .empty;
+        try self.patternOperators(pattern_list, where, &same_slots, &bound, &chain_operators);
+        try self.searchFilter(parts[1], &same_slots, &chain_operators);
+        const rows_of = try self.finish(&chain_operators, .inner);
+
+        const score_slot = if (search.score_alias.len > 0) try self.declare(&after, search.score_alias, search_clause) else no_slot;
+        // The WHERE after SCORE AS is the operator's: an OPTIONAL MATCH
+        // whose rows it all drops still gives its row of nulls.
+        try self.planExpressions(parts[4], &after);
+        try operators.append(allocator, .{ .search = .{
+            .clause = search_clause,
+            .match_clause = match_clause,
+            .candidates = candidates,
+            .rows_of = rows_of,
+            .entity_slot = entity_slot,
+            .score_slot = score_slot,
+            .relationships = bindsRelationship(ast, pattern_list, search.variable_name),
+        } });
+        scope.* = after;
+    }
+
+    /// A WHERE of a SEARCH, unless it is absent.
+    fn searchFilter(self: *Builder, where: Index, scope: *const Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
+        const predicate = whereOf(self.context.ast, where) orelse return;
+        try self.planExpressions(predicate, scope);
+        try operators.append(self.context.allocator, .{ .filter = .{ .predicate = predicate, .counts_accepted = false } });
+    }
+
     /// The operators of `pattern_list` (one MATCH), whose WHERE is `where`
-    /// (null: none), bound from `scope`, which gains their variables.
-    fn patternOperators(self: *Builder, pattern_list: []const Index, where: ?Index, scope: *Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
+    /// (null: none), bound from `scope`, which gains their variables. With
+    /// `bound_before`, the variables bound before it are those, not the
+    /// scope's: `scope` then already holds every variable's slot.
+    fn patternOperators(self: *Builder, pattern_list: []const Index, where: ?Index, scope: *Scope, bound_before: ?*const Scope, operators: *std.ArrayList(Operator)) Allocator.Error!void {
         const allocator = self.context.allocator;
         const match_index = self.match_count;
         self.match_count += 1;
+        var bound = if (bound_before) |names| try names.clone(allocator) else null;
         for (pattern_list) |pattern| {
-            const before = try scope.clone(allocator);
+            const before = if (bound) |names| try names.clone(allocator) else try scope.clone(allocator);
             try self.declarePattern(pattern, scope);
+            if (bound) |*names| try self.bindPatternNames(pattern, scope, names);
             // Its properties may read its own earlier elements.
             try self.planExpressions(pattern, scope);
             const placement = patterns.Placement{
@@ -252,7 +335,7 @@ const Builder = struct {
     /// gains the patterns' variables.
     fn patternChain(self: *Builder, pattern_list: []const Index, where: ?Index, scope: *Scope) Allocator.Error!ChainIndex {
         var operators = std.ArrayList(Operator).empty;
-        try self.patternOperators(pattern_list, where, scope, &operators);
+        try self.patternOperators(pattern_list, where, scope, null, &operators);
         return self.finish(&operators, .inner);
     }
 
@@ -359,6 +442,14 @@ const Builder = struct {
 fn matchPatterns(ast: *const Ast, clause_index: Index) []const Index {
     const children = ast.nodeChildren(clause_index);
     return children[0 .. children.len - 1];
+}
+
+/// True if `name` is a relationship of `pattern_list` (else a node).
+fn bindsRelationship(ast: *const Ast, pattern_list: []const Index, name: []const u8) bool {
+    for (pattern_list) |pattern| for (ast.nodeChildren(pattern)) |element| {
+        if (ast.kind(element) == .edge_pattern and std.mem.eql(u8, ast.data(element).edge_pattern.variable_name, name)) return true;
+    };
+    return false;
 }
 
 /// A WHERE, or null when it is the `true` of a clause without one.

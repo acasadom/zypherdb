@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Vector indexes.** `CREATE VECTOR INDEX name FOR (n:Label) ON n.property` (or on a
+  relationship type) with `vector.dimensions` (1 to 4096) and `vector.similarity_function`
+  (`'cosine'` or `'euclidean'`), queried with `db.index.vector.queryNodes` and
+  `db.index.vector.queryRelationships`. The search is approximate (HNSW) and the index follows
+  every write in the same transaction. A write that would put something other than a vector of
+  the right length in an indexed property fails with a constraint violation instead of leaving the
+  entity out. `CREATE VECTOR INDEX` returns at once and the index is populated from the data
+  already there in the background; while it is, a write on a node it has not reached yet that
+  holds something other than such a vector fails the same way, removing a label or a property
+  included; `SHOW VECTOR INDEXES` shows its `state` (`POPULATING`,
+  `ONLINE` or `FAILED`), `populationPercent` and `failureMessage`. Querying an index still being
+  populated fails with error code 15 (`IndexPopulatingError` in Python); `CALL db.awaitIndexes()`
+  waits until none is (300 seconds at most, or the seconds given). A value in the data that is not
+  a vector fails the index, naming the entity. Once removed entities outnumber the live ones, the
+  index is rebuilt without them in the background, and stays queryable meanwhile; `DROP INDEX`
+  of a vector index also returns at once. `vector.similarity.cosine` and
+  `vector.similarity.euclidean` score two lists with no index. See "Vector search" in
+  `docs/guide/cypher.md`.
+- **The SEARCH clause.** `MATCH … SEARCH x IN (VECTOR INDEX name FOR vector [WHERE condition]
+  LIMIT k [OPTIONS {ef: n}]) [SCORE AS s] [WHERE condition]` keeps, for each row, the `k`
+  entities closest to the vector among those the `MATCH` pattern, its `WHERE` and the `WHERE`
+  inside `SEARCH` give, so `k` come out whenever `k` match. The condition can be any predicate,
+  on any variable in scope; nodes and relationships. Unlike Neo4j, where the pattern and the
+  `MATCH`'s `WHERE` filter after the search, a query written for Neo4j returns here the same rows
+  plus those missing up to `k`. A `WHERE` after `SCORE AS` filters after the search. When few
+  entities match, the answer is exact; otherwise the HNSW is searched with the condition and
+  completed exactly if it finds fewer than `k`. `PROFILE` says which way each row took. A new
+  index option, `vector.hnsw.ef_search` (100 by default), sets how many candidates a search looks
+  at; `OPTIONS {ef: n}` overrides it for one search.
+- **`round(value, precision[, mode])`.** Rounds to `precision` digits after the point, reading the
+  float as the shortest decimal that gives it back, as Neo4j does (`round(2.675, 2)` is 2.68).
+  Without a mode, halves round away from zero (at precision 0 they round up, as in
+  `round(value)`); `mode` is `'UP'`, `'DOWN'`, `'CEILING'`, `'FLOOR'`, `'HALF_UP'`,
+  `'HALF_DOWN'` or `'HALF_EVEN'`. A negative precision is an error.
+
+### Changed
+
+- **Storage format 2.** Creating the first vector index stamps the database with storage format 2,
+  and it stays 2 after the index is dropped. Earlier releases refuse to open such a database
+  (`StorageError`: written in another storage format); a database with no vector index stays at
+  format 1 and still opens with 0.2.0.
+- **Replicas and the storage format.** A replica follows a master whose storage format it reads,
+  older releases included, so replicas can be upgraded before their master. A master upgraded
+  first keeps serving 0.2.0 replicas until it makes its first vector index; then they stop for
+  good with `halted` `"storage_format"`, keeping what they had, until they are upgraded.
+
 ## 0.2.0 — 2026-11-07
 
 ### Added

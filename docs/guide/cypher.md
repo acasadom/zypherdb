@@ -35,6 +35,7 @@ its own rows on; the first clause receives one empty row.
 | --- | --- |
 | `MATCH pattern, … [WHERE condition]` | extends each row with every match of the patterns that passes the condition; comma-separated patterns are matched together |
 | `OPTIONAL MATCH …` | like `MATCH`, but keeps a row that has no match, with its new variables set to `null` (an outer join) |
+| `MATCH … SEARCH x IN (VECTOR INDEX name FOR vector [WHERE condition] LIMIT k [OPTIONS {ef: n}]) [SCORE AS s] [WHERE condition]` | for each row, keeps the `k` entities `x` closest to `vector` among those the `MATCH` (and the `WHERE`s before `SCORE AS`) give: see [Vector search](#vector-search) |
 | `UNWIND list AS x` | produces one row per element of the list (no row for an empty list or `null`) |
 | `LOAD CSV [WITH HEADERS] FROM url AS row [FIELDTERMINATOR ';']` | one row per record of a CSV file: a list of strings, or with headers a map from each header to its field; an empty field is `null`, a quoted one (`""`) the empty string. It reads only from the **import directory** the database was opened with (off without one): `file:///people.csv` is `people.csv` in it, and `..` or a symbolic link out of it is refused, as is any other scheme (`http`). Values are strings: convert them (`toInteger(row.card)`). A failure is error code 11 (`ExternalResourceError` in Python). `linenumber()` and `file()` are not supported |
 | `CALL procedure(arguments) [YIELD column [AS name], … \| *] [WHERE condition]` | runs a [procedure](#procedures) for each row; each row it returns extends the row with the yielded columns |
@@ -190,10 +191,11 @@ before the query runs.
 | Lists | `size(list)`, `head`, `last`, `tail`, `reverse`, `range(start, end[, step])`, `keys(map or entity)` |
 | Strings | `size(text)` (counts code points), `toLower`, `toUpper` (full Unicode case mappings: `toUpper('straße')` is `'STRASSE'`), `trim`, `lTrim`, `rTrim`, `replace(text, search, replacement)`, `substring(text, start[, length])`, `split(text, delimiter)`, `reverse` |
 | Conversion | `toString`, `toInteger` (truncates a float; `null` for a string that is not a number), `toFloat`, `toBoolean` |
-| Numbers | `abs`, `sign`, `round` (a float; halves round up), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
+| Numbers | `abs`, `sign`, `round(x[, precision[, mode]])` (a float; without a mode halves round up at precision 0 and away from zero with a precision, as in Neo4j; mode `UP`, `DOWN`, `CEILING`, `FLOOR`, `HALF_UP`, `HALF_DOWN` or `HALF_EVEN`), `floor`, `ceil`, `sqrt`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `cot`, `asin`, `acos`, `atan`, `atan2`, `degrees`, `radians`, `haversin`, `pi()`, `e()`, `rand()` |
 | Null | `coalesce(x, …)` returns the first argument that is not `null`; `exists(n.property)` is true if the property is set (the same as `n.property IS NOT NULL`; its argument must be a property) |
 | Graph | `id(entity)`, `labels(node)`, `type(relationship)`, `properties(entity)` (a map), `startNode(r)`, `endNode(r)` |
 | Paths | `length(path)`, `nodes(path)`, `relationships(path)` |
+| Vectors | `vector.similarity.cosine(a, b)`, `vector.similarity.euclidean(a, b)`: see [Vector search](#vector-search) |
 | Temporal | see [Temporal values](#temporal-values) |
 
 Nodes and relationships have ids of their own, each counted from 0: a node and a relationship may
@@ -328,6 +330,9 @@ machine.
 | `db.index.fulltext.queryNodes(index, query[, options])` | `node`, `score` | the nodes of a [full-text index](#full-text-search) that match `query`, best first |
 | `db.index.fulltext.queryRelationships(index, query[, options])` | `relationship`, `score` | the same, for an index of relationships |
 | `db.index.fulltext.listAvailableAnalyzers()` | `analyzer`, `description` | the full-text analyzers |
+| `db.index.vector.queryNodes(index, k, vector)` | `node`, `score` | the `k` nodes of a [vector index](#vector-search) closest to `vector`, best first |
+| `db.index.vector.queryRelationships(index, k, vector)` | `relationship`, `score` | the same, for an index of relationships |
+| `db.awaitIndexes([seconds])` | nothing | waits until no [vector index](#vector-search) is being populated |
 
 Procedure names are case-sensitive, as in Neo4j. The `options` of a full-text query are a map with
 `skip` and `limit`, non-negative integers.
@@ -338,7 +343,8 @@ takes arguments then takes each one from the query parameter of the same name.
 ## Schema commands
 
 As in Neo4j, a property is indexed only when an index is created for it: `CREATE INDEX` for
-equality and range lookups, `CREATE FULLTEXT INDEX` for words. Constraints keep values unique.
+equality and range lookups, `CREATE FULLTEXT INDEX` for words, `CREATE VECTOR INDEX` for
+nearest neighbours. Constraints keep values unique.
 Each schema command is a statement of its own:
 
 ```text
@@ -354,13 +360,18 @@ CREATE [RANGE | TEXT] INDEX [name] [IF NOT EXISTS]
   FOR (n:Label) ON (n.property)             -- or FOR ()-[r:TYPE]-() ON (r.property)
                                             -- or a document field: ON (n.property.field)
 
+CREATE VECTOR INDEX [name] [IF NOT EXISTS]
+  FOR (n:Label) ON n.property               -- or FOR ()-[r:TYPE]-() ON r.property
+  OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'cosine',
+                         `vector.hnsw.ef_search`: 100}}
+
 CREATE CONSTRAINT [name] [IF NOT EXISTS]
   FOR (n:Label) REQUIRE n.property IS UNIQUE  -- or REQUIRE (n.a, n.b) IS UNIQUE
 
 DROP INDEX name [IF EXISTS]
 DROP CONSTRAINT name [IF EXISTS]
 
-SHOW [FULLTEXT | RANGE] INDEXES
+SHOW [FULLTEXT | RANGE | VECTOR] INDEXES
 SHOW CONSTRAINTS
 ```
 
@@ -398,13 +409,15 @@ SHOW CONSTRAINTS
   two nodes' values in one query fails. `CREATE CONSTRAINT` fails if the graph already has
   duplicates. Neo4j 4's `CREATE CONSTRAINT ON (n:Label) ASSERT n.p IS UNIQUE` is accepted too.
   Other constraints (`IS NOT NULL`, `IS NODE KEY`, on relationships) are not supported.
-- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT` or `RANGE`; a `TEXT` index
+- `SHOW INDEXES` returns one row per index: `name`, `type` (`FULLTEXT`, `RANGE` or `VECTOR`; a `TEXT` index
   is listed as `RANGE`, since it is one), `entityType`
   (`NODE` or `RELATIONSHIP`), `labelsOrTypes`, `properties`, `owningConstraint`, `options`. As in
   Neo4j 5, a uniqueness constraint's own index is listed: a `RANGE` index named as the
   constraint, with the constraint's name in `owningConstraint` (null for the others), on the
   constraint's first property (the one its keys hold); `DROP INDEX` refuses it, `DROP CONSTRAINT`
-  drops both. `SHOW CONSTRAINTS` returns `name`, `type` (`UNIQUENESS`), `entityType`,
+  drops both. `SHOW VECTOR INDEXES` adds three columns: `state` (`POPULATING`, `ONLINE` or
+  `FAILED`), `populationPercent` (100 once online) and `failureMessage` (null but for a failed
+  index). `SHOW CONSTRAINTS` returns `name`, `type` (`UNIQUENESS`), `entityType`,
   `labelsOrTypes`, `properties`, `ownedIndex`.
 
 ## Full-text search
@@ -455,6 +468,97 @@ indexed when it holds a string or a list of strings; other values are skipped.
   for each edit.
 
 Results come best first.
+
+## Vector search
+
+A vector index finds the nodes (or relationships) whose vector is closest to a given one: the
+embeddings of texts or images, compared by meaning. It is on one label (or relationship type)
+and one property, which holds a list of numbers:
+
+```cypher
+CREATE VECTOR INDEX documents FOR (d:Document) ON d.embedding
+OPTIONS {indexConfig: {`vector.dimensions`: 384, `vector.similarity_function`: 'cosine'}}
+
+CALL db.index.vector.queryNodes('documents', 10, $question_embedding) YIELD node, score
+RETURN node.title, score
+```
+
+Or, inside a query, with the `SEARCH` clause, which keeps the closest **among the entities that
+match** a pattern and any condition:
+
+```cypher
+MATCH (a:Author {name: $author})-[:WROTE]->(d:Document)
+WHERE d.year >= 2020
+SEARCH d IN (VECTOR INDEX documents FOR $question_embedding WHERE d.language = 'es' LIMIT 10)
+SCORE AS score
+RETURN d.title, score
+```
+
+- `vector.dimensions` (1 to 4096) is required: how many numbers each vector has.
+  `vector.similarity_function` is `'cosine'` (the default) or `'euclidean'`, in any case.
+  `vector.hnsw.ef_search` (at least 1, 100 by default) is how many candidates a search looks at:
+  more finds more of the true nearest, and costs more.
+- **A wrong vector is an error, not a skip.** A write that would give an indexed node (one with
+  the label) or relationship (of the type) something else in the property fails with a
+  constraint violation (`ConstraintViolationError` in Python, error code 10) and writes nothing:
+  a value that is not a list of numbers, a list of another length, NaN or infinity, or all zeros
+  under cosine (which has no direction). Neo4j leaves such entities out of the index instead, so
+  that a change of embedding model shows up only as missing results; here it shows up at the
+  first write. An entity without the property is simply not in the index.
+- **Populated in the background.** `CREATE VECTOR INDEX` returns at once, having indexed what it
+  could in about 20 ms (on a small graph, all of it); the rest is indexed by a thread of the open
+  database, in batches of about 20 ms that writes run between. Writes keep the index current
+  meanwhile. Until it is done, `SHOW VECTOR INDEXES` shows it `POPULATING` with its
+  `populationPercent`, and querying it is an error that says how far it got (error code 15,
+  `IndexPopulatingError` in Python): retry later, or wait first. `CALL db.awaitIndexes()` waits
+  until no vector index is populating, for at most 300 seconds (`CALL db.awaitIndexes(60)`: 60);
+  still populating then, it is the same error. It is the whole query, and not in a write
+  transaction, since population needs the writer; on a replica it waits for the replica's own
+  indexes. Closed (or killed) before the end, the database goes on from there when it is opened again;
+  population only moves while some process has the database open. If population meets a value
+  that is not a vector the index takes, the index is `FAILED`: `failureMessage` names the entity
+  and what is wrong, writes no longer keep or check it, and querying it is an error. Correct the
+  data, then `DROP INDEX` and create it again; `db.awaitIndexes()` meeting a failed index is that
+  error too. A replica populates its own copy of each index the
+  same way, so it can be `ONLINE` on the master and still `POPULATING` on a replica.
+- **Rebuilt in the background.** Removed entities stay in the graph as dead ends until they
+  outnumber the live ones; the index is then rebuilt without them by the same thread, in
+  batches, while queries keep using it as it was and it stays `ONLINE`. `DROP INDEX` returns at
+  once too: the index's storage is freed by that thread afterwards.
+- The index keeps each vector as 32-bit floats (normalized under cosine); the property keeps the
+  numbers as they were written.
+- **Scores** are Neo4j's, between 0 and 1, higher is closer: cosine `(1 + cos(a, b)) / 2`,
+  euclidean `1 / (1 + d²)`, where `d` is the distance. Results come best first; equal scores by
+  id.
+- The search is approximate (an HNSW graph, as in Neo4j, Memgraph and FalkorDB): it looks at
+  `max(k, ef)` candidates, `ef` being the index's `vector.hnsw.ef_search`, and finds nearly all
+  of the true `k` nearest. The index follows every
+  write in the transaction that makes it, as the other indexes do. Replicas keep their own: each
+  moves an entity in its indexes as it applies the write that changed it.
+- **`SEARCH`** follows a `MATCH` or `OPTIONAL MATCH` (and its `WHERE`). Its variable is a node
+  or relationship that this `MATCH` binds, of the index's label or type; for each row of the
+  clauses before the `MATCH`, it keeps the `k` entities closest to the vector among those the
+  pattern, the `MATCH`'s `WHERE` and the `WHERE` inside `SEARCH` give, best first, and every row
+  of the `MATCH` with one of them goes on. So `k` come out whenever at least `k` match: the
+  condition chooses among the candidates, it does not remove results after the search. Any
+  condition works, on any variable in scope. `SCORE AS s` binds the score. A `WHERE` after
+  `SCORE AS` filters the rows after the search (it can use the score), so fewer than `k` may be
+  left. With `OPTIONAL MATCH`, a row that keeps no entity goes on once, with nulls.
+- The vector, `LIMIT` and `OPTIONS` are evaluated for each row, from the variables before the
+  `MATCH` (or parameters). The vector is checked like a written one; `null` is an error.
+  `OPTIONS {ef: 400}` overrides the index's `vector.hnsw.ef_search` for this search.
+- When few entities match (up to about `10 × ef`, more on a large index), `SEARCH` measures
+  each one: the answer is exact. When many match, it searches the HNSW graph, checking each
+  entity it meets, and if that leaves fewer than `k` it measures all those that match. `PROFILE`
+  says how many rows took each way. Deciding means listing the matches up to that bound, so a
+  condition no index answers reads entities of the label until it reaches it.
+- Neo4j's `SEARCH` applies the pattern and the `MATCH`'s `WHERE` after the search, so it may
+  return fewer than `k`, and its inner `WHERE` only takes properties named when the index was
+  created. A query written for Neo4j returns here the same rows plus those missing up to `k`.
+- `vector.similarity.cosine(a, b)` and `vector.similarity.euclidean(a, b)` score two lists of
+  numbers of the same length the same way, with no index. They return `null` if either is
+  `null`, or under cosine if one is all zeros; lists of other lengths, empty lists, or elements
+  that are not finite numbers are an error.
 
 ## EXPLAIN and PROFILE
 
@@ -521,8 +625,9 @@ ZypherDB does not implement these parts of openCypher (and of common Neo4j exten
 - procedures other than those [listed](#procedures); `CALL { … } IN TRANSACTIONS`, and `UNION`
   inside `CALL { … }`; `LOAD CSV` from URLs other than `file:` in the import directory;
 - constraints other than uniqueness on nodes (`IS NOT NULL`, `IS NODE KEY`, relationship
-  constraints); `TEXT`, `POINT`, `VECTOR` and `LOOKUP` indexes (`CREATE INDEX` makes a range
-  index, `CREATE FULLTEXT INDEX` a full-text one).
+  constraints); `TEXT`, `POINT` and `LOOKUP` indexes (`CREATE INDEX` makes a range
+  index, `CREATE FULLTEXT INDEX` a full-text one); `SEARCH` over a full-text index (use
+  `db.index.fulltext.queryNodes`).
 
 The openCypher Technology Compatibility Kit (TCK) measures everything else; `tests/tck/REPORT.md`
 gives the current pass rate per area.

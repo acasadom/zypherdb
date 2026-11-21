@@ -5,6 +5,7 @@ Requires the shared library: run `zig build` first, then
 """
 
 import math
+import time
 
 import pytest
 
@@ -16,6 +17,7 @@ from zypherdb import (
     Database,
     Duration,
     ExternalResourceError,
+    IndexPopulatingError,
     InvalidExpressionError,
     NodeNotFoundError,
     Node,
@@ -87,6 +89,93 @@ def test_uniqueness_constraint(db):
     with pytest.raises(ConstraintViolationError):
         db.set_property(50, "number", 1)
     assert db.query("MATCH (c:Card {number: 1}) RETURN count(c)") == [[1]]
+
+
+def test_vector_index(db):
+    db.query(
+        "CREATE VECTOR INDEX docs FOR (d:Doc) ON d.embedding "
+        "OPTIONS {indexConfig: {`vector.dimensions`: 3, `vector.similarity_function`: 'euclidean'}}"
+    )
+    for name, embedding in [("a", [0.0, 0.0, 0.0]), ("b", [1.0, 0.0, 0.0]), ("c", [5, 5, 5])]:
+        db.query("CREATE (:Doc {name: $name, embedding: $embedding})", name=name, embedding=embedding)
+    rows = db.query(
+        "CALL db.index.vector.queryNodes('docs', 2, $q) YIELD node, score RETURN node.name, score",
+        q=[0.9, 0.0, 0.0],
+    )
+    assert [name for name, _ in rows] == ["b", "a"]
+    assert rows[0][1] == pytest.approx(1 / (1 + 0.01))
+    # SEARCH keeps the closest among those that match, with the vector as a parameter.
+    rows = db.query(
+        "MATCH (d:Doc) WHERE d.name <> 'b' "
+        "SEARCH d IN (VECTOR INDEX docs FOR $q LIMIT 2 OPTIONS {ef: 10}) SCORE AS s RETURN d.name, s",
+        q=[0.9, 0.0, 0.0],
+    )
+    assert [name for name, _ in rows] == ["a", "c"]
+    assert rows[0][1] == pytest.approx(1 / (1 + 0.81))
+    with pytest.raises(InvalidExpressionError):
+        db.query("MATCH (d:Doc) SEARCH d IN (VECTOR INDEX nothing FOR $q LIMIT 1) RETURN d", q=[0.0, 0.0, 0.0])
+    # A vector of another length is refused, through the direct API too.
+    with pytest.raises(ConstraintViolationError, match="docs") as caught:
+        db.query("CREATE (:Doc {embedding: [1.0, 2.0]})")
+    assert caught.value.code == 10
+    db.add_node(50, "Doc")
+    with pytest.raises(ConstraintViolationError):
+        db.set_property(50, "embedding", [float("nan"), 0.0, 0.0])
+    assert db.check()["ok"]
+
+
+def vector_index_state(db, name):
+    for row in db.query("SHOW VECTOR INDEXES"):
+        if row[0] == name:
+            return row[7:]
+    raise AssertionError(f"no vector index {name}")
+
+
+def wait_online(db, name):
+    # As long as db.awaitIndexes() waits: slow CI runners take over a minute.
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        state, percent, failure = vector_index_state(db, name)
+        if state == "ONLINE":
+            assert percent == 100 and failure is None
+            return
+        assert state == "POPULATING" and 0 <= percent < 100
+        time.sleep(0.01)
+    raise AssertionError(f"vector index {name} still populating")
+
+
+def test_vector_index_populated_in_the_background(tmp_path):
+    with Database(str(tmp_path)) as db:
+        db.query(
+            "UNWIND range(1, 3000) AS i "
+            "CREATE (:Doc {id: i, embedding: [toFloat(i), 1.0, toFloat(i % 7), toFloat(i % 11), 1.0, 2.0, 3.0, 4.0]})"
+        )
+        db.query("CREATE VECTOR INDEX docs FOR (d:Doc) ON d.embedding OPTIONS {indexConfig: {`vector.dimensions`: 8}}")
+        try:
+            db.query("CALL db.index.vector.queryNodes('docs', 1, [1, 0, 0, 0, 0, 0, 0, 0]) YIELD node RETURN node")
+        except IndexPopulatingError as error:
+            assert "still being populated" in str(error)
+        db.query("CALL db.awaitIndexes()")
+        assert vector_index_state(db, "docs")[0] == "ONLINE"
+        rows = db.query("CALL db.index.vector.queryNodes('docs', 5, [1, 1, 1, 1, 1, 1, 1, 1]) YIELD node RETURN node.id")
+        assert len(rows) == 5
+        assert db.check()["ok"]
+        # Closed mid-population, it goes on at the next open.
+        db.query("MATCH (d:Doc) SET d.other = d.embedding")
+        db.query("CREATE VECTOR INDEX others FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 8}}")
+    with Database(str(tmp_path)) as db:
+        wait_online(db, "others")
+        assert db.check()["ok"]
+        # A bad vector met by population fails the index.
+        db.query("CREATE (:Note {embedding: [1, 2]})")
+        db.query("CREATE VECTOR INDEX notes FOR (n:Note) ON n.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}")
+        state, percent, failure = vector_index_state(db, "notes")
+        assert state == "FAILED" and percent == 0
+        assert "has 2 elements" in failure
+        with pytest.raises(InvalidExpressionError, match="failed"):
+            db.query("CALL db.index.vector.queryNodes('notes', 1, [1, 2, 3]) YIELD node RETURN node")
+        with pytest.raises(InvalidExpressionError, match="failed"):
+            db.query("CALL db.awaitIndexes()")
 
 
 def test_load_csv_reads_only_from_the_import_directory(tmp_path):

@@ -79,6 +79,11 @@ class OutcomeUnknownError(QueryError):
     out: the master may have committed it or not."""
 
 
+class IndexPopulatingError(QueryError):
+    """A vector index is still being populated: query it once it is online, or
+    wait for it with `CALL db.awaitIndexes()`."""
+
+
 # Error code -> exception class (see src/diagnostics.zig ErrorCode).
 _CODE_TO_ERROR = {
     1: ParseError,
@@ -93,6 +98,7 @@ _CODE_TO_ERROR = {
     12: WriteNotForwardedError,
     13: MasterUnreachableError,
     14: OutcomeUnknownError,
+    15: IndexPopulatingError,
 }
 
 

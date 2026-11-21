@@ -18,6 +18,7 @@ const NodeData = @import("execution/entities.zig").NodeData;
 const SnapshotProperty = @import("execution/entities.zig").Property;
 const PropertyIterator = @import("storage/graph.zig").PropertyIterator;
 const KeyValueStore = @import("storage/key_value_store.zig").KeyValueStore;
+const PopulationBuilder = @import("storage/vector_population.zig").Builder;
 const replication_module = @import("replication/replication.zig");
 const Replication = replication_module.Replication;
 const replica_writes = @import("replication/replica_writes.zig");
@@ -44,6 +45,8 @@ const Shared = struct {
     store: KeyValueStore,
     /// Replication, on a database opened with a role.
     replication: ?*Replication = null,
+    /// Populates new vector indexes in the background.
+    population: ?*PopulationBuilder = null,
     /// The sessions open on the database; the last one closed closes it.
     sessions: std.atomic.Value(usize) = .init(0),
 };
@@ -157,11 +160,16 @@ fn openShared(path: []const u8, durability: KeyValueStore.Durability) ?*Shared {
         closeShared(shared);
         return null;
     };
+    shared.population = PopulationBuilder.start(allocator, &shared.store) catch {
+        closeShared(shared);
+        return null;
+    };
     return shared;
 }
 
 fn closeShared(shared: *Shared) void {
     if (shared.replication) |replication| replication.stop();
+    if (shared.population) |builder| builder.stop();
     shared.store.deinit();
     allocator.destroy(shared);
 }

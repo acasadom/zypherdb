@@ -6,11 +6,13 @@
 //!       FOR ()-[r:TYPE1|TYPE2]-() ON EACH [r.property, ...] [OPTIONS {...}]
 //!     CREATE [RANGE|TEXT] INDEX [name] [IF NOT EXISTS]
 //!       FOR (n:Label) ON (n.property, ...) [OPTIONS {...}]   (or FOR ()-[r:TYPE]-())
+//!     CREATE VECTOR INDEX [name] [IF NOT EXISTS]
+//!       FOR (n:Label) ON n.property [OPTIONS {...}]          (or FOR ()-[r:TYPE]-())
 //!     CREATE CONSTRAINT [name] [IF NOT EXISTS]
 //!       FOR (n:Label) REQUIRE n.property IS UNIQUE           (or (n.a, n.b); ON ... ASSERT)
 //!     DROP INDEX name [IF EXISTS]
 //!     DROP CONSTRAINT name [IF EXISTS]
-//!     SHOW [FULLTEXT|RANGE] INDEXES
+//!     SHOW [FULLTEXT|RANGE|VECTOR] INDEXES
 //!     SHOW CONSTRAINTS
 //!
 //! As in Neo4j, plus one extension: a RANGE (or TEXT) index may be on a field
@@ -32,7 +34,7 @@ pub const max_name_length = 1024;
 /// True if the statement starting here is a schema command.
 pub fn atSchemaCommand(self: *const Parser) bool {
     if (self.atKeyword("CREATE")) {
-        for ([_][]const u8{ "FULLTEXT", "INDEX", "RANGE", "TEXT", "BTREE", "CONSTRAINT" }) |keyword| {
+        for ([_][]const u8{ "FULLTEXT", "INDEX", "RANGE", "TEXT", "BTREE", "VECTOR", "CONSTRAINT" }) |keyword| {
             if (self.atKeywordAhead(1, keyword)) return true;
         }
         return false;
@@ -185,6 +187,7 @@ fn parseOptions(self: *Parser, children: *std.ArrayList(Index)) ParseError!void 
 
 fn parseCreateIndex(self: *Parser) ParseError!Index {
     _ = self.advance(); // CREATE
+    if (self.atKeyword("VECTOR")) return parseCreateVectorIndex(self);
     const fulltext = self.atKeyword("FULLTEXT");
     if (fulltext or self.atKeyword("RANGE") or self.atKeyword("TEXT") or self.atKeyword("BTREE")) _ = self.advance();
     try self.expectKeyword("INDEX");
@@ -212,6 +215,35 @@ fn parseCreateIndex(self: *Parser) ParseError!Index {
         .properties = properties,
         .if_not_exists = header.if_not_exists,
     } }, if (fulltext) children.items else &.{});
+}
+
+/// `CREATE VECTOR INDEX [name] [IF NOT EXISTS] FOR (n:L) ON n.p [OPTIONS {...}]`
+/// (`ON (n.p)` too), on one label or relationship type and one property.
+fn parseCreateVectorIndex(self: *Parser) ParseError!Index {
+    _ = self.advance(); // VECTOR
+    try self.expectKeyword("INDEX");
+    const header = try parseNameAndIfNotExists(self, false, "VECTOR INDEX");
+    try self.expectKeyword("FOR");
+    const entity = try parseEntity(self);
+    if (entity.names.len != 1) {
+        self.fail("a vector index is on one {s}", .{if (entity.relationships) "relationship type" else "label"});
+        return error.UnexpectedToken;
+    }
+    try self.expectKeyword("ON");
+    const parenthesized = self.at(.left_paren);
+    if (parenthesized) _ = self.advance();
+    const properties = try parseSingleProperty(self, entity.variable);
+    if (parenthesized) try self.expect(.right_paren);
+    var children = std.ArrayList(Index).empty;
+    defer children.deinit(self.ast.allocator);
+    try parseOptions(self, &children);
+    return self.ast.addNode(.create_vector_index, .{ .schema_definition = .{
+        .name = if (header.name.len > 0) header.name else try generatedName(self, "index", entity, properties),
+        .relationships = entity.relationships,
+        .labels_or_types = entity.names,
+        .properties = properties,
+        .if_not_exists = header.if_not_exists,
+    } }, children.items);
 }
 
 /// `CREATE CONSTRAINT [name] [IF NOT EXISTS] FOR (n:L) REQUIRE n.p IS UNIQUE`
@@ -297,7 +329,7 @@ fn parseDrop(self: *Parser) ParseError!Index {
     return self.ast.addNode(kind, .{ .drop_index = .{ .name = name, .if_exists = if_exists } }, &.{});
 }
 
-/// `SHOW [FULLTEXT|RANGE] INDEXES` or `SHOW CONSTRAINTS` (singular too).
+/// `SHOW [FULLTEXT|RANGE|VECTOR] INDEXES` or `SHOW CONSTRAINTS` (singular too).
 fn parseShow(self: *Parser) ParseError!Index {
     _ = self.advance(); // SHOW
     if (self.atKeyword("CONSTRAINTS") or self.atKeyword("CONSTRAINT")) {
@@ -311,6 +343,9 @@ fn parseShow(self: *Parser) ParseError!Index {
     } else if (self.atKeyword("RANGE")) {
         _ = self.advance();
         which = .range;
+    } else if (self.atKeyword("VECTOR")) {
+        _ = self.advance();
+        which = .vector;
     }
     if (self.atKeyword("INDEXES") or self.atKeyword("INDEX")) {
         _ = self.advance();

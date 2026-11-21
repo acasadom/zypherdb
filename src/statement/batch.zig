@@ -23,7 +23,7 @@ const Diagnostic = @import("../diagnostics.zig").Diagnostic;
 /// `defined`; `error.InvalidExpression`, with `diagnostic` telling why, if
 /// not.
 pub fn check(statement: *const Statement, defined: []const procedures.TableProcedure, diagnostic: ?*Diagnostic) error{InvalidExpression}!void {
-    if (!statement.is_query) return refuse(diagnostic, "a batch holds queries only: run schema commands, EXPLAIN and PROFILE on their own", .{});
+    if (!statement.is_query) return refuse(diagnostic, "a batch holds queries only: run schema commands, EXPLAIN, PROFILE and db.awaitIndexes() on their own", .{});
     const ast = &statement.ast;
     for (0..ast.nodes.items.len) |node| {
         const index: Index = @intCast(node);

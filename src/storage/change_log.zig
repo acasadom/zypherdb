@@ -333,16 +333,18 @@ pub const Application = struct {
         self.leftover.deinit(allocator);
     }
 
-    /// Makes the writes of the next part, `bytes`, in `transaction`.
-    pub fn add(self: *Application, allocator: Allocator, transaction: Transaction, bytes: []const u8) ApplyError!void {
+    /// Makes the writes of the next part, `bytes`, in `transaction`, telling
+    /// `observer` of each: its `before(change)` runs before the write, its
+    /// `after(change)` after it.
+    pub fn add(self: *Application, allocator: Allocator, transaction: Transaction, bytes: []const u8, observer: anytype) !void {
         if (self.skipping) return;
         if (self.leftover.items.len == 0) {
-            const rest = try applyWhole(transaction, bytes);
+            const rest = try applyWhole(transaction, bytes, observer);
             try self.leftover.appendSlice(allocator, rest);
             return;
         }
         try self.leftover.appendSlice(allocator, bytes);
-        const rest = try applyWhole(transaction, self.leftover.items);
+        const rest = try applyWhole(transaction, self.leftover.items, observer);
         std.mem.copyForwards(u8, self.leftover.items[0..rest.len], rest);
         self.leftover.shrinkRetainingCapacity(rest.len);
     }
@@ -360,16 +362,16 @@ pub const Application = struct {
 
     /// Makes the whole writes of `bytes`; returns the bytes of the one
     /// they cut, if any.
-    fn applyWhole(transaction: Transaction, bytes: []const u8) ApplyError![]const u8 {
+    fn applyWhole(transaction: Transaction, bytes: []const u8, observer: anytype) ![]const u8 {
         var changes = Iterator{ .bytes = bytes, .partial = true };
-        try applyEach(transaction, &changes);
+        while (try changes.next()) |change| {
+            try observer.before(change);
+            try apply(transaction, change);
+            try observer.after(change);
+        }
         return changes.rest();
     }
 };
-
-fn applyEach(transaction: Transaction, changes: *Iterator) (engine.Error || error{MalformedChangeSet})!void {
-    while (try changes.next()) |change| try apply(transaction, change);
-}
 
 /// Makes write `change` in `transaction`.
 pub fn apply(transaction: Transaction, change: Change) (engine.Error || error{MalformedChangeSet})!void {

@@ -225,3 +225,114 @@ test "constraint violations name the constraint and the value" {
         \\  invalid_expression: a constraint named 'person_name' already exists
     ));
 }
+
+test "SEARCH names what is missing or misplaced" {
+    try expectErrors("", &.{
+        "SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "UNWIND [1] AS x SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH (m) SEARCH m IN (FULLTEXT INDEX plots FOR 'a' LIMIT 1) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1]) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS 4) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE s RETURN m",
+        "MATCH (m) SEARCH x IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH (m) WITH m MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH p = (m) SEARCH p IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m",
+        "MATCH ()-[r*]->() SEARCH r IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN r",
+        "MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR g.embedding LIMIT 1) RETURN m",
+        "MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT g.k) RETURN m",
+        "MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS {ef: g.ef}) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] WHERE z > 1 LIMIT 1) RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS m RETURN m",
+        "MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS s WHERE count(s) > 1 RETURN m",
+    }, snap(@src(),
+        \\SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  parse: SEARCH must follow a MATCH or OPTIONAL MATCH
+        \\UNWIND [1] AS x SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  parse: SEARCH must follow a MATCH or OPTIONAL MATCH
+        \\MATCH (m) SEARCH m IN (FULLTEXT INDEX plots FOR 'a' LIMIT 1) RETURN m
+        \\  parse: SEARCH reads vector indexes only: for a full-text index use CALL db.index.fulltext.queryNodes
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1]) RETURN m
+        \\  parse: SEARCH needs LIMIT k: how many entities to return
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS 4) RETURN m
+        \\  parse: OPTIONS takes a map: OPTIONS {ef: 400}
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE s RETURN m
+        \\  parse: expected keyword AS
+        \\MATCH (m) SEARCH x IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  invalid_expression: SEARCH needs 'x' to be a node or a relationship its MATCH binds
+        \\MATCH (m) WITH m MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  invalid_expression: SEARCH needs 'm' to be a node or a relationship its MATCH binds
+        \\MATCH p = (m) SEARCH p IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN m
+        \\  invalid_expression: SEARCH needs 'p' to be a node or a relationship its MATCH binds
+        \\MATCH ()-[r*]->() SEARCH r IN (VECTOR INDEX plots FOR [1] LIMIT 1) RETURN r
+        \\  invalid_expression: SEARCH needs 'r' to be a node or a relationship its MATCH binds
+        \\MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR g.embedding LIMIT 1) RETURN m
+        \\  invalid_expression: the SEARCH vector cannot read 'g', which its MATCH binds
+        \\MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT g.k) RETURN m
+        \\  invalid_expression: the SEARCH LIMIT cannot read 'g', which its MATCH binds
+        \\MATCH (m)--(g) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1 OPTIONS {ef: g.ef}) RETURN m
+        \\  invalid_expression: the SEARCH OPTIONS cannot read 'g', which its MATCH binds
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] WHERE z > 1 LIMIT 1) RETURN m
+        \\  unknown_variable: unknown variable 'z'
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS m RETURN m
+        \\  invalid_expression: SCORE AS binds 'm', which is already bound
+        \\MATCH (m) SEARCH m IN (VECTOR INDEX plots FOR [1] LIMIT 1) SCORE AS s WHERE count(s) > 1 RETURN m
+        \\  invalid_expression: an aggregate cannot be used in WHERE; aggregate in a WITH, then filter
+    ));
+}
+
+test "vector indexes name the index, the entity and what is wrong with the vector" {
+    try expectErrors("CREATE VECTOR INDEX docs FOR (d:Doc) ON d.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}", &.{
+        "CREATE (:Doc {embedding: [1.0, 2.0]})",
+        "CREATE (:Doc {embedding: 'text'})",
+        "CREATE (:Doc {embedding: [0, 0, 0]})",
+        "CREATE (:Doc {embedding: [1.0, 2.0, 1e308 * 10]})",
+        "CREATE (:Note {embedding: [1]})",
+        "CREATE VECTOR INDEX notes FOR (n:Note) ON n.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}",
+        "CALL db.index.vector.queryNodes('notes', 5, [1, 2, 3]) YIELD node RETURN node",
+        "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other",
+        "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 0}}",
+        "CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'dot'}}",
+        "CREATE VECTOR INDEX other FOR (d:Doc|Note) ON d.other",
+        "CALL db.index.vector.queryNodes('docs', 5, [1, 2]) YIELD node RETURN node",
+        "CALL db.index.vector.queryNodes('docs', 0, [1, 2, 3]) YIELD node RETURN node",
+        "CALL db.index.vector.queryNodes('nothing', 5, [1, 2, 3]) YIELD node RETURN node",
+        "CALL db.index.vector.queryRelationships('docs', 5, [1, 2, 3]) YIELD relationship RETURN relationship",
+        "RETURN vector.similarity.cosine([1, 2], [1])",
+        "RETURN vector.similarity.cosine([1, 'a'], [1, 2])",
+    }, snap(@src(),
+        \\CREATE (:Doc {embedding: [1.0, 2.0]})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one has 2 elements
+        \\CREATE (:Doc {embedding: 'text'})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one is not a list of numbers
+        \\CREATE (:Doc {embedding: [0, 0, 0]})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one is all zeros, which has no direction for cosine
+        \\CREATE (:Doc {embedding: [1.0, 2.0, 1e308 * 10]})
+        \\  constraint_violation: node 0 cannot have this embedding: vector index 'docs' takes a list of 3 numbers, and this one has an element that is NaN or infinite
+        \\CREATE (:Note {embedding: [1]})
+        \\  ok
+        \\CREATE VECTOR INDEX notes FOR (n:Note) ON n.embedding OPTIONS {indexConfig: {`vector.dimensions`: 3}}
+        \\  ok
+        \\CALL db.index.vector.queryNodes('notes', 5, [1, 2, 3]) YIELD node RETURN node
+        \\  invalid_expression: vector index 'notes' failed (node 0: its embedding has 1 elements, and the index takes a list of 3 numbers): correct the data, then drop it and create it again
+        \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other
+        \\  invalid_expression: a vector index needs its dimensions: OPTIONS {indexConfig: {`vector.dimensions`: N}}
+        \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 0}}
+        \\  invalid_expression: `vector.dimensions` must be between 1 and 4096, not 0
+        \\CREATE VECTOR INDEX other FOR (d:Doc) ON d.other OPTIONS {indexConfig: {`vector.dimensions`: 2, `vector.similarity_function`: 'dot'}}
+        \\  invalid_expression: unknown vector similarity function 'dot' (available: cosine, euclidean)
+        \\CREATE VECTOR INDEX other FOR (d:Doc|Note) ON d.other
+        \\  parse: a vector index is on one label
+        \\CALL db.index.vector.queryNodes('docs', 5, [1, 2]) YIELD node RETURN node
+        \\  invalid_expression: db.index.vector.queryNodes(): index 'docs' takes a list of 3 numbers, and this vector has 2 elements
+        \\CALL db.index.vector.queryNodes('docs', 0, [1, 2, 3]) YIELD node RETURN node
+        \\  invalid_expression: db.index.vector.queryNodes() needs a number of results of at least 1, not 0
+        \\CALL db.index.vector.queryNodes('nothing', 5, [1, 2, 3]) YIELD node RETURN node
+        \\  invalid_expression: there is no vector index named 'nothing'
+        \\CALL db.index.vector.queryRelationships('docs', 5, [1, 2, 3]) YIELD relationship RETURN relationship
+        \\  invalid_expression: 'docs' indexes nodes: use db.index.vector.queryNodes
+        \\RETURN vector.similarity.cosine([1, 2], [1])
+        \\  invalid_expression: vector.similarity.cosine() needs two vectors of the same length, not 2 and 1
+        \\RETURN vector.similarity.cosine([1, 'a'], [1, 2])
+        \\  type_mismatch: vector.similarity.cosine() takes two non-empty lists of numbers
+    ));
+}

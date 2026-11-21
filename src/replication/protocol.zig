@@ -134,7 +134,9 @@ pub const Kind = enum(u8) {
 /// A replica introduces itself.
 pub const Hello = struct {
     protocol_version: u16 = version,
-    /// `Graph.format_version` of the replica's build.
+    /// The newest storage format the replica reads (`Graph.newest_format`,
+    /// or older after a `storage_format` refusal). A build that reads only
+    /// one format sends that one.
     storage_format: u32,
     /// The replica build's storage engine (`zypherdb.storage_engine`): a
     /// snapshot is an engine's file.

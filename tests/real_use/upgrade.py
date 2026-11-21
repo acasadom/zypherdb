@@ -21,6 +21,7 @@ import tempfile
 import time
 
 THIS = os.path.abspath(__file__)
+VECTOR_INDEX = "CREATE VECTOR INDEX embeddings FOR (p:Person) ON p.embedding OPTIONS {indexConfig: {`vector.dimensions`: 2}}"
 TOKEN = "a-long-random-secret-for-this-test"
 SETTLE_SECONDS = 60
 
@@ -112,16 +113,19 @@ def step_serve(path, address, new_data):
             fill(db)
         elif new_data == "more":
             db.query("CREATE (:Person {name: 'after the upgrade', age: 1000, bio: 'an engineer'})")
+        elif new_data == "vector":
+            db.query("CREATE (:Person {name: 'with a vector', age: 1001, embedding: [1.0, 0.0]})")
+            db.query(VECTOR_INDEX)
         print(json.dumps({"lsn": db.last_lsn, "contents": contents(db)}), flush=True)
         sys.stdin.readline()
 
 
-def step_follow(path, address, lsn):
-    """Follows the master at `address` up to `lsn`, tells what it then holds."""
+def step_follow(path, address, lsn, timeout=str(SETTLE_SECONDS)):
+    """Follows the master at `address` up to `lsn` (for at most `timeout` seconds), tells what it then holds."""
     from zypherdb import Database
 
     with Database(path, replicate_from=address, token=TOKEN) as db:
-        applied = db.wait_for(int(lsn), timeout=SETTLE_SECONDS)
+        applied = db.wait_for(int(lsn), timeout=float(timeout))
         print(json.dumps({"applied": applied, "status": db.replication_status(), "contents": contents(db), "check": db.check()}))
 
 
@@ -238,6 +242,54 @@ def replicated_pair(old, new, tmp):
     check(healthy(upgraded["check"]), f"integrity: {upgraded['check']['problems'][:3]}")
 
 
+def old_replica_of_vector_index(old, new, tmp):
+    print("== an old replica of an upgraded master that makes a vector index", flush=True)
+    master_path = os.path.join(tmp, "vector-master")
+    replica_path = os.path.join(tmp, "vector-old-replica")
+    address = free_address()
+    master, told = start_master(new, master_path, address, "fill")
+    try:
+        replica = run_step(old, "follow", replica_path, address, str(told["lsn"]))
+    finally:
+        stop_master(master)
+    check(replica["applied"], "the old replica follows the new master until it makes a vector index")
+    master, vector = start_master(new, master_path, address, "vector")
+    try:
+        after = run_step(old, "follow", replica_path, address, str(vector["lsn"]), "10")
+    finally:
+        stop_master(master)
+    status = after["status"]
+    if after["applied"]:
+        # The old version reads vector indexes too.
+        check(after["contents"]["digest"] == vector["contents"]["digest"], "the old replica holds what the master does")
+    else:
+        check(status["halted"] == "storage_format", f"the old replica stops for good, telling why: {status}")
+        check(after["contents"]["digest"] == replica["contents"]["digest"], "it still holds what it had")
+    check(healthy(after["check"]), f"integrity: {after['check']['problems'][:3]}")
+
+
+def new_replica_of_old_master(old, new, tmp):
+    print("== a new replica of an old master, then of the master upgraded, which makes a vector index", flush=True)
+    master_path = os.path.join(tmp, "replicas-first-master")
+    replica_path = os.path.join(tmp, "replicas-first-replica")
+    address = free_address()
+    master, told = start_master(old, master_path, address, "fill")
+    try:
+        replica = run_step(new, "follow", replica_path, address, str(told["lsn"]))
+    finally:
+        stop_master(master)
+    check(replica["applied"], f"the new replica follows the old master: {replica['status']}")
+    check(replica["contents"]["digest"] == told["contents"]["digest"], "they hold the same")
+    master, told = start_master(new, master_path, address, "vector")
+    try:
+        upgraded = run_step(new, "follow", replica_path, address, str(told["lsn"]))
+    finally:
+        stop_master(master)
+    check(upgraded["applied"], f"it follows the upgraded master and its vector index: {upgraded['status']}")
+    check(upgraded["contents"]["digest"] == told["contents"]["digest"], "they hold the same")
+    check(healthy(upgraded["check"]), f"integrity: {upgraded['check']['problems'][:3]}")
+
+
 def version_of(python):
     code = "from importlib.metadata import version; import zypherdb; print(version('zypherdb'), zypherdb.__file__)"
     return subprocess.run([python, "-I", "-c", code], capture_output=True, text=True, check=True, cwd=os.path.dirname(THIS)).stdout.strip()
@@ -248,7 +300,7 @@ def main():
     print("old:", version_of(old), flush=True)
     print("new:", version_of(new), flush=True)
     tmp = tempfile.mkdtemp(prefix="upgrade-", dir=os.environ.get("REAL_TMP"))
-    for scenario in (clean_close, killed, plain_database_serves, replicated_pair):
+    for scenario in (clean_close, killed, plain_database_serves, replicated_pair, old_replica_of_vector_index, new_replica_of_old_master):
         try:
             scenario(old, new, tmp)
         except Exception as error:

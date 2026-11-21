@@ -270,8 +270,14 @@ role for a process failure, and a machine failure is covered by restarting it.
   see the master's states in jumps, never one the master did not have.
 - **No failover to another machine.** A replica never becomes a master, on its own or by hand
   ([staying available](#staying-available)).
-- **The same platform.** A replica must run the same ZypherDB storage format and storage engine
-  as its master, on a machine of the same byte order (every common one is little-endian).
+- **The same platform.** A replica must run the same storage engine as its master, on a machine
+  of the same byte order (every common one is little-endian), and read the master's storage
+  format ([storage](storage.md#the-storage-format)).
+- **Upgrading.** A replica tells the master the newest storage format it reads, and is turned
+  away from a database in a newer one. Upgrade the replicas first: a new replica follows an older
+  master too. A master upgraded first keeps serving older replicas until it makes its first vector
+  index, which raises its database to format 2: from then on, a replica of 0.2.0 or earlier stops
+  for good, with `halted` `"storage_format"`, keeping what it had. Upgrade it and open it again.
 
 The C interface opens with a role through `zypherdb_open_replicated` (see the
 [C reference](c-api.md#replication)). How replication works inside — the change log, the

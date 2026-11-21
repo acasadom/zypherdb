@@ -648,6 +648,35 @@ const Checker = struct {
         try self.checkQuery(body);
     }
 
+    /// `SEARCH x IN (VECTOR INDEX ... FOR vector WHERE ... LIMIT k OPTIONS
+    /// {...}) SCORE AS s WHERE ...`, after the MATCH that binds x (the scope
+    /// holds what it bound; `bound_before`, what was bound before it). The
+    /// vector, k and the options are one per row of the clauses before the
+    /// MATCH, so they cannot read what the MATCH binds.
+    fn checkSearch(self: *Checker, clause: Index, bound_before: *const std.StringHashMapUnmanaged(void)) SemanticError!void {
+        const search = self.ast.data(clause).search;
+        const children = self.ast.nodeChildren(clause);
+        const kind = self.scope.kindOf(search.variable_name);
+        if (bound_before.contains(search.variable_name) or (kind != .node and kind != .relationship))
+            return self.fail("SEARCH needs '{s}' to be a node or a relationship its MATCH binds", .{search.variable_name});
+        for ([_]Index{ children[0], children[2], children[3] }, [_][]const u8{ "vector", "LIMIT", "OPTIONS" }) |expression, what| {
+            try self.checkExpressions(expression);
+            var names = self.scope.names.keyIterator();
+            while (names.next()) |name| {
+                if (!bound_before.contains(name.*) and mentions(self.ast, expression, name.*))
+                    return self.fail("the SEARCH {s} cannot read '{s}', which its MATCH binds", .{ what, name.* });
+            }
+        }
+        try self.checkWhere(children[1]);
+        try self.checkExpressions(children[1]);
+        if (search.score_alias.len > 0) {
+            if (self.scope.kindOf(search.score_alias) != null) return self.fail("SCORE AS binds '{s}', which is already bound", .{search.score_alias});
+            try self.use(search.score_alias, .value);
+        }
+        try self.checkWhere(children[4]);
+        try self.checkExpressions(children[4]);
+    }
+
     /// Clause by clause: declare what the clause binds, then check its
     /// expressions with those variables in scope (WITH and RETURN expressions
     /// see the scope before their projection).
@@ -668,14 +697,27 @@ const Checker = struct {
                     continue;
                 },
                 .call_clause => {
+                    // It waits in read transactions of its own (schema.zig).
+                    if (query_clauses.len != 1 and std.mem.eql(u8, self.ast.data(clause).call.procedure, "db.awaitIndexes"))
+                        return self.fail("db.awaitIndexes() runs on its own: CALL db.awaitIndexes([seconds]) as the whole query", .{});
                     try self.checkCall(clause, position + 1 == query_clauses.len);
                     try self.checkExpressions(clause);
                     continue;
                 },
                 .match_clause, .optional_match_clause => {
+                    const search = if (position + 1 < query_clauses.len and self.ast.kind(query_clauses[position + 1]) == .search_clause) query_clauses[position + 1] else null;
+                    // What the MATCH binds, for its SEARCH: in scope before it, or not.
+                    var bound_before = std.StringHashMapUnmanaged(void).empty;
+                    defer bound_before.deinit(self.allocator);
+                    if (search != null) {
+                        var names = self.scope.names.keyIterator();
+                        while (names.next()) |name| try bound_before.put(self.allocator, name.*, {});
+                    }
                     try self.checkPatterns(children[0 .. children.len - 1], .match);
                     try self.checkWhere(children[children.len - 1]);
+                    if (search) |clause_index| try self.checkSearch(clause_index, &bound_before);
                 },
+                .search_clause => continue, // checked with its MATCH
                 .create_clause => try self.checkPatterns(children, .create),
                 .merge_clause => try self.checkPatterns(children[0..1], .merge),
                 .unwind_clause => {
@@ -795,5 +837,12 @@ fn projectsName(ast: *const Ast, projection: Index, name: []const u8) bool {
     for (ast.nodeChildren(projection)) |item| {
         if (columnName(ast, item)) |column| if (std.mem.eql(u8, column, name)) return true;
     }
+    return false;
+}
+
+/// True if `expression` reads the variable `name`.
+fn mentions(ast: *const Ast, expression: Index, name: []const u8) bool {
+    if (ast.kind(expression) == .variable and std.mem.eql(u8, ast.data(expression).text, name)) return true;
+    for (ast.nodeChildren(expression)) |child| if (mentions(ast, child, name)) return true;
     return false;
 }

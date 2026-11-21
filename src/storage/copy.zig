@@ -25,6 +25,7 @@ const Writer = std.Io.Writer;
 
 const engine = @import("engine.zig");
 const change_log = @import("change_log.zig");
+const vector_index = @import("vector_index.zig");
 const Table = engine.Table;
 const Transaction = engine.Transaction;
 
@@ -133,6 +134,12 @@ pub const Loading = struct {
             // A copy only puts, and never the engine's catalog.
             if (change.operation != .put) return error.MalformedChangeSet;
             if (change.table == .main and (change.key.len == 0 or change.key[0] == catalog_key_start)) return error.MalformedChangeSet;
+            if (change.table == .main and vector_index.isVersionKey(change.key)) {
+                // The master's transaction id: this database may have had a
+                // version of that number with other entries (see vector_cache.zig).
+                try transaction.put(.main, change.key, &vector_index.encodeVersion(transaction.id()));
+                continue;
+            }
             try change_log.apply(transaction, change);
         }
         return changes.rest();

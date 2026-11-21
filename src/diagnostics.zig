@@ -27,6 +27,9 @@ pub const ErrorCode = enum(u32) {
     /// A forwarded write was sent, then the connection was lost or the
     /// time ran out: the master may have committed it or not.
     outcome_unknown = 14,
+    /// A vector index is still being populated: it can be queried once it
+    /// is online (`CALL db.awaitIndexes()` waits for that).
+    index_populating = 15,
 };
 
 pub const Diagnostic = struct {
@@ -98,6 +101,7 @@ pub fn codeOf(err: anyerror) ErrorCode {
         error.NodeStillConnected => .node_still_connected,
         error.ConstraintViolation => .constraint_violation,
         error.ExternalResourceFailed => .external_resource,
+        error.IndexPopulating => .index_populating,
         else => .storage,
     };
 }

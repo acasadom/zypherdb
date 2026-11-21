@@ -21,6 +21,7 @@ const Instant = @import("clock.zig").Instant;
 const KeyValueStore = @import("../storage/key_value_store.zig").KeyValueStore;
 const change_log = @import("../storage/change_log.zig");
 const StorageError = @import("../storage/key_value_store.zig").StorageError;
+const Graph = @import("../storage/graph.zig").Graph;
 
 pub const Settings = struct {
     /// What a replica must send to be served; empty in an encrypted
@@ -49,7 +50,7 @@ comptime {
     std.debug.assert(change_log.chunk_bytes == protocol.part_bytes);
 }
 
-pub const Error = protocol.DecodeError || StorageError || error{ UnexpectedMessage, NotMaster, ChangeSetDropped, CopyOutdated, ReadFailed };
+pub const Error = protocol.DecodeError || StorageError || error{ UnexpectedMessage, NotMaster, ChangeSetDropped, CopyOutdated, ReadFailed, FormatRaised };
 
 pub const MasterSession = struct {
     inbox: protocol.Inbox,
@@ -75,6 +76,8 @@ pub const MasterSession = struct {
     /// The copy being sent and its bytes sent so far.
     copy: ?*Reader = null,
     copy_size: u64 = 0,
+    /// The newest storage format the replica reads, once its hello came.
+    replica_format: u32 = 0,
     /// What the replica calls itself, once its hello came.
     name_buffer: [protocol.max_name_bytes]u8 = undefined,
     name_length: u8 = 0,
@@ -114,6 +117,7 @@ pub const MasterSession = struct {
     fn introduced(self: *MasterSession, store: *KeyValueStore, hello: protocol.Hello) StorageError!master.Answer {
         @memcpy(self.name_buffer[0..hello.name.len], hello.name);
         self.name_length = @intCast(hello.name.len);
+        self.replica_format = hello.storage_format;
         return master.answer(store, hello, self.settings.token);
     }
 
@@ -192,7 +196,11 @@ pub const MasterSession = struct {
     pub fn pump(self: *MasterSession, store: *KeyValueStore, now: Instant) Error!void {
         if (self.outbox.isEmpty()) self.last_sent = now;
         switch (self.state) {
-            .sending_copy => try self.pumpCopy(),
+            .sending_copy => {
+                // The copy's format is at most the database's now.
+                if (self.copy_size == 0) try self.checkFormat(store);
+                try self.pumpCopy();
+            },
             .streaming => try self.pumpChangeSets(store, now),
             else => {},
         }
@@ -277,6 +285,13 @@ pub const MasterSession = struct {
         self.state = .awaiting_copy_ack;
     }
 
+    /// Fails with `FormatRaised` once the database is in a format the
+    /// replica does not read: it asks again, and its hello is refused.
+    fn checkFormat(self: *MasterSession, store: *KeyValueStore) Error!void {
+        if (self.replica_format >= Graph.newest_format) return;
+        if (!try master.readsFormat(store, self.replica_format)) return error.FormatRaised;
+    }
+
     /// Fails with `ChangeSetDropped` if the log no longer holds the next
     /// change set, or the rest of the one being sent (the replica starts
     /// again from a copy).
@@ -286,6 +301,9 @@ pub const MasterSession = struct {
                 if (self.chunk == 0) {
                     const state = try store.changeLogState() orelse return error.NotMaster;
                     if (self.next_lsn >= state.next_lsn) return;
+                    // Read after the log's state, the format is at least the
+                    // one any change set below `state.next_lsn` stamped.
+                    try self.checkFormat(store);
                 }
                 self.part_final = try store.changeSetChunk(self.next_lsn, self.chunk, &self.part) orelse return error.ChangeSetDropped;
             }

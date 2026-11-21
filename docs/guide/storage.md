@@ -44,18 +44,19 @@ Two rules make that work:
 | `l \| label \| 0x00 \| id` | label index | `nodesWithLabel` |
 | `i \| name` | a schema definition: an index or a constraint | `fulltext.find`, `fulltext.cachedDefinitions` |
 | `p \| index \| value \| id` | property index number `index` (`u32`): a node's or a relationship's id | `nodesByIndex`, `nodesInRange`, `edgesByIndex` |
+| `h \| index \| ...` | vector index number `index` (`u32`): its HNSW graph (see [Vector indexes](#vector-indexes)) | `vector_index.search` |
 | `t \| type` | edge-type cardinality counter | `edgeTypeCount` (anchor selection) |
 | `c \| label` | label cardinality counter (when absent, the label index is counted) | `labelCount` (anchor selection) |
 | `!` | the next node id to allocate | `allocateNodeId` |
 | `!relationships` | the next relationship id to allocate | `addEdge` |
-| `!index_id` | the last property index number handed out | `fulltext.create` |
+| `!index_id` | the last property or vector index number handed out | `fulltext.create` |
 | `!schema` | how many times the definitions changed | plans and cached definitions know when to read them again |
 | `!format` | the storage format's version | `checkFormat` |
 
 Every "index" is just more keys, maintained by the same `put`/`del` primitives. There is no
 separate index structure — an index *is* a key range.
 
-How to read the table: the first byte of a main-table key is a letter (`e`, `f`, `i`, `l`, `p`,
+How to read the table: the first byte of a main-table key is a letter (`e`, `f`, `h`, `i`, `l`, `p`,
 `t`, `c`) that says which kind of key it is, so every kind occupies its own range of the key
 space; the rest of the key is the fields of that kind, one after another. Most index keys have an
 empty value: the key itself is the fact.
@@ -213,13 +214,26 @@ upper bound's.
 
 ## The storage format
 
-The key `!format` holds the format's version, `Graph.format_version` (1). When the C ABI or the
-Python package opens a database, `Graph.checkFormat` stamps a new one with it, and refuses one
-written in another format (`error.IncompatibleFormat`; in Python, a `StorageError`).
+The key `!format` holds the format's version. When the C ABI or the Python package opens a
+database, `Graph.checkFormat` stamps a new one with format 1, and refuses one written in a format
+this build does not read (`error.IncompatibleFormat`; in Python, a `StorageError`). The formats:
 
-Until the first release there are no migrations: ZypherDB has no users yet, so a change to how keys
-or values are written raises the version and earlier databases are not read. Migrations come with
-the first release.
+- 1: the format of the first release.
+- 2: 1 plus vector indexes. Creating the first vector index stamps it, in the same transaction, so
+  a release that reads only format 1 refuses the database instead of misreading the index. The
+  format is never lowered: dropping every vector index keeps 2.
+
+A build reads every format up to its newest (`Graph.newest_format`), and writes the lowest that
+holds what the database contains. The integrity checker reports a vector index in a database not
+stamped 2.
+
+A replica's `hello` tells the newest format it reads. The master refuses one that reads only
+formats older than its database's, or one newer than the master writes; the replica then asks again
+announcing one format less, down to 1, so a new replica follows an older master, and announces its
+newest again once a master welcomed it. A master whose database rises past the format of a replica
+it serves (the first vector index, while a 0.2.0 replica follows) ends that conversation before
+sending the change set that raised it, or the copy: the replica comes back and its `hello` is
+refused for good (`storage_format`).
 
 ## Limits
 
@@ -297,8 +311,9 @@ large content (documents, images) outside the database, with a property that nam
 ## Full-text indexes
 
 Every schema definition lives under `i | name` (`fulltext.zig`): its kind (a full-text index, a
-declared range index, or a uniqueness constraint), whether it is on nodes or relationships, its
-analyzer (full-text only), its labels or types, and its properties. `!schema` counts the changes
+declared range index, a uniqueness constraint, or a vector index), whether it is on nodes or
+relationships, its analyzer (full-text only), its labels or types, its properties, and a vector
+index's dimensions and similarity. `!schema` counts the changes
 to the definitions. Every mutation asks for it, to know whether any index or constraint must
 follow the change, so inside a write transaction it is read once
 (`KeyValueStore.write_transaction_memo`): only that transaction could change it, and when it does
@@ -417,17 +432,103 @@ Nothing cached goes stale on a replica: the record cache lives one read transact
 definitions are kept by schema version, and a prepared statement's plan is checked against counts.
 The version and the counts are keys, so they change with the change sets.
 
+## Vector indexes
+
+A vector index (`vector_index.zig`) is an HNSW graph (Malkov and Yashunin, 2016): every entity is
+on level 0, about one in 16 also on level 1, one in 256 on level 2, and so on; on each level an
+entity keeps a list of neighbours (32 on level 0, 16 above), chosen so that they point different
+ways. A search starts at the entry point on the top level, walks down to the closest entity on
+each level, then explores level 0 breadth-first, keeping the best 100 (or `k`) it has seen. The
+algorithm (`src/vector/hnsw.zig`) is written once over a storage context (distances, levels,
+lists, header), as `std.HashMap` is over its hash context; `vector_index.zig` is the context that
+keeps it in the store, and the tests keep one in memory.
+
+Its keys, after `h` and the index number (`u32`, big-endian); the graph's keys are under a
+generation (u8, see the rebuild below); the values are little-endian:
+
+| Key | Value |
+| --- | --- |
+| `h \| index` | its state: 0 populating (generation 0), then the next id to look at and the entities looked at (u64 each); 1 online, then the generation searches read (u8) and, while it is rebuilt, the next id to look at (u64); 2 failed, then the entity (u64) and what is wrong with its value |
+| `h \| index \| generation \| H` | the header: the entry point (u64), the top level (u8), the live entities and the tombstones (u64 each) |
+| `h \| index \| generation \| E \| id` | the entity's level (u8), whether it is live (u8), its vector (f32 each) |
+| `h \| index \| generation \| N \| id \| level` | its neighbours on that level (u64 each) |
+| `h \| index \| generation \| V` | its version: the id of the write transaction that last wrote the generation (u64) |
+
+An entity's level comes from a hash of its id, so rebuilding gives the same levels. Writes keep it
+current as they keep the full-text postings, from the same mutators:
+
+- **Checked before the write.** `checkNode` and `checkRelationshipProperty` refuse a value that is
+  not a vector of the index's length (`error.ConstraintViolation`), as uniqueness is checked:
+  nothing is written.
+- **Insert**: the entity's record, then its lists on each of its levels, each a search from the
+  entry point (breadth 100); each new neighbour adds it back, choosing again when it has one too
+  many. About 8 KiB of lists per insert, plus the vector.
+- **Update** (a new vector): its old neighbours that link back to it choose again among their
+  other neighbours and its own, then it is inserted anew under the same record.
+- **Delete** (property removed, label removed, entity deleted): the record becomes a tombstone.
+  Its neighbours are repaired as for an update; other lists may still point at it, so it keeps
+  routing searches, and is never returned. When tombstones outnumber live entities (past 1024),
+  the delete marks the index for a rebuild (below); it does not rebuild it.
+
+Each store (one per thread) keeps the records and lists it decoded across transactions
+(`vector_cache.zig`), so an insert or a search does not read again the thousands of entities it
+visits. A generation's version says whether they are current: each write transaction that writes
+a generation stores its own id there, and a store's next look at the generation drops what it
+kept if the version it sees is another. A write transaction that ends without its commit drops the
+store's cache (the engine may hand its id out again), and loading a copy gives each generation the
+loading transaction's id (the master's ids mean nothing here). At most 64 MiB stays kept between
+transactions, evicted by the clock algorithm; a transaction may go above it, as what it reads stays
+valid until it ends. A store that searches while another writes the same index drops its entries
+of that index at each write it sees.
+
+Every key is written in the transaction of the change, so a reader sees the index as of its
+snapshot. The change log does not carry these keys: a replica moves each entity in its own
+indexes as it applies the write that changed it (`replica_vector_indexes.zig`), and the state is
+each database's own. A copy carries them as they are.
+
+A new index is populated in the background (`vector_population.zig`): `CREATE VECTOR INDEX` (or a
+replica applying it) stores the state populating and does a first batch; the builder thread of
+the open database does the rest, one write transaction of about 20 ms per batch, which places
+the next entities by id (from the label index, or the relationship table) and stores how far it
+got, so a crash loses at most a batch. Writes keep the index meanwhile, ahead of that point too:
+placing an entity is idempotent. Several processes share the work, each batch going on from the
+state it reads. A value that is not a vector fails the index: its keys are removed but the state,
+which names the entity and why; writes then leave it alone. The builder's transactions write only
+`h` keys, which a replica allows (`KeyValueStore.beginLocalWrite`). The integrity checker
+requires a populating index to hold the entities below where it got to, and those above that
+writes placed.
+
+The same thread rebuilds an index without its tombstones (`vector_rebuild.zig`), so a delete
+that crosses the threshold costs its transaction nothing more. Each batch takes the next live
+records by id from the current generation and inserts them into the next one, storing how far
+it got in the state; writes keep the current generation, and the next one below that point.
+Searches read the current generation until the last batch makes the next one current; inserted
+in id order with levels from the ids, the new graph is the one a rebuild in one go would make.
+Keys no index needs any more are garbage, which the thread deletes first, about 20 ms of it per
+batch: those of the old generation, of a dropped index (`DROP INDEX` deletes only the
+definition) and of a failed one but its state. Index numbers are never reused, so garbage never
+mixes with a new index's keys. A rebuild only starts from an online index (a population that
+ends with too many tombstones starts one). Copies carry it as they carry a population, and each
+database rebuilds its own indexes. The checker checks both generations while a rebuild runs (the
+next one holding exactly the live entities below where it got to) and accepts garbage as it is.
+
 ## Checking integrity
 
 Everything but the records is derived: the label index, the property indexes (from their
 definitions: an index's keys are rebuilt from the nodes or relationships it covers), both edge
-keys of each relationship and the labels they keep, the counters, the full-text postings. The
+keys of each relationship and the labels they keep, the counters, the full-text postings, the
+vector indexes. The
 integrity checker, `zypherdb.integrity.check(graph, allocator)` (`src/storage/integrity.zig`),
 rebuilds each of them from the primary data — the node and relationship records, the relationship
 properties (`f`), the schema definitions (`i`) — and compares them with what is stored. It also
 checks that every uniqueness constraint holds, that the id counters are above every id in use,
 that each record and value is well formed (`layout.zig`), and that the main table holds no key of
-any other kind. It returns a `Report` with the first problems found, described, and their count.
+any other kind. An HNSW graph depends on the order of the writes that built it, so a vector index
+is not rebuilt but checked: each entity it must hold has its record exactly (level, live, vector),
+every other record is a tombstone, each record has a list on each of its levels naming recorded
+entities once each and at most the level's maximum, the header's entry point and counts
+agree, a generation with entries has a version, and what the store's cache keeps of a
+generation at the version it reads is what the generation holds. It returns a `Report` with the first problems found, described, and their count.
 
 The same layout functions guard the storage boundary in Debug and ReleaseSafe builds: the writer
 asserts the bytes it is about to store, and the reader the bytes it is about to trust (pair

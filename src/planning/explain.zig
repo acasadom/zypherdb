@@ -88,6 +88,7 @@ const Explainer = struct {
             });
             switch (operator) {
                 .optional => |optional| try self.chain(optional.chain, depth + 1, line),
+                .search => |search| try self.chain(search.candidates, depth + 1, line),
                 .call_subquery => |call| try self.chain(call.chain, depth + 1, line),
                 .merge => |merge| try self.chain(merge.chain, depth + 1, line),
                 .foreach => |foreach| try self.chain(foreach.chain, depth + 1, line),
@@ -135,6 +136,10 @@ const Explainer = struct {
                 try self.nodeValues(&roots, pattern.nodes[expand.to]);
             },
             .filter => |filter| try roots.append(self.allocator, filter.predicate),
+            .search => |search| {
+                const parts = ast.nodeChildren(search.clause);
+                try roots.appendSlice(self.allocator, &.{ parts[0], parts[2], parts[3], parts[4] });
+            },
             .unwind, .load_csv, .with_streaming, .with_collecting, .return_, .write => |clause| try roots.appendSlice(self.allocator, ast.nodeChildren(clause)),
             .procedure_call => |call| try roots.appendSlice(self.allocator, ast.nodeChildren(call.clause)),
             .merge => |merge| try roots.appendSlice(self.allocator, ast.nodeChildren(merge.clause)),
@@ -164,6 +169,8 @@ const Explainer = struct {
             },
             .node_index_range_count => "NodeIndexRangeCount",
             .edge_index_scan => "RelationshipIndexSeek",
+            .bound_edge => "BoundRelationship",
+            .search => "VectorSearch",
             .expand => |expand| expand_name: {
                 const pattern = self.plan.patterns[expand.pattern];
                 const edge = pattern.edges[@min(expand.from, expand.to)];
@@ -221,7 +228,8 @@ const Explainer = struct {
             .bound_node => |reference| try nodeText(&text, self.plan.patterns[reference.pattern].nodes[reference.node]),
             .node_scan => |reference| try scanDetails(&text, self.plan.patterns[reference.pattern].nodes[reference.node], false),
             .node_index_range_count => |reference| try scanDetails(&text, self.plan.patterns[reference.pattern].nodes[reference.node], true),
-            .edge_index_scan => |reference| try stepDetails(&text, self.plan.patterns[reference.pattern], reference.edge, reference.edge + 1),
+            .edge_index_scan, .bound_edge => |reference| try stepDetails(&text, self.plan.patterns[reference.pattern], reference.edge, reference.edge + 1),
+            .search => |search| try searchDetails(&text, search),
             .expand => |expand| try stepDetails(&text, self.plan.patterns[expand.pattern], expand.from, expand.to),
             .project_path => |pattern| try text.name(self.plan.patterns[pattern].path_variable),
             .filter => |filter| try text.write(filter.predicate),
@@ -296,6 +304,7 @@ const Explainer = struct {
             .node_scan => |reference| times(input, try self.anchorRows(self.plan.patterns[reference.pattern].nodes[reference.node])),
             .expand => |expand| times(input, try self.degree(self.plan.patterns[expand.pattern], expand.from, expand.to)),
             .optional => |optional| if (times(input, self.chainRows(optional.chain))) |rows| @max(rows, input orelse rows) else input,
+            .search => |search| searchRows(ast, search, input, self.chainRows(search.candidates)),
             .unwind => |clause| unwind: {
                 const list = ast.nodeChildren(clause)[0];
                 if (ast.kind(list) != .list_literal) break :unwind null;
@@ -439,6 +448,50 @@ fn scanDetails(text: *Printer, node: Plan.PatternNode, exact: bool) Allocator.Er
 }
 
 /// `(a)-[r:T]->(b)`, the step from pattern position `from` to `to`.
+/// `m IN plots FOR $v WHERE ... LIMIT 10 SCORE AS s WHERE ...`.
+fn searchDetails(text: *Printer, search: Plan.Search) Allocator.Error!void {
+    const ast = text.ast;
+    const names = ast.data(search.clause).search;
+    const parts = ast.nodeChildren(search.clause);
+    try text.name(names.variable_name);
+    try text.append(" IN ");
+    try text.name(names.index_name);
+    try text.append(" FOR ");
+    try text.write(parts[0]);
+    if (!isTrue(ast, parts[1])) {
+        try text.append(" WHERE ");
+        try text.write(parts[1]);
+    }
+    try text.append(" LIMIT ");
+    try text.write(parts[2]);
+    if (ast.kind(parts[3]) != .null_literal) {
+        try text.append(" OPTIONS ");
+        try text.write(parts[3]);
+    }
+    if (names.score_alias.len > 0) {
+        try text.append(" SCORE AS ");
+        try text.name(names.score_alias);
+    }
+    if (!isTrue(ast, parts[4])) {
+        try text.append(" WHERE ");
+        try text.write(parts[4]);
+    }
+}
+
+/// The `true` of a WHERE not written.
+fn isTrue(ast: *const Ast, where: Index) bool {
+    return ast.kind(where) == .boolean_literal and ast.data(where).boolean;
+}
+
+/// A SEARCH's rows: k entities for each row in (one row each, as the
+/// rows an entity has are not known here), at most the MATCH's.
+fn searchRows(ast: *const Ast, search: Plan.Search, input: ?f64, candidates: ?f64) ?f64 {
+    const limit = ast.nodeChildren(search.clause)[2];
+    if (ast.kind(limit) != .integer_literal) return times(input, candidates);
+    const k: f64 = @floatFromInt(@max(ast.data(limit).int, 0));
+    return times(input, if (candidates) |rows| @min(rows, k) else k);
+}
+
 fn stepDetails(text: *Printer, pattern: Plan.PatternPlan, from: usize, to: usize) Allocator.Error!void {
     const edge = pattern.edges[@min(from, to)];
     try nodeText(text, pattern.nodes[from]);

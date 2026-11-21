@@ -21,7 +21,9 @@
 //!     `delete(Table, key) Error!void` (deleting an absent key succeeds),
 //!     `clear(Table) Error!void` (deletes every key of a table but `main`,
 //!     whose keys starting with `#` are the engine's catalog of tables),
-//!     `openCursor(Table) Error!Cursor`.
+//!     `openCursor(Table) Error!Cursor`, `id() u64` (a read transaction's
+//!     is the last commit's it sees; a write transaction's is above every
+//!     commit before it, and an aborted one's may be handed out again).
 //! - `Cursor`: a position in one table of one transaction, in key order.
 //!     `close()`, `first() Error!?Entry`, `find(key) Error!?[]const u8` (the
 //!     value of exactly `key`), `seek(key) Error!?Entry` (the first key at or
@@ -101,7 +103,7 @@ pub fn check(comptime Engine: type) void {
     const required = .{
         .{ Engine, &.{ "Environment", "Transaction", "Cursor" } },
         .{ Engine.Environment, &.{ "open", "close", "sync", "beginRead", "endRead", "beginWrite", "share" } },
-        .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "clear", "openCursor" } },
+        .{ Engine.Transaction, &.{ "commit", "abort", "get", "put", "delete", "clear", "openCursor", "id" } },
         .{ Engine.Cursor, &.{ "close", "first", "find", "seek", "next" } },
     };
     inline for (required) |entry| {

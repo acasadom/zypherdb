@@ -627,9 +627,29 @@ test "checkFormat stamps a new database and refuses another format" {
     try g.checkFormat();
     const stamped = (try store.get(format_key)).?;
     defer testing.allocator.free(stamped);
-    try testing.expectEqualSlices(u8, &bigEndian(u32, Graph.format_version), stamped);
+    try testing.expectEqualSlices(u8, &bigEndian(u32, Graph.first_format), stamped);
     try g.checkFormat(); // its own format: accepted, unchanged
 
-    try store.put(format_key, &bigEndian(u32, Graph.format_version + 1));
+    try store.put(format_key, &bigEndian(u32, Graph.vector_format));
+    try g.checkFormat(); // every format up to the newest is read
+    try store.put(format_key, &bigEndian(u32, Graph.newest_format + 1));
     try testing.expectError(error.IncompatibleFormat, g.checkFormat());
+    try store.put(format_key, &bigEndian(u32, 0));
+    try testing.expectError(error.IncompatibleFormat, g.checkFormat());
+}
+
+test "raiseFormat raises, never lowers" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buffer: [128]u8 = undefined;
+    var store = try openStore(&tmp, &path_buffer);
+    defer store.deinit();
+    var g = Graph.init(&store, testing.allocator);
+
+    try g.checkFormat();
+    try g.raiseFormat(Graph.vector_format);
+    try testing.expectEqual(@as(?u32, Graph.vector_format), try g.storedFormat());
+    try g.raiseFormat(Graph.first_format);
+    try testing.expectEqual(@as(?u32, Graph.vector_format), try g.storedFormat());
 }

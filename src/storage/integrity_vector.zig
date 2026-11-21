@@ -1,0 +1,245 @@
+//! The integrity checker's part for vector indexes (integrity.zig).
+//!
+//! An HNSW graph depends on the order of the writes that built it, so it
+//! cannot be rebuilt and compared key by key. What is checked:
+//!
+//! - each entity the index must hold has its record, exactly: its level,
+//!   live, its property's vector as the index keeps it;
+//! - the other records are tombstones;
+//! - each record has a neighbour list on each of its levels, of at most
+//!   the level's maximum, naming other recorded entities, once each;
+//! - the header names a recorded entity on the top level, and counts the
+//!   live entities and the tombstones;
+//! - a generation with entries has a version;
+//! - the index has a state. One populating must hold the entities below
+//!   where population got to; above, those writes placed (any of them);
+//! - what the store's cache holds of a generation, at the version the
+//!   snapshot has, is what the generation holds (vector_cache.zig).
+//!
+//! All of it for each generation of the graph writes keep: the current
+//! one, and while the index is rebuilt the next, which must hold the
+//! entities below where the rebuild got to and none above. Keys no index
+//! needs (vector_rebuild.zig) are garbage waiting to be cleared: any.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const Checker = @import("integrity.zig").Checker;
+const Bytes = @import("integrity.zig").Bytes;
+const StorageError = @import("key_value_store.zig").StorageError;
+const Value = @import("../value.zig").Value;
+const value_encoding = @import("value_encoding.zig");
+const fulltext = @import("fulltext.zig");
+const vector_index = @import("vector_index.zig");
+const vector_rebuild = @import("vector_rebuild.zig");
+const hnsw = @import("../vector/hnsw.zig");
+
+/// Records the keys vector index `definition` must hold, and reports what
+/// its stored graph gets wrong.
+pub fn expectIndex(checker: *Checker, definition: fulltext.Definition) StorageError!void {
+    const arena = checker.arena;
+    const index_state = vector_index.state(checker.graph, arena, definition.index_id) catch |err| switch (err) {
+        error.ReadFailed => return checker.report.add("vector index '{s}': its state is missing or malformed", .{definition.name}),
+        else => |other| return other,
+    };
+    const state_key = vector_index.indexPrefix(definition.index_id);
+    try checker.expect(try arena.dupe(u8, &state_key), null);
+    switch (index_state) {
+        .populating => |progress| try expectGeneration(checker, definition, 0, .{ .below = progress.next }),
+        .online => |online| {
+            try expectGeneration(checker, definition, online.generation, .{});
+            if (online.rebuild) |next| try expectGeneration(checker, definition, online.generation +% 1, .{ .below = next, .none_above = true });
+        },
+        .failed => {},
+    }
+}
+
+/// The checks of `expectIndex` for `generation` of the index's graph.
+fn expectGeneration(checker: *Checker, definition: fulltext.Definition, generation: u8, required: Required) StorageError!void {
+    const arena = checker.arena;
+    var storage = vector_index.IndexStorage.initUncached(checker.graph, arena, definition, generation);
+    var live = std.AutoArrayHashMapUnmanaged(u64, void).empty;
+    switch (definition.entity) {
+        .nodes => for (checker.nodes.keys(), checker.nodes.values()) |id, record| {
+            if (!record.hasLabel(definition.labels_or_types[0])) continue;
+            const encoded = record.property(definition.properties[0]) orelse continue;
+            try expectEntity(checker, &storage, definition, required, id, try value_encoding.decodeValue(encoded, arena), &live);
+        },
+        .relationships => for (checker.relationships.keys(), checker.relationships.values()) |id, relationship| {
+            if (!std.mem.eql(u8, relationship.edge_type, definition.labels_or_types[0])) continue;
+            for (relationship.properties.items) |stored| if (std.mem.eql(u8, stored.name, definition.properties[0])) {
+                try expectEntity(checker, &storage, definition, required, id, try value_encoding.decodeValue(stored.encoded, arena), &live);
+            };
+        },
+    }
+    try checkGraph(checker, &storage, definition, required, &live);
+}
+
+/// The entities an index must hold: those below `below` (all, once online).
+/// Above, population has not looked yet: only what writes placed is there,
+/// and in a generation a rebuild fills, nothing.
+const Required = struct {
+    below: u64 = std.math.maxInt(u64),
+    none_above: bool = false,
+};
+
+fn expectEntity(checker: *Checker, storage: *vector_index.IndexStorage, definition: fulltext.Definition, required: Required, id: u64, value: Value, live: *std.AutoArrayHashMapUnmanaged(u64, void)) StorageError!void {
+    const arena = checker.arena;
+    if (id >= required.below and try storage.entityRecord(id) == null) return;
+    const vector = switch (try vector_index.check(arena, definition, value)) {
+        .absent => return,
+        .invalid => |reason| {
+            // Population fails the index when it gets there.
+            if (id >= required.below) return;
+            return checker.report.add("vector index '{s}': the value of entity {d} {s}", .{ definition.name, id, reason });
+        },
+        .vector => |vector| vector,
+    };
+    try live.put(arena, id, {});
+    const bytes = try arena.alloc(u8, 2 + 4 * vector.len);
+    bytes[0] = hnsw.levelOf(id, vector_index.parameters);
+    bytes[1] = 1;
+    for (vector, 0..) |element, i| std.mem.writeInt(u32, bytes[2 + 4 * i ..][0..4], @bitCast(element), .little);
+    const key = storage.entityKey(id);
+    try checker.expect(try arena.dupe(u8, &key), bytes);
+}
+
+/// Scans the index's keys: the tombstones, the neighbour lists and the
+/// header are expected with any value once they pass the checks.
+fn checkGraph(checker: *Checker, storage: *vector_index.IndexStorage, definition: fulltext.Definition, required: Required, live: *const std.AutoArrayHashMapUnmanaged(u64, void)) StorageError!void {
+    const arena = checker.arena;
+    const report = checker.report;
+    const name = definition.name;
+    // Every record's level, and the lists found.
+    var levels = std.AutoArrayHashMapUnmanaged(u64, u8).empty;
+    const List = struct { key: []const u8, id: u64, level: u8, neighbours: []const u8 };
+    var lists = std.ArrayList(List).empty;
+    var header_value: ?[]const u8 = null; // its checks follow the scan
+    var version: ?u64 = null;
+    var tombstones: u64 = 0;
+    {
+        const prefix = vector_index.generationPrefix(definition.index_id, storage.generation);
+        var keys = try checker.graph.store.scanPrefix(&prefix);
+        defer keys.deinit();
+        while (try keys.next()) |entry| {
+            const key = try arena.dupe(u8, entry.key);
+            const rest = key[prefix.len..];
+            if (rest.len == 1 and rest[0] == 'H') {
+                header_value = try arena.dupe(u8, entry.value);
+                try checker.expect(key, null);
+            } else if (vector_index.isVersionKey(key) and entry.value.len == 8) {
+                version = std.mem.readInt(u64, entry.value[0..8], .little);
+                try checker.expect(key, null);
+            } else if (rest.len == 9 and rest[0] == 'E' and entry.value.len == 2 + 4 * @as(usize, definition.dimensions)) {
+                const id = std.mem.readInt(u64, rest[1..9], .big);
+                try levels.put(arena, id, entry.value[0]);
+                if (required.none_above and id >= required.below) try report.add("vector index '{s}': the generation being rebuilt holds entity {d}, past where the rebuild got to ({d})", .{ name, id, required.below });
+                if (entry.value[1] != 1) {
+                    tombstones += 1;
+                    try checker.expect(key, null);
+                    if (live.contains(id)) try report.add("vector index '{s}': entity {d} is a tombstone, but its property holds a vector", .{ name, id });
+                }
+            } else if (rest.len == 10 and rest[0] == 'N' and entry.value.len % 8 == 0) {
+                try lists.append(arena, .{ .key = key, .id = std.mem.readInt(u64, rest[1..9], .big), .level = rest[9], .neighbours = try arena.dupe(u8, entry.value) });
+                try checker.expect(key, null);
+            } else {
+                try report.add("vector index '{s}': malformed key {f}", .{ name, Bytes{ .bytes = key } });
+            }
+        }
+    }
+    if (version == null and (levels.count() > 0 or lists.items.len > 0 or header_value != null)) {
+        try report.add("vector index '{s}': generation {d} has entries and no version", .{ name, storage.generation });
+    }
+    if (version) |current| try checkCache(checker, definition, storage.generation, current);
+    var lists_per_entity = std.AutoArrayHashMapUnmanaged(u64, usize).empty;
+    for (lists.items) |list| {
+        const level = levels.get(list.id) orelse {
+            try report.add("vector index '{s}': a neighbour list of entity {d}, which has no record", .{ name, list.id });
+            continue;
+        };
+        if (list.level > level) try report.add("vector index '{s}': entity {d} has a list on level {d}, above its level {d}", .{ name, list.id, list.level, level });
+        (try lists_per_entity.getOrPutValue(arena, list.id, 0)).value_ptr.* += 1;
+        const count = list.neighbours.len / 8;
+        if (count > vector_index.parameters.maxNeighbours(list.level)) try report.add("vector index '{s}': entity {d} has {d} neighbours on level {d}", .{ name, list.id, count, list.level });
+        for (0..count) |i| {
+            const neighbour = std.mem.readInt(u64, list.neighbours[8 * i ..][0..8], .little);
+            if (neighbour == list.id) try report.add("vector index '{s}': entity {d} is its own neighbour", .{ name, list.id });
+            if (!levels.contains(neighbour)) try report.add("vector index '{s}': entity {d} links to {d}, which has no record", .{ name, list.id, neighbour });
+            for (0..i) |j| if (std.mem.readInt(u64, list.neighbours[8 * j ..][0..8], .little) == neighbour) {
+                try report.add("vector index '{s}': entity {d} links to {d} twice", .{ name, list.id, neighbour });
+            };
+        }
+    }
+    var top_level: u8 = 0;
+    for (levels.keys(), levels.values()) |id, level| {
+        top_level = @max(top_level, level);
+        const have = lists_per_entity.get(id) orelse 0;
+        if (have != @as(usize, level) + 1) try report.add("vector index '{s}': entity {d} has {d} neighbour lists for {d} levels", .{ name, id, have, @as(usize, level) + 1 });
+    }
+    if (header_value == null) {
+        if (levels.count() > 0) try report.add("vector index '{s}': {d} entities and no header", .{ name, levels.count() });
+        return;
+    }
+    const header = storage.header() catch |err| switch (err) {
+        error.ReadFailed => return report.add("vector index '{s}': malformed header {f}", .{ name, Bytes{ .bytes = header_value.? } }),
+        else => |other| return other,
+    } orelse return;
+    if (header.live != live.count()) try report.add("vector index '{s}': the header counts {d} live entities, there are {d}", .{ name, header.live, live.count() });
+    if (header.tombstones != tombstones) try report.add("vector index '{s}': the header counts {d} tombstones, there are {d}", .{ name, header.tombstones, tombstones });
+    const entry_level = levels.get(header.entry) orelse return report.add("vector index '{s}': the entry point {d} has no record", .{ name, header.entry });
+    if (entry_level != header.top_level or header.top_level != top_level) {
+        try report.add("vector index '{s}': the entry point {d} is on level {d}, the header says {d}, the top level is {d}", .{ name, header.entry, entry_level, header.top_level, top_level });
+    }
+}
+
+/// Reports what the store's cache holds of `generation` at `version`
+/// (what the snapshot has) and the generation does not.
+fn checkCache(checker: *Checker, definition: fulltext.Definition, generation: u8, version: u64) StorageError!void {
+    const cache = &checker.graph.store.vector_cache;
+    const kept = cache.generations.get(.{ .index_id = definition.index_id, .generation = generation }) orelse return;
+    if (kept.version != version) return;
+    var storage = vector_index.IndexStorage.initUncached(checker.graph, checker.arena, definition, generation);
+    const name = definition.name;
+    for (kept.entities.keys(), kept.entities.values()) |id, entity| {
+        const record = try storage.entityRecord(id) orelse {
+            try checker.report.add("vector index '{s}': the cache holds entity {d}, which has no record", .{ name, id });
+            continue;
+        };
+        const same = record.len == 2 + 4 * entity.vector.len and record[0] == entity.level and (record[1] == 1) == entity.live and
+            std.mem.eql(f32, try vector_index.vectorOfRecord(checker.arena, record), entity.vector);
+        if (!same) try checker.report.add("vector index '{s}': the cache holds entity {d} other than its record", .{ name, id });
+    }
+    for (kept.neighbours.keys(), kept.neighbours.values()) |key, neighbours| {
+        const stored = storage.neighbours(checker.arena, key.id, key.at) catch |err| switch (err) {
+            error.ReadFailed => {
+                try checker.report.add("vector index '{s}': the cache holds a neighbour list of entity {d} on level {d}, which is not stored", .{ name, key.id, key.at });
+                continue;
+            },
+            else => |other| return other,
+        };
+        if (!std.mem.eql(u64, stored, neighbours.ids)) try checker.report.add("vector index '{s}': the cache holds the neighbours of entity {d} on level {d} other than stored", .{ name, key.id, key.at });
+    }
+}
+
+/// Expects, with any value, every key under the vector marker that no
+/// index needs: garbage, cleared in the background.
+pub fn expectGarbage(checker: *Checker) StorageError!void {
+    const arena = checker.arena;
+    const marker = [1]u8{vector_index.marker};
+    var keys = try checker.graph.store.scanPrefix(&marker);
+    defer keys.deinit();
+    var index_id: ?u32 = null;
+    var index_needs: vector_rebuild.Needed = .nothing;
+    while (try keys.next()) |entry| {
+        if (entry.key.len < 5) continue; // reported as unexpected
+        const id = std.mem.readInt(u32, entry.key[1..5], .big);
+        if (index_id != id) {
+            index_id = id;
+            index_needs = vector_rebuild.needed(checker.graph, arena, checker.definitions, id) catch |err| switch (err) {
+                error.ReadFailed => .nothing, // `expectIndex` reports it
+                else => |other| return other,
+            };
+        }
+        if (!index_needs.has(entry.key)) try checker.expect(try arena.dupe(u8, entry.key), null);
+    }
+}

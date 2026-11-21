@@ -41,6 +41,16 @@ pub const catalog = [_]Signature{
         .{ .name = "relationship", .kind = .relationship },
         .{ .name = "score", .kind = .value },
     } },
+    .{ .name = "db.index.vector.queryNodes", .min_arguments = 3, .max_arguments = 3, .columns = &.{
+        .{ .name = "node", .kind = .node },
+        .{ .name = "score", .kind = .value },
+    } },
+    .{ .name = "db.index.vector.queryRelationships", .min_arguments = 3, .max_arguments = 3, .columns = &.{
+        .{ .name = "relationship", .kind = .relationship },
+        .{ .name = "score", .kind = .value },
+    } },
+    // Runs on its own, as the whole query (schema.zig `awaitsIndexes`).
+    .{ .name = "db.awaitIndexes", .min_arguments = 0, .max_arguments = 1, .columns = &.{} },
     .{ .name = "db.index.fulltext.listAvailableAnalyzers", .min_arguments = 0, .max_arguments = 0, .columns = &.{
         .{ .name = "analyzer", .kind = .value },
         .{ .name = "description", .kind = .value },

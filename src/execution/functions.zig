@@ -23,7 +23,9 @@ const formatFloat = @import("../value.zig").formatFloat;
 const Executor = @import("Executor.zig");
 const ExecutionError = Executor.ExecutionError;
 const expressions = @import("expressions.zig");
+const rounding = @import("rounding.zig");
 const temporal_functions = @import("temporal_functions.zig");
+const vector_functions = @import("vector_functions.zig");
 
 pub const Function = struct {
     min_arguments: usize,
@@ -39,7 +41,7 @@ fn fixed(comptime count: usize, comptime implementation: anytype) Function {
 
 const Entry = struct { []const u8, Function };
 
-const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsciiIgnoreCase).initComptime(builtin_entries ++ temporal_table);
+const table = std.StaticStringMapWithEql(Function, std.static_string_map.eqlAsciiIgnoreCase).initComptime(builtin_entries ++ temporal_table ++ vector_functions.entries);
 
 const builtin_entries = [_]Entry{
     // Lists and strings.
@@ -82,7 +84,7 @@ const builtin_entries = [_]Entry{
     .{ "sign", fixed(1, sign) },
     .{ "ceil", fixed(1, floatFunction("ceil", std.math.ceil)) },
     .{ "floor", fixed(1, floatFunction("floor", std.math.floor)) },
-    .{ "round", fixed(1, floatFunction("round", roundHalfUp)) },
+    .{ "round", Function{ .min_arguments = 1, .max_arguments = 3, .implementation = round } },
     .{ "sqrt", fixed(1, floatFunction("sqrt", std.math.sqrt)) },
     .{ "exp", fixed(1, floatFunction("exp", std.math.exp)) },
     .{ "log", fixed(1, floatFunction("log", naturalLog)) },
@@ -640,6 +642,36 @@ fn constant(comptime x: f64) fn (*Executor, []const Value) ExecutionError!Value 
             return .{ .float = x };
         }
     }.apply;
+}
+
+/// `round(value[, precision[, mode]])`, a float; null if any argument is null. Without a
+/// precision, or at precision 0 without a mode, halves round up, as `roundHalfUp`; with a
+/// precision and no mode, they round away from zero (`HALF_UP`), as in Neo4j.
+fn round(self: *Executor, arguments: []const Value) ExecutionError!Value {
+    for (arguments) |argument| {
+        if (argument == .null) return .{ .null = {} };
+    }
+    const value = switch (arguments[0]) {
+        .int, .float => expressions.asFloat(arguments[0]),
+        else => return typeError(self, "round", "a number"),
+    };
+    if (arguments.len == 1) return .{ .float = roundHalfUp(value) };
+    // Past 400 digits nothing is dropped (rounding.zig), so larger precisions are clamped.
+    const precision: u32 = switch (arguments[1]) {
+        .int => |p| if (p >= 0) @intCast(@min(p, 1000)) else return typeError(self, "round", "a non-negative integer precision"),
+        .float => |p| if (p >= 0 and @floor(p) == p) @intFromFloat(@min(p, 1000)) else return typeError(self, "round", "a non-negative integer precision"),
+        else => return typeError(self, "round", "a non-negative integer precision"),
+    };
+    if (arguments.len == 2) {
+        return .{ .float = if (precision == 0) roundHalfUp(value) else rounding.roundDecimal(value, precision, .half_up) };
+    }
+    const mode_error = "a rounding mode: 'UP', 'DOWN', 'CEILING', 'FLOOR', 'HALF_UP', 'HALF_DOWN' or 'HALF_EVEN'";
+    const name = switch (arguments[2]) {
+        .string => |s| s,
+        else => return typeError(self, "round", mode_error),
+    };
+    const mode = rounding.modeOf(name) orelse return typeError(self, "round", mode_error);
+    return .{ .float = rounding.roundDecimal(value, precision, mode) };
 }
 
 /// Halves round up (toward positive infinity): round(2.5) is 3.0, round(-2.5) is -2.0.

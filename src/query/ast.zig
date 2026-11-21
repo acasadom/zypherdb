@@ -16,6 +16,11 @@
 //!   more comma-separated patterns followed by the `WHERE` (a missing `WHERE`
 //!   is `bool_literal(true)`).
 //! - `optional_match_clause` children are the same shape as `match_clause`.
+//! - `search_clause` follows the `match_clause` (or `optional_match_clause`)
+//!   that binds its variable; children are `[vector, where, limit, options,
+//!   post_where]`: the `WHERE` inside the parentheses and the one after
+//!   `SCORE AS` (each `bool_literal(true)` if absent), the OPTIONS map (a
+//!   `null_literal` if absent); names in the `search` payload.
 //! - `create_clause` children are its patterns, `[pattern, ...]`.
 //! - `set_clause` children are `set_item`s.
 //! - `delete_clause` children are `delete_item`s; `detach` is in the `delete`
@@ -158,6 +163,9 @@ pub const NodeKind = enum {
     projection_item,
     match_clause,
     optional_match_clause,
+    /// `SEARCH x IN (VECTOR INDEX ...) SCORE AS s`: data.search; see the
+    /// conventions above.
+    search_clause,
     create_clause,
     merge_clause,
     set_clause,
@@ -210,6 +218,9 @@ pub const NodeKind = enum {
     /// `CREATE [RANGE|TEXT] INDEX [name] FOR (n:L) ON (n.p, ...)` (or a
     /// document path `n.p.field`): data.schema_definition.
     create_index,
+    /// `CREATE VECTOR INDEX [name] FOR (n:L) ON n.p [OPTIONS {...}]`:
+    /// data.schema_definition; children: the OPTIONS map, if any.
+    create_vector_index,
     /// `CREATE CONSTRAINT [name] FOR (n:L) REQUIRE n.p IS UNIQUE`:
     /// data.schema_definition.
     create_constraint,
@@ -217,7 +228,7 @@ pub const NodeKind = enum {
     drop_index,
     /// `DROP CONSTRAINT name [IF EXISTS]`: data.drop_index.
     drop_constraint,
-    /// `SHOW [FULLTEXT|RANGE] INDEXES`: data.show_indexes.
+    /// `SHOW [FULLTEXT|RANGE|VECTOR] INDEXES`: data.show_indexes.
     show_indexes,
     /// `SHOW CONSTRAINTS`.
     show_constraints,
@@ -258,6 +269,8 @@ pub const Data = union(enum) {
     with_: struct { distinct: bool },
     unwind: struct { variable_name: []const u8 },
     load_csv: struct { variable_name: []const u8, with_headers: bool },
+    /// `score_alias` is "" without `SCORE AS`.
+    search: struct { variable_name: []const u8, index_name: []const u8, score_alias: []const u8 },
     order_item: struct { ascending: bool },
     delete: struct { detach: bool },
     quantifier: struct { kind: QuantifierKind, variable_name: []const u8 },
@@ -282,7 +295,7 @@ pub const Data = union(enum) {
         if_not_exists: bool,
     },
     /// Which indexes SHOW INDEXES lists.
-    show_indexes: enum { all, fulltext, range },
+    show_indexes: enum { all, fulltext, range, vector },
     drop_index: struct { name: []const u8, if_exists: bool },
     labels: []const []const u8,
     explain: ExplainMode,

@@ -16,7 +16,7 @@ const Watched = network_module.Watched;
 const Network = network_module.Network;
 
 pub const Tcp = struct {
-    /// Only to resolve host names.
+    /// To resolve host names, and the clock `wait` keeps its timeout by.
     io: Io,
     allocator: Allocator,
     /// Connections asked for: each starts at another of the addresses a
@@ -83,7 +83,7 @@ pub const Tcp = struct {
     }
 
     fn wait(context: *anyopaque, watched: []Watched, timeout_ns: ?u64) Error!void {
-        _ = context;
+        const self: *Tcp = @ptrCast(@alignCast(context));
         var entries: [network_module.max_watched]sockets.PollEntry = undefined;
         for (watched, entries[0..watched.len]) |one, *entry| {
             var events: i16 = 0;
@@ -91,12 +91,18 @@ pub const Tcp = struct {
             if (one.wanted.writable) events |= sockets.poll_writable;
             entry.* = sockets.pollEntry(handleOf(one.source), events);
         }
-        const timeout_ms: i32 = if (timeout_ns) |ns|
-            // Rounded up: woken before the deadline, a loop would wait again.
-            @intCast(@min(std.math.divCeil(u64, ns, std.time.ns_per_ms) catch unreachable, std.math.maxInt(i32)))
-        else
-            -1;
-        if (try sockets.poll(entries[0..watched.len], timeout_ms) == 0) return;
+        const deadline: ?u64 = if (timeout_ns) |ns| self.now() +| ns else null;
+        while (true) {
+            const timeout_ms: i32 = if (deadline) |end|
+                // Rounded up: woken before the deadline, a loop would wait again.
+                @intCast(@min(std.math.divCeil(u64, end -| self.now(), std.time.ns_per_ms) catch unreachable, std.math.maxInt(i32)))
+            else
+                -1;
+            if (try sockets.poll(entries[0..watched.len], timeout_ms) != 0) break;
+            // Windows' `WSAPoll` can come back before its timeout with
+            // nothing ready: wait the rest.
+            if (self.now() >= deadline.?) return;
+        }
         for (watched, entries[0..watched.len]) |*one, entry| {
             const failed = entry.revents & sockets.poll_failed != 0;
             one.ready = .{
@@ -104,6 +110,10 @@ pub const Tcp = struct {
                 .writable = one.wanted.writable and (failed or entry.revents & sockets.poll_writable != 0),
             };
         }
+    }
+
+    fn now(self: *Tcp) u64 {
+        return @intCast(Io.Clock.awake.now(self.io).nanoseconds);
     }
 
     fn handleOf(source: network_module.Source) sockets.Handle {

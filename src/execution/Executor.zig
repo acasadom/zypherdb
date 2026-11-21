@@ -65,6 +65,11 @@ pub const ExecutionError = StorageError || error{
     LimitReached,
     /// LOAD CSV could not read its file (load_csv.zig).
     ExternalResourceFailed,
+    /// A vector index is still being populated (schema.zig).
+    IndexPopulating,
+    /// Internal: a SEARCH's MATCH has more entities than an exact search
+    /// ranks (vector_search.zig).
+    SearchTooBroad,
 };
 
 /// A projected row: one `Value` per RETURN item.

@@ -62,6 +62,8 @@ pub extern "c" fn mdb_env_close(env: *MDB_env) void;
 pub extern "c" fn mdb_txn_begin(env: *MDB_env, parent: ?*MDB_txn, flags: c_uint, txn: *?*MDB_txn) c_int;
 pub extern "c" fn mdb_txn_commit(txn: *MDB_txn) c_int;
 pub extern "c" fn mdb_txn_abort(txn: *MDB_txn) void;
+/// `mdb_size_t` is `size_t` without MDB_VL32, which the build does not set.
+pub extern "c" fn mdb_txn_id(txn: *MDB_txn) usize;
 pub extern "c" fn mdb_txn_reset(txn: *MDB_txn) void;
 pub extern "c" fn mdb_txn_renew(txn: *MDB_txn) c_int;
 

@@ -42,6 +42,16 @@ pub const integrity = @import("storage/integrity.zig");
 /// Schema definitions (indexes, constraints) and the property indexes.
 pub const schema_definitions = @import("storage/fulltext.zig");
 pub const property_indexes = @import("storage/property_indexes.zig");
+/// Vector search: the HNSW algorithm, generic over its storage; the
+/// similarity functions; the vector indexes kept in the store, and their
+/// population.
+pub const vector = struct {
+    pub const hnsw = @import("vector/hnsw.zig");
+    pub const similarity = @import("vector/similarity.zig");
+    pub const index = @import("storage/vector_index.zig");
+    pub const population = @import("storage/vector_population.zig");
+    pub const cache = @import("storage/vector_cache.zig");
+};
 
 /// The layout of stored bytes, checked; and which names can be stored.
 pub const layout = @import("storage/layout.zig");

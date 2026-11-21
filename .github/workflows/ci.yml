@@ -22,7 +22,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 30
     env:
       # A stalled Zig cache download gives up after 2 minutes, not the default
       # 10, and the job goes on with an empty cache (the cache takes seconds).
