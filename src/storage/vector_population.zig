@@ -93,6 +93,12 @@ pub fn advance(graph: *Graph, definition: fulltext.Definition, budget: Budget) S
             return .online;
         }
         progress.next = found.next;
+        // A batch may find no entity of a rare relationship type in many
+        // looks: the time it takes counts all the same.
+        if (now() - started >= budget.nanoseconds) {
+            try vector_index.setState(graph, definition.index_id, .{ .populating = progress });
+            return .populating;
+        }
     }
 }
 

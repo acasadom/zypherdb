@@ -205,6 +205,9 @@ pub const Graph = struct {
         if (!record.hasLabel(label)) return;
         const old = try self.keptRecord(record, scratch.allocator());
         const updated = try node_record.withLabel(scratch.allocator(), record, label, false);
+        // As for any other write: a node an index is still populating over
+        // may hold a value it does not take.
+        try vector_index.checkNode(self, id, .{ .bytes = updated });
         try self.writeRecord(id, updated);
         try fulltext_postings.nodeChanged(self, id, old, .{ .bytes = updated }, null);
         try vector_index.nodeChanged(self, id, old, .{ .bytes = updated }, null);
@@ -468,6 +471,7 @@ pub const Graph = struct {
         if (record.property(name) == null) return;
         const updated = try node_record.withProperty(scratch.allocator(), record, name, null);
         const old_record = try self.keptRecord(record, scratch.allocator());
+        try vector_index.checkNode(self, id, .{ .bytes = updated });
         try self.writeRecord(id, updated);
         try property_indexes.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);
         try fulltext_postings.nodeChanged(self, id, old_record, .{ .bytes = updated }, name);

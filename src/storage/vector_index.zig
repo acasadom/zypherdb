@@ -616,10 +616,18 @@ pub const Placer = struct {
         };
     }
 
-    /// `arena` holds the scratch of this call.
+    /// `arena` holds the scratch of this call. A value the index does not
+    /// take, which only a write that was not checked can leave (a replica
+    /// applies what its master wrote), fails the index naming the entity,
+    /// as its population does: the placer is not to be used after that.
     pub fn place(self: *Placer, arena: Allocator, id: u64, value: ?Value) StorageError!void {
         const checked = try check(arena, self.definition, value);
-        if (checked == .invalid) unreachable; // checked before the write
+        if (checked == .invalid) {
+            try setState(self.graph, self.definition.index_id, .{ .failed = .{ .entity = id, .reason = checked.invalid } });
+            // A failed index has keys to clear.
+            self.graph.store.wakePopulation();
+            return;
+        }
         // A rebuild it starts has placed nothing yet: no shadow to place in.
         if (try placeIn(&self.current, arena, id, checked)) |header| try startRebuildIfDue(self.graph, self.definition, header);
         const shadow = if (self.shadow) |*storage| storage else return;

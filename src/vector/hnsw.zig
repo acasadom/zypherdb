@@ -50,6 +50,9 @@ pub const Parameters = struct {
 /// The highest level an entity gets (levels above it are vanishingly rare).
 pub const max_level: u8 = 15;
 
+/// The most entries a search reserves for the entities it visits.
+const max_visited_hint: usize = 1 << 16;
+
 /// An entity found, and its distance to the query.
 pub const Hit = struct {
     id: u64,
@@ -245,8 +248,9 @@ pub fn Hnsw(comptime Storage: type) type {
         /// route the search but are left out of the result.
         fn searchLevel(storage: *Storage, arena: Allocator, target: []const f32, entries: []const Hit, ef: usize, at: u8, filter: anytype) ![]Hit {
             var visited = std.AutoHashMapUnmanaged(u64, void).empty;
-            // About what a search on level 0 visits: it seldom grows.
-            try visited.ensureTotalCapacity(arena, @intCast(16 * ef));
+            // About what a search on level 0 visits: it seldom grows. Capped:
+            // a huge ef (or k) visits at most the whole index, and grows it.
+            try visited.ensureTotalCapacity(arena, @intCast(@min(16 *| ef, max_visited_hint)));
             var candidates = std.PriorityQueue(Hit, void, closerFirst).empty;
             var results = std.PriorityQueue(Hit, void, fartherFirst).empty;
             for (entries) |entry| {
