@@ -62,7 +62,7 @@ test "population goes in batches, kept by writes meanwhile, and resumes after a 
     var path_buffer: [256]u8 = undefined;
     var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
-    store.population_budget = .{ .entities = 10 };
+    store.population_budget = .{ .entities = 10, .nanoseconds = std.math.maxInt(u64) };
     var g = Graph.init(&store, testing.allocator);
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
@@ -102,7 +102,7 @@ test "population goes in batches, kept by writes meanwhile, and resumes after a 
     // Closed mid-population: it goes on from where it got to.
     store.deinit();
     store = try openStore(&tmp, &path_buffer);
-    store.population_budget = .{ .entities = 10 };
+    store.population_budget = .{ .entities = 10, .nanoseconds = std.math.maxInt(u64) };
     g = Graph.init(&store, testing.allocator);
     try expectPopulating(&g, "docs", 20);
     try population.finish(&store);
@@ -119,7 +119,7 @@ test "a bad vector met by population fails the index, which is dropped and made 
     var path_buffer: [256]u8 = undefined;
     var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
-    store.population_budget = .{ .entities = 5 };
+    store.population_budget = .{ .entities = 5, .nanoseconds = std.math.maxInt(u64) };
     var g = Graph.init(&store, testing.allocator);
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
@@ -162,7 +162,7 @@ test "a relationship index populates past many relationships of other types" {
     var path_buffer: [256]u8 = undefined;
     var store = try openStore(&tmp, &path_buffer);
     defer store.deinit();
-    store.population_budget = .{ .entities = 3 };
+    store.population_budget = .{ .entities = 3, .nanoseconds = std.math.maxInt(u64) };
     var g = Graph.init(&store, testing.allocator);
     var ast = Ast.init(testing.allocator);
     defer ast.deinit();
@@ -201,7 +201,7 @@ test "a replica copied mid-population goes on with it; one applying a CREATE ove
     var master = try openAt(&tmp, "master", &master_path);
     defer master.deinit();
     try master.startChangeLog();
-    master.population_budget = .{ .entities = 10 };
+    master.population_budget = .{ .entities = 10, .nanoseconds = std.math.maxInt(u64) };
     var replica_path: [256]u8 = undefined;
     var replica = try openAt(&tmp, "replica", &replica_path);
     defer replica.deinit();
