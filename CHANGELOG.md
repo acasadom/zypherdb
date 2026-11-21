@@ -31,6 +31,11 @@
   completed exactly if it finds fewer than `k`. `PROFILE` says which way each row took. A new
   index option, `vector.hnsw.ef_search` (100 by default), sets how many candidates a search looks
   at; `OPTIONS {ef: n}` overrides it for one search.
+- **`round(value, precision[, mode])`.** Rounds to `precision` digits after the point, reading the
+  float as the shortest decimal that gives it back, as Neo4j does (`round(2.675, 2)` is 2.68).
+  Without a mode, halves round away from zero (at precision 0 they round up, as in
+  `round(value)`); `mode` is `'UP'`, `'DOWN'`, `'CEILING'`, `'FLOOR'`, `'HALF_UP'`,
+  `'HALF_DOWN'` or `'HALF_EVEN'`. A negative precision is an error.
 
 ### Changed
 

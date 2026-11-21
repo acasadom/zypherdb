@@ -220,19 +220,5 @@ alarm_notes RELATIONSHIP ['NOTED'] ['text'] english
 protocols NODE ['Protocol'] ['title', 'body'] spanish
 ```
 
-## What you have built
-
-Over twenty steps, Helix Biolabs got:
-
-- a graph of its people, teams, buildings, rooms and doors ([1](01-getting-started)–[3](03-relationships));
-- the queries to explore it, report on it and keep it current ([4](04-filtering)–[10](10-optional));
-- access rules as data — team grants with hours, management reach, personal exceptions, bans,
-  training — and the one query that applies them all ([11](11-hierarchies)–[14](14-time));
-- an event log at volume, used safely from many threads and processes ([15](15-loading)–[17](17-performance));
-- a door controller that decides, records and tracks in one transaction ([18](18-door-controller)),
-  and a monitor for the rules no door can enforce ([19](19-monitoring));
-- a searchable safety manual, tied to the rooms it applies to.
-
-From here, the [Cypher reference](../guide/cypher) lists everything the language can do, the
-[Python reference](../guide/python) every method, and the technical guides explain how ZypherDB
-works inside.
+The next step searches by a different kind of closeness: not words in common, but numbers that
+point the same way.

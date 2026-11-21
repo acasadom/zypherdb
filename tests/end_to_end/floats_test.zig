@@ -109,6 +109,28 @@ test "numeric functions and conversions" {
     try expectQuery(&ast, &g, "RETURN round(2.5), round(-2.5), floor(-1.5), ceil(1.2), sqrt(16), abs(-1.5), sign(-0.5)", &.{
         &.{ float(3), float(-2), float(-2), float(2), float(4), float(1.5), int(-1) },
     });
+    // round with a precision and a mode: Neo4j's manual examples, then the float read as its
+    // shortest decimal (2.675 is 2.67499999... in binary), zero never negative, nothing dropped.
+    try expectQuery(&ast, &g, "RETURN round(3.141592, 3), round(-1.5, 0), round(-1.55, 1), round(2.675, 2), round(-0.004, 2), round(1.5, 3), round(7, 2), round(null, 1), round(1.5, null)", &.{
+        &.{ float(3.142), float(-1), float(-1.6), float(2.68), float(0), float(1.5), float(7), null_value, null_value },
+    });
+    const modes = [_]struct { []const u8, [4]f64 }{
+        .{ "UP", .{ 1.3, -1.3, 1.3, -1.4 } },        .{ "DOWN", .{ 1.2, -1.2, 1.2, -1.3 } },
+        .{ "CEILING", .{ 1.3, -1.2, 1.3, -1.3 } },   .{ "FLOOR", .{ 1.2, -1.3, 1.2, -1.4 } },
+        .{ "HALF_UP", .{ 1.2, -1.3, 1.3, -1.4 } },   .{ "HALF_DOWN", .{ 1.2, -1.3, 1.2, -1.3 } },
+        .{ "HALF_EVEN", .{ 1.2, -1.3, 1.2, -1.4 } },
+    };
+    for (modes) |mode| {
+        const query = try std.fmt.allocPrint(testing.allocator, "RETURN round(1.249, 1, '{0s}'), round(-1.251, 1, '{0s}'), round(1.25, 1, '{0s}'), round(-1.35, 1, '{0s}')", .{mode[0]});
+        defer testing.allocator.free(query);
+        try expectQuery(&ast, &g, query, &.{&.{ float(mode[1][0]), float(mode[1][1]), float(mode[1][2]), float(mode[1][3]) }});
+    }
+    try expectQuery(&ast, &g, "RETURN round(0.0001, 2, 'UP'), round(-2.5, 0, 'HALF_UP'), round(1e-300, 400, 'DOWN')", &.{
+        &.{ float(0.01), float(-3), float(1e-300) },
+    });
+    try expectQueryError(&ast, &g, "RETURN round(1.5, -1)", error.TypeMismatch);
+    try expectQueryError(&ast, &g, "RETURN round(1.5, 1.5)", error.TypeMismatch);
+    try expectQueryError(&ast, &g, "RETURN round(1.5, 1, 'half_up')", error.TypeMismatch);
     try expectQuery(&ast, &g, "RETURN toFloat(3), toFloat('2.5'), toFloat('x'), toInteger(2.9), toInteger(-2.9), toInteger('3.7')", &.{
         &.{ float(3), float(2.5), null_value, int(2), int(-2), int(3) },
     });

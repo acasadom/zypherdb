@@ -89,7 +89,7 @@ Return p.name, rule.from, rule.until   rows: 1
 ```
 
 The [tutorial](https://acasadom.github.io/zypherdb/tutorial/01-getting-started.html) goes from
-here to a complete access-control system in twenty short steps.
+here to a complete access-control system in twenty-one short steps.
 
 ## What it can do
 
