@@ -11,7 +11,9 @@
   every write in the same transaction. A write that would put something other than a vector of
   the right length in an indexed property fails with a constraint violation instead of leaving the
   entity out. `CREATE VECTOR INDEX` returns at once and the index is populated from the data
-  already there in the background; `SHOW VECTOR INDEXES` shows its `state` (`POPULATING`,
+  already there in the background; while it is, a write on a node it has not reached yet that
+  holds something other than such a vector fails the same way, removing a label or a property
+  included; `SHOW VECTOR INDEXES` shows its `state` (`POPULATING`,
   `ONLINE` or `FAILED`), `populationPercent` and `failureMessage`. Querying an index still being
   populated fails with error code 15 (`IndexPopulatingError` in Python); `CALL db.awaitIndexes()`
   waits until none is (300 seconds at most, or the seconds given). A value in the data that is not
